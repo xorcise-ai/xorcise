@@ -68,6 +68,27 @@ def test_missing_span_fields_do_not_raise():
     assert out[0].name == "" and dict(out[0].attrs) == {} and out[0].start_ns == 0
 
 
+def test_symbolic_otlp_error_status_is_normalized_to_enum_value():
+    payload = {
+        "resourceSpans": [
+            {
+                "scopeSpans": [
+                    {
+                        "spans": [
+                            {
+                                "name": "failed",
+                                "status": {"code": "STATUS_CODE_ERROR"},
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+
+    assert flatten(payload)[0].status_code == 2
+
+
 def test_attr_scalar_types_and_lossless_complex():
     payload = {
         "resourceSpans": [

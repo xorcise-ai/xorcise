@@ -11,7 +11,7 @@ from xorcise.core.harness_adapters.openhands.otel import OpenHandsAdapter
 from xorcise.core.otel.adapters.base import AdapterContext
 from xorcise.core.otel.adapters.genai import GenAiSemconvExtractor
 from xorcise.core.otel.adapters.registry import select
-from xorcise.core.otel.flatten import FlatSpan, flatten
+from xorcise.core.otel.flatten import FlatSpan, FlatSpanEvent, flatten
 
 _FIX = Path(__file__).resolve().parents[1] / "fixtures/otlp/openhands_real_run.json"
 _GOLDEN = Path(__file__).resolve().parents[1] / "fixtures/otlp/openhands_events_golden.json"
@@ -86,7 +86,14 @@ def test_llm_spans_are_delegated_to_the_shared_extractor():
     assert [(e.id, e.kind) for e in got_non_tool] == [(e.id, e.kind) for e in kept]
 
 
-def _flatspan(name: str, attrs: dict[str, str], *, span_id: str = "s1") -> FlatSpan:
+def _flatspan(
+    name: str,
+    attrs: dict[str, str],
+    *,
+    span_id: str = "s1",
+    status_code: int = 0,
+    events: tuple[FlatSpanEvent, ...] = (),
+) -> FlatSpan:
     return FlatSpan(
         span_id=span_id,
         parent_span_id="",
@@ -94,12 +101,65 @@ def _flatspan(name: str, attrs: dict[str, str], *, span_id: str = "s1") -> FlatS
         name=name,
         start_ns=1_700_000_000_000_000_000,
         end_ns=0,
-        status_code=0,
+        status_code=status_code,
         attrs=attrs,
         scope="lmnr.tracer",
         resource={},
         raw_seq=0,
+        events=events,
     )
+
+
+def test_failed_llm_policy_exception_surfaces_one_clean_refusal_event():
+    provider_message = (
+        "This content was flagged for possible cybersecurity risk. "
+        "If this seems wrong, try rephrasing your request."
+    )
+    exception = FlatSpanEvent(
+        name="exception",
+        time_ns=1_700_000_001_000_000_000,
+        attrs={
+            "exception.type": "litellm.exceptions.BadRequestError",
+            "exception.message": (
+                "litellm.BadRequestError: OpenAIException - "
+                + json.dumps(
+                    {
+                        "error": {
+                            "message": provider_message,
+                            "type": "invalid_request",
+                            "code": "cyber_policy",
+                        }
+                    }
+                )
+            ),
+        },
+    )
+    span = _flatspan(
+        "litellm.responses",
+        {
+            "lmnr.span.type": "LLM",
+            "gen_ai.request.model": "openai/gpt-5.5",
+        },
+        status_code=2,
+        # The reported Laminar span repeats this exception; render one card, not two.
+        events=(exception, exception),
+    )
+
+    events = OpenHandsAdapter().normalize([span], _CTX)
+    errors = [event for event in events if event.kind is AgentEventKind.error]
+
+    assert len(errors) == 1
+    assert errors[0].title == "model refusal"
+    assert errors[0].subkind == "model_refusal"
+    assert errors[0].body == provider_message
+    assert errors[0].status == "error"
+    assert errors[0].severity == "error"
+    assert errors[0].data == {
+        "error.code": "cyber_policy",
+        "error.type": "invalid_request",
+        "exception.type": "litellm.exceptions.BadRequestError",
+    }
+    assert any(event.kind is AgentEventKind.metric for event in events)
 
 
 def test_send_message_with_dict_content_maps_to_user_message():
