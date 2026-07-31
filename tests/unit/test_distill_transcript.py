@@ -159,6 +159,31 @@ def test_distils_the_logs_signal_not_only_spans():
     assert "someone@example.com" not in lines[0] and "duration_ms" not in lines[0]
 
 
+def test_distils_claude_code_refusal_for_the_judge():
+    logs = _logs_payload(
+        _log(
+            event_name="claude_code.api_refusal",
+            attrs={
+                "model": "claude-opus-4-8",
+                "category": "cyber",
+                "attempt": "1",
+                "has_explanation": "true",
+                "request_id": "req_refused",
+                "user.email": "operator@example.com",
+            },
+        )
+    )
+
+    (line,) = distill_transcript([], [_rec(0, logs)])
+
+    assert line == (
+        "claude_code.api_refusal | outcome=refusal · model=claude-opus-4-8 "
+        "· category=cyber · attempt=1 · has_explanation=true"
+    )
+    assert "req_refused" not in line
+    assert "operator@example.com" not in line
+
+
 def test_interleaves_spans_and_logs_in_time_order():
     """A judge reasons about a sequence of actions, so a span-recorded action and a log-recorded
     one must appear in the order they happened, not grouped by which signal carried them."""
