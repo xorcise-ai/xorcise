@@ -20,6 +20,19 @@ describe("CapabilityMatrix", () => {
     expect(screen.getAllByText(/not supported/).length).toBeGreaterThan(0);
   });
 
+  it("shows refusal support separately from general status and metrics", async () => {
+    renderWithProviders(<CapabilityMatrix selectedKind="codex" />);
+    await waitFor(() => expect(screen.getByRole("table")).toBeInTheDocument());
+
+    expect(screen.getByRole("rowheader", { name: "Model refusals" })).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /Model refusals: not supported, Model refusal details are not exported\./,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText(/Model refusals: supported/)).toHaveLength(3);
+  });
+
   it("marks the Custom column unverified", async () => {
     renderWithProviders(<CapabilityMatrix selectedKind="codex" />);
     await waitFor(() => expect(screen.getByText(/unverified/i)).toBeInTheDocument());

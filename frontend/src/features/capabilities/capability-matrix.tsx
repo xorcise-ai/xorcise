@@ -21,7 +21,7 @@ interface MatrixColumn {
 
 /**
  * The harness capability dot-matrix shown beneath the harness picker at agent
- * creation: rows = the 9 display groups, columns = every built-in harness + Custom, so a user
+ * creation: rows = the display groups, columns = every built-in harness + Custom, so a user
  * can see — before registering an agent — what telemetry that harness's adapter actually
  * declares, honestly (gaps show as an unsupported/partial dot with the adapter's own note,
  * never hidden). `selectedKind` highlights the chosen column with the amber selection token —

@@ -133,7 +133,28 @@ describe("RegisterAgentPage — register mode", () => {
 
     expect(screen.getByLabelText(/user messages: supported/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/agent messages: not supported/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/model refusals: not supported/i)).toBeInTheDocument();
+    expect(
+      screen.getByText("Model refusal details are not exported."),
+    ).toBeInTheDocument();
     expect(screen.queryByText(/review visibility limitations/i)).not.toBeInTheDocument();
+  });
+
+  it("advertises refusal support for Claude Code and OpenHands", async () => {
+    renderWithProviders(<RegisterAgentPage editName={null} />);
+
+    fireEvent.click(screen.getByRole("radio", { name: /claude code/i }));
+    await waitFor(() =>
+      expect(screen.getByLabelText(/model refusals: supported/i)).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByText("Model refusal details are not exported."),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("radio", { name: /openhands/i }));
+    await waitFor(() =>
+      expect(screen.getByLabelText(/model refusals: supported/i)).toBeInTheDocument(),
+    );
   });
 
   it("shows custom harness export capabilities as unknown, not supported", async () => {
@@ -141,7 +162,7 @@ describe("RegisterAgentPage — register mode", () => {
     fireEvent.click(screen.getByRole("radio", { name: /custom/i }));
 
     await waitFor(() =>
-      expect(screen.getByText("8 unknown")).toBeInTheDocument(),
+      expect(screen.getByText("9 unknown")).toBeInTheDocument(),
     );
     expect(screen.getByLabelText(/user messages: unknown/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/agent messages: unknown/i)).toBeInTheDocument();
@@ -154,13 +175,17 @@ describe("RegisterAgentPage — register mode", () => {
 
     await waitFor(() => expect(screen.getByText("claude-opus-4-8")).toBeInTheDocument());
     fireEvent.click(screen.getByText("claude-opus-4-8"));
-    expect(screen.getByLabelText(/^model/i)).toHaveValue("claude-opus-4-8");
+    expect(screen.getByRole("combobox", { name: /^model/i })).toHaveValue(
+      "claude-opus-4-8",
+    );
 
     // Suggestions are shortcuts, not validation — arbitrary disclosed IDs remain accepted.
-    fireEvent.change(screen.getByLabelText(/^model/i), {
+    fireEvent.change(screen.getByRole("combobox", { name: /^model/i }), {
       target: { value: "my-provider/custom-model" },
     });
-    expect(screen.getByLabelText(/^model/i)).toHaveValue("my-provider/custom-model");
+    expect(screen.getByRole("combobox", { name: /^model/i })).toHaveValue(
+      "my-provider/custom-model",
+    );
   });
 
   it("adds the selected model to the Codex launch preview", async () => {
@@ -168,7 +193,7 @@ describe("RegisterAgentPage — register mode", () => {
 
     fireEvent.click(screen.getByRole("radio", { name: /codex/i }));
     await screen.findByText(/codex exec/i);
-    fireEvent.change(screen.getByLabelText(/^model/i), {
+    fireEvent.change(screen.getByRole("combobox", { name: /^model/i }), {
       target: { value: "gpt-5.6-terra" },
     });
     await waitFor(() =>
@@ -184,7 +209,7 @@ describe("RegisterAgentPage — register mode", () => {
 
     fireEvent.click(screen.getByRole("radio", { name: /claude code/i }));
     await screen.findByText(/claude --permission-mode/i);
-    fireEvent.change(screen.getByLabelText(/^model/i), {
+    fireEvent.change(screen.getByRole("combobox", { name: /^model/i }), {
       target: { value: "claude-sonnet-5" },
     });
     await waitFor(() =>
@@ -312,7 +337,7 @@ describe("RegisterAgentPage — edit mode", () => {
     );
     expect(screen.getByDisplayValue("claude-opus-4-8")).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText(/^model/i), {
+    fireEvent.change(screen.getByRole("combobox", { name: /^model/i }), {
       target: { value: "claude-haiku" },
     });
     fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
@@ -521,7 +546,7 @@ describe("RegisterAgentPage — edit mode", () => {
       expect(screen.getByDisplayValue("claude-opus-4-8")).toBeInTheDocument(),
     );
 
-    fireEvent.change(screen.getByLabelText(/^model/i), {
+    fireEvent.change(screen.getByRole("combobox", { name: /^model/i }), {
       target: { value: "typing-in-progress" },
     });
 

@@ -1,6 +1,6 @@
 // Display grouping over AgentEventKind (XOR harness capability matrix). The wire profile is
 // TOTAL over every kind (see HarnessCapabilityProfile), but a per-kind matrix is too dense to
-// read at a glance — these 9 groups are the unit the capability matrix renders one row/dot per.
+// read at a glance — these groups are the unit the capability matrix renders one row/dot per.
 // `unknown` is deliberately excluded: it is the adapter's escape hatch, not a declared capability,
 // so it never earns its own row.
 import type { HarnessCapabilityProfile } from "@/lib/api/types";
@@ -30,10 +30,11 @@ export const DISPLAY_GROUPS: readonly DisplayGroup[] = [
   { id: "tools", label: "Tool calls", kinds: ["tool_call", "tool_result"] },
   { id: "mcp", label: "MCP", kinds: ["mcp_call", "mcp_result"] },
   { id: "findings", label: "Findings & flags", kinds: ["finding", "flag"] },
+  { id: "errors", label: "Model refusals", kinds: ["error"] },
   {
     id: "health",
-    label: "Status / errors / metrics",
-    kinds: ["status", "error", "metric"],
+    label: "Status / metrics",
+    kinds: ["status", "metric"],
   },
 ] as const;
 
