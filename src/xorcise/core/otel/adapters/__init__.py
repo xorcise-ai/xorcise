@@ -21,6 +21,15 @@ from xorcise.core.otel.adapters.base import AdapterContext
 from xorcise.core.otel.adapters.registry import select
 from xorcise.core.otel.flatten import FlatLogRecord, FlatSpan, flatten, flatten_logs
 
+# Normalization is a versioned projection independently of each harness adapter's mapping version.
+# Including it in RunEventsView.adapter_version makes persisted caches rebuild when shared assembly
+# semantics (such as cross-batch ordering) change, even if the selected adapter itself did not.
+NORMALIZER_VERSION = "2"
+
+
+def projection_version(adapter_version: str) -> str:
+    return f"{adapter_version}+normalizer.{NORMALIZER_VERSION}"
+
 
 def _extract_record(
     record: TraceRecord | Mapping[str, Any],
@@ -147,13 +156,12 @@ def normalize_run(
     events = [with_receipt(event) for event in events]
     log_events = [with_receipt(event) for event in log_events]
 
-    def order_key(event: AgentEvent) -> tuple[float, float, str, int, str]:
-        # Receipt time is the only clock shared by RAW telemetry and infra records. Producer time
-        # remains the deterministic intra-export ordering key. Legacy/in-memory records without a
-        # receipt stamp fall back to producer time and retain their historical behavior.
-        received = event.received_at or event.ts
+    def order_key(event: AgentEvent) -> tuple[float, str, int, str]:
+        # This view is the agent narrative, so its own clock is authoritative for chronology.
+        # Receipt time says when XORCISE learned about an event, not when it happened: a delayed
+        # export must not move a prompt behind its response. The presentation layer retains
+        # received_at and uses it only as one-way evidence when interleaving server-clock infra.
         return (
-            received.timestamp(),
             event.ts.timestamp(),
             event.raw_ref.signal,
             event.raw_ref.raw_seq,
@@ -198,7 +206,7 @@ def normalize_run(
         run_id=ctx.run_id,
         source_agent=ctx.source_agent,
         adapter_name=adapter.name,
-        adapter_version=adapter.version,
+        adapter_version=projection_version(adapter.version),
         fallback=fallback,
         next_since=next_since,
         next_cursor=next_cursor,

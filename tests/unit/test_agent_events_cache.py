@@ -115,6 +115,28 @@ def test_adapter_version_bump_invalidates(migrated_home):
     assert rebuilt is not None and rebuilt[1] == current_version
 
 
+def test_shared_normalizer_version_invalidates_legacy_projection(migrated_home):
+    """A shared ordering change must rebuild old completed-run caches even when the harness
+    adapter and RAW max sequences themselves have not changed."""
+    from xorcise.core.db import session_scope
+    from xorcise.core.otel.store.agent_events import SqliteAgentEventStore
+    from xorcise.core.otel.store.models import AgentEventRunRow
+    from xorcise.core.rest import events_view
+
+    _seed("r-normalizer", [(0, "s0", "shell.exec")])
+    events_view.events_since("r-normalizer", -1)
+    with session_scope() as s:
+        header = s.get(AgentEventRunRow, "r-normalizer")
+        assert header is not None
+        header.adapter_version = "1"  # pre-normalizer-version cache
+
+    events_view.events_since("r-normalizer", -1)
+
+    rebuilt = SqliteAgentEventStore().get_staleness("r-normalizer")
+    assert rebuilt is not None
+    assert rebuilt[1].endswith("+normalizer.2")
+
+
 def test_regenerate_from_raw_equals_served(migrated_home):
     """Canonical-safety guard: the cached (served) view == a fresh normalize-from-RAW view."""
     from xorcise.core.otel.adapters import normalize_run

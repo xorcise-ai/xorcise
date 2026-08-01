@@ -595,7 +595,7 @@ describe("ReplayTimeline infra rows", () => {
   });
 
   it("interleaves an infra row between agent turns by receipt-time", () => {
-    // Agent producer clocks disagree, but receipt times at 1000ms and 3000ms bracket infra at 2000.
+    // Receipt times at 1000ms and 3000ms bracket infra at 2000ms.
     // Message titles are display-mapped ("Agent CoT"), so the distinguishing text rides in body.
     const first = agentEvent({ id: "first", kind: "message", body: "first-msg" });
     const second = agentEvent({ id: "second", kind: "message", body: "second-msg" });
@@ -605,12 +605,12 @@ describe("ReplayTimeline infra rows", () => {
         events={[
           {
             ...first,
-            ts: new Date(9000).toISOString(),
+            ts: new Date(500).toISOString(),
             received_at: new Date(1000).toISOString(),
           },
           {
             ...second,
-            ts: new Date(500).toISOString(),
+            ts: new Date(9000).toISOString(),
             received_at: new Date(3000).toISOString(),
           },
         ]}
@@ -623,6 +623,42 @@ describe("ReplayTimeline infra rows", () => {
     expect(text[0]).toContain("first-msg");
     expect(text[1]).toContain("Fetched the run brief");
     expect(text[2]).toContain("second-msg");
+  });
+
+  it("does not let a delayed prompt move behind its already-received response or intervening infra", () => {
+    render(
+      <ReplayTimeline
+        runId="r1"
+        events={[
+          agentEvent({
+            id: "response",
+            kind: "message",
+            body: "assistant-response",
+            ts: new Date(2000).toISOString(),
+            received_at: new Date(1000).toISOString(),
+          }),
+          agentEvent({
+            id: "prompt",
+            kind: "message",
+            role: "user",
+            body: "delayed-user-prompt",
+            ts: new Date(1000).toISOString(),
+            received_at: new Date(4000).toISOString(),
+          }),
+        ]}
+        infraRows={[
+          infra({
+            ts: new Date(1500).toISOString(),
+            label: "System activity",
+          }),
+        ]}
+      />,
+    );
+
+    const rows = screen.getAllByTestId(/replay-turn|infra-turn/);
+    expect(rows[0]).toHaveTextContent("delayed-user-prompt");
+    expect(rows[1]).toHaveTextContent("assistant-response");
+    expect(rows[2]).toHaveTextContent("System activity");
   });
 
   it("lets infra split a long same-group Claude segment", () => {
@@ -661,7 +697,7 @@ describe("ReplayTimeline infra rows", () => {
     expect(rows[2]).toHaveTextContent("after-infra");
   });
 
-  it("places a delayed older producer event by receipt time", () => {
+  it("keeps infra first when a lone delayed event has no cross-clock ordering evidence", () => {
     render(
       <ReplayTimeline
         runId="r1"

@@ -32,7 +32,7 @@ from xorcise.core.contracts.telemetry import TraceRecord
 # the imports, to stay E402-clean). Still lazy: events_view is itself lazy-imported by the route
 # handler, so this stays off role:control's boot path (plane-isolation invariant).
 from xorcise.core.harness_adapters import load_adapters
-from xorcise.core.otel.adapters import normalize_run
+from xorcise.core.otel.adapters import normalize_run, projection_version
 from xorcise.core.otel.adapters.base import AdapterContext
 from xorcise.core.otel.adapters.registry import select
 from xorcise.core.otel.flatten import FlatSpan, flatten
@@ -92,7 +92,12 @@ def _ensure_fresh(run_id: str) -> None:
     ctx = _ctx_for(run_id)
     adapter, _ = select(ctx.source_agent, _flatten_records(records))
     store = SqliteAgentEventStore()
-    if store.get_staleness(run_id) == (adapter.name, adapter.version, max_seq, log_max_seq):
+    if store.get_staleness(run_id) == (
+        adapter.name,
+        projection_version(adapter.version),
+        max_seq,
+        log_max_seq,
+    ):
         return
     store.put(run_id, normalize_run(records, ctx, log_records=logs), max_seq, log_max_seq)
 

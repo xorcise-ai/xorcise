@@ -376,9 +376,9 @@ def test_normalize_run_skips_structurally_broken_record() -> None:
     assert view.events[0].title == "ok"
 
 
-def test_normalize_run_orders_by_receipt_time_not_delayed_producer_time() -> None:
-    """A late export may contain an older producer timestamp; it still belongs after infra/events
-    already received by the server."""
+def test_normalize_run_keeps_delayed_older_event_in_producer_chronology() -> None:
+    """Receipt is an observation time, not an occurrence time: a late export containing an older
+    producer event must not move that event behind a response exported earlier."""
     early_receipt = datetime(2026, 7, 25, 1, 0, 1, tzinfo=UTC)
     late_receipt = datetime(2026, 7, 25, 1, 0, 10, tzinfo=UTC)
     records: list[Mapping[str, Any]] = [
@@ -392,8 +392,8 @@ def test_normalize_run_orders_by_receipt_time_not_delayed_producer_time() -> Non
                             {
                                 "spans": [
                                     {
-                                        "spanId": "received-first",
-                                        "name": "first",
+                                        "spanId": "response-received-first",
+                                        "name": "response",
                                         "startTimeUnixNano": "2000000000",
                                     }
                                 ]
@@ -413,8 +413,8 @@ def test_normalize_run_orders_by_receipt_time_not_delayed_producer_time() -> Non
                             {
                                 "spans": [
                                     {
-                                        "spanId": "producer-older",
-                                        "name": "late",
+                                        "spanId": "delayed-prompt",
+                                        "name": "prompt",
                                         "startTimeUnixNano": "1000000000",
                                     }
                                 ]
@@ -428,8 +428,8 @@ def test_normalize_run_orders_by_receipt_time_not_delayed_producer_time() -> Non
 
     view = normalize_run(records, _ctx(source_agent="generic"))
 
-    assert [event.id for event in view.events] == ["received-first", "producer-older"]
-    assert [event.received_at for event in view.events] == [early_receipt, late_receipt]
+    assert [event.id for event in view.events] == ["delayed-prompt", "response-received-first"]
+    assert [event.received_at for event in view.events] == [late_receipt, early_receipt]
 
 
 def test_normalize_run_uses_producer_time_within_one_receipt_batch() -> None:

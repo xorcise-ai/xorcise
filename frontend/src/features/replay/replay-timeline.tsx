@@ -10,6 +10,7 @@ import type { RunEventsMeta } from "./use-run-events";
 import { KIND_META, displayLabel, formatEventTime } from "./kind-meta";
 import { EventCard, EventTime, StatusDot, TerminalCard, type AttributionSpanStatus } from "./event-card";
 import { RawDrillDownModal } from "./raw-drilldown-modal";
+import { mergeAgentAndInfra } from "./replay-order";
 
 /** The icon for an infra row, by its representative target id (Headscale / run-control / OTel
  *  collector / agent). Display-only. */
@@ -292,65 +293,51 @@ export function ReplayTimeline({
         : events.filter((e) => (KIND_META[e.kind] ?? KIND_META.unknown).group !== "debug"),
     [events, debug],
   );
-  // Merge atomic agent cards and infra activities on the server receipt clock BEFORE visual turn
-  // grouping. This is important for Claude: many consecutive tool spans share one whole-session
-  // group_id, and grouping first makes an infra event incapable of landing inside that long group.
+  // Fix the agent narrative in producer order, then merge infra using receipt as one-way evidence.
+  // This preserves infra's server-clock interleaving without mistaking a delayed export for a late
+  // event. Merge before visual grouping so infra can still split Claude's whole-session group.
   type Entry =
     | { kind: "turn"; ts: number; turn: Turn }
     | { kind: "infra"; ts: number; row: InfraRowData };
   const entries = useMemo<Entry[]>(() => {
-    type Atomic =
-      | { kind: "agent"; card: AgentCard }
-      | { kind: "infra"; row: InfraRowData; receivedTs: number };
-    const atomic: Atomic[] = [
-      ...agentCards(visible).map((card): Atomic => ({ kind: "agent", card })),
-      ...(infraRows ?? []).map(
-        (row): Atomic => ({
-          kind: "infra",
-          row,
-          receivedTs: finiteOr(parseTime(row.ts), Number.NEGATIVE_INFINITY),
-        }),
-      ),
-    ];
-    atomic.sort((a, b) => {
-      const aReceived = a.kind === "infra" ? a.receivedTs : a.card.receivedTs;
-      const bReceived = b.kind === "infra" ? b.receivedTs : b.card.receivedTs;
-      if (aReceived !== bReceived) return aReceived - bReceived;
-      // Infra wins an exact receipt-time tie so setup/lifecycle state is visible before the agent
-      // action it enabled. Remaining keys make same-export ordering deterministic.
-      if (a.kind !== b.kind) return a.kind === "infra" ? -1 : 1;
-      if (a.kind === "infra" && b.kind === "infra") return a.row.seq - b.row.seq;
-      if (a.kind === "agent" && b.kind === "agent") {
-        if (a.card.producerTs !== b.card.producerTs) {
-          return a.card.producerTs - b.card.producerTs;
-        }
-        const signal = a.card.signal.localeCompare(b.card.signal);
-        if (signal !== 0) return signal;
-        if (a.card.rawSeq !== b.card.rawSeq) return a.card.rawSeq - b.card.rawSeq;
-        return a.card.key.localeCompare(b.card.key);
-      }
-      return 0;
+    const cards = agentCards(visible).sort((a, b) => {
+      if (a.producerTs !== b.producerTs) return a.producerTs - b.producerTs;
+      const signal = a.signal.localeCompare(b.signal);
+      if (signal !== 0) return signal;
+      if (a.rawSeq !== b.rawSeq) return a.rawSeq - b.rawSeq;
+      return a.key.localeCompare(b.key);
+    });
+    const atomic = mergeAgentAndInfra(cards, infraRows ?? [], {
+      agentReceipt: (card) => card.events[0]?.received_at,
+      infraTime: (row) => row.ts,
+      infraSequence: (row) => row.seq,
     });
 
     const merged: Entry[] = [];
     let previousGroup: string | null = null;
     for (const item of atomic) {
       if (item.kind === "infra") {
-        merged.push({ kind: "infra", ts: item.receivedTs, row: item.row });
+        const row = item.infra;
+        merged.push({
+          kind: "infra",
+          ts: finiteOr(parseTime(row.ts), Number.POSITIVE_INFINITY),
+          row,
+        });
         previousGroup = null; // infra deliberately splits a long visual agent turn
         continue;
       }
+      const card = item.agent;
       const previous = merged.at(-1);
-      if (previous?.kind === "turn" && previousGroup === item.card.groupKey) {
-        previous.turn.events.push(...item.card.events);
+      if (previous?.kind === "turn" && previousGroup === card.groupKey) {
+        previous.turn.events.push(...card.events);
       } else {
         merged.push({
           kind: "turn",
-          ts: item.card.receivedTs,
-          turn: { key: item.card.key, events: [...item.card.events] },
+          ts: card.receivedTs,
+          turn: { key: card.key, events: [...card.events] },
         });
       }
-      previousGroup = item.card.groupKey;
+      previousGroup = card.groupKey;
     }
     return merged;
   }, [visible, infraRows]);
