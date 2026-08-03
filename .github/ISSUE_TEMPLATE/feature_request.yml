@@ -1,0 +1,85 @@
+name: Feature request
+description: Suggest a capability or improvement for XORCISE.
+title: "[Feature]: "
+labels:
+  - feature
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. The most useful feature requests describe a **problem you
+        hit**, not just a solution you have in mind — that leaves room for a better design than
+        either of us had first.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before you file
+      options:
+        - label: I searched existing issues and discussions and this is not a duplicate.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: >-
+        What are you trying to do, and what stops you today? Concrete beats abstract:
+        "I cannot compare two agents across the same mission set without exporting to CSV
+        by hand" is far more useful than "reporting should be better".
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to happen?
+      description: Your proposed solution, if you have one. Sketch the CLI or UI if it helps.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you have considered
+      description: Including workarounds you are using now.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of XORCISE does this affect?
+      multiple: true
+      options:
+        - CLI
+        - Web UI / frontend
+        - Runner / mission execution
+        - Control plane / networking
+        - Agent harness adapters
+        - Mission format or schema
+        - Grading / evaluation
+        - Reporting
+        - Packaging / installation
+        - Documentation
+        - Not sure
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: breaking
+    attributes:
+      label: Compatibility
+      options:
+        - label: >-
+            As far as I can tell, this would require a breaking change to an existing
+            interface (CLI options, config, mission schema, adapter contract, output format).
+          required: false
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I would be willing to work on this myself.
+          required: false

@@ -1,0 +1,490 @@
+@import "tailwindcss";
+
+/* ═══════════════════════════════════════════════════════════════
+   XORCISE design tokens — dark-only.
+   Ported verbatim (dark values) from the original xorcise.ai frontend
+   (xorcise-ai-old/frontend/src/app/globals.css). Tailwind v4 exposes each
+   --color-* both as a utility (bg-card, text-terminal) and a CSS variable
+   (var(--color-terminal)).
+   Surface scale (lightest → darkest):
+     raised  #232323   hover / terminal panels
+     card    #1a1a1a   card body / popover
+     chrome  #141414   tab/header strips
+     bg      #111111   page background
+     sidebar #0d0d0d   navigation sidebar
+   ═══════════════════════════════════════════════════════════════ */
+
+@theme {
+  /* type — JetBrains Mono everywhere (the --font-jetbrains var is set by next/font) */
+  /* ONE face on screen. §5.1 scopes the faces by MEDIUM, not by passage length:
+     "JetBrains Mono — all screen, deck, UI, labels, data" and "Inter — long-form body
+     in branded print/one-pagers ONLY"; §6 states it flat — "Mono everywhere on screen".
+     A previous pass read §5.1's "two supporting faces exist only where long reading in
+     monospace turns punishing" as licence to set console prose in Inter. That sentence
+     is about print and .docx, which is why Inter is filed under "Print body". Both
+     tokens therefore resolve to the mono stack; `font-sans` is kept as an alias so no
+     call site can silently reintroduce a second screen face. */
+  --font-mono: var(--font-jetbrains), ui-monospace, "SF Mono", Consolas, monospace;
+  --font-sans: var(--font-jetbrains), ui-monospace, "SF Mono", Consolas, monospace;
+
+  /* ── The type scale (brand Module 05 §5.2/§5.3) ────────────────────────────
+     Roles, not pixel values. Before this existed the app had no scale at all:
+     measured across all eight routes, 498 of 1164 text elements were 10px and
+     259 were 11px — 65% of every word on screen sat below the brand's own 12px
+     data floor, using the LABEL size (reserved for "eyebrows, section labels,
+     badges, status") as the de-facto body size. Ten-pixel text also carried four
+     different line-heights (1.6, 1.43, 1.33, 1.63) with no rule behind any of them.
+
+     Weight is one step heavier than the brand's print table at every rung below
+     14px, and that is deliberate. A light glyph on a dark ground reads thinner
+     than the same weight dark-on-light — the eye's response to a thin bright
+     stroke against black is weaker — and monospace makes it worse, because a
+     uniform advance width gives the stem nowhere to thicken into. This whole UI
+     is light-on-near-black at 10-12px, which is the exact condition where 400
+     stops holding up. The fix belongs in the scale, not in 1164 call sites. */
+
+  /* uppercase eyebrows, section labels, badges, status chips */
+  --text-label: 10px;
+  --text-label--line-height: 1.3;
+  --text-label--letter-spacing: 0.16em; /* the type spec floors labels at 0.14em; we shipped 0.05em */
+  --text-label--font-weight: 600;
+
+  /* The quiet supporting rung: meta, timestamps, table chrome — AND the helper
+     sentence under a control, which is what it mostly carries in practice.
+
+     Three corrections after seeing it render on the Settings page:
+     · tracking 0.02em -> 0. Letter-spacing belongs on short uppercase labels, not
+       on running sentences; the type spec sets body tracking to 0. At 0.02em a
+       72-character helper sentence was stretched about 1.4 characters wider than it
+       should be, which is what made the helper paragraphs read as loose and ragged.
+     · weight 500 -> 400. Help text was rendering at the SAME weight as the 500 field
+       label above it, so nothing but a single pixel of size separated the two. The
+       explanation must sit below the thing it explains.
+     · line-height 1.5 -> 1.6. 1.5 is right for one-line meta; these run to three
+       lines and want the body rung's leading. */
+  --text-caption: 11px;
+  --text-caption--line-height: 1.6;
+  --text-caption--letter-spacing: 0em;
+  --text-caption--font-weight: 400;
+
+  /* dense rows, values, IDs, paths — the console's working size */
+  --text-dense: 12px;
+  --text-dense--line-height: 1.6;
+  --text-dense--font-weight: 500;
+
+  /* standard body and nav — multi-line copy, where 1.6 earns its keep */
+  --text-body: 14px;
+  --text-body--line-height: 1.6;
+  --text-body--font-weight: 450;
+
+  /* SINGLE-LINE dense rows: leaderboard entries, table cells, list items.
+     Same 14px as body, but §5.3's "table rows 1.45" leading instead of body's 1.6.
+     Leading exists to help the eye find the next line; a row that never wraps has
+     no next line, so 1.6 there is pure vertical padding. Shipping body on the
+     dashboard leaderboards added ~2.4px per row and, over seven rows, pushed the
+     last mission out of a fixed-height card. The brand names this case
+     separately for exactly that reason — "the console is dense by design; don't
+     inflate padding for breathing room at the cost of rows-on-screen" (§9). */
+  --text-row: 14px;
+  --text-row--line-height: 1.45;
+  --text-row--font-weight: 450;
+
+  /* page and section heads */
+  --text-lead: 20px;
+  --text-lead--line-height: 1.4;
+  --text-lead--letter-spacing: -0.01em;
+  --text-lead--font-weight: 700;
+
+  /* surfaces & core */
+  --color-deepest: #0a0805; /* shell / nav / inputs — the darkest surface */
+  --color-background: #111111;
+  --color-foreground: #d4d4d4;
+  --color-card: #1a1a1a;
+  --color-card-foreground: #d4d4d4;
+  --color-popover: #1a1a1a;
+  --color-popover-foreground: #d4d4d4;
+  --color-primary: #e8b84b;
+  --color-primary-foreground: #111111;
+  --color-secondary: #222222;
+  --color-secondary-foreground: #d4d4d4;
+  --color-muted: #1e1e1e;
+  --color-muted-foreground: #888888;
+  --color-accent: #222222;
+  --color-accent-foreground: #e8e8e8;
+  --color-destructive: #ff5f57;
+  --color-warning: #f0d890; /* amber's caution stop (hot amber) — pending/partial */
+  --color-info: #38bdf8;    /* target/info signal */
+  --color-data: #6ee7a8;    /* THE data accent — measured values, score/progress fills, success */
+  --color-model: #a78bfa;   /* model signal */
+  /* Decorative separation between containers — cards, tables, dialogs, toasts.
+     Deliberately near-invisible: the brand builds depth from the surface ladder,
+     never from rules or shadow. Has no contrast floor and should stay quiet. */
+  --color-border: rgba(255, 255, 255, 0.09);
+  /* Control boundaries are a different job with a hard floor: WCAG 1.4.11 puts 3:1
+     on the parts of a control needed to identify it. A field sits on --color-deepest
+     inside a --color-card panel, and #0a0805 against #1a1a1a is only 1.15:1 — so the
+     surface alone cannot identify the control and the border is load-bearing.
+     .40 composites to #6c6b69, which clears 3:1 against all three neighbours it can
+     touch: its own fill (3.76), the card around it (3.27) and the page (3.55).
+     Measured against every neighbour rather than one, because the fill is darker
+     than the surround and the weakest pair is not the obvious one. */
+  --color-input: rgba(255, 255, 255, 0.4);
+  --color-ring: #e8b84b;
+
+  /* explicit surface scale */
+  --color-chrome: #141414;
+  --color-raised: #232323;
+
+  /* sidebar */
+  --color-sidebar: #0d0d0d;
+  --color-sidebar-foreground: #d4d4d4;
+  --color-sidebar-accent: #1a1a1a;
+  --color-sidebar-border: rgba(255, 255, 255, 0.07);
+
+  /* semantic trace/event colors */
+  --color-terminal: #00c9a0; /* exec_shell  */
+  --color-mcp: #f97316;      /* xorcise MCP */
+  --color-tool: #38bdf8;     /* local tools */
+  --color-flag: #e8b84b;     /* submit_flag */
+  --color-think: #a78bfa;    /* thinking    */
+  --color-agent: #2dd4bf;    /* assistant   */
+  --color-ok: #6ee7a8;       /* success → data accent (guide's #1 rule) */
+  --color-err: #ff5f57;      /* error       */
+
+  /* terrain map v2 state palette. yellow = the agent node + the currently-probing edge; blue =
+     discovered + the XORCISE-infra group + other active edges; green (--color-ok) = enumerated;
+     red (--color-err) = the unsolved objective; grey (--color-muted-foreground) = unknown. All
+     distinct in hue from --color-primary (#e8b84b, amber), which stays the selection/pulse ring. */
+  --color-terrain-hot: #facc15;
+  --color-terrain-cool: #38bdf8;
+
+  /* replay event families (kind-meta.ts) — colored ONLY for kinds the real harness adapters
+     emit; high-contrast so message/exec/tool/file/thinking are all distinguishable. */
+  --color-user: #e8b84b;      /* user prompt (your input) */
+  --color-assistant: #f97316; /* assistant message        */
+  --color-file: #38bdf8;      /* file read / edit         */
+  --color-toolcall: #f472b6;  /* tool calls (+ folded mcp/browser/finding/flag) */
+
+  /* status text scale.
+     tertiary was #666666 — 3.03:1 on --color-card, 2.74:1 on --color-raised, so it
+     failed WCAG 1.4.3 (AA, 4.5:1) on every one of the five surfaces while carrying
+     form labels, page eyebrows, settings keys and input placeholders across 228
+     usages. Brand Module 09 makes WCAG 2.2 AA the standard, so the swatch loses to
+     the clause. #8a8a8a is close to the lowest value that clears AA on the WORST
+     ground (raised, 4.55:1) — chosen to keep this three-rung ladder intact rather
+     than flatten tertiary into secondary. */
+  --color-heading: #f0f0f0;
+  --color-text-secondary: #999999;
+  --color-text-tertiary: #8a8a8a;
+
+  /* The wordmark is named explicitly so it never inherits a general text token —
+     brand tokens.css says exactly that, and we had inherited --color-heading
+     (#f0f0f0) instead of the specified #f2ead6. Module 03 §3.1. */
+  --color-wordmark: #f2ead6;
+
+  /* charts */
+  --color-chart-1: #e8b84b;
+  --color-chart-2: #6ee7a8; /* success/measured → data accent */
+  --color-chart-3: #c084fc;
+  --color-chart-4: #38bdf8; /* info (was #8ab4f8) */
+  --color-chart-5: #ff5f57;
+}
+
+/* Motion token scale (guide §11) — fast for hover/focus/small state, base for
+   drawer/panel/tab. resolve is tied to real progress, not a fixed duration.
+   Kept in :root (not @theme) so they're always emitted as design tokens even
+   when not yet referenced by a utility. */
+:root {
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+}
+
+/* Syntax-highlight palette for the Trace's terminal + JSON blocks (features/replay/syntax.tsx).
+   Kept as theme tokens so a future light theme overrides them in ONE place; today's dark values are
+   VSCode Dark+. Referenced from the spans as text-[var(--syntax-*)]. */
+:root {
+  --syntax-comment: #6a9955;
+  --syntax-string: #ce9178;
+  --syntax-variable: #9cdcfe;
+  --syntax-keyword: #c586c0;
+  --syntax-number: #b5cea8;
+  --syntax-flag: #d7ba7d;
+  --syntax-command: #dcdcaa;
+  --syntax-operator: #569cd6;
+  --syntax-key: #9cdcfe;
+  --syntax-boolean: #569cd6;
+}
+
+/* Forward-looking: when a light theme is introduced (data-theme="light"), the palette switches to
+   VSCode Light+ so the Trace stays readable on a light surface. Inert until that theme exists. */
+:root[data-theme="light"] {
+  --syntax-comment: #008000;
+  --syntax-string: #a31515;
+  --syntax-variable: #001080;
+  --syntax-keyword: #af00db;
+  --syntax-number: #098658;
+  --syntax-flag: #795e26;
+  --syntax-command: #795e26;
+  --syntax-operator: #0000ff;
+  --syntax-key: #0451a5;
+  --syntax-boolean: #0000ff;
+}
+
+/* themed scrollbar so the system scrollbar never bleeds through the dark UI */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2a2a2a transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #2a2a2a;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #3a3a3a;
+  background-clip: padding-box;
+}
+
+/* Global focus-visible fallback (guide §12) — every interactive gets a visible
+   amber ring even when it doesn't set its own. Components that define a richer
+   focus treatment (button/input/tabs) still win via their own :focus-visible. */
+:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
+html {
+  font-family: var(--font-mono);
+}
+
+body {
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-mono);
+  /* Brand Module 05 §5.2 sets body at 14px; we shipped 13px, which dragged every
+     relative size down with it. Monospace needs the pixel more than a proportional
+     face does: uniform advance width weakens word-shape recognition, so size and
+     leading carry more of the reading load. */
+  font-size: 14px;
+  line-height: 1.6;
+  /* 450, not 400. Two thirds of the interface (763 of 1164 measured elements) was
+     weight 400 monospace on a near-black ground at 10-12px, which is where
+     light-on-dark thinning is most visible — the reported symptom was that the
+     words look "slim". Half a step lifts the whole surface without tipping the
+     console into the heaviness that would flatten the 500/600/700 rungs above it. */
+  font-weight: 450;
+  /* Grayscale AA smoothing keeps stems from being thinned further by subpixel
+     rendering on dark backgrounds, which is the other half of the same problem. */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Content measure — brand §7.1: "Content max-width ~1120px".
+   The app shipped with NO cap, so every page stretched to the viewport. On a wide monitor
+   a Settings card grew to 1107px of inner width while its prose correctly stopped at the
+   readable measure (68ch ~= 449px): 41% fill, and 658px of dead space to the right of every
+   sentence. Reported as "the sentences are aligned to the right and don't cover the box —
+   the line breaks in the middle, so it doesn't look completed", and it worsens the further
+   you zoom out, because the box grows and the text cannot.
+   Applied to PROSE-LED pages only. Dense card grids (catalog, runs, results) are exempt:
+   their cards are narrow, their text already fills them, and §9 keeps the console dense by
+   design — capping those would trade columns for whitespace. */
+.page-measure {
+  max-inline-size: 1120px;
+  margin-inline: auto;
+}
+
+/* Line-clamped blocks must reserve WHOLE line boxes.
+   Tailwind's `line-clamp-N` sizes the box from its content and the engine quantises that
+   height, so a fractional line box leaves the last line short and shaves its descenders.
+   Measured on the live catalog: --text-dense is 12px with 1.6 leading = 19.2px, two lines
+   need 38.4px, the box laid out at 38px — and ALL 23 clamped card descriptions were cut by
+   0.4px. It reads as "the text is clipped", on every card, always, because it is arithmetic
+   rather than content. Reserving n line boxes also levels card heights in a grid, which is
+   what a clamp is for. */
+.line-clamp-1 { min-height: 1lh; }
+.line-clamp-2 { min-height: 2lh; }
+.line-clamp-3 { min-height: 3lh; }
+.line-clamp-4 { min-height: 4lh; }
+
+/* ── Prose ───────────────────────────────────────────────────────────────────
+   Long-form explanatory copy — help text, empty states, onboarding, error detail.
+   NOT for data: IDs, paths, timestamps, trace output and table cells stay on the
+   body rule so columns keep aligning.
+
+   Measured on the live build before this rule existed: settings help text rendered at
+   line-height 1.33 and 76 characters (one at 92ch), the dashboard lede at 1.43 and
+   80ch. The type spec sets prose leading at 1.7; the readable band is 45–75ch.
+   Monospace is the reason both matter here — every glyph shares one advance width,
+   so the eye can't navigate by word silhouette and falls back on line position,
+   which is exactly what tight leading and long lines destroy. */
+.prose-block {
+  line-height: 1.7;
+  max-width: 68ch;
+}
+/* Dense variant for help text sitting directly under a control, where 1.7 would
+   visually detach it from the field it explains. */
+.prose-tight {
+  line-height: 1.6;
+  max-width: 68ch;
+}
+
+/* ── Terrain map (live-trace) — pulsing rings, objective glow, and flowing edges.
+   Pure CSS keyframes (no JS loop), ported from the old XORCISE map's visual grammar.
+   The ring keyframes animate the SVG circle `r` presentation attribute directly. ── */
+@keyframes tmPosAmber {
+  0% { r: 16px; opacity: 0.7; }
+  100% { r: 34px; opacity: 0; }
+}
+@keyframes tmProbeBlue {
+  0% { r: 16px; opacity: 0.6; }
+  100% { r: 38px; opacity: 0; }
+}
+@keyframes tmCrownGlow {
+  0%, 100% { opacity: 0.22; }
+  50% { opacity: 0.55; }
+}
+@keyframes tmFlowDash {
+  to { stroke-dashoffset: -20; }
+}
+/* v2: the "discovered" node's persistent pulsing-yellow halo — same expanding-ring shape as
+   tmPosAmber/tmProbeBlue, just re-colored to --color-terrain-hot so it never reads as the
+   amber selection ring. */
+@keyframes tmPulseYellow {
+  0% { r: 16px; opacity: 0.7; }
+  100% { r: 32px; opacity: 0; }
+}
+.tm-ring-amber { animation: tmPosAmber 2s ease-out infinite; }
+.tm-ring-blue { animation: tmProbeBlue 2.2s ease-out infinite; }
+.tm-glow { animation: tmCrownGlow 2.4s ease-in-out infinite; }
+.tm-flow { animation: tmFlowDash 1s linear infinite; }
+.tm-pulse-yellow { animation: tmPulseYellow 1.6s ease-out infinite; }
+
+/* Edge route-used note: an HTML box (in an SVG foreignObject) clamped to the first two lines so a
+   long note can't grow tall and clutter the map. When truncated, the clamped bottom edge is faded
+   to suggest there's more; hovering the box expands it to the full note with a natural max-height
+   transition. The full text always lives in the DOM (accessible); only the visible height changes. */
+.tm-edge-note {
+  box-sizing: border-box;
+  max-height: var(--tm-note-collapsed, 999px);
+  overflow: hidden;
+  padding: 3px 6px;
+  border-radius: 3px;
+  background: var(--color-popover);
+  color: var(--color-popover-foreground);
+  border: 1px solid var(--color-border);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  line-height: 11px;
+  text-align: center;
+  overflow-wrap: anywhere;
+  pointer-events: auto;
+  transition: max-height 0.28s ease;
+}
+.tm-edge-note--truncated {
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 55%, transparent 100%);
+}
+.tm-edge-note--truncated:hover {
+  max-height: var(--tm-note-full, 999px);
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tm-edge-note { transition: none; }
+  /* Guide §11/§12: no glow/flicker loops in the workspace under reduced motion
+     (Calm). Freeze the terrain pulses/glow/flow to their resting state. */
+  .tm-ring-amber,
+  .tm-ring-blue,
+  .tm-glow,
+  .tm-flow,
+  .tm-pulse-yellow { animation: none; }
+}
+
+/* Indeterminate progress — a bar sliding across the track for work with no measurable
+   percentage (e.g. a mission pull, which the API completes in one shot with no byte-level
+   progress). Signals activity without claiming a false number. */
+@keyframes progressSlide {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(320%); }
+}
+.progress-indeterminate {
+  animation: progressSlide 1.1s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .progress-indeterminate { animation: none; width: 100%; }
+}
+
+/* ═══ Suspense animation system (spec: 2026-07-26-suspense-animations) ═══
+   Keyframes live in @theme so Tailwind 4 emits animate-* utilities.
+   Entrances use `both` fill so delayed (staggered) elements start invisible. */
+@theme {
+  --animate-fade-up: fade-up 0.25s ease-out both;
+  --animate-scale-in: scale-in 0.15s ease-out both;
+  --animate-scale-out: scale-out 0.15s ease-in both;
+  --animate-backdrop-in: backdrop-in 0.15s ease-out both;
+  --animate-backdrop-out: backdrop-out 0.15s ease-in both;
+  --animate-slide-in-right: slide-in-right 0.2s ease-out both;
+  --animate-slide-out-right: slide-out-right 0.2s ease-in both;
+
+  @keyframes fade-up {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: none; }
+  }
+  @keyframes scale-in {
+    from { opacity: 0; transform: scale(0.96); }
+    to { opacity: 1; transform: none; }
+  }
+  @keyframes scale-out {
+    from { opacity: 1; transform: none; }
+    to { opacity: 0; transform: scale(0.96); }
+  }
+  @keyframes backdrop-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes backdrop-out { from { opacity: 1; } to { opacity: 0; } }
+  @keyframes slide-in-right {
+    from { opacity: 0; transform: translateX(1.5rem); }
+    to { opacity: 1; transform: none; }
+  }
+  @keyframes slide-out-right {
+    from { opacity: 1; transform: none; }
+    to { opacity: 0; transform: translateX(1.5rem); }
+  }
+}
+
+/* Skeleton shimmer — a gradient sweep over the raised surface. A plain class
+   (not @theme) because it sets background properties, mirroring
+   .progress-indeterminate above. */
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-raised) 25%,
+    rgba(255, 255, 255, 0.07) 50%,
+    var(--color-raised) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+/* One switch kills the whole system for reduced-motion users: skeletons go
+   static, entrances/exits become instant appearance/disappearance. */
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-shimmer { animation: none; background: var(--color-raised); }
+  .animate-fade-up,
+  .animate-scale-in,
+  .animate-scale-out,
+  .animate-backdrop-in,
+  .animate-backdrop-out,
+  .animate-slide-in-right,
+  .animate-slide-out-right {
+    animation: none;
+  }
+}

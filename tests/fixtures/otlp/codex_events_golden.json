@@ -1,0 +1,74 @@
+[
+  {
+    "id": "log:0:0002:start",
+    "kind": "status",
+    "role": "system",
+    "title": "session started",
+    "body_head": "model=gpt-5.5 effort=low",
+    "group_id": null,
+    "status": null
+  },
+  {
+    "id": "log:0:0006:user",
+    "kind": "message",
+    "role": "user",
+    "title": "user message",
+    "body_head": "Run the shell command: echo hello-codex-fixture. Then tell me in one short sente",
+    "group_id": null,
+    "status": null
+  },
+  {
+    "id": "log:0:0011:tokens",
+    "kind": "metric",
+    "role": "agent",
+    "title": "token usage",
+    "body_head": "in=10777 out=0 reasoning=0",
+    "group_id": null,
+    "status": null
+  },
+  {
+    "id": "log:0:0016:ttft",
+    "kind": "metric",
+    "role": "agent",
+    "title": "time to first token",
+    "body_head": "ttft=4198ms",
+    "group_id": null,
+    "status": null
+  },
+  {
+    "id": "log:0:0017:tokens",
+    "kind": "metric",
+    "role": "agent",
+    "title": "token usage",
+    "body_head": "in=14537 out=38 reasoning=0",
+    "group_id": null,
+    "status": null
+  },
+  {
+    "id": "log:0:0019:cmd",
+    "kind": "terminal_command",
+    "role": "agent",
+    "title": "terminal",
+    "body_head": "echo hello-codex-fixture",
+    "group_id": "call_PY2ymlU1nmR6zPCmLc2Ly7OV",
+    "status": "ok"
+  },
+  {
+    "id": "log:0:0019:out",
+    "kind": "terminal_output",
+    "role": "tool",
+    "title": "output",
+    "body_head": "Chunk ID: 65f1b5\nWall time: 0.0000 seconds\nProcess exited with code 0\nOriginal t",
+    "group_id": "call_PY2ymlU1nmR6zPCmLc2Ly7OV",
+    "status": null
+  },
+  {
+    "id": "log:0:0021:tokens",
+    "kind": "metric",
+    "role": "agent",
+    "title": "token usage",
+    "body_head": "in=14629 out=15 reasoning=0",
+    "group_id": null,
+    "status": null
+  }
+]

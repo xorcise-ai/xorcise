@@ -1,0 +1,157 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "xorcise"
+description = "XORCISE — evaluate cyber AI agents."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+dynamic = ["version"]
+dependencies = [
+    "typer>=0.12",
+    "rich>=13",
+    "httpx>=0.27",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "tiktoken>=0.7",
+    "packaging>=23",  # `up`'s update-available notice: PEP 440 version comparison
+    # Bundled into the base install (previously the `runner` + `collector` extras) so a plain
+    # `pip install xorcise` is ready for real runs AND OTLP telemetry with nothing else to add.
+    # `xorcise up` boots the `all` role — runner plane + OTLP ingest — unconditionally, so these
+    # are needed by the default CLI flow, not just niche deployments. The matching extras below
+    # are kept as empty no-ops so `pip install xorcise[runner]` / `[collector]` still resolve.
+    "docker>=7.0",  # runner plane: Docker SDK (mission containers)
+    "pyyaml>=6.0",  # runner plane: compose / net-override rendering
+    # OTLP/HTTP protobuf decode — the OTLP exporter default wire format (Claude Code / OpenHands).
+    # Pinned so the decode path is locked to one proto schema version (no silent drift).
+    "opentelemetry-proto==1.42.1",
+]
+
+# `authors` records who created the project; `maintainers` who looks after it now. Both render
+# on the PyPI project page, so this is the public credit surface — it is independent of who holds
+# repository or PyPI *access*, which is managed in GitHub and PyPI settings.
+authors = [
+    { name = "Guru Hariharaun", email = "guru@xorcise.ai" },
+]
+maintainers = [
+    { name = "Guru Hariharaun", email = "guru@xorcise.ai" },
+    { name = "Christo Joby Antony", email = "christo@xorcise.ai" },
+]
+
+[project.scripts]
+xorcise = "xorcise.core.cli.app:main"
+
+# Shown on the PyPI project sidebar. `release.yml` refuses to publish if any `<PLACEHOLDER>`
+# survives here — PyPI metadata is immutable per version, so a bad link can never be corrected
+# in a published release.
+[project.urls]
+Homepage = "https://xorcise.ai"
+Documentation = "https://docs.xorcise.ai"
+Repository = "https://github.com/xorcise-ai/xorcise"
+Issues = "https://github.com/xorcise-ai/xorcise/issues"
+Changelog = "https://github.com/xorcise-ai/xorcise/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+control = []
+# runner + collector deps now ship in the base install (see [project.dependencies]); these
+# extras are retained as empty no-ops so existing `pip install xorcise[runner]` / `[collector]`
+# invocations keep resolving. The role↔extra parity check only requires the keys to exist.
+runner = []
+headscale = []
+collector = []
+# No `postgres` / `clickhouse` extras. Both were declared before either backend existed and
+# neither was ever implemented: nothing imports `asyncpg` or `clickhouse_connect`, no config
+# path parses those URLs, and `core/db/engine.py` builds a SYNCHRONOUS SQLAlchemy engine —
+# which `asyncpg`, an async-only driver, cannot drive at all. Publishing them would advertise
+# `pip install xorcise[postgres]` on PyPI for a backend that resolves, installs, and then
+# fails. Storage is SQLite today; when another backend is genuinely supported, the extra can
+# come back alongside the code that honours it.
+all = ["xorcise[runner]"]
+dev = [
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pytest>=8.2",
+    "pytest-cov>=5.0",
+    "pytest-xdist>=3.6",
+    "pre-commit>=3.7",
+    "import-linter>=2.0",
+    "anyio>=4.4",
+    "pyyaml>=6.0",
+    "types-pyyaml>=6.0",
+    # Release + CI tooling. These live in the LOCKED dev extra (not floating `uvx`) so a GitHub
+    # Actions run and a maintainer laptop execute byte-identical tools: an unpinned supply-chain
+    # tool that lints our workflows or validates our release artifacts is itself attack surface.
+    "twine>=6.1",  # strict package-metadata validation before any publish
+    "zizmor>=1.28",  # GitHub Actions static security audit (see .github/workflows/)
+]
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/xorcise"]
+# The Next.js static export (built by `npm run build:static` in frontend/)
+# lands in the VCS-ignored _static/ directory. `artifacts` force-includes the
+# generated export so the UI ships in the wheel without committing build output.
+artifacts = ["src/xorcise/core/frontend/_static/**/*"]
+
+# This force-include section is for files OUTSIDE the package tree. `_static` lives
+# inside the package tree but its generated contents are VCS-ignored, so the export
+# is force-included via `artifacts` above — NOT here, where it would collide on the
+# same wheel path.
+[tool.hatch.build.targets.wheel.force-include]
+"ROLE_MANIFEST.toml" = "xorcise/ROLE_MANIFEST.toml"
+# The mission-base build context (Dockerfile + entrypoint.sh) ships as package data so the
+# runner can build xorcise/mission-base on demand from a real install (no published registry,
+# PRD-0017). Editable/dev checkouts fall back to the canonical containers/mission-base.
+"containers/mission-base" = "xorcise/core/runner/docker/_mission_base"
+
+# Build-time hook: regenerate the /ui static export (npm run build:static) BEFORE the
+# wheel is assembled, so `artifacts` above can never force-include a stale/missing UI.
+# Runs only at build time (uv build / python -m build) — never at pip install or runtime.
+# Node/npm is needed only here, on the maintainer/CI machine. See hatch_build.py.
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+explicit_package_bases = true
+namespace_packages = true
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
+[[tool.mypy.overrides]]
+module = ["opentelemetry.*", "google.protobuf.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "unit: no Docker, fast (default lane)",
+    "adapters: port/adapter contract tests",
+    "topology: manifest/compose/import/extras parity",
+    "integration: needs Docker or a live server process",
+    "e2e: full xorcise up + scripted agent",
+]

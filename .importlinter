@@ -1,0 +1,91 @@
+[importlinter]
+root_packages =
+    xorcise
+
+[importlinter:contract:layers]
+name = Layered architecture (inward-only): cli > roles > application > parts > kernel > contracts
+type = layers
+exhaustive = true
+exhaustive_ignores =
+    premium
+containers =
+    xorcise.core
+layers =
+    cli
+    roles
+    rest | frontend
+    harness_adapters
+    runs | agents | targets | reporting | orchestration | home | seams | runcontrol
+    eval | runner | headscale | otel | catalog | missions | code
+    observability | db
+    config
+    contracts
+
+[importlinter:contract:islands]
+name = Part-islands are mutually non-importing
+type = independence
+modules =
+    xorcise.core.eval
+    xorcise.core.runner
+    xorcise.core.headscale
+    xorcise.core.otel
+    xorcise.core.catalog
+    xorcise.core.missions
+    xorcise.core.code
+
+[importlinter:contract:premium-seam]
+name = Only core.seams imports premium
+type = forbidden
+# Every core sibling EXCEPT seams (the sanctioned importer). Listing siblings —
+# not the parent xorcise.core — avoids a parent/child overlap with the target.
+source_modules =
+    xorcise.core.cli
+    xorcise.core.roles
+    xorcise.core.runs
+    xorcise.core.agents
+    xorcise.core.targets
+    xorcise.core.reporting
+    xorcise.core.orchestration
+    xorcise.core.rest
+    xorcise.core.frontend
+    xorcise.core.home
+    xorcise.core.config
+    xorcise.core.observability
+    xorcise.core.db
+    xorcise.core.eval
+    xorcise.core.runner
+    xorcise.core.headscale
+    xorcise.core.otel
+    xorcise.core.catalog
+    xorcise.core.missions
+    xorcise.core.code
+    xorcise.core.contracts
+forbidden_modules =
+    xorcise.core.premium
+# seams is the ONLY sanctioned importer; nothing imports premium yet (deletable-
+# clean OSS stub). The seams->premium edge + its allowance land with the premium wiring.
+
+[importlinter:contract:grader-never-reads-projection]
+name = Grader never reads the AgentEvent projection
+type = forbidden
+source_modules =
+    xorcise.core.rest.grade_assembly
+forbidden_modules =
+    xorcise.core.otel.adapters
+    xorcise.core.contracts.agent_event
+    xorcise.core.otel.store.agent_events
+    xorcise.core.harness_adapters
+ignore_imports =
+    xorcise.core.rest.grade_assembly -> xorcise.core.contracts.agent_event
+    xorcise.core.rest.grade_assembly -> xorcise.core.otel.adapters.registry
+    xorcise.core.rest.grade_assembly -> xorcise.core.harness_adapters
+# Narrow exemption: grade_assembly resolves
+# the run's ADAPTER (otel.adapters.registry + harness_adapters.load_adapters) to read its
+# statically-declared HarnessCapabilityProfile (contracts.agent_event.KindSupport/notes) for the
+# judge's telemetry-gaps disclosure -- adapter metadata, not per-run derived event data. This is an
+# EDGE-SCOPED exemption (ignore_imports), not a blanket module exemption: forbidden_modules above
+# is left FULLY INTACT, so any OTHER path into these packages (e.g. `from
+# xorcise.core.otel.adapters import normalize_run`, or reading contracts.agent_event.AgentEvent /
+# RunEventsView) is still caught. otel.store.agent_events (the per-run CACHED projection, the
+# invariant this contract protects) carries no exemption at all.
+# tests/unit/test_grader_isolation.py mirrors this edge-level distinction with its own AST scan.

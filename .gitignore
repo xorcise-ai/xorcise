@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+# Tooling
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.import_linter_cache/
+htmlcov/
+.coverage
+.coverage.*
+# uv
+# (uv.lock IS committed)
+# Node / frontend
+node_modules
+node_modules/
+frontend/.next/
+frontend/out/
+# Vite/Vitest build cache
+.vite/
+frontend/.vite/
+# Frontend build artifact; generated locally and force-included in release wheels
+src/xorcise/core/frontend/_static/
+# Local secrets. `.env.example` is the committed template (empty values); a real `.env`
+# holds XORCISE_MODEL_KEY — a live API key — and must never be committed. Negated for the
+# example so the template still ships.
+.env
+.env.*
+!.env.example
+# XORCISE state + session buffer
+.remember/
+.xorcise/
+# Local run scratch — generated connect-prompt dumps + agent run logs. NEVER commit these:
+# a real run log contains the mission's solution and its run credentials in cleartext.
+prompt.txt
+scratch/
+# OS / editor
+.DS_Store
+*.swp
+# Missions cache
+missions/.cache/
+# Local AI-assistant + tooling config (personal, not project configuration)
+.claude/
+.firecrawl/
+.playwright-mcp/

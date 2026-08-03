@@ -1,0 +1,5 @@
+# role:collector — OTLP receiver + trace store only.
+services:
+  collector:
+    build: { context: ../../.., target: collector }
+    command: ["xorcise", "serve", "--role", "collector"]

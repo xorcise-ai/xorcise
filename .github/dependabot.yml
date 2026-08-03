@@ -1,0 +1,101 @@
+# Dependency updates.
+#
+# The `github-actions` ecosystem is the security-critical one: every `uses:` is pinned to a
+# commit SHA, and Dependabot is what stops those pins going stale. `ignore` only suppresses
+# version-bump PRs — security alerts and fixes still arrive.
+version: 2
+
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    # Supply-chain maturity window: never adopt a release in its first 7 days.
+    #
+    # The attack this blocks is a compromised or hijacked package publishing a malicious
+    # version. Those are typically caught and yanked within hours-to-days, so the danger
+    # window is the release's infancy — precisely when an eager auto-bump would take it.
+    # Waiting lets the ecosystem find the problem for us; a version still standing after a
+    # week has been exercised by thousands of other installs.
+    #
+    # This deliberately applies to VERSION updates only. GitHub does not apply cooldown to
+    # Dependabot SECURITY updates, which is the behaviour we want: a fix for a known CVE
+    # must not sit in a queue for a week. Fast for fixes, patient for features.
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    groups:
+      python-minor-patch:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # opentelemetry-proto is pinned exactly: it decodes the OTLP wire format, so a mismatch
+      # corrupts traces rather than raising an import error. Majors only — minor/patch still flow.
+      - dependency-name: opentelemetry-*
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    # Supply-chain maturity window: never adopt a release in its first 7 days.
+    #
+    # The attack this blocks is a compromised or hijacked package publishing a malicious
+    # version. Those are typically caught and yanked within hours-to-days, so the danger
+    # window is the release's infancy — precisely when an eager auto-bump would take it.
+    # Waiting lets the ecosystem find the problem for us; a version still standing after a
+    # week has been exercised by thousands of other installs.
+    #
+    # This deliberately applies to VERSION updates only. GitHub does not apply cooldown to
+    # Dependabot SECURITY updates, which is the behaviour we want: a fix for a known CVE
+    # must not sit in a queue for a week. Fast for fixes, patient for features.
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    groups:
+      frontend-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # Grouped into one PR: a single reviewable PR actually gets merged, which is what keeps the
+  # SHA pins current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    # Supply-chain maturity window: never adopt a release in its first 7 days.
+    #
+    # The attack this blocks is a compromised or hijacked package publishing a malicious
+    # version. Those are typically caught and yanked within hours-to-days, so the danger
+    # window is the release's infancy — precisely when an eager auto-bump would take it.
+    # Waiting lets the ecosystem find the problem for us; a version still standing after a
+    # week has been exercised by thousands of other installs.
+    #
+    # This deliberately applies to VERSION updates only. GitHub does not apply cooldown to
+    # Dependabot SECURITY updates, which is the behaviour we want: a fix for a known CVE
+    # must not sit in a queue for a week. Fast for fixes, patient for features.
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - internal
+    groups:
+      github-actions:
+        patterns:
+          - "*"

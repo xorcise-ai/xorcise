@@ -1,0 +1,5 @@
+# role:runner — relocatable execution plane (runner control-service + headscale, co-located).
+services:
+  runner:
+    build: { context: ../../.., target: runner }
+    command: ["xorcise", "serve", "--role", "runner"]
