@@ -107,6 +107,10 @@ artifacts = ["src/xorcise/core/frontend/_static/**/*"]
 # same wheel path.
 [tool.hatch.build.targets.wheel.force-include]
 "ROLE_MANIFEST.toml" = "xorcise/ROLE_MANIFEST.toml"
+# ACCEPTABLE_USE.md promises it travels with the `xorcise` distribution. The sdist carries it
+# by default (hatchling ships every tracked file), but the wheel — what most pip installs
+# resolve to — only ships src/xorcise plus these includes, so the policy rides along here.
+"ACCEPTABLE_USE.md" = "xorcise/ACCEPTABLE_USE.md"
 # The mission-base build context (Dockerfile + entrypoint.sh) ships as package data so the
 # runner can build xorcise/mission-base on demand from a real install (no published registry,
 # PRD-0017). Editable/dev checkouts fall back to the canonical containers/mission-base.
