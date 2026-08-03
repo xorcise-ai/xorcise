@@ -55,16 +55,11 @@ The more of this you can provide, the faster a fix lands:
 
 ### What to expect
 
-| Stage | Target |
-| --- | --- |
-| Acknowledgement that your report was received | within **3 business days** |
-| Initial assessment (in scope? severity? reproducible?) | within **10 business days** |
-| Progress updates while a fix is being developed | at least every **2 weeks** |
-| Fix released and advisory published | varies with severity and complexity |
-
-XORCISE is maintained by a small team. If you have not heard back within the acknowledgement
-window, please send a follow-up — it means something went wrong with the notification, not
-that your report was ignored.
+XORCISE is maintained by a small team, and we do not yet publish a response-time commitment
+we could be held to. We will acknowledge your report, tell you whether it is in scope, and
+keep you posted while a fix is developed. If you have not heard back and think you should
+have, send a follow-up — it means something went wrong with the notification, not that your
+report was ignored.
 
 We will credit you in the published advisory unless you ask us not to. Please give us a
 reasonable opportunity to release a fix before disclosing publicly.
