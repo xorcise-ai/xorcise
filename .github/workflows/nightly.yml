@@ -1,0 +1,231 @@
+# Nightly full validation — runs everything against `main` once a day, so a regression that
+# slipped past the PR gate has a bounded lifetime.
+#
+# Also catches failures no code change causes: a dependency releasing a breaking version, a
+# base image moving, a lockfile drifting.
+name: Nightly
+
+on:
+  schedule:
+    # Non-round on purpose — GitHub delays scheduled runs when everyone's cron fires at :00.
+    - cron: "17 3 * * *"
+  workflow_dispatch: {}
+
+permissions: {}
+
+concurrency:
+  group: nightly-${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  UV_VERSION: "0.9.30"
+
+jobs:
+  # Every lane, one runner each — not an optimisation: integration and e2e bind fixed host
+  # ports and would collide if co-located.
+  full-tests:
+    name: test (${{ matrix.lane }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [unit, topology, adapters, integration, e2e]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked dependencies
+        run: uv sync --locked --extra dev
+
+      - name: Docker environment
+        run: |
+          docker --version
+          docker compose version || echo "NOTE: compose v2 plugin unavailable on this runner"
+
+      - name: Run lane
+        env:
+          LANE: ${{ matrix.lane }}
+        run: |
+          set -euo pipefail
+          args=(-m "$LANE" -v)
+          if [ "$LANE" = "unit" ]; then
+            args+=(-n auto)
+          fi
+          uv run pytest "${args[@]}"
+
+  # Same packaging validation as the PR gate — the wheel build depends on things no code
+  # change touches (npm registry, Node toolchain, hatch-vcs).
+  build-dist:
+    name: build-dist (wheel + sdist)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked dependencies
+        run: uv sync --locked --extra dev
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Verify wheel contents
+        run: uv run python scripts/check_wheel_contents.py dist
+
+      - name: Validate package metadata (twine, strict)
+        run: uv run twine check --strict dist/*
+
+      - name: Install wheel into a clean environment and run the CLI
+        run: |
+          set -euo pipefail
+          uv venv /tmp/smoke
+          uv pip install --python /tmp/smoke/bin/python dist/*.whl
+          /tmp/smoke/bin/xorcise --help
+
+  # `uv sync --locked` only covers the extras it resolves; this is the whole-file check.
+  lock-freshness:
+    name: lock-freshness
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Check uv.lock is in sync with pyproject.toml
+        run: uv lock --check
+
+  # Failure reporting. Maintains ONE rolling issue rather than a new one every night — the
+  # usual reason teams start ignoring nightly bots.
+  report:
+    name: report
+    runs-on: ubuntu-latest
+    if: always() && github.event.repository.fork == false
+    needs: [full-tests, build-dist, lock-freshness]
+    timeout-minutes: 10
+    permissions:
+      # The ONLY write permission in this workflow, scoped to the one job that needs it.
+      issues: write # open/comment/close the single rolling nightly-failure issue
+    steps:
+      - name: Open or update the nightly failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TESTS: ${{ needs.full-tests.result }}
+          BUILD: ${{ needs.build-dist.result }}
+          LOCK: ${{ needs.lock-freshness.result }}
+        run: |
+          set -euo pipefail
+
+          failed=0
+          for entry in "full-tests=$TESTS" "build-dist=$BUILD" "lock-freshness=$LOCK"; do
+            name="${entry%%=*}"
+            result="${entry#*=}"
+            printf '%-16s %s\n' "$name" "$result"
+            if [ "$result" != "success" ]; then
+              failed=1
+            fi
+          done
+
+          # Create the label if it is missing, so a fresh repository does not need any manual
+          # setup before the first nightly can report. Idempotent: `|| true` covers "exists".
+          gh label create ci-nightly \
+            --repo "$REPO" \
+            --color B60205 \
+            --description "Automated nightly validation failure" >/dev/null 2>&1 || true
+
+          # Find the existing rolling issue, if any. Tolerate a query error (e.g. the label was
+          # only just created) rather than failing the reporting step itself.
+          existing=$(gh issue list \
+            --repo "$REPO" \
+            --label ci-nightly \
+            --state open \
+            --limit 1 \
+            --json number \
+            --jq '.[0].number // empty' 2>/dev/null || echo "")
+
+          if [ "$failed" -eq 0 ]; then
+            echo "Nightly is green."
+            if [ -n "$existing" ]; then
+              echo "Closing recovered nightly issue #$existing"
+              gh issue comment "$existing" --repo "$REPO" \
+                --body "Nightly is green again as of [this run]($RUN_URL). Closing automatically."
+              gh issue close "$existing" --repo "$REPO" --reason completed
+            fi
+            exit 0
+          fi
+
+          body=$(cat <<EOF
+          The nightly validation run failed.
+
+          | job | result |
+          | --- | --- |
+          | full-tests | \`$TESTS\` |
+          | build-dist | \`$BUILD\` |
+          | lock-freshness | \`$LOCK\` |
+
+          Run: $RUN_URL
+
+          This issue is updated (not duplicated) by each subsequent failing nightly, and closed
+          automatically once a nightly run is green again.
+          EOF
+          )
+
+          if [ -n "$existing" ]; then
+            echo "Commenting on existing nightly issue #$existing"
+            gh issue comment "$existing" --repo "$REPO" --body "$body"
+          else
+            echo "Creating a new nightly failure issue"
+            gh issue create \
+              --repo "$REPO" \
+              --label ci-nightly \
+              --title "Nightly CI failure" \
+              --body "$body"
+          fi
+
+          # Surface the failure on the workflow itself too, so the Actions tab is not green.
+          echo "::error::Nightly validation failed — see the tracking issue."
+          exit 1

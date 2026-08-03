@@ -1,0 +1,126 @@
+name: Bug report
+description: Something in XORCISE does not work the way it should.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug.
+
+        **Security vulnerabilities do not belong here.** If you have found a security issue,
+        please report it privately — see [SECURITY.md](../blob/main/SECURITY.md). Public
+        issues are visible to everyone, including people who would exploit the flaw.
+
+        Note that missions are **deliberately vulnerable**; that is their purpose.
+        Vulnerabilities inside a mission bundle are not XORCISE bugs.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before you file
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: This is not a security vulnerability (those go to SECURITY.md).
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: XORCISE version
+      description: Output of `xorcise --version`.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: How did you install XORCISE?
+      options:
+        - pip / uv from PyPI
+        - From a git checkout (editable install)
+        - From a built wheel
+        - Other (describe below)
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: Include the version. On Linux, the distribution too.
+      placeholder: "Ubuntu 24.04 / macOS 15.1 / Windows 11 + WSL2"
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      description: Output of `python --version`. XORCISE requires 3.12 or newer.
+      placeholder: "3.12.3"
+    validations:
+      required: true
+
+  - type: input
+    id: docker-version
+    attributes:
+      label: Docker version
+      description: >-
+        Output of `docker --version`. Required if the bug involves running a mission,
+        `xorcise up`, the runner, or the control plane. Write "n/a" if unrelated.
+      placeholder: "Docker version 27.3.1"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: >-
+        Exact commands, in order. A bug someone else can reproduce gets fixed; one that only
+        happens on your machine usually does not.
+      placeholder: |
+        1. xorcise up
+        2. xorcise mission pull <name>
+        3. xorcise run create --mission <name> --agent <agent>
+        4. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+      description: Include the full error message if there is one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / output
+      description: >-
+        Relevant output. **Remove secrets first** — API keys, tokens, tailnet auth keys,
+        certificates, internal hostnames. This box renders as a code block automatically.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: Screenshots, related issues, workarounds you have found.
+    validations:
+      required: false

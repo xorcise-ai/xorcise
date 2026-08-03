@@ -1,0 +1,56 @@
+# Generated release-notes configuration.
+#
+# NOT a workflow. GitHub reads this file when `gh release create --generate-notes` runs (see
+# .github/workflows/release.yml) and uses it to group merged pull requests into sections.
+#
+# This is what makes "merge ten PRs, release once" produce a readable changelog: each PR is
+# filed by its label, so the notes for v0.2.0 arrive already sorted into breaking changes,
+# features, fixes and so on — rather than a flat list of commit subjects.
+#
+# Labelling a PR is therefore part of reviewing it. An unlabelled PR still appears, under
+# "Other changes".
+changelog:
+  exclude:
+    labels:
+      # Routine noise that should not appear in user-facing notes.
+      - skip-release-notes
+  categories:
+    # Order matters — this is the order sections appear in the notes. Breaking changes go
+    # first because they are the only thing a user MUST read before upgrading.
+    - title: ⚠️ Breaking changes
+      labels:
+        - breaking-change
+
+    - title: 🚀 New features
+      labels:
+        - feature
+
+    - title: ✨ Enhancements
+      labels:
+        - enhancement
+
+    - title: 🐛 Bug fixes
+      labels:
+        - bug
+
+    - title: 🔒 Security
+      labels:
+        - security
+
+    - title: 📚 Documentation
+      labels:
+        - documentation
+
+    - title: 📦 Dependencies
+      labels:
+        - dependencies
+
+    - title: 🔧 Internal
+      labels:
+        - internal
+
+    # Catch-all. `*` matches any PR not already claimed by a category above, so nothing is
+    # ever silently dropped from the notes.
+    - title: Other changes
+      labels:
+        - "*"

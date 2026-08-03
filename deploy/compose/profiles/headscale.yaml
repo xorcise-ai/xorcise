@@ -1,0 +1,5 @@
+# role:headscale — the coordinator plane only.
+services:
+  headscale:
+    build: { context: ../../.., target: headscale }
+    command: ["xorcise", "serve", "--role", "headscale"]

@@ -1,0 +1,6175 @@
+{
+  "components": {
+    "schemas": {
+      "AdapterWarning": {
+        "additionalProperties": false,
+        "description": "A non-fatal normalization signal (unknown span, parse fallback, source mismatch).",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "count": {
+            "default": 1,
+            "title": "Count",
+            "type": "integer"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "span_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Span Id"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "AdapterWarning",
+        "type": "object"
+      },
+      "AgentDeclaration": {
+        "description": "Register request: name + how it connects + how it emits its OTel trace.",
+        "properties": {
+          "endpoint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "launch_command_template": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Launch Command Template"
+          },
+          "launch_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "host",
+                  "container"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Launch Mode"
+          },
+          "launch_tips": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Launch Tips"
+          },
+          "mission_preamble": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mission Preamble"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "otel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Otel"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "AgentDeclaration",
+        "type": "object"
+      },
+      "AgentEntry": {
+        "description": "A stored registry entry as returned over the wire.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "endpoint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "launch_command_template": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Launch Command Template"
+          },
+          "launch_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "host",
+                  "container"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Launch Mode"
+          },
+          "launch_tips": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Launch Tips"
+          },
+          "mission_preamble": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mission Preamble"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "otel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Otel"
+          },
+          "version": {
+            "default": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "id",
+          "created_at"
+        ],
+        "title": "AgentEntry",
+        "type": "object"
+      },
+      "AgentEvent": {
+        "additionalProperties": false,
+        "description": "One normalized, display-only event. Agent-agnostic: `source_agent` is provenance,\nnot a rendering switch. Derived + rebuildable from RAW OTLP; never a grading input.",
+        "properties": {
+          "actor_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Id"
+          },
+          "actor_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Name"
+          },
+          "actor_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Role"
+          },
+          "body": {
+            "default": "",
+            "title": "Body",
+            "type": "string"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "data": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Data",
+            "type": "object"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "group_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group Id"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AgentEventKind"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "raw_ref": {
+            "$ref": "#/components/schemas/RawTraceRef"
+          },
+          "received_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received At"
+          },
+          "role": {
+            "default": "agent",
+            "enum": [
+              "agent",
+              "user",
+              "system",
+              "tool"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "severity": {
+            "default": "info",
+            "enum": [
+              "info",
+              "notice",
+              "warning",
+              "error"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "source_agent": {
+            "title": "Source Agent",
+            "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ok",
+                  "error"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "subkind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subkind"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "title": "Ts",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "id",
+          "ts",
+          "source_agent",
+          "kind",
+          "title",
+          "raw_ref"
+        ],
+        "title": "AgentEvent",
+        "type": "object"
+      },
+      "AgentEventKind": {
+        "description": "Closed render set. Framework-specific meaning rides `subkind`/`data`, never a new kind.",
+        "enum": [
+          "message",
+          "thinking",
+          "terminal_command",
+          "terminal_output",
+          "file_edit",
+          "file_read",
+          "browser_action",
+          "browser_observation",
+          "tool_call",
+          "tool_result",
+          "mcp_call",
+          "mcp_result",
+          "finding",
+          "flag",
+          "error",
+          "status",
+          "metric",
+          "unknown"
+        ],
+        "title": "AgentEventKind",
+        "type": "string"
+      },
+      "AgentHistoryEntry": {
+        "description": "One recorded result in an agent's track record (the 50/50 breakdown).",
+        "properties": {
+          "agent_id": {
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "conditions": {
+            "$ref": "#/components/schemas/ResultConditions",
+            "default": {
+              "agent_version": 1,
+              "budget_seconds": 0,
+              "intel_disclosed": 0,
+              "mission_version": 1
+            }
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "deterministic": {
+            "title": "Deterministic",
+            "type": "number"
+          },
+          "judge": {
+            "title": "Judge",
+            "type": "number"
+          },
+          "overall": {
+            "title": "Overall",
+            "type": "number"
+          },
+          "partial": {
+            "default": false,
+            "title": "Partial",
+            "type": "boolean"
+          },
+          "partial_trigger": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Partial Trigger"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "trace_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace Ref"
+          }
+        },
+        "required": [
+          "run_id",
+          "agent_id",
+          "overall",
+          "deterministic",
+          "judge",
+          "created_at"
+        ],
+        "title": "AgentHistoryEntry",
+        "type": "object"
+      },
+      "ArtifactSpec": {
+        "additionalProperties": false,
+        "description": "An artifact the agent is expected to submit (run-control collects it).",
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "required": {
+            "default": true,
+            "title": "Required",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ArtifactSpec",
+        "type": "object"
+      },
+      "Attachment": {
+        "additionalProperties": false,
+        "description": "A mission companion file the agent downloads (binary, library, source, pcap).\n\nBytes are never inlined in this DTO: at run time `get_attachment` mints a\nshort-lived signed link the sandbox fetches over the tailnet. `path` existence is\nchecked at preflight.",
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "media_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Media Type"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sha256"
+          }
+        },
+        "required": [
+          "name",
+          "path"
+        ],
+        "title": "Attachment",
+        "type": "object"
+      },
+      "AttributionStatus": {
+        "additionalProperties": false,
+        "description": "Per-run BYOM mission-plane attribution progress (iteration 2), for subtle per-span\nfeedback in the Trace view. `running` is true while a catch-up batch is in flight for this run\n(spans not yet attributed can show an \"attributing\u2026\" pulse); `attributed`/`attributable` are the\ncounts of action-events the model has considered vs the total attributable events, for a\nrun-level \"N/M\" read. A span is \"completed\" when its event_id appears in the v2 `updates`\nstream; \"pending\" when it is attributable but absent \u2014 the client derives that from `updates`\n+ the event list.",
+        "properties": {
+          "attributable": {
+            "default": 0,
+            "title": "Attributable",
+            "type": "integer"
+          },
+          "attributed": {
+            "default": 0,
+            "title": "Attributed",
+            "type": "integer"
+          },
+          "considered_event_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Considered Event Ids",
+            "type": "array"
+          },
+          "running": {
+            "default": false,
+            "title": "Running",
+            "type": "boolean"
+          }
+        },
+        "title": "AttributionStatus",
+        "type": "object"
+      },
+      "CatalogConfigUpdate": {
+        "additionalProperties": false,
+        "description": "Flip the remote-catalog connect/disconnect switch (persists catalog_enabled).",
+        "properties": {
+          "connected": {
+            "title": "Connected",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "connected"
+        ],
+        "title": "CatalogConfigUpdate",
+        "type": "object"
+      },
+      "CatalogConfigView": {
+        "additionalProperties": false,
+        "description": "The XORCISE remote catalog's connection state for the Settings switch.\n\n`connected` = the switch is on AND an endpoint is configured; `url` is the endpoint\nthe local app points at (shown read-only \u2014 the operator only toggles connect/disconnect).",
+        "properties": {
+          "connected": {
+            "title": "Connected",
+            "type": "boolean"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "connected"
+        ],
+        "title": "CatalogConfigView",
+        "type": "object"
+      },
+      "CatalogEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "image": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image"
+          },
+          "installed": {
+            "default": false,
+            "title": "Installed",
+            "type": "boolean"
+          },
+          "mission_id": {
+            "title": "Mission Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "proficiency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proficiency"
+          },
+          "skills": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Skills",
+            "type": "array"
+          },
+          "source": {
+            "enum": [
+              "your_own",
+              "library"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "specialty": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Specialty"
+          },
+          "summary": {
+            "default": "",
+            "title": "Summary",
+            "type": "string"
+          },
+          "technologies": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Technologies",
+            "type": "array"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type"
+          }
+        },
+        "required": [
+          "source",
+          "mission_id",
+          "name"
+        ],
+        "title": "CatalogEntry",
+        "type": "object"
+      },
+      "CatalogStatus": {
+        "additionalProperties": false,
+        "description": "Free-library reachability. `connected`/`error` come from the source;\n`disconnected` means the catalog is disabled (no `catalog_url`). `last_sync` is set\nonly by the real HttpCatalogSource; the stub leaves it None (nothing synced yet).",
+        "properties": {
+          "last_sync": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Sync"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "state": {
+            "enum": [
+              "connected",
+              "error",
+              "disconnected"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "CatalogStatus",
+        "type": "object"
+      },
+      "CatalogStatusView": {
+        "additionalProperties": false,
+        "description": "Self-contained mirror of catalog reachability (contracts are leaves \u2014 no cross-import).",
+        "properties": {
+          "last_sync": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Sync"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "state": {
+            "enum": [
+              "connected",
+              "error",
+              "disconnected"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "CatalogStatusView",
+        "type": "object"
+      },
+      "Check": {
+        "additionalProperties": false,
+        "description": "A deterministic check: assert `op` over the value at `ref` in `source`.\n\nFetching (source/ref) is decoupled from asserting (op/args). `source` names the resolver\n(artifacts | otel-stats | observed-facts); `op` names the pure operation; `args` are the op's\narguments; `weight` is this check's slice of the deterministic half (None \u21d2 equal split).\n`requires` names checks that must also pass before this check can earn its weight.",
+        "properties": {
+          "args": {
+            "additionalProperties": true,
+            "title": "Args",
+            "type": "object"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "op": {
+            "enum": [
+              "equals",
+              "matches_format",
+              "observed",
+              "lesser_than"
+            ],
+            "title": "Op",
+            "type": "string"
+          },
+          "ref": {
+            "title": "Ref",
+            "type": "string"
+          },
+          "requires": {
+            "default": [],
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": "Requires",
+            "type": "array",
+            "uniqueItems": true
+          },
+          "source": {
+            "enum": [
+              "artifacts",
+              "otel-stats",
+              "observed-facts"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "weight": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 1.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weight"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "ref",
+          "op"
+        ],
+        "title": "Check",
+        "type": "object"
+      },
+      "CheckVerdict": {
+        "additionalProperties": false,
+        "description": "One deterministic check's effective outcome and resolved value.\n\n`blocked_by` names failed prerequisites. A raw operation may have succeeded while `passed`\nis false because a prerequisite prevented the check from earning credit.",
+        "properties": {
+          "blocked_by": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Blocked By",
+            "type": "array"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "op": {
+            "title": "Op",
+            "type": "string"
+          },
+          "passed": {
+            "default": false,
+            "title": "Passed",
+            "type": "boolean"
+          },
+          "ref": {
+            "title": "Ref",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value"
+          },
+          "weight": {
+            "default": 0.0,
+            "title": "Weight",
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "ref",
+          "op"
+        ],
+        "title": "CheckVerdict",
+        "type": "object"
+      },
+      "CompleteResponse": {
+        "properties": {
+          "run_id": {
+            "default": "",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "state": {
+            "default": "terminal",
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "title": "CompleteResponse",
+        "type": "object"
+      },
+      "ConfigView": {
+        "additionalProperties": false,
+        "properties": {
+          "catalog": {
+            "$ref": "#/components/schemas/CatalogConfigView"
+          },
+          "default_budget_seconds": {
+            "title": "Default Budget Seconds",
+            "type": "integer"
+          },
+          "judge": {
+            "$ref": "#/components/schemas/JudgeConfigView"
+          },
+          "network": {
+            "$ref": "#/components/schemas/NetworkConfigView"
+          },
+          "terrain": {
+            "$ref": "#/components/schemas/TerrainModelConfigView"
+          }
+        },
+        "required": [
+          "judge",
+          "terrain",
+          "default_budget_seconds",
+          "catalog",
+          "network"
+        ],
+        "title": "ConfigView",
+        "type": "object"
+      },
+      "CountStats": {
+        "description": "Event counts folded from the projection (uniform across harnesses).",
+        "properties": {
+          "by_kind": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "default": {},
+            "title": "By Kind",
+            "type": "object"
+          },
+          "errors": {
+            "default": 0,
+            "title": "Errors",
+            "type": "integer"
+          },
+          "events_total": {
+            "default": 0,
+            "title": "Events Total",
+            "type": "integer"
+          },
+          "findings": {
+            "default": 0,
+            "title": "Findings",
+            "type": "integer"
+          },
+          "model_calls": {
+            "default": 0,
+            "title": "Model Calls",
+            "type": "integer"
+          },
+          "tool_calls": {
+            "default": 0,
+            "title": "Tool Calls",
+            "type": "integer"
+          }
+        },
+        "title": "CountStats",
+        "type": "object"
+      },
+      "CriterionScore": {
+        "additionalProperties": false,
+        "description": "One rubric criterion's judge result \u2014 a SELF-CONTAINED snapshot.\n\ntext/weight are copied from the rubric AS GRADED so the result survives later manifest\nmutation; criterion_id is only a join key back to RubricCriterion.id.",
+        "properties": {
+          "criterion_id": {
+            "title": "Criterion Id",
+            "type": "string"
+          },
+          "criterion_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Criterion Prompt"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          },
+          "status": {
+            "default": "ok",
+            "enum": [
+              "ok",
+              "unobservable",
+              "error",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "weight": {
+            "title": "Weight",
+            "type": "number"
+          }
+        },
+        "required": [
+          "criterion_id",
+          "text",
+          "weight",
+          "score",
+          "reason"
+        ],
+        "title": "CriterionScore",
+        "type": "object"
+      },
+      "EnvironmentSpec": {
+        "additionalProperties": false,
+        "description": "Authored container/network SOURCE. Ingestion fuses this into the run-ready\nimage (MissionRef.image). No file reading here \u2014 pure shape.",
+        "properties": {
+          "compose_file": {
+            "default": "docker-compose.yml",
+            "title": "Compose File",
+            "type": "string"
+          },
+          "entry_networks": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Entry Networks",
+            "type": "array"
+          },
+          "static_ips": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            "title": "Static Ips",
+            "type": "object"
+          }
+        },
+        "title": "EnvironmentSpec",
+        "type": "object"
+      },
+      "EventCursor": {
+        "additionalProperties": false,
+        "description": "Independent exclusive cursors for the two OTLP signals.\n\nTrace and log export batches are numbered independently, so their sequence numbers must never\nbe compared to each other.",
+        "properties": {
+          "log_seq": {
+            "default": -1,
+            "title": "Log Seq",
+            "type": "integer"
+          },
+          "trace_seq": {
+            "default": -1,
+            "title": "Trace Seq",
+            "type": "integer"
+          }
+        },
+        "title": "EventCursor",
+        "type": "object"
+      },
+      "FsEntry": {
+        "description": "One entry in a listed directory. `path` is absolute; contents are never read.",
+        "properties": {
+          "is_dir": {
+            "title": "Is Dir",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "path",
+          "is_dir"
+        ],
+        "title": "FsEntry",
+        "type": "object"
+      },
+      "FsListing": {
+        "description": "A read-only listing of one directory for the GUI file picker.",
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/FsEntry"
+            },
+            "title": "Entries",
+            "type": "array"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "parent",
+          "entries"
+        ],
+        "title": "FsListing",
+        "type": "object"
+      },
+      "GradeResult": {
+        "additionalProperties": false,
+        "description": "The 50/50 evidence-anchored verdict.",
+        "properties": {
+          "artifacts": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Artifacts",
+            "type": "array"
+          },
+          "breakdown": {
+            "$ref": "#/components/schemas/ScoreBreakdown"
+          },
+          "check_breakdown": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/CheckVerdict"
+            },
+            "title": "Check Breakdown",
+            "type": "array"
+          },
+          "hard_fails": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Hard Fails",
+            "type": "array"
+          },
+          "judge_breakdown": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/CriterionScore"
+            },
+            "title": "Judge Breakdown",
+            "type": "array"
+          },
+          "judge_coverage": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge Coverage"
+          },
+          "judge_detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge Detail"
+          },
+          "judge_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge Prompt"
+          },
+          "judge_status": {
+            "default": "ok",
+            "enum": [
+              "ok",
+              "partial",
+              "model-not-configured",
+              "unavailable"
+            ],
+            "title": "Judge Status",
+            "type": "string"
+          },
+          "judge_upper": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge Upper"
+          },
+          "key_evidence": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Key Evidence",
+            "type": "array"
+          },
+          "major_deductions": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Major Deductions",
+            "type": "array"
+          },
+          "overall": {
+            "title": "Overall",
+            "type": "number"
+          },
+          "overall_upper": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overall Upper"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "spans_truncated": {
+            "default": 0,
+            "title": "Spans Truncated",
+            "type": "integer"
+          },
+          "trace_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace Ref"
+          }
+        },
+        "required": [
+          "run_id",
+          "overall",
+          "breakdown"
+        ],
+        "title": "GradeResult",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HarnessCapabilityProfile": {
+        "additionalProperties": false,
+        "description": "A harness adapter's declared telemetry capabilities \u2014 TOTAL over AgentEventKind.\n\nDeclared beside each adapter's mapping code (the same MR that teaches an adapter a new\nspan flips the entry). `notes` carry the honest user-facing gap sentences, rendered\nverbatim in the UI and the judge disclosure so the wording never forks. `verified` is\nFalse only for the generic fallback (profile not audited against a real harness).",
+        "properties": {
+          "adapter_name": {
+            "title": "Adapter Name",
+            "type": "string"
+          },
+          "adapter_version": {
+            "title": "Adapter Version",
+            "type": "string"
+          },
+          "kinds": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/KindSupport"
+            },
+            "title": "Kinds",
+            "type": "object"
+          },
+          "message_roles": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/KindSupport"
+            },
+            "title": "Message Roles",
+            "type": "object"
+          },
+          "notes": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Notes",
+            "type": "object"
+          },
+          "verified": {
+            "default": true,
+            "title": "Verified",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "adapter_name",
+          "adapter_version",
+          "kinds"
+        ],
+        "title": "HarnessCapabilityProfile",
+        "type": "object"
+      },
+      "HarnessDescriptor": {
+        "additionalProperties": false,
+        "description": "One registration-facing harness descriptor assembled from the harness-owned planes.",
+        "properties": {
+          "capabilities": {
+            "$ref": "#/components/schemas/HarnessCapabilityProfile"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "launch": {
+            "$ref": "#/components/schemas/HarnessLaunchPreview"
+          },
+          "model_hints": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Model Hints",
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind",
+          "display_name",
+          "description",
+          "capabilities",
+          "launch"
+        ],
+        "title": "HarnessDescriptor",
+        "type": "object"
+      },
+      "HarnessLaunchPreview": {
+        "additionalProperties": false,
+        "description": "Static, registration-safe preview of how a harness will be started.\n\nThis is deliberately a TEMPLATE, not a runnable launch profile: run credentials, endpoints,\ncorrelation values, and the real mission only exist after a run is created.",
+        "properties": {
+          "command_template": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Command Template"
+          },
+          "launch_modes": {
+            "items": {
+              "enum": [
+                "host",
+                "container"
+              ],
+              "type": "string"
+            },
+            "title": "Launch Modes",
+            "type": "array"
+          },
+          "mission_preamble": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Mission Preamble",
+            "type": "array"
+          },
+          "model_flag": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Flag"
+          },
+          "model_flag_anchor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Flag Anchor"
+          },
+          "tips": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Tips",
+            "type": "array"
+          }
+        },
+        "required": [
+          "launch_modes"
+        ],
+        "title": "HarnessLaunchPreview",
+        "type": "object"
+      },
+      "IngestJobView": {
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "image": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "logs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Logs",
+            "type": "array"
+          },
+          "slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slug"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "status",
+          "logs"
+        ],
+        "title": "IngestJobView",
+        "type": "object"
+      },
+      "IngestRequest": {
+        "description": "Ingest a local bundle directory into Your Own (builds its fused image).",
+        "properties": {
+          "bundle_dir": {
+            "title": "Bundle Dir",
+            "type": "string"
+          }
+        },
+        "required": [
+          "bundle_dir"
+        ],
+        "title": "IngestRequest",
+        "type": "object"
+      },
+      "IngestStarted": {
+        "properties": {
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "title": "IngestStarted",
+        "type": "object"
+      },
+      "Intel": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "text"
+        ],
+        "title": "Intel",
+        "type": "object"
+      },
+      "IntelResponse": {
+        "properties": {
+          "intel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intel"
+          },
+          "remaining": {
+            "default": 0,
+            "title": "Remaining",
+            "type": "integer"
+          }
+        },
+        "title": "IntelResponse",
+        "type": "object"
+      },
+      "JudgeConfigView": {
+        "additionalProperties": false,
+        "description": "The BYOM judge model's status. `key_hint` is a masked tail (e.g. `\u2026abcd`), never the key.",
+        "properties": {
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "key_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Hint"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "span_max_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Span Max Tokens"
+          },
+          "timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout Seconds"
+          },
+          "tokenizer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tokenizer"
+          },
+          "transcript_max_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transcript Max Tokens"
+          }
+        },
+        "required": [
+          "configured"
+        ],
+        "title": "JudgeConfigView",
+        "type": "object"
+      },
+      "JudgeTestResult": {
+        "additionalProperties": false,
+        "description": "Result of a live judge-key check (POST /config/model/test).\n\n`configured` is only a presence check, so this actually calls the model. `ok` = the model\nanswered; `status` distinguishes a missing config from a real error; `message` carries the\nprovider error on failure.",
+        "properties": {
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "not_configured",
+              "error"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "title": "JudgeTestResult",
+        "type": "object"
+      },
+      "KindSupport": {
+        "description": "Honest per-kind support: `partial` = emitted only in a restricted form (note REQUIRED).",
+        "enum": [
+          "supported",
+          "partial",
+          "unsupported"
+        ],
+        "title": "KindSupport",
+        "type": "string"
+      },
+      "MissionInfo": {
+        "description": "What `GET /runs/{id}/mission` returns: the run's single mission, unlocked.",
+        "properties": {
+          "attachments": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Attachments",
+            "type": "array"
+          },
+          "mission": {
+            "title": "Mission",
+            "type": "string"
+          },
+          "objective": {
+            "title": "Objective",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mission",
+          "objective"
+        ],
+        "title": "MissionInfo",
+        "type": "object"
+      },
+      "MissionManifest": {
+        "additionalProperties": false,
+        "description": "The `mission.json` v2 object \u2014 the shared contract all consumers import.\n\nRequired: schema_version, metadata (incl. metadata.type \u2208 {lab, static}; the agent objective\nlives under metadata.objective). `environment` is conditional: required for lab, omitted for\nstatic (see _check_execution_contract). Everything else defaults empty/None so a minimal bundle\nvalidates (terrain/intel absent is valid; lab needs environment, static needs attachments).",
+        "properties": {
+          "artifacts": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ArtifactSpec"
+            },
+            "title": "Artifacts",
+            "type": "array"
+          },
+          "attachments": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/Attachment"
+            },
+            "title": "Attachments",
+            "type": "array"
+          },
+          "checks": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/Check"
+            },
+            "title": "Checks",
+            "type": "array"
+          },
+          "delivery": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery"
+          },
+          "environment": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EnvironmentSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "intel": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/Intel"
+            },
+            "title": "Intel",
+            "type": "array"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/MissionMetadata"
+          },
+          "rubric": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/RubricCriterion"
+            },
+            "title": "Rubric",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": "2.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "terrain": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TerrainSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "schema_version",
+          "metadata"
+        ],
+        "title": "MissionManifest",
+        "type": "object"
+      },
+      "MissionMetadata": {
+        "additionalProperties": false,
+        "properties": {
+          "mission_id": {
+            "title": "Mission Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "objective": {
+            "title": "Objective",
+            "type": "string"
+          },
+          "proficiency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proficiency"
+          },
+          "skills": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Skills",
+            "type": "array"
+          },
+          "specialty": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Specialty"
+          },
+          "summary": {
+            "default": "",
+            "title": "Summary",
+            "type": "string"
+          },
+          "technologies": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Technologies",
+            "type": "array"
+          },
+          "type": {
+            "enum": [
+              "lab",
+              "static"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mission_id",
+          "name",
+          "objective",
+          "type"
+        ],
+        "title": "MissionMetadata",
+        "type": "object"
+      },
+      "ModelConfigUpdate": {
+        "additionalProperties": false,
+        "description": "A partial update to the judge trio. Empty/None field = leave/remove that env var.",
+        "properties": {
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "span_max_tokens": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Span Max Tokens"
+          },
+          "timeout_seconds": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout Seconds"
+          },
+          "tokenizer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tokenizer"
+          },
+          "transcript_max_tokens": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transcript Max Tokens"
+          }
+        },
+        "title": "ModelConfigUpdate",
+        "type": "object"
+      },
+      "NetworkConfigUpdate": {
+        "additionalProperties": false,
+        "description": "Partial update to the distributed network addresses. None = leave; \"\" = unset to default.",
+        "properties": {
+          "advertise_host": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Advertise Host"
+          },
+          "headscale_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headscale Url"
+          }
+        },
+        "title": "NetworkConfigUpdate",
+        "type": "object"
+      },
+      "NetworkConfigView": {
+        "additionalProperties": false,
+        "description": "Distributed-mode network addresses the local server dials (editable, applies on restart).\n\nBoth default empty in single-host local mode; set them to point at a remote Headscale\ncontrol plane / advertise a reachable host when running modules across machines.",
+        "properties": {
+          "advertise_host": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Advertise Host"
+          },
+          "headscale_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headscale Url"
+          }
+        },
+        "title": "NetworkConfigView",
+        "type": "object"
+      },
+      "PlaneStatus": {
+        "additionalProperties": false,
+        "description": "One module's reachability, tagged with the service role that owns it.\n\n`role` + `label` exist so the operator surfaces can group modules the way XORCISE is\nactually built (control / runner / headscale / collector) instead of listing bare\nplane keys. They are the SAME role keys `xorcise serve --role <key>` takes, which is\nwhat makes a future multi-host deployment legible: when a module moves to another\nbox only `location` changes. `name` stays the raw key \u2014 the CLI, the JSON contract\nand the existing tests key off it.",
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "label": {
+            "default": "",
+            "title": "Label",
+            "type": "string"
+          },
+          "location": {
+            "default": "",
+            "title": "Location",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "role": {
+            "default": "",
+            "title": "Role",
+            "type": "string"
+          },
+          "state": {
+            "default": "ok",
+            "enum": [
+              "ok",
+              "down",
+              "not_deployed"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "ok",
+          "detail"
+        ],
+        "title": "PlaneStatus",
+        "type": "object"
+      },
+      "PullJobStarted": {
+        "properties": {
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "title": "PullJobStarted",
+        "type": "object"
+      },
+      "PullJobView": {
+        "description": "Poll view of a background pull. percent/eta_seconds are server-computed: percent is\nNone while the total is unknown (indeterminate UI), and neither is trusted to be\nmonotonic \u2014 docker's layer totals grow as layers are discovered mid-pull.",
+        "properties": {
+          "bytes_current": {
+            "title": "Bytes Current",
+            "type": "integer"
+          },
+          "bytes_total": {
+            "title": "Bytes Total",
+            "type": "integer"
+          },
+          "cancel_requested": {
+            "default": false,
+            "title": "Cancel Requested",
+            "type": "boolean"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "entry": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CatalogEntry"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "eta_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eta Seconds"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "mission_id": {
+            "title": "Mission Id",
+            "type": "string"
+          },
+          "percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Percent"
+          },
+          "phase": {
+            "title": "Phase",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "mission_id",
+          "status",
+          "phase",
+          "bytes_current",
+          "bytes_total"
+        ],
+        "title": "PullJobView",
+        "type": "object"
+      },
+      "RawTraceRef": {
+        "additionalProperties": false,
+        "description": "Provenance back to the RAW trace record a display event was derived from.",
+        "properties": {
+          "raw_seq": {
+            "title": "Raw Seq",
+            "type": "integer"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "signal": {
+            "default": "trace",
+            "enum": [
+              "trace",
+              "log"
+            ],
+            "title": "Signal",
+            "type": "string"
+          },
+          "span_id": {
+            "title": "Span Id",
+            "type": "string"
+          },
+          "trace_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace Id"
+          }
+        },
+        "required": [
+          "run_id",
+          "raw_seq",
+          "span_id"
+        ],
+        "title": "RawTraceRef",
+        "type": "object"
+      },
+      "ResolvedTerrainV2": {
+        "additionalProperties": false,
+        "description": "The v2 resolved terrain wire DTO \u2014 the run-scoped network/infrastructure map\nwith groups, nodes, edges, and an updates stream for state transitions.",
+        "properties": {
+          "attribution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AttributionStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/TerrainEdgeV2"
+            },
+            "title": "Edges",
+            "type": "array"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/TerrainGroup"
+            },
+            "title": "Groups",
+            "type": "array"
+          },
+          "mission_id": {
+            "title": "Mission Id",
+            "type": "string"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/TerrainNodeV2"
+            },
+            "title": "Nodes",
+            "type": "array"
+          },
+          "objective_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Objective Id"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "updates": {
+            "items": {
+              "$ref": "#/components/schemas/TerrainUpdate"
+            },
+            "title": "Updates",
+            "type": "array"
+          }
+        },
+        "required": [
+          "run_id",
+          "mission_id"
+        ],
+        "title": "ResolvedTerrainV2",
+        "type": "object"
+      },
+      "ResultConditions": {
+        "description": "The disclosed conditions a result was produced under.",
+        "properties": {
+          "agent_version": {
+            "default": 1,
+            "title": "Agent Version",
+            "type": "integer"
+          },
+          "budget_seconds": {
+            "default": 0,
+            "title": "Budget Seconds",
+            "type": "integer"
+          },
+          "intel_disclosed": {
+            "default": 0,
+            "title": "Intel Disclosed",
+            "type": "integer"
+          },
+          "judge_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge Model"
+          },
+          "mission_version": {
+            "default": 1,
+            "title": "Mission Version",
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "sandbox_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Ref"
+          }
+        },
+        "title": "ResultConditions",
+        "type": "object"
+      },
+      "RubricCriterion": {
+        "additionalProperties": false,
+        "description": "An author-declared grading criterion. Scoring is the eval engine's job, NOT here.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "weight": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weight"
+          }
+        },
+        "required": [
+          "id",
+          "text"
+        ],
+        "title": "RubricCriterion",
+        "type": "object"
+      },
+      "RunArtifactView": {
+        "description": "A single artifact an agent submitted during a run, with its full content.",
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "payload": {
+            "title": "Payload",
+            "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "seq",
+          "payload"
+        ],
+        "title": "RunArtifactView",
+        "type": "object"
+      },
+      "RunCreate": {
+        "description": "Create request: the registered agent's name + the mission ref.\n\n`name` is the operator's label for the run; when omitted (or blank) the spine mints a lazy\nunique default (`<mission> \u00b7 <agent> #<n>`), so a run always has a name.",
+        "properties": {
+          "agent": {
+            "title": "Agent",
+            "type": "string"
+          },
+          "budget_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Seconds"
+          },
+          "intel_policy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intel Policy"
+          },
+          "mission": {
+            "title": "Mission",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "required": [
+          "agent",
+          "mission"
+        ],
+        "title": "RunCreate",
+        "type": "object"
+      },
+      "RunCreatedEntry": {
+        "description": "The 201-create response shape \u2014 extends RunEntry with the freshly-minted bearer.\n\nReturned ONLY on POST /api/runs (once, like an API token on first issue). Never\nincluded in list or get responses so the key is not leaked to unauthenticated callers.",
+        "properties": {
+          "agent_id": {
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "agent_version": {
+            "default": 1,
+            "title": "Agent Version",
+            "type": "integer"
+          },
+          "budget_seconds": {
+            "default": 0,
+            "title": "Budget Seconds",
+            "type": "integer"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "intel_policy": {
+            "default": "all",
+            "title": "Intel Policy",
+            "type": "string"
+          },
+          "last_telemetry_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Telemetry At"
+          },
+          "mission": {
+            "title": "Mission",
+            "type": "string"
+          },
+          "mission_version": {
+            "default": 1,
+            "title": "Mission Version",
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "name": {
+            "default": "",
+            "title": "Name",
+            "type": "string"
+          },
+          "run_control_key": {
+            "title": "Run Control Key",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "sandbox_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Ref"
+          },
+          "source_agent": {
+            "default": "generic",
+            "title": "Source Agent",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "terminal_trigger": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Trigger"
+          }
+        },
+        "required": [
+          "run_id",
+          "agent_id",
+          "mission",
+          "state",
+          "created_at",
+          "run_control_key"
+        ],
+        "title": "RunCreatedEntry",
+        "type": "object"
+      },
+      "RunEntry": {
+        "description": "A run as returned over the wire for list/get \u2014 never carries the bearer.",
+        "properties": {
+          "agent_id": {
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "agent_version": {
+            "default": 1,
+            "title": "Agent Version",
+            "type": "integer"
+          },
+          "budget_seconds": {
+            "default": 0,
+            "title": "Budget Seconds",
+            "type": "integer"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "intel_policy": {
+            "default": "all",
+            "title": "Intel Policy",
+            "type": "string"
+          },
+          "last_telemetry_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Telemetry At"
+          },
+          "mission": {
+            "title": "Mission",
+            "type": "string"
+          },
+          "mission_version": {
+            "default": 1,
+            "title": "Mission Version",
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "name": {
+            "default": "",
+            "title": "Name",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "sandbox_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Ref"
+          },
+          "source_agent": {
+            "default": "generic",
+            "title": "Source Agent",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "terminal_trigger": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Trigger"
+          }
+        },
+        "required": [
+          "run_id",
+          "agent_id",
+          "mission",
+          "state",
+          "created_at"
+        ],
+        "title": "RunEntry",
+        "type": "object"
+      },
+      "RunEnvironmentView": {
+        "description": "The live state of a run's mission ENVIRONMENT, for the run page's Environment chip.\n\nPreviously the UI inferred this from `sandbox_ref` alone, which could only ever say \"Starting\"\nor \"Ready\" and was wrong twice over: a static mission (no image \u21d2 no sandbox_ref) read as a\nperpetual \"Starting\", and an environment that had DIED still read as \"Ready\". These states are\nobserved from the runner + fence instead:\n\n  none      static (attachment-only) run \u2014 there is no environment, and never will be\n  starting  deployed; the mission services / subnet router are still coming up\n  ready     every inner service is running and the run's router is on the tailnet\n  failed    the environment exited or never came up (the run is closed out as deploy_failed)\n  released  terminal run \u2014 the environment has been torn down",
+        "properties": {
+          "detail": {
+            "default": "",
+            "title": "Detail",
+            "type": "string"
+          },
+          "ready": {
+            "default": false,
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "none",
+              "starting",
+              "ready",
+              "failed",
+              "released"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "state"
+        ],
+        "title": "RunEnvironmentView",
+        "type": "object"
+      },
+      "RunEventsView": {
+        "additionalProperties": false,
+        "description": "The `GET /runs/{id}/events` page.",
+        "properties": {
+          "adapter_name": {
+            "title": "Adapter Name",
+            "type": "string"
+          },
+          "adapter_version": {
+            "title": "Adapter Version",
+            "type": "string"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "events": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/AgentEvent"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "fallback": {
+            "title": "Fallback",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "$ref": "#/components/schemas/EventCursor"
+          },
+          "next_since": {
+            "title": "Next Since",
+            "type": "integer"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "source_agent": {
+            "title": "Source Agent",
+            "type": "string"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/AdapterWarning"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "run_id",
+          "source_agent",
+          "adapter_name",
+          "adapter_version",
+          "fallback",
+          "next_since"
+        ],
+        "title": "RunEventsView",
+        "type": "object"
+      },
+      "RunResultView": {
+        "description": "Recorded result + disclosed conditions + partial state.",
+        "properties": {
+          "conditions": {
+            "$ref": "#/components/schemas/ResultConditions"
+          },
+          "grade": {
+            "$ref": "#/components/schemas/GradeResult"
+          },
+          "partial": {
+            "default": false,
+            "title": "Partial",
+            "type": "boolean"
+          },
+          "partial_trigger": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Partial Trigger"
+          }
+        },
+        "required": [
+          "grade",
+          "conditions"
+        ],
+        "title": "RunResultView",
+        "type": "object"
+      },
+      "RunStats": {
+        "description": "Per-run telemetry snapshot (XOR run-report). Agent-self-reported \u2192 display/comparison only,\npersisted beside the grade; NEVER an observed fact, NEVER a grading input.",
+        "properties": {
+          "cost_estimated_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Estimated Usd"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/CountStats",
+            "default": {
+              "by_kind": {},
+              "errors": 0,
+              "events_total": 0,
+              "findings": 0,
+              "model_calls": 0,
+              "tool_calls": 0
+            }
+          },
+          "timing": {
+            "$ref": "#/components/schemas/TimingStats",
+            "default": {}
+          },
+          "tokens": {
+            "$ref": "#/components/schemas/TokenStats",
+            "default": {
+              "cache_creation": 0,
+              "cache_read": 0,
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "total": 0
+            }
+          }
+        },
+        "title": "RunStats",
+        "type": "object"
+      },
+      "ScoreBreakdown": {
+        "additionalProperties": false,
+        "properties": {
+          "deterministic": {
+            "default": 0.0,
+            "title": "Deterministic",
+            "type": "number"
+          },
+          "judge": {
+            "default": 0.0,
+            "title": "Judge",
+            "type": "number"
+          }
+        },
+        "title": "ScoreBreakdown",
+        "type": "object"
+      },
+      "SubmitArtifactRequest": {
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "content"
+        ],
+        "title": "SubmitArtifactRequest",
+        "type": "object"
+      },
+      "SubmitArtifactResponse": {
+        "properties": {
+          "accepted": {
+            "default": true,
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "SubmitArtifactResponse",
+        "type": "object"
+      },
+      "SystemInfo": {
+        "additionalProperties": false,
+        "description": "Read-only Reflect view powering the GUI System / Modules / Catalog cards.",
+        "properties": {
+          "catalog": {
+            "$ref": "#/components/schemas/CatalogStatusView"
+          },
+          "db_schema": {
+            "enum": [
+              "head",
+              "behind",
+              "fresh",
+              "unknown"
+            ],
+            "title": "Db Schema",
+            "type": "string"
+          },
+          "db_url": {
+            "default": "",
+            "title": "Db Url",
+            "type": "string"
+          },
+          "home": {
+            "default": "",
+            "title": "Home",
+            "type": "string"
+          },
+          "planes": {
+            "items": {
+              "$ref": "#/components/schemas/PlaneStatus"
+            },
+            "title": "Planes",
+            "type": "array"
+          },
+          "remotes": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Remotes",
+            "type": "array"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "topology": {
+            "default": "local",
+            "enum": [
+              "local",
+              "distributed"
+            ],
+            "title": "Topology",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "planes",
+          "db_schema",
+          "catalog"
+        ],
+        "title": "SystemInfo",
+        "type": "object"
+      },
+      "TailnetJoinResponse": {
+        "description": "What GET /runs/{id}/connect returns: the tailnet join bundle the agent fetches\ninstead of the prompt inlining it. login_server is pre-rewritten to by-IP so it is\ndirectly usable; ca_cert is empty when the deployment is not air-gapped.",
+        "properties": {
+          "ca_cert": {
+            "default": "",
+            "title": "Ca Cert",
+            "type": "string"
+          },
+          "join_key": {
+            "title": "Join Key",
+            "type": "string"
+          },
+          "login_server": {
+            "title": "Login Server",
+            "type": "string"
+          }
+        },
+        "required": [
+          "login_server",
+          "join_key"
+        ],
+        "title": "TailnetJoinResponse",
+        "type": "object"
+      },
+      "TerrainEdgeV2": {
+        "additionalProperties": false,
+        "description": "A link between two nodes on the v2 map. Carries base state only.",
+        "properties": {
+          "active": {
+            "default": false,
+            "title": "Active",
+            "type": "boolean"
+          },
+          "dst": {
+            "title": "Dst",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "src": {
+            "title": "Src",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "src",
+          "dst"
+        ],
+        "title": "TerrainEdgeV2",
+        "type": "object"
+      },
+      "TerrainGroup": {
+        "additionalProperties": false,
+        "description": "A logical grouping of nodes on the v2 map. Groups organize the infrastructure\nand can be hidden during discovery.",
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "discovered": {
+            "default": false,
+            "title": "Discovered",
+            "type": "boolean"
+          },
+          "discovery_condition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discovery Condition"
+          },
+          "hidden": {
+            "default": false,
+            "title": "Hidden",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "default": "segment",
+            "enum": [
+              "infra",
+              "agent",
+              "segment"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "order": {
+            "default": 0,
+            "title": "Order",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "title": "TerrainGroup",
+        "type": "object"
+      },
+      "TerrainModelConfigUpdate": {
+        "additionalProperties": false,
+        "description": "Partial update to the terrain-model override.\n\nNone = leave; \"\" = unset (fall back to judge). `transcript_max_tokens` is the per-call prompt\ntoken safety cap (None = leave).",
+        "properties": {
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "transcript_max_tokens": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transcript Max Tokens"
+          }
+        },
+        "title": "TerrainModelConfigUpdate",
+        "type": "object"
+      },
+      "TerrainModelConfigView": {
+        "additionalProperties": false,
+        "description": "The terrain-attribution model's effective status. Defaults to the judge config;\n`uses_judge_default` is False once any terrain-specific override is set. Write-only key \u2014\n`key_hint` is a masked tail, never the key.",
+        "properties": {
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "key_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Hint"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "transcript_max_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transcript Max Tokens"
+          },
+          "uses_judge_default": {
+            "title": "Uses Judge Default",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "configured",
+          "uses_judge_default"
+        ],
+        "title": "TerrainModelConfigView",
+        "type": "object"
+      },
+      "TerrainNodeV2": {
+        "additionalProperties": false,
+        "description": "One node on the v2 map. Carries base state only; dynamic state folding is client-side.",
+        "properties": {
+          "completion_condition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completion Condition"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "discovery_condition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discovery Condition"
+          },
+          "group": {
+            "title": "Group",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "objective": {
+            "default": false,
+            "title": "Objective",
+            "type": "boolean"
+          },
+          "state": {
+            "default": "defined",
+            "enum": [
+              "defined",
+              "discovered",
+              "completed"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "type": {
+            "default": "service",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "group"
+        ],
+        "title": "TerrainNodeV2",
+        "type": "object"
+      },
+      "TerrainSpec": {
+        "additionalProperties": false,
+        "description": "Optional map block. v2 authoring: permissive dict tuples for\ngroups/nodes/edges so a minimal block validates; the v2 projector interprets the keys. The old\nrole/gt_prev node keys are no longer read (missions re-authored; else static_ips fallback).",
+        "properties": {
+          "edges": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Edges",
+            "type": "array"
+          },
+          "groups": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Groups",
+            "type": "array"
+          },
+          "nodes": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Nodes",
+            "type": "array"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          }
+        },
+        "title": "TerrainSpec",
+        "type": "object"
+      },
+      "TerrainUpdate": {
+        "additionalProperties": false,
+        "description": "An update event in the v2 resolved terrain stream. Folds onto nodes/groups/edges\nto represent discovered/completed state transitions over time. `note` is an optional\nshort free-text description of what the agent did in the source span (display-only).",
+        "properties": {
+          "active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active"
+          },
+          "discovered": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discovered"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "discovered",
+                  "completed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "target_id": {
+            "title": "Target Id",
+            "type": "string"
+          },
+          "target_kind": {
+            "enum": [
+              "node",
+              "group",
+              "edge"
+            ],
+            "title": "Target Kind",
+            "type": "string"
+          },
+          "ts": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ts"
+          }
+        },
+        "required": [
+          "seq",
+          "target_kind",
+          "target_id"
+        ],
+        "title": "TerrainUpdate",
+        "type": "object"
+      },
+      "TimingStats": {
+        "description": "Wall-clock + per-event timing. `elapsed_seconds` is from the run row; the rest are sparse.",
+        "properties": {
+          "elapsed_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Elapsed Seconds"
+          },
+          "first_event_ts": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Event Ts"
+          },
+          "last_event_ts": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Event Ts"
+          },
+          "longest_tool_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Longest Tool Ms"
+          }
+        },
+        "title": "TimingStats",
+        "type": "object"
+      },
+      "TokenStats": {
+        "description": "Summed token usage over a run. `total` is COMPUTED (input+output): no harness emits a\nreliable total, and the three harnesses report the parts under different keys.",
+        "properties": {
+          "cache_creation": {
+            "default": 0,
+            "title": "Cache Creation",
+            "type": "integer"
+          },
+          "cache_read": {
+            "default": 0,
+            "title": "Cache Read",
+            "type": "integer"
+          },
+          "input": {
+            "default": 0,
+            "title": "Input",
+            "type": "integer"
+          },
+          "output": {
+            "default": 0,
+            "title": "Output",
+            "type": "integer"
+          },
+          "reasoning": {
+            "default": 0,
+            "title": "Reasoning",
+            "type": "integer"
+          },
+          "total": {
+            "default": 0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "title": "TokenStats",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "XORCISE",
+    "version": "0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/agents": {
+      "get": {
+        "operationId": "list_agents_api_agents_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AgentEntry"
+                  },
+                  "title": "Response List Agents Api Agents Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Agents",
+        "tags": [
+          "agents"
+        ]
+      },
+      "post": {
+        "operationId": "register_agent_api_agents_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentDeclaration"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentEntry"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register Agent",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/agents/{name}": {
+      "delete": {
+        "description": "Remove an agent and cascade-delete its runs + results.",
+        "operationId": "remove_agent_api_agents__name__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Agent",
+        "tags": [
+          "agents"
+        ]
+      },
+      "put": {
+        "description": "Update an agent's declaration and bump its version; a differing body name\nrenames the agent (409 when taken). 404 when absent.",
+        "operationId": "update_agent_api_agents__name__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentDeclaration"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentEntry"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Agent",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/agents/{name}/history": {
+      "get": {
+        "operationId": "agent_history_api_agents__name__history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AgentHistoryEntry"
+                  },
+                  "title": "Response Agent History Api Agents  Name  History Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Agent History",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/catalog/status": {
+      "get": {
+        "description": "Whether the XORCISE.AI catalog is connected / error / disconnected.",
+        "operationId": "status_api_catalog_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Status",
+        "tags": [
+          "catalog"
+        ]
+      }
+    },
+    "/api/config": {
+      "get": {
+        "operationId": "get_config_api_config_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Config",
+        "tags": [
+          "config"
+        ]
+      }
+    },
+    "/api/config/catalog": {
+      "put": {
+        "description": "Connect/disconnect the XORCISE remote catalog (the Settings switch).",
+        "operationId": "put_catalog_config_api_config_catalog_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CatalogConfigUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Catalog Config",
+        "tags": [
+          "config"
+        ]
+      }
+    },
+    "/api/config/model": {
+      "put": {
+        "operationId": "put_model_config_api_config_model_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelConfigUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Model Config",
+        "tags": [
+          "config"
+        ]
+      }
+    },
+    "/api/config/model/test": {
+      "post": {
+        "description": "Live-check the saved judge key by actually calling the model (a minimal completion).\n\n`configured` in GET /config is only a presence check; this proves the key works. Runs only\non this explicit action so GET /config stays fast and spends no tokens on page load.",
+        "operationId": "test_model_config_api_config_model_test_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JudgeTestResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Test Model Config",
+        "tags": [
+          "config"
+        ]
+      }
+    },
+    "/api/config/network": {
+      "put": {
+        "description": "Set the distributed-mode network addresses (Headscale URL / advertise host).\n\nPersisted to ~/.xorcise/.env; applies at the next server start (the GUI notes this).",
+        "operationId": "put_network_config_api_config_network_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NetworkConfigUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Network Config",
+        "tags": [
+          "config"
+        ]
+      }
+    },
+    "/api/config/terrain-model": {
+      "put": {
+        "description": "Set (or clear, via empty strings) the terrain-attribution model override. Defaults to the\njudge model when unset.",
+        "operationId": "put_terrain_model_config_api_config_terrain_model_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TerrainModelConfigUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Terrain Model Config",
+        "tags": [
+          "config"
+        ]
+      }
+    },
+    "/api/config/terrain-model/test": {
+      "post": {
+        "description": "Live-check the terrain attribution model by actually calling it (a minimal completion).\n\nExercises the effective config \u2014 the custom (advanced-mode) override if set, else the judge\ntrio \u2014 so the Settings UI can confirm a custom terrain model is reachable. Runs only on this\nexplicit action so GET /config stays fast and spends no tokens on page load.",
+        "operationId": "test_terrain_model_config_api_config_terrain_model_test_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JudgeTestResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Test Terrain Model Config",
+        "tags": [
+          "config"
+        ]
+      }
+    },
+    "/api/fs/list": {
+      "get": {
+        "description": "List one directory (names + is_dir). Defaults to the user's home directory.",
+        "operationId": "list_fs_api_fs_list_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FsListing"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Fs",
+        "tags": [
+          "fs"
+        ]
+      }
+    },
+    "/api/harnesses": {
+      "get": {
+        "description": "Registration descriptors assembled from the existing collect + launch providers.\n\nThe launch information is a non-runnable preview. The run-specific launch-profile route\nremains authoritative once a mission, endpoints, and credentials exist.",
+        "operationId": "list_harnesses_api_harnesses_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/HarnessDescriptor"
+                  },
+                  "title": "Response List Harnesses Api Harnesses Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Harnesses",
+        "tags": [
+          "harnesses"
+        ]
+      }
+    },
+    "/api/harnesses/capabilities": {
+      "get": {
+        "description": "Every registered adapter's declared profile, adapter_name-sorted (stable wire order).",
+        "operationId": "list_capabilities_api_harnesses_capabilities_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/HarnessCapabilityProfile"
+                  },
+                  "title": "Response List Capabilities Api Harnesses Capabilities Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Capabilities",
+        "tags": [
+          "harnesses"
+        ]
+      }
+    },
+    "/api/health": {
+      "get": {
+        "operationId": "health_api_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Health Api Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/api/missions": {
+      "get": {
+        "description": "Browse Your Own (local store) + the free XORCISE library (no account/key).",
+        "operationId": "list_missions_api_missions_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CatalogEntry"
+                  },
+                  "title": "Response List Missions Api Missions Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Missions",
+        "tags": [
+          "missions"
+        ]
+      }
+    },
+    "/api/missions/ingest": {
+      "post": {
+        "description": "Start a local-bundle ingest and return a job id immediately.\n\nThe host-local Docker build can take minutes \u2014 far past the CLI's read timeout and long enough\nto hang a browser request \u2014 so it runs on a background task; poll GET /missions/ingest/{id}\nfor status + progress logs (the CLI and the GUI both do). Routes the install through the\ncontroller so the server remains the single writer (parity with /pull).",
+        "operationId": "ingest_api_missions_ingest_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IngestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestStarted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ingest",
+        "tags": [
+          "missions"
+        ]
+      }
+    },
+    "/api/missions/ingest/{job_id}": {
+      "get": {
+        "description": "Ingest job status + progress logs. `since` = log-index cursor (default 0=all).",
+        "operationId": "ingest_status_api_missions_ingest__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Since",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestJobView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ingest Status",
+        "tags": [
+          "missions"
+        ]
+      }
+    },
+    "/api/missions/pull-jobs": {
+      "get": {
+        "description": "The active ('pulling') job for a mission, or null \u2014 lets a reloaded GUI resume its\nprogress bar and keeps a second view's Pull button disabled.",
+        "operationId": "active_pull_job_api_missions_pull_jobs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "mission_id",
+            "required": true,
+            "schema": {
+              "title": "Mission Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/PullJobView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Active Pull Job Api Missions Pull Jobs Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Active Pull Job",
+        "tags": [
+          "missions"
+        ]
+      }
+    },
+    "/api/missions/pull-jobs/{job_id}": {
+      "get": {
+        "description": "Pull job status + progress (poll target for the GUI).",
+        "operationId": "pull_job_status_api_missions_pull_jobs__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullJobView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pull Job Status",
+        "tags": [
+          "missions"
+        ]
+      }
+    },
+    "/api/missions/pull-jobs/{job_id}/cancel": {
+      "post": {
+        "description": "Ask an in-flight pull to stop (GUI Cancel button / CLI Ctrl-C).\n\nSets the job's cooperative-cancel flag; the background worker checks it (per download event,\nthrottled) and aborts before install, recording `cancelled`. Returns the current job view so\nthe caller sees `cancel_requested` immediately. Idempotent: cancelling an already-terminal job\n(it finished racing the cancel) returns its view unchanged. 404 if the job is unknown.",
+        "operationId": "cancel_pull_job_api_missions_pull_jobs__job_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullJobView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Pull Job",
+        "tags": [
+          "missions"
+        ]
+      }
+    },
+    "/api/missions/{mission_id}": {
+      "delete": {
+        "description": "Uninstall an installed mission \u2014 local (your_own) or pulled (library).\n\nRemoves the local install directory so the mission leaves Your Own / drops back to\nnot-installed in the library. 404 if nothing is installed under that id. Routes the write\nthrough the server's install root (single writer, parity with ingest/pull). The fused image is\nintentionally left in the local store; pruning it is a separate concern.",
+        "operationId": "delete_mission_api_missions__mission_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mission_id",
+            "required": true,
+            "schema": {
+              "title": "Mission Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Mission",
+        "tags": [
+          "missions"
+        ]
+      }
+    },
+    "/api/missions/{mission_id}/manifest": {
+      "get": {
+        "description": "The full mission.json for an id \u2014 Your Own copy if installed, else the library.",
+        "operationId": "mission_manifest_api_missions__mission_id__manifest_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mission_id",
+            "required": true,
+            "schema": {
+              "title": "Mission Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MissionManifest"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mission Manifest",
+        "tags": [
+          "missions"
+        ]
+      }
+    },
+    "/api/missions/{mission_id}/pull": {
+      "post": {
+        "description": "Pull a free-library mission (image-pull) so it becomes selectable/runnable.",
+        "operationId": "pull_api_missions__mission_id__pull_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mission_id",
+            "required": true,
+            "schema": {
+              "title": "Mission Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogEntry"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pull",
+        "tags": [
+          "missions"
+        ]
+      }
+    },
+    "/api/missions/{mission_id}/pull-jobs": {
+      "post": {
+        "description": "Start (or join) a background pull for a library mission (202 + job_id, idempotent).\n\nThe image download can take minutes \u2014 far past what a browser will hold one request open\nfor \u2014 so it runs on a background task; poll GET /missions/pull-jobs/{job_id}. A POST\nwhile a pull for this mission is active returns the SAME job_id without starting a\nsecond worker (server-side double-pull guard).",
+        "operationId": "start_pull_job_api_missions__mission_id__pull_jobs_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mission_id",
+            "required": true,
+            "schema": {
+              "title": "Mission Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullJobStarted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Pull Job",
+        "tags": [
+          "missions"
+        ]
+      }
+    },
+    "/api/runs": {
+      "get": {
+        "description": "List runs, each stamped with `last_telemetry_at` \u2014 the newest OTLP receipt across the\ntrace + log signals. A cross-module join the delivery layer owns (like /result's intel count):\nthe runs module stays telemetry-blind, and the RAW stores stay canonical. Lazy import keeps\nthe otel plane off the module-import path (plane-isolation invariant).",
+        "operationId": "list_runs_api_runs_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RunEntry"
+                  },
+                  "title": "Response List Runs Api Runs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Runs",
+        "tags": [
+          "runs"
+        ]
+      },
+      "post": {
+        "description": "Create a 1:1:1 run: gated on a registered agent + installed mission.\n\nEvery failure maps to a clean JSON error (never a raw text/plain 500 that the CLI can't\ndecode): the deps build + spine run share one try so the fail-loud\nRuntimeError (Docker/Headscale unreachable) surfaces as a 503 with its remediation.\n\nThe 201 response is RunCreatedEntry \u2014 a RunEntry superset that adds run_control_key so the\nagent can authenticate run-control calls. The key is NEVER returned by\nGET /api/runs (list) or GET /api/runs/{id} (get) \u2014 only this once, like an API token.",
+        "operationId": "create_run_api_runs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunCreatedEntry"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Run",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{run_id}": {
+      "delete": {
+        "description": "Operator-initiated delete of a single run's result + record.\n\nThe narrow, per-run counterpart to the agent-scoped cascade (DELETE /agents/{name}): removes\nthe recorded result and the run row so the run leaves the runs list, the agent history, and the\nresults view. 404 if the run is unknown; 409 if it has not reached a terminal state \u2014 it must be\nterminated first (deleting it would strand its container/tailnet env). Idempotent on the result\n(delete of an ungraded terminal run still removes the record).",
+        "operationId": "delete_run_api_runs__run_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Run",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/artifacts": {
+      "get": {
+        "description": "The artifacts an agent submitted during a run, with full content, for operator review.\n\nThe submission store keeps every payload, but only artifact *names* reached the grade result\n\u2014 so the flag and any submitted work were never reviewable. This\noperator-facing GET (same auth model as /result) returns the flag/artifact submissions in\nsubmission order; intel/complete markers are excluded. Unknown run \u2192 404; a known run with no\nsubmissions \u2192 an empty list.",
+        "operationId": "run_artifacts_api_runs__run_id__artifacts_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RunArtifactView"
+                  },
+                  "title": "Response Run Artifacts Api Runs  Run Id  Artifacts Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Artifacts",
+        "tags": [
+          "runs"
+        ]
+      },
+      "post": {
+        "operationId": "submit_artifact_api_runs__run_id__artifacts_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitArtifactRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitArtifactResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit Artifact",
+        "tags": [
+          "run-control"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/attachments/{name}": {
+      "get": {
+        "operationId": "attachment_api_runs__run_id__attachments__name__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "exp",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Exp"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sig",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sig"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-run-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Run-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Attachment Api Runs  Run Id  Attachments  Name  Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Attachment",
+        "tags": [
+          "run-control"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/complete": {
+      "post": {
+        "operationId": "complete_api_runs__run_id__complete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompleteResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Complete",
+        "tags": [
+          "run-control"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/connect": {
+      "get": {
+        "description": "Hand the agent its tailnet join bundle over an authenticated call instead of the\nprompt inlining the CA PEM + one-time key. login_server is pre-rewritten to by-IP.",
+        "operationId": "get_connect_api_runs__run_id__connect_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TailnetJoinResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Connect",
+        "tags": [
+          "run-control"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/environment": {
+      "get": {
+        "description": "The live state of a run's mission environment (run page's Environment chip).\n\nServed from the readiness gate's most recent observation rather than re-probing Docker +\nHeadscale per request \u2014 the page polls this while a run is live, and a nested `compose ps` exec\non every poll would be far heavier than the fact is worth. The two states that need no probe at\nall are answered from the run row itself: a STATIC mission has no environment by design, and a\nterminal run's has been torn down.",
+        "operationId": "run_environment_api_runs__run_id__environment_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunEnvironmentView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Environment",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/events": {
+      "get": {
+        "description": "Normalized, agent-agnostic replay events for a run (generate-on-read).\n\n`trace_since` and `log_since` are independent exclusive cursors. `since` is retained for\nbackward compatibility and supplies either coordinate when its signal-specific parameter is\nabsent. New clients should poll with `next_cursor` from the response.",
+        "operationId": "run_events_api_runs__run_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "default": -1,
+              "title": "Since",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "trace_since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Trace Since"
+            }
+          },
+          {
+            "in": "query",
+            "name": "log_since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Log Since"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunEventsView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Events",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/events/{event_id}/raw": {
+      "get": {
+        "description": "The source RAW OTLP span(s) an event was derived from (drill-down).\n\n`{event_id:path}` \u2014 AgentEvent ids derive from base64 span ids, which may contain '/'.",
+        "operationId": "run_event_raw_api_runs__run_id__events__event_id__raw_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "event_id",
+            "required": true,
+            "schema": {
+              "title": "Event Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Run Event Raw Api Runs  Run Id  Events  Event Id  Raw Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Event Raw",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/intel": {
+      "get": {
+        "operationId": "get_intel_api_runs__run_id__intel_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntelResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Intel",
+        "tags": [
+          "run-control"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/join.sh": {
+      "get": {
+        "description": "Serve the runnable one-shot tailnet join script (join ergonomics). Same bundle as GET\n/connect (by-IP login server, per-run key, control-plane CA), rendered into a self-contained\nscript the agent runs with ``curl -fsS -H 'Authorization: Bearer <key>' <base>/join.sh | sh``.\nCollapses the reconstruct-the-join-by-hand friction into one command; works non-root. The\nscript is handed the same base + bearer so it can pull the pinned client from /tailscale.tgz\n(air-gapped) before falling back to the public CDN.",
+        "operationId": "get_join_script_api_runs__run_id__join_sh_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Join Script",
+        "tags": [
+          "run-control"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/launch-profile": {
+      "get": {
+        "description": "The harness-facing LaunchProfile: the pre-start OTel env the runner injects into the agent\ncontainer. Served here, out of the agent-facing prompt \u2014 the two-artifact split. The\nOTLP endpoint is authoritative (the server's configured collector host + port), so a harness\nneed not guess it. Harness-aware: the run's source_agent selects both the telemetry\nprovider and the harness launch provider. A known harness gets its solid OTel env including\nOTEL_RESOURCE_ATTRIBUTES=xorcise.run_id=<id> (correlation=\"resource-attr\"), plus the launch\nprovider's copy-paste ``command`` and per-harness ``tips``; unknown/blank harnesses get the\nrun-agnostic generic env (correlation=\"prompt-sentinel\", fallback=true). env is empty when no\ncollector is configured.",
+        "operationId": "run_launch_profile_api_runs__run_id__launch_profile_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "launch_mode",
+            "required": false,
+            "schema": {
+              "default": "container",
+              "title": "Launch Mode",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Run Launch Profile Api Runs  Run Id  Launch Profile Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Launch Profile",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/mission": {
+      "get": {
+        "operationId": "get_mission_api_runs__run_id__mission_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MissionInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Mission",
+        "tags": [
+          "run-control"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/prompt": {
+      "get": {
+        "description": "The agent-facing mission prompt for a run. *launch_mode* rebases the run-control\nBase URL \u2014 and the container-only --add-host note \u2014 to where the agent actually runs: ``host``\n(the server's loopback bind, a terminal CLI) vs ``container`` (host.docker.internal, resolvable\nonly inside a container). Defaults to ``container`` so a non-GUI caller keeps the baked host;\nthe GUI passes the launch-mode toggle so the whole hand-off \u2014 not just the telemetry env \u2014\nfollows the operator's choice.",
+        "operationId": "run_prompt_api_runs__run_id__prompt_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "launch_mode",
+            "required": false,
+            "schema": {
+              "default": "container",
+              "title": "Launch Mode",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Run Prompt Api Runs  Run Id  Prompt Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Prompt",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/regrade": {
+      "post": {
+        "description": "Re-evaluate a terminal run: re-grade its already-SEALED evidence (the deterministic checks +\nthe LLM judge) against the CURRENT settings, without re-running the agent.\n\nThe motivating case: a run the agent actually solved (deterministic checks pass) whose JUDGE\nhalf failed on a config limit \u2014 the transcript was larger than the judge's token budget, or the\nkey was rejected. The operator raises the transcript budget / fixes the key in Settings, then\nre-evaluates, and the judge half runs over the same preserved evidence.\n\nDrops the recorded result and schedules a fresh grade off the request thread (the judge can be\nslow); the new result surfaces via the SAME `202 grading \u2192 grade` poll the initial grade uses,\nso the client needs no new state machine. De-duplicated, so a double click grades once. 404 if\nthe run is unknown; 409 if it has not reached a terminal state (nothing is sealed to grade yet).",
+        "operationId": "regrade_run_api_runs__run_id__regrade_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Regrade Run",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/report": {
+      "get": {
+        "description": "The run's full result as a downloadable Markdown or HTML document (run report).\n\nThe Results page is the interactive view; this is the shareable one \u2014 the same metadata,\nscores, check table, rubric, evidence, artifacts, telemetry and conditions, rendered offline\ninto a single self-contained file (the HTML carries its own dark styling; no external asset).\n\nMirrors /result's state ladder exactly, so a caller polling for a report sees the same\ntransitions it already handles: unknown run \u2192 404; terminal-but-ungraded \u2192 202\n{\"status\": \"grading\"}; still-active run \u2192 409. An unsupported `format` \u2192 422.\nContent-Disposition is `attachment`, so a browser downloads rather than renders it.",
+        "operationId": "run_report_api_runs__run_id__report_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "default": "md",
+              "title": "Format",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Report",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/result": {
+      "get": {
+        "description": "Recorded 50/50 explainable result + disclosed conditions for a run.\n\nWhen no result is recorded yet, distinguish three cases instead of a blanket 404:\ngrading runs asynchronously after /complete, so a terminal-but-ungraded run is a normal\ntransient state, NOT a failure. Unknown run \u2192 404; terminal-but-ungraded \u2192 202\n{\"status\": \"grading\"}; still-active run \u2192 409 (no result to read yet).\n\nA terminal-ungraded run also RE-DRIVES grading here (ensure_graded_async): if the grade was\nlost to a server restart or a hung judge call, polling the result heals it rather than spinning\nat \"grading\" forever (de-duplicated, so the poll loop triggers one grade, not one per poll).",
+        "operationId": "run_result_api_runs__run_id__result_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunResultView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Result",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/stats": {
+      "get": {
+        "description": "Per-run telemetry snapshot (tokens / counts / timing) for the run report.\n\nPrefers the snapshot recorded at grade time; for a run graded before the snapshot column\nexisted (empty stats_json) it folds the event projection LIVE as a read-only fallback (no\nback-write). Mirrors /result's states otherwise: unknown run \u2192 404; terminal-but-ungraded \u2192\n202 {\"status\": \"grading\"}; still-active run \u2192 409.",
+        "operationId": "run_stats_api_runs__run_id__stats_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunStats"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Stats",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/tailscale.tgz": {
+      "get": {
+        "description": "Serve the version-pinned static tailscale client tarball for *arch* (run-control-served\nbinary). The server caches it (downloading once per arch), so an air-gapped agent installs\ntailscale without public egress. 400 on an unsupported arch; 502 when the server can't obtain\nit \u2014 the served join.sh treats 502 as its cue to fall back to the public CDN.",
+        "operationId": "get_tailscale_tarball_api_runs__run_id__tailscale_tgz_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "arch",
+            "required": false,
+            "schema": {
+              "default": "amd64",
+              "title": "Arch",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Tailscale Tarball",
+        "tags": [
+          "run-control"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/terminate": {
+      "post": {
+        "description": "Operator-initiated termination: abort an active run from GUI/CLI.\n\n404 if the run is unknown; 409 if it is already terminal. Closes run-control synchronously and\nreturns the terminal entry immediately; the background finalizer drains telemetry, seals, and\ngrades without blocking the caller. Result surfaces via `run status` (202 grading \u2192 grade).",
+        "operationId": "terminate_run_api_runs__run_id__terminate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunEntry"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Terminate Run",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/terrain2": {
+      "get": {
+        "description": "v2 terrain served alongside v1 /terrain during migration (Strategy A).\n\nComposes the base v2 graph (infra scaffold + authored/static-ips mission graph) with the\nv2 updates stream and BYOM attribution progress. The `updates` tuple is a\ndeterministic MERGE of three sources, in this fixed order (documented, not renumbered):\n1. deterministic infra updates (`infra_updates`, first-party facts/submissions, event_id=None)\n   \u2014 computed fresh every request, never persisted, given synthetic seq 0..n-1;\n2. persisted BYOM mission updates (`store.list_for_run`, already seq-ordered) \u2014 kept as-is;\n3. objective terminal-grade reconciliation (`objective_grade_update`) \u2014 appended last,\n   only when the run is terminal AND graded solved AND no `completed` update for the\n   objective is already present (idempotent; makes the served map agree with XORCISE's own\n   recorded grade, independent of the BYOM terrain model).\nThe runs module takes plain data \u2014 this delivery layer does the store reads. Kicks\nthe v2 catch-up ONLY when attribution is pending (v1's truthful-running fix, mirrored) so\n`attribution.running` stays truthful rather than pinned on for a fully-attributed run.\nUnknown run \u2192 404.",
+        "operationId": "run_terrain_v2_api_runs__run_id__terrain2_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolvedTerrainV2"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Terrain V2",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/traces": {
+      "get": {
+        "description": "Incremental RAW trace records for a run (live view fan-out).\n\nPull-based and read-only: a stalled/absent poller cannot block ingest or mutate\nthe RAW record. `since` is an exclusive seq cursor (default -1 \u2192 all records).",
+        "operationId": "run_traces_api_runs__run_id__traces_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "default": -1,
+              "title": "Since",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Run Traces Api Runs  Run Id  Traces Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Traces",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/system": {
+      "get": {
+        "operationId": "get_system_api_system_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SystemInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get System",
+        "tags": [
+          "system"
+        ]
+      }
+    }
+  }
+}

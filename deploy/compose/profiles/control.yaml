@@ -1,0 +1,5 @@
+# role:control — the application layer only (REST); no runner/otel/headscale plane.
+services:
+  app:
+    build: { context: ../../.., target: control }
+    command: ["xorcise", "serve", "--role", "control"]

@@ -1,0 +1,26 @@
+# Issue-template chooser configuration.
+#
+# `blank_issues_enabled: false` forces every report through one of the structured forms. That
+# is not bureaucracy: the single biggest cost in triage is going back and forth asking for a
+# version number and a reproduction, and the forms collect both up front.
+#
+# The security link is the important one. It routes vulnerability reports to GitHub's private
+# advisory flow BEFORE someone posts an exploitable flaw in a public issue.
+blank_issues_enabled: false
+
+contact_links:
+  - name: 🔒 Report a security vulnerability (private)
+    # PLACEHOLDER: xorcise-ai/xorcise — substitute the real GitHub org/repo.
+    # Requires "Private vulnerability reporting" to be enabled in repository settings.
+    url: https://github.com/xorcise-ai/xorcise/security/advisories/new
+    about: >-
+      Never report a vulnerability in a public issue. Use GitHub's private advisory form so the
+      problem can be fixed before it is disclosed. See SECURITY.md for scope and what to include.
+
+  - name: 💬 Questions and general discussion
+    # PLACEHOLDER: xorcise-ai/xorcise. If GitHub Discussions is not enabled, remove this entry
+    # rather than leaving a link that 404s.
+    url: https://github.com/xorcise-ai/xorcise/discussions
+    about: >-
+      Usage questions, ideas that are not yet a concrete feature request, and "am I doing this
+      right?" — these get better answers in Discussions than in the issue tracker.

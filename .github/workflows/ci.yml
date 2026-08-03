@@ -1,0 +1,470 @@
+# Pull-request gate. Runs UNTRUSTED code: any fork PR executes these jobs.
+# `pull_request` (never `pull_request_target`) means fork PRs get a read-only token and no
+# secrets; no job here references a secret, so there is nothing to exfiltrate.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    # `labeled` is required so that ADDING the `full-ci` label re-runs the workflow and lets
+    # the Docker-heavy lanes execute on a PR that needs them (see the `test-heavy` job).
+    types: [opened, synchronize, reopened, labeled]
+
+permissions: {}
+
+concurrency:
+  # Cancel superseded PR runs, never `main` runs — each of those records whether a commit is green.
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Pinning the action SHA does not pin the tool it installs.
+  UV_VERSION: "0.9.30"
+
+jobs:
+  # Static quality. Everything depends on this, so a typo fails in ~2 min, not after the suite.
+  smoke:
+    name: smoke (lint, types, guards)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # hatch-vcs reads git tags during the editable install
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # `--locked` fails on a stale uv.lock, so a dep change without a re-lock cannot merge.
+      - name: Install locked dependencies
+        run: uv sync --locked --extra dev
+
+      - name: Import smoke test
+        run: uv run python -c "import xorcise, xorcise.core; print(xorcise.__version__)"
+
+      - name: Type check (mypy, strict)
+        run: uv run mypy
+
+      - name: Guard — single distribution
+        run: uv run python scripts/check_single_distribution.py
+
+      - name: Guard — import walls (import-linter)
+        run: uv run lint-imports
+
+      - name: Lint (ruff)
+        run: uv run ruff check .
+
+      - name: Format check (ruff format)
+        run: uv run ruff format --check .
+
+  # Fast lanes: no Docker needed. These gate every pull request.
+  test:
+    name: test (${{ matrix.lane }})
+    runs-on: ubuntu-latest
+    needs: smoke
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false # one lane failing must not hide the others
+      matrix:
+        lane: [unit, topology, adapters]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked dependencies
+        run: uv sync --locked --extra dev
+
+      # Lane travels via `env:`, never interpolated into `run:` — keeps the no-injection rule
+      # mechanical and lets zizmor verify it.
+      - name: Run lane
+        env:
+          LANE: ${{ matrix.lane }}
+        run: |
+          set -euo pipefail
+          args=(-m "$LANE" -v)
+          # Only the unit lane is process-isolated (function-scoped temp DBs + stub adapters)
+          # and therefore safe under xdist. adapters/topology touch Docker and fixed ports.
+          if [ "$LANE" = "unit" ]; then
+            args+=(-n auto)
+          fi
+          uv run pytest "${args[@]}"
+
+  # Docker-heavy lanes: real containers, Headscale, FIXED host ports (:3001, the tailnet) —
+  # one matrix leg each so they never share a runner.
+  #
+  # Not on every PR: a flaky required check teaches everyone to ignore CI, which is worse than
+  # catching a regression at merge. Runs on push-to-main, nightly, or a `full-ci` label —
+  # and `ci-ok` requires them whenever they do run.
+  test-heavy:
+    name: test-heavy (${{ matrix.lane }})
+    runs-on: ubuntu-latest
+    needs: smoke
+    if: >-
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci')
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [integration, e2e]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked dependencies
+        run: uv sync --locked --extra dev
+
+      # Logged so a skipped Docker test is never mistaken for a passing one.
+      - name: Docker environment
+        run: |
+          docker --version
+          docker compose version || echo "NOTE: compose v2 plugin unavailable on this runner"
+
+      - name: Run lane
+        env:
+          LANE: ${{ matrix.lane }}
+        # No xdist: these lanes bind fixed ports and share a Docker daemon.
+        run: uv run pytest -m "$LANE" -v
+
+  # Frontend type check + unit tests. The production build is NOT duplicated here —
+  # `build-dist` exercises that exact path via the hatch hook, which is what ships.
+  frontend:
+    name: frontend (typecheck, tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # `npm ci`, not `install`: fails if package.json and the lockfile disagree.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Unit tests (vitest)
+        run: npm test
+
+  # Browser end-to-end against a REAL served surface. Nothing else in CI drives the UI,
+  # and the cost of that showed: this suite had been failing for months on four separate
+  # rots — a baseURL whose path every root-relative goto() discarded, two headings renamed
+  # by the mission/intel vocabulary change, form labels that never existed, and a strict-mode
+  # clash with Next's own route announcer. None of it was noticed because nothing ran it.
+  #
+  # Runs on a FRESH install (no agents, no runs, nothing pulled), which is what a runner
+  # gets and what the specs are written against — a suite that needs seeded state is a
+  # suite that only ever passes locally.
+  frontend-e2e:
+    name: frontend (e2e)
+    runs-on: ubuntu-latest
+    needs: smoke
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install locked dependencies
+        run: uv sync --locked --extra dev
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # Writes the export into the package tree, which is where the server reads it from.
+      - name: Build the operator surface
+        working-directory: frontend
+        run: npm run build:static
+
+      - name: Install the browser
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      # A dedicated XORCISE_HOME keeps the run hermetic: a fresh DB, no inherited config.
+      - name: Serve, and drive the UI against it
+        env:
+          XORCISE_HOME: ${{ runner.temp }}/xorcise-e2e
+          PLAYWRIGHT_BASE_URL: http://127.0.0.1:3001
+        run: |
+          set -euo pipefail
+          mkdir -p "$XORCISE_HOME"
+          uv run xorcise serve --port 3001 > "$RUNNER_TEMP/server.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+
+          # Poll rather than sleep — a fixed wait is either flaky or slow.
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:3001/api/health >/dev/null 2>&1; then break; fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              echo "::error::server exited before becoming ready"; cat "$RUNNER_TEMP/server.log"; exit 1
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:3001/api/health >/dev/null \
+            || { echo "::error::server never became ready"; cat "$RUNNER_TEMP/server.log"; exit 1; }
+
+          npm --prefix frontend run test:e2e
+
+      # The opposite precondition: the same export served with NO /api behind it, so the
+      # shell must show the unreachable banner instead of crashing. Run against a plain
+      # file server, with the export under /ui to match how the app is mounted.
+      - name: Drive the UI with the API unreachable
+        env:
+          PLAYWRIGHT_BASE_URL: http://127.0.0.1:3098
+        run: |
+          set -euo pipefail
+          static_root="$RUNNER_TEMP/ui-static"
+          mkdir -p "$static_root/ui"
+          cp -r frontend/out/. "$static_root/ui/"
+          python3 -m http.server 3098 --bind 127.0.0.1 --directory "$static_root" >/dev/null 2>&1 &
+          static_pid=$!
+          trap 'kill "$static_pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3098/ui/ >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          npm --prefix frontend run test:e2e:no-server
+
+      - name: Upload the Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-report
+          path: |
+            frontend/playwright-report/
+            frontend/test-results/
+          retention-days: 7
+
+  # Proves `pip install xorcise` works: runs the real hatch hook (which builds the UI),
+  # verifies the wheel actually contains it, installs clean and runs the CLI.
+  # Nothing else in CI covers this path.
+  build-dist:
+    name: build-dist (wheel + sdist)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # a shallow clone silently produces a 0.1.dev0 wheel
+          persist-credentials: false
+
+      # Node must exist BEFORE `uv build` — the hook degrades to a stale export without it.
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked dependencies
+        run: uv sync --locked --extra dev
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: List built artifacts
+        run: ls -l dist/
+
+      - name: Verify wheel contents (UI export, role manifest, migrations, mission base)
+        run: uv run python scripts/check_wheel_contents.py dist
+
+      - name: Validate package metadata (twine, strict)
+        run: uv run twine check --strict dist/*
+
+      # A throwaway venv proves the entry point works; an import-only check would not.
+      - name: Install wheel into a clean environment and run the CLI
+        run: |
+          set -euo pipefail
+          uv venv /tmp/smoke
+          uv pip install --python /tmp/smoke/bin/python dist/*.whl
+          /tmp/smoke/bin/xorcise --help
+          /tmp/smoke/bin/xorcise --version || true
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error
+
+  # Audits these workflow files for template injection, credential persistence, over-broad
+  # permissions and unpinned actions.
+  lint-actions:
+    name: lint-actions (zizmor)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked dependencies
+        run: uv sync --locked --extra dev
+
+      # zizmor comes from the locked dev extra, not `uvx` — the tool auditing our supply
+      # chain must not itself float to latest on every run.
+      - name: Audit workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run zizmor --pedantic .github/workflows/
+
+  # THE single required status check. Branch protection names only this, so lanes can change
+  # without touching repo settings — and a renamed leg can't leave a required check that never
+  # reports.
+  #
+  # `if: always()` is load-bearing: without it this job would SKIP when a dependency failed,
+  # and a skipped required check does NOT block a merge.
+  ci-ok:
+    name: ci-ok
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [smoke, test, test-heavy, frontend, frontend-e2e, build-dist, lint-actions]
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Verify all required jobs succeeded
+        env:
+          SMOKE: ${{ needs.smoke.result }}
+          TEST: ${{ needs.test.result }}
+          TEST_HEAVY: ${{ needs.test-heavy.result }}
+          FRONTEND: ${{ needs.frontend.result }}
+          FRONTEND_E2E: ${{ needs.frontend-e2e.result }}
+          BUILD_DIST: ${{ needs.build-dist.result }}
+          LINT_ACTIONS: ${{ needs.lint-actions.result }}
+          EVENT: ${{ github.event_name }}
+          HAS_FULL_CI: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+        run: |
+          set -uo pipefail
+          status=0
+
+          # Always-required jobs: anything other than success (failure, cancelled, or an
+          # unexpected skip) fails the gate.
+          for entry in \
+            "smoke=$SMOKE" \
+            "test=$TEST" \
+            "frontend=$FRONTEND" \
+            "frontend-e2e=$FRONTEND_E2E" \
+            "build-dist=$BUILD_DIST" \
+            "lint-actions=$LINT_ACTIONS"
+          do
+            name="${entry%%=*}"
+            result="${entry#*=}"
+            if [ "$result" = "success" ]; then
+              printf 'ok       %-14s %s\n' "$name" "$result"
+            else
+              printf 'FAILED   %-14s %s\n' "$name" "$result"
+              echo "::error::Required job '$name' did not succeed (result: $result)"
+              status=1
+            fi
+          done
+
+          # test-heavy is conditional. It MUST succeed whenever it was supposed to run;
+          # `skipped` is only acceptable on a pull request that did not ask for it.
+          heavy_required=false
+          if [ "$EVENT" = "push" ] || [ "$HAS_FULL_CI" = "true" ]; then
+            heavy_required=true
+          fi
+
+          if [ "$TEST_HEAVY" = "success" ]; then
+            printf 'ok       %-14s %s\n' "test-heavy" "$TEST_HEAVY"
+          elif [ "$TEST_HEAVY" = "skipped" ] && [ "$heavy_required" = "false" ]; then
+            printf 'ok       %-14s %s (not required for this event; add the "full-ci" label to run it)\n' \
+              "test-heavy" "$TEST_HEAVY"
+          else
+            printf 'FAILED   %-14s %s (required=%s)\n' "test-heavy" "$TEST_HEAVY" "$heavy_required"
+            echo "::error::Job 'test-heavy' was required for this event but its result was '$TEST_HEAVY'"
+            status=1
+          fi
+
+          if [ "$status" -ne 0 ]; then
+            echo "::error::CI gate failed — see the job results above."
+          else
+            echo "All required checks passed."
+          fi
+          exit "$status"

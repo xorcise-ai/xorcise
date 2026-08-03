@@ -1,0 +1,46 @@
+{
+  "name": "xorcise-frontend",
+  "private": true,
+  "version": "0.0.0",
+  "//engines": "Node 22 (LTS) is the ONLY runtime CI tests and the only one the wheel is built with; see frontend/.nvmrc. Do not widen without adding the version to the CI matrix.",
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "build:static": "next build && rm -rf ../src/xorcise/core/frontend/_static && cp -r out ../src/xorcise/core/frontend/_static",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "playwright test --grep-invert @no-server",
+    "test:e2e:no-server": "playwright test --grep @no-server",
+    "codegen": "openapi-typescript openapi.json -o src/lib/api/schema.ts"
+  },
+  "dependencies": {
+    "next": "^15",
+    "react": "^18",
+    "react-dom": "^18",
+    "@tanstack/react-query": "^5",
+    "zustand": "^5",
+    "class-variance-authority": "^0.7",
+    "tailwind-merge": "^3",
+    "clsx": "^2",
+    "lucide-react": "^0.577.0"
+  },
+  "devDependencies": {
+    "typescript": "^5",
+    "@types/node": "^22",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "tailwindcss": "^4",
+    "@tailwindcss/postcss": "^4",
+    "vitest": "^2",
+    "@vitejs/plugin-react": "^4",
+    "@testing-library/react": "^16",
+    "@testing-library/jest-dom": "^6",
+    "jsdom": "^25",
+    "msw": "^2",
+    "openapi-typescript": "^7",
+    "@playwright/test": "^1"
+  }
+}

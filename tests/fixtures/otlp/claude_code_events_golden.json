@@ -1,0 +1,38 @@
+[
+  {
+    "id": "I3fn6ImSi/Y=:metric",
+    "kind": "metric",
+    "role": "agent",
+    "title": "claude-fable-5",
+    "body_head": "in=18129 out=460",
+    "group_id": "Y6ZjWg5v/5U=",
+    "status": null
+  },
+  {
+    "id": "Y6ZjWg5v/5U=:msg",
+    "kind": "message",
+    "role": "user",
+    "title": "user message",
+    "body_head": "create a file named hello.py containing a program that prints 'hello from claude",
+    "group_id": "Y6ZjWg5v/5U=",
+    "status": null
+  },
+  {
+    "id": "rm1kD5q7wDc=:tool",
+    "kind": "file_edit",
+    "role": "agent",
+    "title": "Write /tmp/tmp.MEd1lZOkrk/hello.py",
+    "body_head": "print(\"hello from claude code\")\n",
+    "group_id": "Y6ZjWg5v/5U=",
+    "status": "ok"
+  },
+  {
+    "id": "sAg1l3mDd3M=:metric",
+    "kind": "metric",
+    "role": "agent",
+    "title": "claude-fable-5",
+    "body_head": "in=2 out=209",
+    "group_id": "Y6ZjWg5v/5U=",
+    "status": null
+  }
+]

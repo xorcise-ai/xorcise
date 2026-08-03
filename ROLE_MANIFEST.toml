@@ -1,0 +1,60 @@
+# Single source of truth for role slicing.
+# Checked — never generated from — by tests/topology/test_parity.py:
+#   roles ↔ pyproject extras ↔ compose profiles ↔ Dockerfile targets ↔ import graph.
+# Module sets: REPO-STRUCTURE.md §8. There is no structured `ports` field here —
+# xorcise.core.config (Settings, env-overridable) is the single source of truth for
+# host/ports. The `health` strings below embed a default probe port only to
+# name the plane (illustrative, unconsumed today); a future health-probe consumer should
+# resolve the real port from config, not these literals.
+#
+# TODO(health-probe): when something actually consumes `health`, make these entries
+# plane-referenced (rest/otlp + path) and resolve the port from xorcise.core.config
+# at probe time — then delete the :4318/:8800/:8080 literals from the `health` strings below.
+
+[roles.all]
+boot = "xorcise.core.roles.boot.role_all"
+modules = [
+  "xorcise.core.eval", "xorcise.core.runner", "xorcise.core.headscale",
+  "xorcise.core.otel", "xorcise.core.catalog", "xorcise.core.missions",
+]
+extras = ["all"]
+compose_profile = "all"
+compose_services = ["app"]
+dockerfile_target = "all"
+health = ["GET /api/health", "GET :4318/healthz"]
+
+[roles.control]
+boot = "xorcise.core.roles.boot.role_control"
+modules = ["xorcise.core.eval", "xorcise.core.catalog", "xorcise.core.missions"]
+extras = ["control"]
+compose_profile = "control"
+compose_services = ["app"]
+dockerfile_target = "control"
+health = ["GET /api/health"]
+
+[roles.runner]
+boot = "xorcise.core.roles.boot.role_runner"
+modules = ["xorcise.core.runner", "xorcise.core.headscale"]
+extras = ["runner"]
+compose_profile = "runner"
+compose_services = ["runner"]
+dockerfile_target = "runner"
+health = ["GET :8800/healthz"]
+
+[roles.headscale]
+boot = "xorcise.core.roles.boot.role_headscale"
+modules = ["xorcise.core.headscale"]
+extras = ["headscale"]
+compose_profile = "headscale"
+compose_services = ["headscale"]
+dockerfile_target = "headscale"
+health = ["GET :8080/healthz"]
+
+[roles.collector]
+boot = "xorcise.core.roles.boot.role_collector"
+modules = ["xorcise.core.otel"]
+extras = ["collector"]
+compose_profile = "collector"
+compose_services = ["collector"]
+dockerfile_target = "collector"
+health = ["GET :4318/healthz"]

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="2 2 36 36" width="32" height="32" role="img" aria-label="XORCISE.AI">
+  <title>XORCISE.AI</title>
+  <!-- The XORCISE.AI mark, verbatim from the brand system (assets/favicon.svg, brand-03-logo):
+       an amber crosshair — ring plus vertical/horizontal strokes — on a transparent ground.
+       Do not add a tile, invert the colours, or swap the cross for a diagonal X. -->
+  <circle cx="20" cy="20" r="15" fill="none" stroke="#e8b84b" stroke-width="2.4" />
+  <path d="M20 8V32 M8 20H32" fill="none" stroke="#e8b84b" stroke-width="2.4" stroke-linecap="round" />
+</svg>

@@ -1,0 +1,26 @@
+# Code owners. With "Require review from Code Owners" in the branch ruleset, these paths
+# cannot merge without a maintainer's approval. See MAINTAINERS.md.
+#
+#   @guru-xorciseai      Guru Hariharaun      — author and maintainer
+#   @christo-xorciseai   Christo Joby Antony  — maintainer
+#
+# Both are on every rule so either can approve; a single owner would deadlock reviews.
+#
+# Two silent failure modes — neither reports an error at merge time:
+#   1. an owner without WRITE access to the repo is ignored;
+#   2. a handle that does not resolve is skipped, and the rule then protects nothing.
+# Check for GitHub's warning banner on this file after pushing.
+
+*                                @guru-xorciseai @christo-xorciseai
+
+# Supply-chain critical: a bad change here compromises every release, not just one feature.
+/.github/                        @guru-xorciseai @christo-xorciseai
+/.github/workflows/              @guru-xorciseai @christo-xorciseai
+/.github/workflows/release.yml   @guru-xorciseai @christo-xorciseai
+/pyproject.toml                  @guru-xorciseai @christo-xorciseai
+/hatch_build.py                  @guru-xorciseai @christo-xorciseai
+/uv.lock                         @guru-xorciseai @christo-xorciseai
+/scripts/                        @guru-xorciseai @christo-xorciseai
+/SECURITY.md                     @guru-xorciseai @christo-xorciseai
+/CODE_OF_CONDUCT.md              @guru-xorciseai @christo-xorciseai
+/LICENSE                         @guru-xorciseai @christo-xorciseai

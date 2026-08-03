@@ -1,0 +1,11 @@
+# CodeQL analysis config. Note this is not the workflow's `paths-ignore`, which only decides
+# whether the workflow runs — this is what removes code from the database.
+name: "XORCISE CodeQL config"
+
+paths-ignore:
+  # Mission bundles are deliberately vulnerable: SQL injection, weak crypto and hardcoded flags
+  # are the content, not defects. Scanning them buries real findings under intentional ones.
+  # Harmless to keep if missions/ is later removed — an exclusion for a missing path is a no-op.
+  - missions
+  # Generated Next.js bundle. The authored sources under frontend/ are analysed instead.
+  - src/xorcise/core/frontend/_static

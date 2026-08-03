@@ -1,0 +1,5 @@
+# role:all — collapsed local plane (skeletal; checked against ROLE_MANIFEST by tests/topology).
+services:
+  app:
+    build: { context: ../../.., target: all }
+    command: ["xorcise", "serve", "--role", "all"]
