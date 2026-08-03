@@ -100,6 +100,59 @@ jobs:
           uv pip install --python /tmp/release-smoke/bin/python dist/*.whl
           /tmp/release-smoke/bin/xorcise --help
 
+      # Release notes come from CHANGELOG.md, not from commit subjects.
+      #
+      # `--generate-notes` alone lists merged pull requests, which says nothing on a release
+      # whose work landed as direct commits — v0.1.0's generated notes were 173 characters and
+      # had to be pasted in by hand afterwards. The changelog is already written, already
+      # reviewed, and already ships inside the sdist; it is the honest source.
+      #
+      # Extracted HERE rather than in the draft job because that job deliberately never checks
+      # out (it consumes artifacts only), and because this job is already checked out AT THE TAG
+      # — so the notes come from the same tree that produced the wheel.
+      #
+      # Falls back to generated notes rather than failing: a forgotten changelog entry should
+      # not abort a release that has already built, verified and attested cleanly. A prerelease
+      # (v1.2.3rc1) has no section of its own by convention, so it falls back to the base
+      # version's (1.2.3) — the notes a reader wants when trying the candidate.
+      - name: Extract release notes from CHANGELOG
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"                       # v0.1.0 -> 0.1.0
+          base="${version%%[ab]*}"; base="${base%%rc*}"   # 0.1.0rc1 -> 0.1.0
+
+          extract() {  # $1 = version string to look for
+            awk -v v="$1" '
+              $0 == "## [" v "]" || index($0, "## [" v "] ") == 1 { f=1; next }
+              f && /^## \[/ { exit }
+              f { print }
+            ' CHANGELOG.md
+          }
+
+          mkdir -p notes
+          extract "$version" > notes/release-notes.md
+          if [ ! -s notes/release-notes.md ] && [ "$base" != "$version" ]; then
+            echo "No [$version] section; falling back to the base version [$base]."
+            extract "$base" > notes/release-notes.md
+          fi
+
+          if [ -s notes/release-notes.md ]; then
+            echo "Release notes taken from CHANGELOG.md ($(wc -c < notes/release-notes.md) bytes)."
+          else
+            echo "::warning::No CHANGELOG section for $version — falling back to generated notes."
+            rm -f notes/release-notes.md
+          fi
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-notes
+          path: notes/
+          retention-days: 30
+          if-no-files-found: ignore   # absent => the draft job uses --generate-notes
+
       # Proof of which repo/workflow/commit produced these files (`gh attestation verify`).
       - name: Generate build provenance attestations
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
@@ -131,6 +184,15 @@ jobs:
           name: dist
           path: dist
 
+      # Kept OUT of dist/ deliberately: `gh release create ... dist/*` uploads everything in
+      # that directory as a release asset, and the notes are the release body, not an asset.
+      - name: Download release notes
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true   # absent when CHANGELOG had no matching section
+        with:
+          name: release-notes
+          path: notes
+
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -157,11 +219,23 @@ jobs:
             echo "Tag $TAG is a prerelease."
           fi
 
+          # CHANGELOG body when the build job found one, generated notes otherwise. Both are
+          # passed together when we have a body: `--notes-file` becomes the release text and
+          # `--generate-notes` appends GitHub's contributor/full-changelog footer under it, so
+          # the hand-written section gains the compare link without losing its own words.
+          notes_flags="--generate-notes"
+          if [ -s notes/release-notes.md ]; then
+            notes_flags="--notes-file notes/release-notes.md --generate-notes"
+            echo "Release body: CHANGELOG section ($(wc -c < notes/release-notes.md) bytes) + generated footer."
+          else
+            echo "Release body: generated notes only (no CHANGELOG section for $TAG)."
+          fi
+
           gh release create "$TAG" \
             --repo "$REPO" \
             --title "$TAG" \
             --draft \
-            --generate-notes \
+            $notes_flags \
             $prerelease_flag \
             dist/*
 
