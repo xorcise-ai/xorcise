@@ -55,9 +55,15 @@ def test_file_target_raises(tmp_path: Path) -> None:
         list_directory(str(f))
 
 
+def _loopback_client() -> TestClient:
+    # The endpoint answers loopback clients only; TestClient's default placeholder
+    # ("testclient") must NOT pass the guard, so present a real loopback peer.
+    return TestClient(build_rest_app(), client=("127.0.0.1", 51000))
+
+
 def test_rest_list_ok(tmp_path: Path) -> None:
     _tree(tmp_path)
-    r = TestClient(build_rest_app()).get("/api/fs/list", params={"path": str(tmp_path)})
+    r = _loopback_client().get("/api/fs/list", params={"path": str(tmp_path)})
     assert r.status_code == 200
     body = r.json()
     assert body["path"] == str(tmp_path.resolve())
@@ -65,5 +71,16 @@ def test_rest_list_ok(tmp_path: Path) -> None:
 
 
 def test_rest_bad_path_is_400(tmp_path: Path) -> None:
-    r = TestClient(build_rest_app()).get("/api/fs/list", params={"path": str(tmp_path / "nope")})
+    r = _loopback_client().get("/api/fs/list", params={"path": str(tmp_path / "nope")})
     assert r.status_code == 400
+
+
+def test_rest_non_loopback_client_is_403(tmp_path: Path) -> None:
+    # Under an explicit 0.0.0.0 bind (or via the docker bridge interface) the host's
+    # directory tree must stay invisible: only the local operator on loopback may browse.
+    _tree(tmp_path)
+    for peer in ("192.168.1.50", "172.17.0.2", "testclient"):
+        r = TestClient(build_rest_app(), client=(peer, 40000)).get(
+            "/api/fs/list", params={"path": str(tmp_path)}
+        )
+        assert r.status_code == 403, peer
