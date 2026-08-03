@@ -12,8 +12,32 @@ Report privately using GitHub's **Private Vulnerability Reporting**:
 This creates a private advisory that only you and the maintainers can see, so the problem can
 be fixed before it becomes public.
 
-If you cannot use GitHub's advisory form, email **guru@xorcise.ai** with the subject line
+If you cannot use GitHub's advisory form, email **security@xorcise.ai** with the subject line
 `XORCISE security report`.
+
+### Encrypted disclosure
+
+If you would rather not send it in the clear, encrypt to our disclosure key:
+
+| | |
+| --- | --- |
+| Key | [`.github/security/xorcise-security.asc`](https://raw.githubusercontent.com/xorcise-ai/xorcise/main/.github/security/xorcise-security.asc) |
+| Fingerprint | `7669 9A0C 221D D2F8 4358  E871 FC6A E63E B8E3 EB95` |
+| User ID | `XORCISE.AI Security <security@xorcise.ai>` |
+| Expires | 2029-07-30 |
+
+```bash
+curl -sL https://raw.githubusercontent.com/xorcise-ai/xorcise/main/.github/security/xorcise-security.asc | gpg --import
+gpg --fingerprint security@xorcise.ai   # check it against the value above
+```
+
+Verify the fingerprint before you trust the key. It is published here and on
+<https://xorcise.ai/security>; checking both tells you that you have the right key, not that
+nobody replaced it.
+
+We ask for coordinated disclosure: give us a chance to ship a fix before you publish, and we
+will credit you unless you would rather we did not. We do not run a bug bounty, and we will
+not threaten anyone who reports a finding in good faith.
 
 ### What to include
 
@@ -31,16 +55,11 @@ The more of this you can provide, the faster a fix lands:
 
 ### What to expect
 
-| Stage | Target |
-| --- | --- |
-| Acknowledgement that your report was received | within **3 business days** |
-| Initial assessment (in scope? severity? reproducible?) | within **10 business days** |
-| Progress updates while a fix is being developed | at least every **2 weeks** |
-| Fix released and advisory published | varies with severity and complexity |
-
-XORCISE is maintained by a small team. If you have not heard back within the acknowledgement
-window, please send a follow-up — it means something went wrong with the notification, not
-that your report was ignored.
+XORCISE is maintained by a small team, and we do not yet publish a response-time commitment
+we could be held to. We will acknowledge your report, tell you whether it is in scope, and
+keep you posted while a fix is developed. If you have not heard back and think you should
+have, send a follow-up — it means something went wrong with the notification, not that your
+report was ignored.
 
 We will credit you in the published advisory unless you ask us not to. Please give us a
 reasonable opportunity to release a fix before disclosing publicly.
@@ -112,6 +131,32 @@ XORCISE executes untrusted code by design. Run it on infrastructure you are will
 a dedicated VM or an isolated cloud environment, never a workstation holding credentials or
 data you care about, and never on a network segment you would not want a compromised agent to
 reach.
+
+Stated plainly, because you should decide with the facts rather than the reassurance:
+
+- **The mission library is vulnerable on purpose.** It deliberately ships software with known,
+  exploitable vulnerabilities — including a host running Apache 2.4.49 carrying
+  CVE-2021-41773, and others like it. That is the point; an agent needs something real to find.
+- **Mission images are not signed and carry no SBOM.** They are not pinned by digest in the
+  catalogue either. Verify what you run.
+- **A default local install binds an unauthenticated REST API and console (`:3001`) and OTLP
+  ingest (`:4318`) to loopback** — plus, on Linux, the Docker bridge gateway, so the agent
+  container can reach them. Any local process, and any container on that bridge, can reach
+  them too. The bind widens to the IPv4 wildcard only if you set `XORCISE_HOST=0.0.0.0`, or
+  on Linux when the Docker bridge gateway cannot be determined at boot.
+- **No third-party penetration test has been published**, and the isolation boundary has not
+  been audited outside the company.
+
+See <https://xorcise.ai/security> for the full port table and the current list of gaps.
+
+## Acceptable use
+
+XORCISE is offensive-security tooling. **Only point it at systems you own, or that you have
+specific written authorisation to test.** See [ACCEPTABLE_USE.md](ACCEPTABLE_USE.md) for what
+that means in practice, including export-control and sanctions obligations.
+
+That policy is not an additional licence condition and does not narrow the rights Apache-2.0
+grants you.
 
 ## Verifying what you installed
 

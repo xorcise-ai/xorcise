@@ -95,6 +95,9 @@ point: they exist so an agent has something real to find.
 > Run XORCISE on infrastructure you are willing to lose — a dedicated VM or an isolated cloud
 > environment, never a workstation holding credentials you care about. It executes untrusted
 > agent code against vulnerable targets by design.
+>
+> **Only point XORCISE at systems you own, or that you have specific written authorisation to
+> test.** See [Acceptable use](ACCEPTABLE_USE.md).
 
 ## Open source
 
@@ -114,6 +117,7 @@ published separately as they are readied.
 | [Documentation](https://docs.xorcise.ai) | first run, missions, grading, traces, the full CLI and API reference |
 | [Contributing](CONTRIBUTING.md) | dev setup, the test lanes, the PR process, versioning |
 | [Security](SECURITY.md) | what's in scope, and how to report privately |
+| [Acceptable use](ACCEPTABLE_USE.md) | what to point XORCISE at, export control, sanctions |
 | [Maintainers](MAINTAINERS.md) · [Code of Conduct](CODE_OF_CONDUCT.md) | who to ask, and how we work |
 
 Found a vulnerability? **Do not open a public issue** — [report it privately](SECURITY.md).
