@@ -3,8 +3,10 @@
 </p>
 
 <p align="center">
+  <a href="https://pypi.org/project/xorcise/"><img alt="PyPI" src="https://img.shields.io/pypi/v/xorcise?style=flat-square&labelColor=0f0c07&color=e8b84b"></a>
   <img alt="Python 3.12+" src="https://img.shields.io/badge/python-3.12%2B-e8b84b?style=flat-square&labelColor=0f0c07">
   <img alt="Tested on Ubuntu" src="https://img.shields.io/badge/ubuntu-tested-e8b84b?style=flat-square&labelColor=0f0c07&logo=ubuntu&logoColor=e8b84b">
+  <a href="https://github.com/xorcise-ai/xorcise/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/xorcise-ai/xorcise/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <a href="LICENSE"><img alt="License Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-e8b84b?style=flat-square&labelColor=0f0c07"></a>
 </p>
 
@@ -54,8 +56,7 @@ xorcise run status <run_id>               # score, breakdown, evidence
 `xorcise up --stub` is the self-contained demo. `xorcise --help` has the rest, and
 [docs.xorcise.ai](https://docs.xorcise.ai) walks through a first run end to end.
 
-> `0.1.0` is not on PyPI yet — until it is, install from source: see
-> [Contributing → Setup](CONTRIBUTING.md#setup).
+Prefer to work from source? See [Contributing → Setup](CONTRIBUTING.md#setup).
 
 ## What comes out
 
