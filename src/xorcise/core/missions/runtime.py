@@ -102,9 +102,22 @@ class InstalledMission:
         )
 
 
+def resolve_install_dir(slug: str, install_root: Path) -> Path | None:
+    """Resolve *slug* to its directory under *install_root*, or None unless it lands on
+    a direct child. Slugs arrive from REST path params, request bodies and bundle/catalog
+    manifests; every install-store path is built through this choke point so a hostile
+    slug (separators, '..', an absolute path) can never steer a read, write or rmtree
+    outside the install root."""
+    base = install_root.resolve()
+    root = (install_root / slug).resolve()
+    if not root.is_relative_to(base) or root.parent != base:
+        return None
+    return root
+
+
 def get_installed(slug: str, install_root: Path) -> InstalledMission | None:
-    root = install_root / slug
-    if not (root / INSTALLED_FILE).is_file():
+    root = resolve_install_dir(slug, install_root)
+    if root is None or not (root / INSTALLED_FILE).is_file():
         return None
     try:
         return InstalledMission.from_root(root)
@@ -135,10 +148,11 @@ def delete_installed(slug: str, install_root: Path) -> bool:
     Uninstalls the local copy — the same for a locally-ingested "your_own" mission and a pulled
     "library" one (a pulled mission has no remote state to reach beyond its local install). The
     fused image is intentionally left in the local store; pruning it is a separate concern. Guarded
-    on the INSTALLED_FILE marker so it never removes an unrelated directory.
+    on the INSTALLED_FILE marker so it never removes an unrelated directory, and on
+    resolve_install_dir so a path-shaped slug can never aim the rmtree outside the root.
     """
-    root = install_root / slug
-    if not (root / INSTALLED_FILE).is_file():
+    root = resolve_install_dir(slug, install_root)
+    if root is None or not (root / INSTALLED_FILE).is_file():
         return False
     shutil.rmtree(root)
     return True
