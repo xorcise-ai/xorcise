@@ -113,7 +113,11 @@ including a host running Apache 2.4.49 carrying CVE-2021-41773 and others like i
 intentional and it is the point.
 
 6.2 Mission images are not signed and carry no software bill of materials. A default local
-install binds an unauthenticated REST API and console on the IPv4 wildcard.
+install binds an unauthenticated REST API, console and OTLP ingest to loopback, plus the
+Docker bridge gateway on native Linux, so any local process — and any container on that
+bridge — can reach them. The bind widens to the IPv4 wildcard only if you set
+`XORCISE_HOST=0.0.0.0` explicitly, or on Linux when the bridge gateway cannot be determined
+at boot.
 
 6.3 Run XORCISE on a host you are willing to treat as untrusted, on a network segment with no
 route into anything you care about. Do not run it on a workstation holding credentials, on a

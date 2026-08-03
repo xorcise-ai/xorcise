@@ -139,9 +139,11 @@ Stated plainly, because you should decide with the facts rather than the reassur
   CVE-2021-41773, and others like it. That is the point; an agent needs something real to find.
 - **Mission images are not signed and carry no SBOM.** They are not pinned by digest in the
   catalogue either. Verify what you run.
-- **A default local install binds an unauthenticated REST API and console on the IPv4
-  wildcard** (`:3001`), because the agent container has to reach it. Anyone who can route to
-  your machine can reach it too. The OTLP ingest on `:4318` binds the same way.
+- **A default local install binds an unauthenticated REST API and console (`:3001`) and OTLP
+  ingest (`:4318`) to loopback** — plus, on Linux, the Docker bridge gateway, so the agent
+  container can reach them. Any local process, and any container on that bridge, can reach
+  them too. The bind widens to the IPv4 wildcard only if you set `XORCISE_HOST=0.0.0.0`, or
+  on Linux when the Docker bridge gateway cannot be determined at boot.
 - **No third-party penetration test has been published**, and the isolation boundary has not
   been audited outside the company.
 
