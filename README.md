@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/readme-banner.svg" width="820" alt="XORCISE.AI — Trust Evidence, not Claims.">
+  <img src="https://raw.githubusercontent.com/xorcise-ai/xorcise/main/assets/readme-banner.svg" width="820" alt="XORCISE.AI — Trust Evidence, not Claims.">
 </p>
 
 <p align="center">
