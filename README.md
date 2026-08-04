@@ -126,7 +126,12 @@ mission are the content.
 
 ## License
 
-[Apache-2.0](LICENSE) © The XORCISE Authors
+[Apache-2.0](LICENSE) © 2026 Fifth Domain Pty Ltd (ACN 606 251 585)
+
+XORCISE.AI is a business name of Fifth Domain Pty Ltd. Contributions are accepted under the
+[Contributor License Agreement](CLA.md). "XORCISE" and "XORCISE.AI", the associated logos and
+wordmarks, and the `xorcise.ai` domain are trademarks — see the
+[trademark policy](https://xorcise.ai/policies/trademark/) and [`NOTICE`](NOTICE).
 
 ---
 
