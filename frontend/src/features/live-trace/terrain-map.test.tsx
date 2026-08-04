@@ -1056,4 +1056,62 @@ describe("TerrainMap", () => {
     });
   });
 
+  describe("fullscreen toggle (expandable)", () => {
+    const graph = terrain({
+      groups: [{ id: "g", label: "Group", description: null, kind: "segment", order: 0, hidden: false, discovered: true }],
+      nodes: [
+        { id: "web", label: "web", group: "g", type: "service", objective: false, description: null,
+          discovery_condition: null, completion_condition: null, state: "defined" },
+      ] as ResolvedTerrainV2["nodes"],
+    });
+
+    test("no fullscreen control unless expandable is passed", async () => {
+      server.use(http.get("*/runs/r1/terrain2", () => HttpResponse.json(graph)));
+      renderWithProviders(<TerrainMap runId="r1" />);
+      await screen.findByText("web");
+      expect(screen.queryByRole("button", { name: "fullscreen" })).toBeNull();
+    });
+
+    test("expands into a modal overlay, and the toggle collapses it again", async () => {
+      server.use(http.get("*/runs/r1/terrain2", () => HttpResponse.json(graph)));
+      renderWithProviders(<TerrainMap runId="r1" expandable />);
+      await screen.findByText("web");
+      expect(screen.queryByRole("dialog")).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: "fullscreen" }));
+      const overlay = screen.getByRole("dialog");
+      expect(overlay).toBeInTheDocument();
+      expect(overlay.className).toContain("fixed");
+      // SAME instance re-homed, not a second map: still exactly one SVG.
+      expect(screen.getAllByTestId("terrain-svg")).toHaveLength(1);
+
+      fireEvent.click(screen.getByRole("button", { name: "exit fullscreen" }));
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+
+    test("Escape closes the expanded overlay", async () => {
+      server.use(http.get("*/runs/r1/terrain2", () => HttpResponse.json(graph)));
+      renderWithProviders(<TerrainMap runId="r1" expandable />);
+      await screen.findByText("web");
+      fireEvent.click(screen.getByRole("button", { name: "fullscreen" }));
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(screen.queryByRole("dialog")).toBeNull();
+      // the map itself is still there, back in its pane
+      expect(screen.getByTestId("terrain-svg")).toBeInTheDocument();
+    });
+
+    test("clicking the backdrop closes; clicking inside the card does not", async () => {
+      server.use(http.get("*/runs/r1/terrain2", () => HttpResponse.json(graph)));
+      renderWithProviders(<TerrainMap runId="r1" expandable />);
+      await screen.findByText("web");
+      fireEvent.click(screen.getByRole("button", { name: "fullscreen" }));
+      const overlay = screen.getByRole("dialog");
+      fireEvent.click(screen.getByTestId("terrain-viewport")); // inside the card
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+      fireEvent.click(overlay); // the backdrop itself
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+  });
+
 });

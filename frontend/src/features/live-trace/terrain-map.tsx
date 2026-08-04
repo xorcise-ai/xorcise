@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { Minus, Plus, Radio } from "lucide-react";
+import { Maximize2, Minimize2, Minus, Plus, Radio } from "lucide-react";
 import { foldIndexForEvent, foldTerrain, probingPathEdgeIds, pulseIdsForIndex, type FoldedNode } from "./terrain-fold";
 import { layoutTerrainV2, type LaidOutEdge, type LaidOutGroup, type LaidOutNode } from "./terrain-layout";
 import { edgeColor, groupStyle, nodeColor, otelActive, T } from "./terrain-colors";
@@ -486,6 +486,7 @@ export function TerrainMap({
   active = false,
   selectedEventId = null,
   attributionOff = false,
+  expandable = false,
   onHoverEvents,
   onReturnToLive,
 }: {
@@ -494,6 +495,7 @@ export function TerrainMap({
   selectedEventId?: string | null;
   onReturnToLive?: () => void;
   attributionOff?: boolean;
+  expandable?: boolean;
   onHoverEvents?: (eventIds: string[]) => void;
 }) {
   const { terrain, isError } = useRunTerrain(runId, active);
@@ -505,6 +507,7 @@ export function TerrainMap({
       active={active}
       selectedEventId={selectedEventId}
       attributionOff={attributionOff}
+      expandable={expandable}
       onHoverEvents={onHoverEvents}
       onReturnToLive={onReturnToLive}
     />
@@ -518,6 +521,7 @@ export function TerrainMapView({
   active = false,
   selectedEventId = null,
   attributionOff = false,
+  expandable = false,
   caption,
   onHoverEvents,
   onReturnToLive,
@@ -539,6 +543,9 @@ export function TerrainMapView({
    *  configured — RunLive derives this from `useConfig().terrain.configured` so TerrainMap
    *  stays presentational/query-free. */
   attributionOff?: boolean;
+  /** Offer the fullscreen toggle (bottom-right cluster): expanded, the card re-homes into a
+   *  fixed full-viewport overlay — Escape, the backdrop, or the toggle collapse it. */
+  expandable?: boolean;
   /** Footer caption override — the default speaks run-language (amber ring / trace events);
    *  the mission preview passes its own. */
   caption?: string;
@@ -622,6 +629,18 @@ export function TerrainMapView({
 
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  // Fullscreen toggle (expandable only): the SAME component instance re-homes into a fixed
+  // overlay — no second map, no remount — so pan/zoom and the shared terrain query carry
+  // over, and the ResizeObserver's auto-fit refits the graph to the larger viewport.
+  const [expanded, setExpanded] = useState(false);
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setExpanded(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [expanded]);
   // Hover state for the node popover (description + collapsed routes, Change 2). An edge's
   // route-used note (Change 3) is rendered persistently at the edge midpoint instead — no hover
   // state needed for it.
@@ -798,7 +817,20 @@ export function TerrainMapView({
   const hasMissionGroup = (terrain.groups ?? []).some((g) => g.kind === "segment");
 
   return (
-    <div className="flex h-full flex-col rounded-md border border-border bg-card">
+    // Collapsed, the wrapper is layout-transparent (`contents`) so the card sits in the page
+    // exactly as before; expanded, it becomes the fixed backdrop the card fills. One element
+    // whose class flips — not two subtrees — so React never remounts the map mid-toggle.
+    <div
+      className={expanded ? "fixed inset-0 z-50 flex bg-black/60 p-3 sm:p-6" : "contents"}
+      role={expanded ? "dialog" : undefined}
+      aria-modal={expanded || undefined}
+      aria-label={expanded ? "Terrain map — fullscreen" : undefined}
+      onClick={expanded ? () => setExpanded(false) : undefined}
+    >
+      <div
+        className="flex h-full w-full flex-col rounded-md border border-border bg-card"
+        onClick={expanded ? (e) => e.stopPropagation() : undefined}
+      >
       {terrain.summary && (
         // The authored summary, in full. It used to be ONE `truncate`d line with the rest
         // revealed on hover, which cut every shipped mission's summary mid-sentence — they
@@ -960,6 +992,21 @@ export function TerrainMapView({
           className="absolute bottom-2 right-2 flex items-center gap-1 text-text-secondary"
           onPointerDown={(e) => e.stopPropagation()}
         >
+          {expandable && (
+            <button
+              type="button"
+              aria-label={expanded ? "exit fullscreen" : "fullscreen"}
+              title={expanded ? "Exit fullscreen (Esc)" : "Fullscreen"}
+              onClick={() => setExpanded((v) => !v)}
+              className="flex items-center self-stretch rounded border border-border bg-card px-2 hover:text-foreground"
+            >
+              {expanded ? (
+                <Minimize2 className="size-3" aria-hidden />
+              ) : (
+                <Maximize2 className="size-3" aria-hidden />
+              )}
+            </button>
+          )}
           <button
             type="button"
             aria-label="zoom out"
@@ -1001,6 +1048,7 @@ export function TerrainMapView({
           target attribution off — set a model in Settings
         </p>
       )}
+      </div>
     </div>
   );
 }
