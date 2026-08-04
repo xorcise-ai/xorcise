@@ -82,9 +82,13 @@ run by hand. Delete any section that genuinely does not apply, and say why.
 
 ---
 
+- [ ] I have signed the [Contributor License Agreement](../CLA.md), or will when the CLA
+      assistant comments below. If I am contributing in the course of employment, my employer
+      has signed the Corporate CLA.
+
 By opening this pull request you agree that your contribution is licensed under the
-[Apache License 2.0](../LICENSE), and that you have read the
-[Code of Conduct](../CODE_OF_CONDUCT.md).
+[Apache License 2.0](../LICENSE) and on the terms of the [CLA](../CLA.md), and that you have read
+the [Code of Conduct](../CODE_OF_CONDUCT.md).
 
 **Found a security vulnerability?** Do not open a pull request or a public issue — follow
 [SECURITY.md](../SECURITY.md) instead.

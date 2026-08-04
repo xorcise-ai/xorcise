@@ -229,6 +229,19 @@ generated release notes your change lands in:
 
 ---
 
-By contributing, you agree that your contributions will be licensed under the
-[Apache License 2.0](LICENSE), and that you have read the
+## Contributor License Agreement
+
+XORCISE is published by **Fifth Domain Pty Ltd (ACN 606 251 585)**, which owns the project and
+holds the rights needed to license it as a whole.
+
+Before your first pull request can be merged, you need to sign the
+[Contributor License Agreement](CLA.md). The CLA assistant will comment on your pull request with
+a link; signing takes a minute and covers all your future contributions. You keep the copyright in
+your own work — the CLA grants Fifth Domain the licence it needs to distribute and, if it ever
+chooses to, relicense the project.
+
+If you are contributing in the course of employment, or your employer otherwise holds rights in
+your work, your employer needs to sign the Corporate CLA instead. Email <legal@xorcise.ai>.
+
+By contributing, you also confirm that you have read the
 [Code of Conduct](CODE_OF_CONDUCT.md).
