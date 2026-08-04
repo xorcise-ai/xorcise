@@ -53,6 +53,19 @@ def _to_int(v: Any) -> int:
         return 0
 
 
+def _status_code(v: Any) -> int:
+    """OTLP status enum accepts both protobuf-JSON names and their integer values."""
+    if isinstance(v, str):
+        named = {
+            "STATUS_CODE_UNSET": 0,
+            "STATUS_CODE_OK": 1,
+            "STATUS_CODE_ERROR": 2,
+        }
+        if v in named:
+            return named[v]
+    return _to_int(v)
+
+
 def _scalar(value: Any) -> str | None:
     """An OTLP attribute value -> scalar string; complex values preserved as JSON; else None."""
     if not isinstance(value, dict):
@@ -193,7 +206,7 @@ def flatten(payload: Any, *, raw_seq: int = 0) -> list[FlatSpan]:
                         name=str(sp.get("name", "")),
                         start_ns=_to_int(sp.get("startTimeUnixNano")),
                         end_ns=_to_int(sp.get("endTimeUnixNano")),
-                        status_code=_to_int(status.get("code")),
+                        status_code=_status_code(status.get("code")),
                         attrs=_flatten_attrs(sp.get("attributes")),
                         scope=scope,
                         resource=resource,

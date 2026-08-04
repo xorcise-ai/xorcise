@@ -46,10 +46,10 @@ function capabilityProfile(
 const CAPABILITY_PROFILES: HarnessCapabilityProfile[] = [
   capabilityProfile(
     "claude-code",
-    "7",
+    "8",
     [
       "message", "terminal_command", "terminal_output", "file_edit", "file_read",
-      "tool_call", "tool_result", "status", "metric", "unknown",
+      "tool_call", "tool_result", "error", "status", "metric", "unknown",
     ],
     [],
     {
@@ -59,7 +59,7 @@ const CAPABILITY_PROFILES: HarnessCapabilityProfile[] = [
   ),
   capabilityProfile(
     "codex",
-    "1",
+    "2",
     [
       "terminal_command", "terminal_output", "file_edit", "tool_call", "tool_result",
       "mcp_call", "mcp_result", "status", "metric", "unknown",
@@ -69,6 +69,7 @@ const CAPABILITY_PROFILES: HarnessCapabilityProfile[] = [
       message:
         "User prompts only — Codex CLI does not export agent-authored chat messages.",
       thinking: "Codex CLI does not export thinking traces.",
+      error: "Model refusal details are not exported.",
     },
   ),
   capabilityProfile(
@@ -81,10 +82,10 @@ const CAPABILITY_PROFILES: HarnessCapabilityProfile[] = [
   ),
   capabilityProfile(
     "openhands",
-    "1",
+    "2",
     [
       "message", "thinking", "terminal_command", "terminal_output", "file_edit",
-      "file_read", "tool_call", "metric", "unknown",
+      "file_read", "tool_call", "error", "metric", "unknown",
     ],
     [],
     { tool_result: "OpenHands reports tool calls without separate result events." },

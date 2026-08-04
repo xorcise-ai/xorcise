@@ -176,3 +176,5 @@ def test_claude_code_declares_no_thinking_and_codex_partial_messages() -> None:
     cx = CodexAdapter().capabilities
     assert cx.kinds["message"].value == "partial"
     assert "message" in cx.notes
+    assert cx.kinds["error"].value == "unsupported"
+    assert cx.notes["error"] == "Model refusal details are not exported."

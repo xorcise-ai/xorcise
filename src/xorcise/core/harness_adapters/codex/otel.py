@@ -75,7 +75,8 @@ _AUTO_DECISIONS = {"approved", "approve", "auto", "allow", "allowed"}
 
 class CodexAdapter(AgentTraceAdapter):
     name = "codex"
-    version = "1"
+    # v2: disclose that the Codex OTel export does not expose model refusal details.
+    version = "2"
 
     @property
     def capabilities(self) -> HarnessCapabilityProfile:
@@ -103,6 +104,7 @@ class CodexAdapter(AgentTraceAdapter):
                 "message": "User prompts only — Codex CLI does not export "
                 "agent-authored chat messages.",
                 "thinking": "Codex CLI does not export thinking traces.",
+                "error": "Model refusal details are not exported.",
             },
         )
 

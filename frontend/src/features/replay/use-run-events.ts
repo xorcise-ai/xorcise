@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api/client";
 import type { AgentEvent, RunEventsView } from "@/lib/api/types";
+import { sortAgentEvents } from "./replay-order";
 
 export interface RunEventsMeta {
   sourceAgent: string;
@@ -79,7 +80,9 @@ export function useRunEvents(runId: string, active: boolean) {
       setLastEventAt(Date.now());
     }
     fresh.forEach((e) => seenRef.current.add(e.id));
-    setEvents((prev) => [...prev, ...fresh]);
+    // A later export can contain an older producer event. Rebuild the agent chronology after each
+    // page instead of treating page arrival as occurrence order.
+    setEvents((prev) => sortAgentEvents([...prev, ...fresh]));
   }, [query.data]);
 
   return {

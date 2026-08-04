@@ -424,6 +424,58 @@ def test_normalize_logs_maps_assistant_response_to_agent_message():
     assert ev.data.get("model") == "claude-opus-4-8"
 
 
+def test_normalize_logs_maps_api_refusal_to_clean_error():
+    rec = FlatLogRecord(
+        event_name="claude_code.api_refusal",
+        time_ns=1_700_000_000_000_000_000,
+        attrs={
+            "model": "claude-opus-4-8",
+            "category": "cyber",
+            "request_id": "req_refused",
+            "attempt": "1",
+            "has_explanation": "True",
+            "user.email": "operator@example.com",
+        },
+        body="claude_code.api_refusal",
+        raw_seq=3,
+    )
+
+    (event,) = ClaudeCodeAdapter().normalize_logs([rec], _CTX)
+
+    assert event.kind is AgentEventKind.error
+    assert event.subkind == "model_refusal"
+    assert event.title == "model refusal"
+    assert event.body == "claude-opus-4-8 refused the request (category: cyber)."
+    assert event.status == "error"
+    assert event.severity == "error"
+    assert event.data == {
+        "model": "claude-opus-4-8",
+        "category": "cyber",
+        "request_id": "req_refused",
+        "attempt": "1",
+        "has_explanation": "True",
+    }
+    assert event.raw_ref.signal == "log" and event.raw_ref.raw_seq == 3
+
+
+def test_normalize_logs_prefers_exported_refusal_explanation():
+    rec = FlatLogRecord(
+        event_name="claude_code.api_refusal",
+        time_ns=0,
+        attrs={
+            "model": "claude-opus",
+            "category": "policy",
+            "explanation": "I cannot assist with that request.",
+        },
+        body="claude_code.api_refusal",
+        raw_seq=0,
+    )
+
+    (event,) = ClaudeCodeAdapter().normalize_logs([rec], _CTX)
+
+    assert event.body == "I cannot assist with that request."
+
+
 def test_normalize_logs_skips_redacted_and_non_response_events():
     from xorcise.core.otel.flatten import FlatLogRecord
 

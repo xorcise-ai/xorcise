@@ -17,6 +17,8 @@ import. Maps OpenHands-SDK / Laminar (lmnr.tracer) spans to AgentEvents:
                                 high-risk action OpenHands runs without a TerminalAction span) is
                                 SURFACED, so no real agent action is invisible. The
                                 assistant text + usage metric are always kept (as Claude Code does).
+                                Failed LLM spans also surface their OTel exception as one clean
+                                error event; policy blocks are labelled as model refusals.
   <anything else>            -> unknown (never crash)
 
 Pure + total: malformed lmnr blobs / missing keys yield fewer events, never an exception.
@@ -72,7 +74,9 @@ def _dict(v: Any) -> dict[str, Any]:
 
 class OpenHandsAdapter(AgentTraceAdapter):
     name = "openhands"
-    version = "1"
+    # v2: surface failed LLM exceptions, including provider policy refusals, instead of leaving
+    #     only an empty-body model metric in the replay.
+    version = "2"
     _genai = GenAiSemconvExtractor()
     # Span names that ARE the canonical execution of a tool call (they carry `action.command`).
     _ACTION_SPANS = ("TerminalAction", "TaskTrackerAction", "FileEditorAction")
@@ -90,6 +94,7 @@ class OpenHandsAdapter(AgentTraceAdapter):
                 AgentEventKind.file_edit,
                 AgentEventKind.file_read,
                 AgentEventKind.tool_call,
+                AgentEventKind.error,
                 AgentEventKind.metric,
                 AgentEventKind.unknown,
             ),
@@ -141,6 +146,93 @@ class OpenHandsAdapter(AgentTraceAdapter):
             cur = anc.parent_span_id
         return None
 
+    @staticmethod
+    def _llm_error_details(span: FlatSpan) -> tuple[str, str, dict[str, str]] | None:
+        """Extract one display-safe failure from repeated Laminar exception events."""
+        if span.status_code != 2:
+            return None
+        raw = ""
+        exception_type = ""
+        for event in span.events:
+            if event.name != "exception":
+                continue
+            raw = event.attrs.get("exception.message") or raw
+            exception_type = event.attrs.get("exception.type") or exception_type
+        if not raw:
+            return None
+
+        # LiteLLM prefixes the provider JSON with its exception class. Prefer the provider's
+        # concise error message over exposing that wrapper (or its stack trace) in the replay.
+        message = raw.strip()
+        error_code = ""
+        error_type = ""
+        brace = message.find("{")
+        if brace >= 0:
+            parsed = _loads(message[brace:])
+            error = _dict(_dict(parsed).get("error"))
+            provider_message = error.get("message")
+            if isinstance(provider_message, str) and provider_message.strip():
+                message = provider_message.strip()
+            error_code = str(error.get("code") or "")
+            error_type = str(error.get("type") or "")
+
+        refusal_markers = (
+            "cyber_policy",
+            "content_filter",
+            "content_policy",
+            "policy_violation",
+            "moderation",
+            "safety",
+        )
+        refusal_text = f"{error_code} {error_type} {message}".lower()
+        is_refusal = any(marker in refusal_text for marker in refusal_markers) or (
+            "content was flagged" in refusal_text
+        )
+        data = {"body": message}
+        if error_code:
+            data["error.code"] = error_code
+        if error_type:
+            data["error.type"] = error_type
+        if exception_type:
+            data["exception.type"] = exception_type
+        return (
+            "model refusal" if is_refusal else "model request failed",
+            "model_refusal" if is_refusal else "model_error",
+            data,
+        )
+
+    def _llm_error_event(
+        self, span: FlatSpan, ctx: AdapterContext, group_id: str | None
+    ) -> AgentEvent | None:
+        details = self._llm_error_details(span)
+        if details is None:
+            return None
+        title, subkind, details_data = details
+        body = details_data.pop("body")
+        base = span.span_id or f"{span.raw_seq}:{span.name}:{span.start_ns}"
+        return AgentEvent(
+            run_id=ctx.run_id,
+            id=f"{base}:error",
+            ts=self._ts(span, ctx),
+            source_agent=ctx.source_agent,
+            kind=AgentEventKind.error,
+            subkind=subkind,
+            role="agent",
+            title=title,
+            body=body,
+            data=details_data,
+            group_id=group_id,
+            parent_id=span.parent_span_id or None,
+            status="error",
+            severity="error",
+            raw_ref=RawTraceRef(
+                run_id=ctx.run_id,
+                raw_seq=span.raw_seq,
+                span_id=span.span_id,
+                trace_id=span.trace_id or None,
+            ),
+        )
+
     def _ts(self, span: FlatSpan, ctx: AdapterContext) -> datetime:
         if span.start_ns > 0:
             try:
@@ -171,6 +263,9 @@ class OpenHandsAdapter(AgentTraceAdapter):
                 if is_tc and not self._is_orphan_tool_call(e, actioned):
                     continue  # duplicates a dedicated action span → the action layer is canonical
                 kept.append(e.model_copy(update={"group_id": gid or e.group_id}))
+            failure = self._llm_error_event(span, ctx, gid)
+            if failure is not None:
+                kept.append(failure)
             return kept
 
         # agent.step is a structural group boundary — no event.

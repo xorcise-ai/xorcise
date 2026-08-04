@@ -15,6 +15,7 @@ Rides AgentTraceAdapter; self-registers at import; the core framework never impo
                                      (v4); a separate result event only for an orphan execution
   claude_code.tool.blocked_on_user-> status, but ONLY for a meaningful decision (reject/approve/…);
                                      a decision=unknown gate is auto-handled noise and is dropped
+  claude_code.api_refusal (LOG)   -> error/model_refusal, with model + policy category metadata
   <anything else claude_code.*>   -> unknown (never crash)
 
 DISPATCH ORDER MATTERS: claude_code.tool / tool.execution carry ``gen_ai.tool.call.id`` (a
@@ -26,9 +27,8 @@ CONTENT NOTE: tool OUTPUT — file content for Write/Edit/Read (``content``) and
 Bash (``output``, with the command in ``bash_command``) — rides the ``tool.output`` span EVENT
 (surfaced by flatten()), and this adapter maps it. What is STILL not
 in the spans is the assistant's response FREE-TEXT: ``claude_code.llm_request`` carries only
-tokens/model/stop_reason (no message body), so assistant prose needs OTLP *log records*
-(``OTEL_LOG_RAW_API_BODIES`` + a log-ingestion path) — a documented follow-up. Pure + total:
-malformed/missing keys -> fewer events, never an exception.
+tokens/model/stop_reason (no message body), so assistant prose and explicit refusal signals come
+from OTLP *log records*. Pure + total: malformed/missing keys -> fewer events, never an exception.
 """
 
 from __future__ import annotations
@@ -56,11 +56,12 @@ _TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_crea
 
 class ClaudeCodeAdapter(AgentTraceAdapter):
     name = "claude-code"
+    # v8: surface the explicit claude_code.api_refusal log as a model_refusal error.
     # v7: map the user_prompt LOG → user message (headless runs drop the interaction
     #   span that carried it), deduped against the span copy by the merge.
     # v6: _group_id falls back to the topmost ancestor when the interaction root was
     #   never exported (headless), so tool spans still group into turns instead of group_id=None.
-    version = "7"
+    version = "8"
     _genai = GenAiSemconvExtractor()
 
     @property
@@ -76,6 +77,7 @@ class ClaudeCodeAdapter(AgentTraceAdapter):
                 AgentEventKind.file_read,
                 AgentEventKind.tool_call,
                 AgentEventKind.tool_result,
+                AgentEventKind.error,
                 AgentEventKind.status,
                 AgentEventKind.metric,
                 AgentEventKind.unknown,
@@ -116,13 +118,62 @@ class ClaudeCodeAdapter(AgentTraceAdapter):
 
     def normalize_logs(self, logs: list[FlatLogRecord], ctx: AdapterContext) -> list[AgentEvent]:
         """Map Claude Code's OTLP LOG events (scope com.anthropic.claude_code.events) to
-        AgentEvents: the assistant's response TEXT
+        AgentEvents: explicit model refusals (`claude_code.api_refusal` → error), the assistant's
+        response TEXT
         (`claude_code.assistant_response.response` → agent `message`) and the user's prompt
         (`claude_code.user_prompt.prompt` → user `message`). The user prompt normally rides the
         interaction span, but headless runs don't export it; the merge dedups the two sources by
         body so it never shows twice. Pure + total."""
         out: list[AgentEvent] = []
         for i, rec in enumerate(logs):
+            if rec.event_name == "claude_code.api_refusal":
+                model = str(rec.attrs.get("model") or "Claude")
+                category = str(rec.attrs.get("category") or "")
+                explanation = str(
+                    rec.attrs.get("explanation")
+                    or rec.attrs.get("reason")
+                    or rec.attrs.get("message")
+                    or ""
+                )
+                if explanation and explanation != "<REDACTED>":
+                    body = explanation
+                else:
+                    body = f"{model} refused the request"
+                    if category:
+                        body += f" (category: {category})"
+                    body += "."
+                data_keys = (
+                    "model",
+                    "category",
+                    "request_id",
+                    "attempt",
+                    "effort",
+                    "query_source",
+                    "has_explanation",
+                )
+                out.append(
+                    AgentEvent(
+                        run_id=ctx.run_id,
+                        id=f"log:{rec.raw_seq}:{i}:refusal",
+                        ts=self._log_ts(rec, ctx),
+                        source_agent=ctx.source_agent,
+                        kind=AgentEventKind.error,
+                        subkind="model_refusal",
+                        role="agent",
+                        title="model refusal",
+                        body=body,
+                        data={k: rec.attrs[k] for k in data_keys if rec.attrs.get(k)},
+                        status="error",
+                        severity="error",
+                        raw_ref=RawTraceRef(
+                            run_id=ctx.run_id,
+                            raw_seq=rec.raw_seq,
+                            span_id="",
+                            signal="log",
+                        ),
+                    )
+                )
+                continue
             # The user's prompt: normally the claude_code.interaction span carries it, but headless
             # runs never export that span, so the user_prompt LOG is the only source — map it (the
             # merge dedups against a span-provided copy so it never shows twice).

@@ -146,7 +146,10 @@ describe("useRunEvents", () => {
     await waitFor(() => expect(result.current.events).toHaveLength(2), {
       timeout: 4000,
     });
-    expect(result.current.events.map((event) => event.id)).toEqual(["evt-0", "log-0"]);
+    expect(result.current.events.map((event) => event.id)).toHaveLength(2);
+    expect(result.current.events.map((event) => event.id)).toEqual(
+      expect.arrayContaining(["evt-0", "log-0"]),
+    );
   });
 
   it("seeds the stall clock from the backlog's newest receipt time, clamped to now", async () => {
@@ -206,5 +209,53 @@ describe("useRunEvents", () => {
     // The second batch really did just arrive — client stamp, so the old server receipt
     // time can't hold the stall clock in the past while telemetry is visibly flowing.
     expect(result.current.lastEventAt).toBeGreaterThanOrEqual(testStart);
+  });
+
+  it("reorders a delayed older event into producer chronology across polling pages", async () => {
+    let poll = 0;
+    server.use(
+      http.get("*/api/runs/r7/events", () => {
+        poll += 1;
+        if (poll === 1) {
+          return HttpResponse.json(
+            eventsView(
+              "r7",
+              [
+                {
+                  ...agentEvent(0, "r7"),
+                  id: "response",
+                  ts: new Date(2000).toISOString(),
+                },
+              ],
+              0,
+            ),
+          );
+        }
+        return HttpResponse.json(
+          eventsView(
+            "r7",
+            [
+              {
+                ...agentEvent(1, "r7"),
+                id: "delayed-prompt",
+                ts: new Date(1000).toISOString(),
+              },
+            ],
+            1,
+          ),
+        );
+      }),
+    );
+    const { result } = renderHook(() => useRunEvents("r7", true), {
+      wrapper: createQueryWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.events).toHaveLength(2), {
+      timeout: 4000,
+    });
+    expect(result.current.events.map((event) => event.id)).toEqual([
+      "delayed-prompt",
+      "response",
+    ]);
   });
 });

@@ -167,6 +167,16 @@ def _render_log(rec: FlatLogRecord) -> str | None:
 
     Seeded with the event name so a record whose `event.name` attr repeats it does not say it
     twice — `event.name` is itself content-bearing (segment "name"), unlike a span's name."""
+    if rec.event_name == "claude_code.api_refusal":
+        # A refusal is an agent outcome, not transport noise. Claude Code emits a purpose-built
+        # log but no response body: preserve the semantic outcome and its policy classification
+        # for the raw-derived judge transcript without globally admitting model/request metadata.
+        parts = ["outcome=refusal"]
+        for key in ("model", "category", "attempt", "has_explanation"):
+            value = rec.attrs.get(key)
+            if value:
+                parts.append(f"{key}={value}")
+        return " | ".join([rec.event_name, " · ".join(parts)])
     seen: set[str] = {rec.event_name}
     parts = _render(rec.attrs, seen)
     if not parts:

@@ -52,7 +52,8 @@ describe("capability display groups", () => {
       "Tool calls",
       "MCP",
       "Findings & flags",
-      "Status / errors / metrics",
+      "Model refusals",
+      "Status / metrics",
     ]);
   });
 

@@ -17,6 +17,7 @@ describe("CapabilityGapNotes", () => {
     expect(screen.getByText(/Agent messages/)).toBeInTheDocument();
     expect(screen.getByText(/partial/i)).toBeInTheDocument();
     expect(screen.getByText(/Codex CLI does not export thinking traces\./)).toBeInTheDocument();
+    expect(screen.getByText(/Model refusal details are not exported\./)).toBeInTheDocument();
   });
 
   it("omits un-noted structural gaps (they stay matrix-only)", async () => {

@@ -13,6 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/components/ui/cn";
 import {
   groupLevel,
+  groupNote,
   type GroupLevel,
   type DisplayGroup,
 } from "@/features/capabilities/capability-groups";
@@ -28,7 +29,8 @@ const REGISTRATION_GROUPS: readonly DisplayGroup[] = [
   { id: "files", label: "File edits", kinds: ["file_edit", "file_read"] },
   { id: "tools", label: "Tool calls", kinds: ["tool_call", "tool_result"] },
   { id: "mcp", label: "MCP", kinds: ["mcp_call", "mcp_result"] },
-  { id: "health", label: "Status / errors / metrics", kinds: ["status", "error", "metric"] },
+  { id: "refusals", label: "Model refusals", kinds: ["error"] },
+  { id: "health", label: "Status / metrics", kinds: ["status", "metric"] },
 ] as const;
 
 function registrationLevel(
@@ -131,25 +133,34 @@ export function HarnessProfile({
           {REGISTRATION_GROUPS.map((group) => {
             const level = registrationLevel(descriptor.capabilities, group);
             const supported = level !== "unsupported";
+            const note =
+              group.id === "refusals"
+                ? groupNote(descriptor.capabilities, group)
+                : undefined;
             return (
-              <li key={group.id} className="flex items-center gap-2 text-dense text-text-secondary">
+              <li key={group.id} className="flex items-start gap-2 text-dense text-text-secondary">
                 {isGeneric ? (
                   <CircleHelp
-                    className="size-4 shrink-0 text-primary"
+                    className="mt-0.5 size-4 shrink-0 text-primary"
                     aria-label={`${group.label}: unknown`}
                   />
                 ) : supported ? (
                   <CheckCircle2
-                    className="size-4 shrink-0 text-ok"
+                    className="mt-0.5 size-4 shrink-0 text-ok"
                     aria-label={`${group.label}: supported`}
                   />
                 ) : (
                   <XCircle
-                    className="size-4 shrink-0 text-err"
+                    className="mt-0.5 size-4 shrink-0 text-err"
                     aria-label={`${group.label}: not supported`}
                   />
                 )}
-                <span>{group.label}</span>
+                <span>
+                  {group.label}
+                  {!isGeneric && level !== "supported" && note && (
+                    <span className="block text-caption text-text-tertiary">{note}</span>
+                  )}
+                </span>
               </li>
             );
           })}
