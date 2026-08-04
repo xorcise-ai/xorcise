@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import contextlib
-import time
 from pathlib import Path
 from typing import Any
 
 import typer
 
+from xorcise.core.cli._pull import pull_to_terminal
 from xorcise.core.cli._resolve import resolve_mission
 from xorcise.core.cli._shared import app, console, emit_json, err_console
 from xorcise.core.cli._ux import (
@@ -28,11 +27,6 @@ from xorcise.core.cli.rest_client import RestClient
 
 mission_app = typer.Typer(help="Browse, install, and manage missions.", no_args_is_help=True)
 app.add_typer(mission_app, name="mission", rich_help_panel="Evaluate")
-
-# Pull-job poll cadence + cap: a multi-GB image download can take many minutes; the job
-# keeps running server-side past the cap (exit 3 = still in progress, not failure).
-_PULL_POLL_SECONDS = 0.7
-_PULL_POLL_CAP_SECONDS = 1800.0
 
 _MISSION_HELP = "Mission id or name (see: xorcise mission list)."
 
@@ -55,15 +49,6 @@ _ENVIRONMENT_LABELS = {
 # match nothing, and hand back an empty result the caller cannot distinguish from
 # a genuinely empty library.
 _DIFFICULTIES = ("novice", "advance beginner", "competent", "proficient", "expert")
-
-# Pull-job phases → the words a user is waiting on (server phases stay internal).
-_PHASE_LABELS = {
-    "resolving": "resolving mission",
-    "pulling_image": "downloading container image",
-    "downloading_bundle": "downloading mission bundle",
-    "installing": "installing",
-    "done": "done",
-}
 
 # Module-level singleton (B008): a call in an argument default would re-run per import.
 # Optional and unvalidated while `ingest` is disabled — see ingest_cmd for why.
@@ -228,75 +213,6 @@ def show_mission(
         next_step(f"xorcise mission pull {mission_id}")
 
 
-def _watch_pull(client: RestClient, job_id: str) -> dict[str, Any]:
-    """Poll a pull job to a terminal state, rendering honest progress on stderr.
-
-    TTY: a live bar fed by the server's real byte counts (indeterminate spinner while
-    totals are unknown — progress is never fabricated). Non-TTY: one line per phase
-    change, no cursor movement. Returns the final job view (may still be 'pulling'
-    when the cap expires — the job continues server-side)."""
-    deadline = time.monotonic() + _PULL_POLL_CAP_SECONDS
-
-    def _poll() -> dict[str, Any]:
-        view: dict[str, Any] = client.get(f"/missions/pull-jobs/{job_id}")
-        return view
-
-    if err_console.is_terminal:
-        from rich.progress import (
-            BarColumn,
-            DownloadColumn,
-            Progress,
-            SpinnerColumn,
-            TextColumn,
-            TimeRemainingColumn,
-            TransferSpeedColumn,
-        )
-
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("{task.description}"),
-            BarColumn(),
-            DownloadColumn(),
-            TransferSpeedColumn(),
-            TimeRemainingColumn(),
-            console=err_console,
-            transient=True,
-        ) as progress:
-            task = progress.add_task(_PHASE_LABELS["resolving"], total=None)
-            while True:
-                view = _poll()
-                total = view.get("bytes_total") or 0
-                progress.update(
-                    task,
-                    description=_PHASE_LABELS.get(view.get("phase") or "", "working"),
-                    total=total if total > 0 else None,
-                    completed=view.get("bytes_current") or 0,
-                )
-                if view.get("status") != "pulling" or time.monotonic() >= deadline:
-                    return view
-                time.sleep(_PULL_POLL_SECONDS)
-    last_phase = None
-    while True:
-        view = _poll()
-        if view.get("phase") != last_phase:
-            last_phase = view.get("phase")
-            err_console.print(f"{_PHASE_LABELS.get(last_phase or '', 'working')}…", markup=False)
-        if view.get("status") != "pulling" or time.monotonic() >= deadline:
-            return view
-        time.sleep(_PULL_POLL_SECONDS)
-
-
-def _request_cancel(client: RestClient, job_id: str) -> None:
-    """Best-effort server-side cancel of an in-flight pull job (Ctrl-C).
-
-    A failed cancel POST (e.g. the server went away) must NOT mask the interrupt — the exit 130
-    stands regardless — so RestClient's clean-exit (typer.Exit) is swallowed. A SECOND Ctrl-C
-    landing inside this POST is swallowed too: the caller still falls through to `raise Exit(130)`,
-    so an impatient double-interrupt keeps the documented interrupted exit code."""
-    with contextlib.suppress(typer.Exit, KeyboardInterrupt):
-        client.post(f"/missions/pull-jobs/{job_id}/cancel", json={})
-
-
 @mission_app.command("pull")
 def pull_mission_cmd(
     mission_id: str = typer.Argument(..., help=_MISSION_HELP),
@@ -310,16 +226,7 @@ def pull_mission_cmd(
         console.print(f"'{entry.get('name') or mission_id}' is already installed", markup=False)
         next_step(f"xorcise run create --agent <name> --mission {mission_id}")
         return
-    started = client.post(f"/missions/{mission_id}/pull-jobs", json={})
-    job_id = started["job_id"]
-    try:
-        view = _watch_pull(client, job_id)
-    except KeyboardInterrupt:
-        # Ctrl-C stops the pull server-side too (not just this client): request the cancel, then
-        # exit 130 (interrupted). The worker aborts the download and records the job 'cancelled'.
-        err_console.print("\ncancelling the pull…")
-        _request_cancel(client, job_id)
-        raise typer.Exit(130) from None
+    view = pull_to_terminal(client, mission_id)
     if view.get("status") == "installed":
         name = (view.get("entry") or {}).get("name") or entry.get("name") or mission_id
         console.print(f"installed '{name}' ({mission_id})", markup=False)
@@ -339,7 +246,7 @@ def pull_mission_cmd(
         raise typer.Exit(0)
     # Cap expired with the job still running server-side: in progress, not failure.
     console.print(
-        f"still pulling — the download continues in the background (job {job_id}); "
+        f"still pulling — the download continues in the background (job {view.get('job_id')}); "
         "check [value]xorcise mission list[/value]"
     )
     raise typer.Exit(3)

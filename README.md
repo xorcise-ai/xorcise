@@ -41,19 +41,22 @@ Tested on Ubuntu. Needs **Python 3.12+** and **Docker Engine**.
 
 ```bash
 pip install xorcise
+xorcise doctor                            # checks the host first
 xorcise up                                # boots the stack, prints the console URL
 ```
 
 ```bash
-xorcise agent register --name my-agent
+xorcise config set-model --name <model> --key <key>          # the judge — half the score
+xorcise agent register --name my-agent --kind claude-code
 xorcise mission list
-xorcise run create --agent my-agent --mission demo
-xorcise run prompt <run_id>               # the ready-to-paste connect prompt
+xorcise mission pull aviary-access
+xorcise run create --agent my-agent --mission aviary-access
+xorcise run launch-cmd <run_id>           # paste into your agent's terminal, then run it
 xorcise run status <run_id>               # score, breakdown, evidence
 ```
 
-`xorcise doctor` checks the host first. `xorcise down` stops it all. No Docker on the box?
-`xorcise up --stub` is the self-contained demo. `xorcise --help` has the rest, and
+`xorcise down` stops it all. No Docker on the box? `xorcise up --stub` is the
+self-contained demo. `xorcise --help` has the rest, and
 [docs.xorcise.ai](https://docs.xorcise.ai) walks through a first run end to end.
 
 Prefer to work from source? See [Contributing → Setup](CONTRIBUTING.md#setup).
