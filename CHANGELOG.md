@@ -6,6 +6,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are derived from git tags (hatch-vcs).
 
+## [0.1.1] - 2026-08-04
+
+### Added
+
+- **Missions install themselves on `run create`** — `xorcise run create` no longer refuses an
+  uninstalled mission; it pulls it first, docker-run style, which is what `POST /runs` already
+  did. The pull renders the same honest progress as `xorcise mission pull`, Ctrl-C still cancels
+  the job server-side, and all of its messaging goes to stderr so `--json` output stays
+  parseable. A failed or externally cancelled pull exits 1 with no run created; a pull still
+  going when the client's poll cap expires exits 3 and continues server-side.
+- **Model refusals are surfaced as evidence** — when a provider blocks a request on policy, the
+  OpenHands and Claude Code adapters now record it as a labelled refusal event instead of
+  discarding the failed call. A refusal is a fact about the run and is graded as one. The
+  console discloses which harnesses support refusal detection, so an unsupported harness reads
+  as "unknown", never as "no refusals".
+
+### Fixed
+
+- **Run replay keeps the agent's own chronology** — events are ordered by the agent's clock
+  rather than by when XORCISE received them, so a delayed OpenTelemetry export can no longer
+  move a prompt behind the response it produced. Ordering stays deterministic when timestamps
+  tie.
+
+### Security
+
+- **Mission slugs can no longer escape the install store** — a slug arriving from a REST path
+  parameter, a request body or a bundle manifest now resolves through a single choke point that
+  rejects anything which is not a direct child of the install root. Previously a slug carrying a
+  path separator, `..` or an absolute path could aim reads, the delete path's `rmtree`, and an
+  install's staging, backup and final writes outside that root. Reads now degrade to "not
+  installed"; installs fail preflight with a named error.
+- **The filesystem browser answers only the local operator** — `GET /api/fs/list` exposes the
+  server host's directory tree, so it is now gated on the peer address: non-loopback clients —
+  LAN peers under an explicit `XORCISE_HOST=0.0.0.0` bind, and agent containers reaching the API
+  over the Docker bridge — get a 403.
+
+### Changed
+
+- **The README quickstart runs as written** — it now follows the CLI's own golden path: set the
+  judge model, register the agent with `--kind`, pull a real library mission, then
+  `run launch-cmd` for the block you paste into the agent's terminal.
+- **The published policies match the shipped software** — the documented default bind is stated
+  as it really is (loopback plus the Docker bridge gateway, widening to the IPv4 wildcard only
+  when you ask for it, or when the gateway cannot be determined at boot), the security
+  response-time commitments that could not yet be honoured are gone, and `ACCEPTABLE_USE.md`
+  now ships inside the wheel, as the policy says it does.
+- **Fifth Domain Pty Ltd is named as the copyright holder**, and a Contributor License Agreement
+  now covers contributions. The licence itself is unchanged: Apache-2.0.
+
 ## [0.1.0] - 2026-08-03
 
 First public release.
