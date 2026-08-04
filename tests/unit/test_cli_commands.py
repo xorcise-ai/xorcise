@@ -1,15 +1,16 @@
 import os
 import subprocess
+from collections.abc import Mapping
 
 import httpx
 import pytest
 from typer.testing import CliRunner
 
 import xorcise.core.cli.app  # noqa: F401 — registers commands/callback on shared app
+from xorcise.core.cli import _pull as pull_helpers
 from xorcise.core.cli._diagnostics import Check
 from xorcise.core.cli._shared import app
 from xorcise.core.cli.commands import lifecycle
-from xorcise.core.cli.commands import mission as mission_cmd
 from xorcise.core.cli.rest_client import RestClient
 from xorcise.core.config import REST_PORT
 from xorcise.core.headscale import provision
@@ -133,6 +134,65 @@ def test_run_create_renders(monkeypatch):
     assert "run-001" in result.stdout
 
 
+def _run_create_autopull_fakes(
+    monkeypatch: pytest.MonkeyPatch, terminal_view: Mapping[str, object]
+) -> list[str]:
+    """Wire a not-installed mission whose pull job ends in *terminal_view*; returns the
+    list of POSTed paths so a test can assert what ran (and what never did)."""
+    posts: list[str] = []
+
+    def fake_get(self, path):
+        if path == "/agents":
+            return [{"name": "a"}]
+        if path == "/missions":
+            return [{"source": "library", "mission_id": "c", "name": "C", "installed": False}]
+        assert path == "/missions/pull-jobs/j1"
+        return terminal_view
+
+    def fake_post(self, path, json=None, timeout=None):
+        posts.append(path)
+        if path == "/missions/c/pull-jobs":
+            return {"job_id": "j1"}
+        assert path == "/runs"
+        return {"run_id": "run-001"}
+
+    monkeypatch.setattr(RestClient, "get", fake_get)
+    monkeypatch.setattr(RestClient, "post", fake_post)
+    return posts
+
+
+def test_run_create_autopulls_uninstalled_mission(monkeypatch):
+    # A not-installed mission no longer fails create: it is pulled first (docker-run-style,
+    # parity with POST /runs), then the run is created — one command, honest progress.
+    view = {"status": "installed", "phase": "done", "entry": {"name": "C"}}
+    posts = _run_create_autopull_fakes(monkeypatch, view)
+    result = runner.invoke(app, ["run", "create", "--agent", "a", "--mission", "c"])
+    assert result.exit_code == 0
+    assert posts == ["/missions/c/pull-jobs", "/runs"]  # pulled, then created
+    assert "run-001" in result.stdout
+
+
+def test_run_create_pull_error_exits_1(monkeypatch):
+    # A failed auto-pull is a runtime failure: exit 1, and /runs is never POSTed.
+    view = {"status": "error", "phase": "pulling_image", "detail": "registry unreachable"}
+    posts = _run_create_autopull_fakes(monkeypatch, view)
+    result = runner.invoke(app, ["run", "create", "--agent", "a", "--mission", "c"])
+    assert result.exit_code == 1
+    assert "pull failed" in result.output and "registry unreachable" in result.output
+    assert posts == ["/missions/c/pull-jobs"]  # the create never happened
+
+
+def test_run_create_pull_cancelled_exits_1(monkeypatch):
+    # An externally cancelled auto-pull means no run was created — unlike `mission pull`
+    # (a clean converged stop, exit 0), create's artifact never appeared, so exit 1.
+    view = {"status": "cancelled", "phase": "pulling_image"}
+    posts = _run_create_autopull_fakes(monkeypatch, view)
+    result = runner.invoke(app, ["run", "create", "--agent", "a", "--mission", "c"])
+    assert result.exit_code == 1
+    assert "no run was created" in result.output
+    assert posts == ["/missions/c/pull-jobs"]
+
+
 def test_mission_list_renders(monkeypatch):
     monkeypatch.setattr(
         RestClient,
@@ -199,7 +259,7 @@ def test_mission_pull_ctrl_c_cancels_server_side_and_exits_130(monkeypatch):
 
     monkeypatch.setattr(RestClient, "get", fake_get)
     monkeypatch.setattr(RestClient, "post", fake_post)
-    monkeypatch.setattr(mission_cmd, "_watch_pull", interrupt)
+    monkeypatch.setattr(pull_helpers, "watch_pull", interrupt)
     result = runner.invoke(app, ["mission", "pull", "sqli"])
     assert result.exit_code == 130
     assert "/missions/sqli/pull-jobs" in posts  # the pull was started
@@ -224,7 +284,7 @@ def test_mission_pull_ctrl_c_exits_130_even_if_cancel_post_fails(monkeypatch):
 
     monkeypatch.setattr(RestClient, "get", fake_get)
     monkeypatch.setattr(RestClient, "post", fake_post)
-    monkeypatch.setattr(mission_cmd, "_watch_pull", interrupt)
+    monkeypatch.setattr(pull_helpers, "watch_pull", interrupt)
     result = runner.invoke(app, ["mission", "pull", "sqli"])
     assert result.exit_code == 130
 
@@ -245,7 +305,7 @@ def test_mission_pull_double_ctrl_c_during_cancel_still_exits_130(monkeypatch):
 
     monkeypatch.setattr(RestClient, "get", fake_get)
     monkeypatch.setattr(RestClient, "post", fake_post)
-    monkeypatch.setattr(mission_cmd, "_watch_pull", interrupt)
+    monkeypatch.setattr(pull_helpers, "watch_pull", interrupt)
     result = runner.invoke(app, ["mission", "pull", "sqli"])
     assert result.exit_code == 130
 

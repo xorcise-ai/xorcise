@@ -602,20 +602,31 @@ def test_agent_resolver_never_suggests_registering_a_command_word(monkeypatch, c
     assert "register --name list" not in err  # never steer a typo toward a mutation
 
 
-def test_run_create_not_installed_hint_has_single_label(monkeypatch):
+def test_run_create_not_installed_pulls_and_says_so_on_stderr(monkeypatch):
+    # A not-installed mission is no longer an error with a hint — create pulls it itself.
+    # The UX contract flips with it: announce the pull on stderr (stdout stays clean for
+    # --json), and never instruct the user to run a command the CLI just ran for them.
     from xorcise.core.cli.rest_client import RestClient
 
     def fake_get(self, path):
         if path == "/agents":
             return [{"id": "a1", "name": "demo"}]
-        return [{"mission_id": "aviary-access", "name": "Aviary Access", "installed": False}]
+        if path == "/missions":
+            return [{"mission_id": "aviary-access", "name": "Aviary Access", "installed": False}]
+        return {"status": "installed", "phase": "done"}
+
+    def fake_post(self, path, json=None, timeout=None):
+        if path.endswith("/pull-jobs"):
+            return {"job_id": "j1"}
+        return {"run_id": "run-777"}
 
     monkeypatch.setattr(RestClient, "get", fake_get)
+    monkeypatch.setattr(RestClient, "post", fake_post)
     result = runner.invoke(app, ["run", "create", "--agent", "demo", "--mission", "aviary-access"])
-    assert result.exit_code == 1
-    assert "xorcise mission pull aviary-access" in result.stderr
-    assert "then: xorcise run create --agent demo --mission aviary-access" in result.stderr
-    assert "see: then:" not in result.stderr  # regression: the two labels once doubled up
+    assert result.exit_code == 0
+    assert "'Aviary Access' is not installed — pulling it first" in result.stderr
+    assert "then: xorcise run create" not in result.stderr  # the old hint must not linger
+    assert "run-777" in result.stdout
 
 
 def test_narrow_terminal_never_truncates_ids_or_scores():

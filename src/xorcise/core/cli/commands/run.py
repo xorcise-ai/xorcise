@@ -10,6 +10,7 @@ from typing import Any
 import typer
 from rich.markup import escape
 
+from xorcise.core.cli._pull import pull_to_terminal
 from xorcise.core.cli._resolve import (
     agent_names_by_id,
     mission_names_by_id,
@@ -213,6 +214,39 @@ def list_runs(
     print_table(table)
 
 
+def _auto_pull(client: RestClient, entry: dict[str, Any], mission: str) -> None:
+    """Install a not-yet-installed mission before creating its run (docker-run-style,
+    parity with POST /runs which auto-pulls on demand). The CLI runs the pull itself so
+    the wait shows the honest progress bar instead of a silently long create request.
+
+    Everything here renders on stderr: with --json, stdout must carry ONLY the created
+    run. Returns on 'installed'; every other terminal state means no run gets created —
+    'error' and 'cancelled' exit 1 (unlike `mission pull`, where an external cancel is a
+    clean converged stop, exit 0 — here the command's artifact, the run, never appeared),
+    and a poll-cap expiry exits 3 (in progress, retry once installed)."""
+    name = entry.get("name") or mission
+    err_console.print(f"mission '{name}' is not installed — pulling it first", markup=False)
+    view = pull_to_terminal(client, mission)
+    status = view.get("status")
+    if status == "installed":
+        err_console.print(f"installed '{name}' ({mission})", markup=False)
+        return
+    if status == "error":
+        fail(
+            f"pull failed — {view.get('detail') or 'unknown error'}",
+            see=("xorcise doctor",),
+        )
+    if status == "cancelled":
+        fail(f"pull cancelled — '{mission}' was not installed, so no run was created")
+    # Cap expired with the job still running server-side: in progress, not failure.
+    err_console.print(
+        f"still pulling — the download continues in the background (job {view.get('job_id')}); "
+        f"once installed, re-run: xorcise run create --agent <agent> --mission {mission}",
+        markup=False,
+    )
+    raise typer.Exit(3)
+
+
 @run_app.command("create")
 def create_run(
     agent: str = typer.Option(
@@ -221,28 +255,21 @@ def create_run(
     mission: str = typer.Option(
         ...,
         "--mission",
-        help="Installed mission id or name (see: xorcise mission list).",
+        help="Mission id or name (see: xorcise mission list); pulled first if not installed.",
     ),
     budget: int | None = typer.Option(None, "--budget", help="Run budget in seconds."),
     as_json: bool = typer.Option(
         False, "--json", help="Emit the raw created run as JSON (for scripting)."
     ),
 ) -> None:
-    """Create an evaluation run (one agent vs one installed mission)."""
+    """Create an evaluation run (one agent vs one mission; pulls the mission on demand)."""
     client = RestClient()
-    # Validate both inputs up front: the answer to a typo is the matching name and
-    # the answer to a not-installed mission is the pull command — not a 404.
+    # Validate both inputs up front: the answer to a typo is the matching name — not a 404.
     agent = resolve_agent_name(client, agent)
     entry = resolve_mission(client, mission)
     mission = str(entry["mission_id"])
     if not entry.get("installed"):
-        fail(
-            f"mission '{entry.get('name') or mission}' is not installed",
-            example=(
-                f"xorcise mission pull {mission}\n"
-                f"  then: xorcise run create --agent {agent} --mission {mission}"
-            ),
-        )
+        _auto_pull(client, entry, mission)
     body: dict[str, object] = {"agent": agent, "mission": mission}
     if budget is not None:
         body["budget_seconds"] = budget
