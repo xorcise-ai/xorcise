@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -107,12 +108,19 @@ def resolve_install_dir(slug: str, install_root: Path) -> Path | None:
     a direct child. Slugs arrive from REST path params, request bodies and bundle/catalog
     manifests; every install-store path is built through this choke point so a hostile
     slug (separators, '..', an absolute path) can never steer a read, write or rmtree
-    outside the install root."""
-    base = install_root.resolve()
-    root = (install_root / slug).resolve()
-    if not root.is_relative_to(base) or root.parent != base:
+    outside the install root.
+
+    os.path (not pathlib) on purpose: realpath + startswith is the containment idiom
+    CodeQL recognizes as a taint barrier, while Path.resolve() inside the guard reads as
+    one more unsanitized filesystem sink — "simplifying" back to pathlib re-opens the
+    py/path-injection alerts this function exists to close."""
+    base = os.path.realpath(install_root)
+    root = os.path.realpath(os.path.join(base, slug))
+    if not root.startswith(base + os.sep):
         return None
-    return root
+    if os.path.dirname(root) != base:  # direct child only — never a nested path
+        return None
+    return Path(root)
 
 
 def get_installed(slug: str, install_root: Path) -> InstalledMission | None:
