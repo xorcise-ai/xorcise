@@ -105,6 +105,77 @@ describe("MissionDetail skills before pull", () => {
   });
 });
 
+describe("MissionDetail terrain", () => {
+  it("renders the ACTUAL terrain map (SVG renderer) for a manifest with a terrain block", async () => {
+    server.use(
+      http.get("*/api/missions", () => HttpResponse.json([INSTALLED])),
+      http.get("*/api/missions/idor/manifest", () =>
+        HttpResponse.json({
+          schema_version: "2.0",
+          metadata: {
+            mission_id: "idor",
+            name: "IDOR",
+            objective: "o",
+            type: "lab",
+            skills: [],
+            technologies: [],
+          },
+          environment: {},
+          rubric: [],
+          checks: [],
+          artifacts: [],
+          attachments: [],
+          intel: [],
+          terrain: {
+            summary: "Reach the vault.",
+            groups: [{ id: "dmz", label: "DMZ" }],
+            nodes: [
+              { id: "web", parent: "dmz", label: "web" },
+              { id: "vault", parent: "dmz", label: "vault", objective: true },
+            ],
+            edges: [],
+          },
+        }),
+      ),
+      // The detail page draws the server-side projection — the SAME graph a run starts from.
+      http.get("*/api/missions/idor/terrain", () =>
+        HttpResponse.json({
+          run_id: "",
+          mission_id: "idor",
+          summary: "Reach the vault.",
+          groups: [
+            { id: "dmz", label: "DMZ", description: null, kind: "segment", order: 2, hidden: false, discovered: false },
+          ],
+          nodes: [
+            { id: "web", label: "web", group: "dmz", type: "service", objective: false,
+              description: null, discovery_condition: null, completion_condition: null, state: "defined" },
+            { id: "vault", label: "vault", group: "dmz", type: "service", objective: true,
+              description: null, discovery_condition: null, completion_condition: null, state: "defined" },
+          ],
+          edges: [],
+          updates: [],
+          attribution: null,
+          objective_id: "vault",
+        }),
+      ),
+    );
+
+    const { container } = renderWithProviders(<MissionDetail id="idor" />);
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "IDOR" })).toBeInTheDocument(),
+    );
+    // The real SVG renderer, not the old linear flow simplification.
+    await waitFor(() =>
+      expect(container.querySelector('[data-testid="terrain-svg"]')).toBeInTheDocument(),
+    );
+    expect(container.querySelectorAll("[data-node-id]").length).toBe(2);
+    // The objective keeps its ⊗ grammar on the preview too.
+    expect(container.querySelector('[data-node-objective="true"]')).toBeInTheDocument();
+    // The authored summary rides in the map's header strip.
+    expect(screen.getByText("Reach the vault.")).toBeInTheDocument();
+  });
+});
+
 describe("MissionDetail deterministic check prerequisites", () => {
   it("shows which check must pass before a dependent check earns credit", async () => {
     server.use(

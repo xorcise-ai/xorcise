@@ -9,6 +9,7 @@ import type {
   IngestStarted,
   PullJobStarted,
   PullJobView,
+  ResolvedTerrainV2,
 } from "@/lib/api/types";
 
 export function useMissions() {
@@ -226,6 +227,20 @@ export function useDeleteMission() {
     mutationFn: (id: string) =>
       api.del(`/missions/${encodeURIComponent(id)}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["missions"] }),
+  });
+}
+
+/** The mission's projected v2 terrain — the same base graph a run of it starts from
+ * (infra scaffold + authored mission plane, no run, no updates). Static per mission
+ * version, so no polling. */
+export function useMissionTerrain(id: string) {
+  return useQuery({
+    queryKey: ["missions", id, "terrain"],
+    queryFn: () =>
+      api.get<ResolvedTerrainV2>(
+        `/missions/${encodeURIComponent(id)}/terrain`,
+      ),
+    enabled: !!id,
   });
 }
 

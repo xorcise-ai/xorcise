@@ -1,19 +1,16 @@
 "use client";
 
-import { Fragment, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
-  ArrowRight,
-  Bot,
   Boxes,
   Cpu,
   Crosshair,
   Download,
   FileText,
   FlaskConical,
-  Flag,
   Lightbulb,
   Loader2,
   ListChecks,
@@ -34,6 +31,7 @@ import { Reveal } from "@/components/ui/reveal";
 import { NotFoundState } from "@/components/layout/not-found-state";
 import type { CatalogEntry, MissionManifest } from "@/lib/api/types";
 import { PullProgressBlock } from "./mission-card";
+import { MissionTerrain } from "./mission-terrain";
 import {
   useMission,
   useMissionManifest,
@@ -615,171 +613,18 @@ function ManifestSections({
       )}
 
       {m.terrain && (
-        <Section icon={MapIcon} title="Terrain">
-          <TerrainPreview terrain={m.terrain} />
+        <Section
+          icon={MapIcon}
+          title="Terrain"
+          helpText="The actual mission map — exactly what the live run view draws, before any run exists."
+        >
+          {/* The real renderer, not the old linear Agent → Service flow: the server projects
+              the authored terrain through the same projector a run uses, so layout, legend
+              and hover popovers match the live map one-for-one. */}
+          <MissionTerrain missionId={m.metadata.mission_id} />
         </Section>
       )}
     </>
-  );
-}
-
-/* ── Terrain preview ── */
-
-type FlowStep = {
-  id: string;
-  label: string;
-  sub: string;
-  objective: boolean;
-  isAgent: boolean;
-  edgeFull?: string;
-  edgeCaption?: string;
-};
-
-const str = (x: unknown): string => (typeof x === "string" ? x : "");
-
-/** A short "PROTO :port" caption pulled from a free-text edge label (ports aren't structured). */
-function edgeCaption(label: string): string {
-  const port = label.match(/:\d{2,5}\b/)?.[0] ?? "";
-  const proto =
-    label.match(
-      /\b(HTTPS?|SSH|FTP|SMB|RDP|DNS|TCP|UDP|SSRF|SQLi?|LDAP|SMTP|gRPC|WS|API)\b/i,
-    )?.[0] ?? "";
-  return [proto, port].filter(Boolean).join(" ");
-}
-
-/**
- * Best-effort linear flow (Agent → Service → …) from the loosely-typed terrain graph.
- * Returns null when there aren't enough connected edges to draw one — the caller then
- * falls back to the summary text.
- */
-function buildFlow(terrain: NonNullable<MissionManifest["terrain"]>): FlowStep[] | null {
-  const nodes = new Map<string, { label: string; sub: string; objective: boolean }>();
-  for (const n of terrain.nodes ?? []) {
-    const id = str((n as Record<string, unknown>).id);
-    if (!id) continue;
-    const type = str((n as Record<string, unknown>).type);
-    nodes.set(id, {
-      label: type ? titleCase(type) : titleCase(id),
-      sub: id,
-      objective: (n as Record<string, unknown>).objective === true,
-    });
-  }
-
-  const edges = (terrain.edges ?? [])
-    .map((e) => {
-      const r = e as Record<string, unknown>;
-      return { src: str(r.src), dst: str(r.dst), label: str(r.label) };
-    })
-    .filter((e) => e.src && e.dst);
-  if (edges.length === 0) return null;
-
-  const out = new Map<string, { dst: string; label: string }[]>();
-  const incoming = new Set<string>();
-  for (const e of edges) {
-    if (!out.has(e.src)) out.set(e.src, []);
-    out.get(e.src)!.push({ dst: e.dst, label: e.label });
-    incoming.add(e.dst);
-  }
-
-  const start =
-    (out.has("agent") && "agent") ||
-    [...out.keys()].find((k) => !incoming.has(k)) ||
-    edges[0].src;
-
-  const steps: FlowStep[] = [];
-  const seen = new Set<string>();
-  let cur: string | undefined = start;
-  let edgeFull: string | undefined;
-  while (cur && !seen.has(cur)) {
-    seen.add(cur);
-    const meta = nodes.get(cur);
-    const isAgent = cur === "agent";
-    steps.push({
-      id: cur,
-      label: meta?.label ?? (isAgent ? "Agent" : titleCase(cur)),
-      sub: meta?.sub ?? cur,
-      objective: meta?.objective ?? false,
-      isAgent,
-      edgeFull,
-      edgeCaption: edgeFull ? edgeCaption(edgeFull) : undefined,
-    });
-    const nexts = out.get(cur);
-    if (!nexts || nexts.length === 0) break;
-    const nxt = nexts.find((n) => !seen.has(n.dst)) ?? nexts[0];
-    edgeFull = nxt.label || undefined;
-    cur = nxt.dst;
-  }
-
-  return steps.length >= 2 ? steps : null;
-}
-
-function TerrainPreview({
-  terrain,
-}: {
-  terrain: NonNullable<MissionManifest["terrain"]>;
-}) {
-  const flow = buildFlow(terrain);
-  const summary = terrain.summary?.trim();
-
-  if (!flow && !summary) {
-    return (
-      <p className="text-dense text-text-tertiary">
-        No terrain map available for this mission.
-      </p>
-    );
-  }
-
-  return (
-    <div className="space-y-3">
-      {flow && (
-        <div className="flex flex-wrap items-stretch gap-2 rounded-lg border border-border bg-background/60 p-3">
-          {flow.map((s, i) => (
-            <Fragment key={s.id}>
-              {i > 0 && (
-                <div
-                  className="flex flex-col items-center justify-center gap-1 self-center"
-                  title={s.edgeFull}
-                >
-                  <ArrowRight className="size-4 text-text-tertiary" />
-                  {s.edgeCaption && (
-                    <span className="font-mono text-caption text-text-tertiary">
-                      {s.edgeCaption}
-                    </span>
-                  )}
-                </div>
-              )}
-              <div
-                className={cn(
-                  "flex min-w-[92px] flex-col items-center gap-1 rounded-lg border px-3 py-2 text-center",
-                  s.objective
-                    ? "border-primary/40 bg-primary/[0.08]"
-                    : s.isAgent
-                      ? "border-tool/40 bg-tool/[0.08]"
-                      : "border-border bg-raised",
-                )}
-              >
-                {s.isAgent ? (
-                  <Bot className="size-4 text-tool" />
-                ) : s.objective ? (
-                  <Flag className="size-4 text-primary" />
-                ) : (
-                  <Server className="size-4 text-text-secondary" />
-                )}
-                <span className="text-dense text-heading">{s.label}</span>
-                {s.sub && s.sub.toLowerCase() !== s.label.toLowerCase() && (
-                  <span className="font-mono text-caption text-text-tertiary">
-                    {s.sub}
-                  </span>
-                )}
-              </div>
-            </Fragment>
-          ))}
-        </div>
-      )}
-      {summary && (
-        <p className="max-w-full break-words text-body text-text-secondary">{summary}</p>
-      )}
-    </div>
   );
 }
 

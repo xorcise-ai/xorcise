@@ -6,6 +6,7 @@ import { foldIndexForEvent, foldTerrain, probingPathEdgeIds, pulseIdsForIndex, t
 import { layoutTerrainV2, type LaidOutEdge, type LaidOutGroup, type LaidOutNode } from "./terrain-layout";
 import { edgeColor, groupStyle, nodeColor, otelActive, T } from "./terrain-colors";
 import { useRunTerrain } from "./use-run-terrain";
+import type { ResolvedTerrainV2 } from "@/lib/api/types";
 
 /**
  * Terrain map v2 — a spatial map rendered as hand-rolled inline SVG (no graph library), drawing the
@@ -477,6 +478,9 @@ function Legend() {
   );
 }
 
+/** The run-scoped terrain map: fetches the run's resolved v2 terrain and renders it.
+ *  All drawing lives in `TerrainMapView` below, which is presentational/query-free — the
+ *  mission detail page feeds it a MISSION-scoped projection (no run) through its own query. */
 export function TerrainMap({
   runId,
   active = false,
@@ -488,6 +492,45 @@ export function TerrainMap({
   runId: string;
   active?: boolean;
   selectedEventId?: string | null;
+  onReturnToLive?: () => void;
+  attributionOff?: boolean;
+  onHoverEvents?: (eventIds: string[]) => void;
+}) {
+  const { terrain, isError } = useRunTerrain(runId, active);
+  return (
+    <TerrainMapView
+      terrain={terrain}
+      isError={isError}
+      resetKey={runId}
+      active={active}
+      selectedEventId={selectedEventId}
+      attributionOff={attributionOff}
+      onHoverEvents={onHoverEvents}
+      onReturnToLive={onReturnToLive}
+    />
+  );
+}
+
+export function TerrainMapView({
+  terrain,
+  isError = false,
+  resetKey = "",
+  active = false,
+  selectedEventId = null,
+  attributionOff = false,
+  caption,
+  onHoverEvents,
+  onReturnToLive,
+}: {
+  /** The resolved v2 terrain to draw (null while loading/absent). Run-scoped (with updates)
+   *  or mission-scoped (base graph only) — the fold below is a no-op on an empty updates array. */
+  terrain: ResolvedTerrainV2 | null;
+  isError?: boolean;
+  /** Identity of the drawn subject (run id / mission id) — a new key restarts auto-fit
+   *  following from scratch, exactly as a new run used to. */
+  resetKey?: string;
+  active?: boolean;
+  selectedEventId?: string | null;
   /** Return-to-live escape from time-travel: when a span is selected the map is frozen at that
    *  fold, so a control asks RunLive (which owns the selection) to clear it. Without this the only
    *  way back to the live/latest view was a page refresh. */
@@ -496,11 +539,13 @@ export function TerrainMap({
    *  configured — RunLive derives this from `useConfig().terrain.configured` so TerrainMap
    *  stays presentational/query-free. */
   attributionOff?: boolean;
+  /** Footer caption override — the default speaks run-language (amber ring / trace events);
+   *  the mission preview passes its own. */
+  caption?: string;
   /** Reverse hover link: hovering a node reports the event ids of the updates
    *  that targeted it, so RunLive can highlight them in the Trace. */
   onHoverEvents?: (eventIds: string[]) => void;
 }) {
-  const { terrain, isError } = useRunTerrain(runId, active);
 
   // TIME-TRAVEL wiring: `k` is the array index to fold to. Selection is prop-driven (owned by
   // RunLive) — it derives from `selectedEventId` every render, so a poll that advances "latest"
@@ -686,10 +731,10 @@ export function TerrainMap({
     // container (re)mounts: it only renders once layout exists, so the first mount is never missed.
   }, [layout, showWheelTip]);
   useEffect(() => {
-    // A new run starts following again from scratch.
+    // A new subject (run / mission) starts following again from scratch.
     fittedDims.current = null;
     userControlled.current = false;
-  }, [runId]);
+  }, [resetKey]);
   useEffect(() => {
     // Fit on the FIRST render, and re-fit whenever the graph's drawn size changes (live nodes
     // appear) — unless the user has taken manual control. Keyed on the actual dimensions so a poll
@@ -949,7 +994,7 @@ export function TerrainMap({
           hover interaction. The colour→state mapping lives in the legend, so it's dropped here to
           keep this caption short enough to wrap cleanly inside the card. */}
       <p className="shrink-0 border-t border-border px-4 py-2 text-caption text-text-tertiary">
-        Amber ring = what just changed · hover a node to highlight its trace events.
+        {caption ?? "Amber ring = what just changed · hover a node to highlight its trace events."}
       </p>
       {attributionOff && hasMissionGroup && (
         <p className="shrink-0 border-t border-border px-4 py-2 text-caption italic text-text-tertiary">

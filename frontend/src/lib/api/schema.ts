@@ -529,6 +529,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/missions/{mission_id}/terrain": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Mission Terrain
+         * @description The mission's projected v2 terrain — the same base graph a run of it starts from.
+         *
+         *     Runs the run-scoped projector over the manifest (installed copy, else the library) with
+         *     no run attached: infra scaffold + authored/static-ips mission plane, every element in its
+         *     base state, no updates. This is what the mission detail page draws so the ACTUAL terrain
+         *     map — not a simplification — is visible before a run (or a pull). Unknown id → 404.
+         */
+        get: operations["mission_terrain_api_missions__mission_id__terrain_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs": {
         parameters: {
             query?: never;
@@ -3563,6 +3588,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PullJobStarted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mission_terrain_api_missions__mission_id__terrain_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolvedTerrainV2"];
                 };
             };
             /** @description Validation Error */

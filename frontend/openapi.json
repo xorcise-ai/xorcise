@@ -4850,6 +4850,49 @@
         ]
       }
     },
+    "/api/missions/{mission_id}/terrain": {
+      "get": {
+        "description": "The mission's projected v2 terrain \u2014 the same base graph a run of it starts from.\n\nRuns the run-scoped projector over the manifest (installed copy, else the library) with\nno run attached: infra scaffold + authored/static-ips mission plane, every element in its\nbase state, no updates. This is what the mission detail page draws so the ACTUAL terrain\nmap \u2014 not a simplification \u2014 is visible before a run (or a pull). Unknown id \u2192 404.",
+        "operationId": "mission_terrain_api_missions__mission_id__terrain_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mission_id",
+            "required": true,
+            "schema": {
+              "title": "Mission Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolvedTerrainV2"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mission Terrain",
+        "tags": [
+          "missions"
+        ]
+      }
+    },
     "/api/runs": {
       "get": {
         "description": "List runs, each stamped with `last_telemetry_at` \u2014 the newest OTLP receipt across the\ntrace + log signals. A cross-module join the delivery layer owns (like /result's intel count):\nthe runs module stays telemetry-blind, and the RAW stores stay canonical. Lazy import keeps\nthe otel plane off the module-import path (plane-isolation invariant).",
