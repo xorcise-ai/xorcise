@@ -16,9 +16,18 @@ from pathlib import Path
 from xorcise.core.contracts.control import MissionRef
 from xorcise.core.contracts.mission import MissionManifest
 from xorcise.core.missions.builder import BundleBuilder
-from xorcise.core.missions.errors import AttachmentBundleError, MissionCollisionError
+from xorcise.core.missions.errors import (
+    AttachmentBundleError,
+    MissionCollisionError,
+    PreflightError,
+)
 from xorcise.core.missions.preflight import preflight
-from xorcise.core.missions.runtime import INSTALLED_FILE, InstalledMission, Origin
+from xorcise.core.missions.runtime import (
+    INSTALLED_FILE,
+    InstalledMission,
+    Origin,
+    resolve_install_dir,
+)
 
 
 def _copytree(src: Path, dst: Path) -> None:
@@ -70,9 +79,16 @@ def _atomic_install(
     installed.json is written; it should create/populate the staging directory.
     Version/origin are read from any existing install BEFORE the swap so the read is safe."""
     install_root.mkdir(parents=True, exist_ok=True)
+    # mission_id is third-party content (bundle/catalog manifest); a separator or '..' in it
+    # would put final — and staging/backup with their rmtree cleanups — outside the install root.
+    final = resolve_install_dir(slug, install_root)
+    if final is None:
+        raise PreflightError(
+            f"metadata.mission_id {slug!r} is not a usable install name "
+            "(must be a plain directory name: no separators, no '..')"
+        )
     staging = install_root / f".{slug}.tmp"
     backup = install_root / f".{slug}.bak"
-    final = install_root / slug
 
     # a mission_id belongs to one source. Read the existing record BEFORE we disturb
     # anything, so a cross-source collision leaves the prior install byte-for-byte intact (no

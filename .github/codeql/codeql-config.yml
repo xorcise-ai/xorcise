@@ -9,3 +9,6 @@ paths-ignore:
   - missions
   # Generated Next.js bundle. The authored sources under frontend/ are analysed instead.
   - src/xorcise/core/frontend/_static
+  # Test code is not attack surface, and its idioms read as findings: tmp_path fixtures
+  # flag as path injection, `in` assertions on built URLs as incomplete sanitization.
+  - tests
