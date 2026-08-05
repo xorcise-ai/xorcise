@@ -33,6 +33,7 @@ import type { CatalogEntry, MissionManifest } from "@/lib/api/types";
 import { PullProgressBlock } from "./mission-card";
 import { MissionTerrain } from "./mission-terrain";
 import {
+  formatBytes,
   useMission,
   useMissionManifest,
   useDeleteMission,
@@ -277,6 +278,37 @@ export function MissionDetail({ id }: { id: string | null }) {
                 This mission lives in the XORCISE remote library. Pull it to install
                 locally, or just start a run — it’s pulled automatically on start.
               </p>
+              {/* The other place a pull gets decided, so it quotes the same cost as the
+                  card. There is room here, so the image/attachment split is shown outright
+                  rather than hidden in a tooltip, and the shared-layer caveat is spelled
+                  out — this page is where someone goes to understand before committing. */}
+              {c.download_size_bytes != null && (
+                <p
+                  data-testid="mission-detail-download-size"
+                  className="max-w-full break-words text-dense text-text-tertiary"
+                >
+                  <span className="text-text-secondary">
+                    Download {formatBytes(c.download_size_bytes)}
+                  </span>
+                  {/* Split shown only when the total genuinely decomposes: a mission with
+                      no attachments would otherwise read "Download 280.5 MB — image
+                      280.5 MB", repeating one number as if it were two facts. */}
+                  {c.image_size_bytes != null && c.attachments_size_bytes != null && (
+                    <>
+                      {" — "}
+                      {`image ${formatBytes(c.image_size_bytes)}`}
+                      {" · "}
+                      {`attachments ${formatBytes(c.attachments_size_bytes)}`}
+                    </>
+                  )}
+                  {/* Layer reuse is an IMAGE property. A static mission is an attachment
+                      bundle with no layers, so its figure is exact and this caveat would
+                      describe something that cannot happen to it. */}
+                  {c.image_size_bytes != null
+                    ? ". Shared layers already on disk are not re-downloaded, so a later pull transfers less."
+                    : "."}
+                </p>
+              )}
             </div>
           </CardContent>
         </Card>

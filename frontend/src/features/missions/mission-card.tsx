@@ -46,34 +46,44 @@ function EnvironmentBadge({ type }: { type: string }) {
 /**
  * What this mission will cost to download, shown while it is still a decision.
  *
- * "up to" is load-bearing, not hedging: this is the mission's full compressed size, but
- * missions share base layers, so a pull that reuses layers already on disk transfers
- * strictly less. Quoting it as an exact figure would make a correct pull look broken —
- * the same confusion that made cached-layer pulls read as "stuck at 0 bytes".
+ * The card shows the bare figure; the CEILING caveat lives in the tooltip. This is the
+ * mission's full compressed size, but missions share base layers — 17 of 19 labs sit on
+ * one base image — so the first pull transfers this much and later pulls transfer roughly
+ * half. Hedging the label ("up to …") bought accuracy at the cost of reading as vagueness
+ * on a first pull, where the figure is exact; the tooltip carries the nuance instead.
  *
  * Renders nothing when the size is unknown (an installed mission, or a catalog that
  * predates the field) rather than a confident "0 B".
  */
-function DownloadSize({ mission: c }: { mission: CatalogEntry }) {
+function DownloadSize({ mission: c, className }: { mission: CatalogEntry; className?: string }) {
   if (c.download_size_bytes == null) return null;
-  const parts = [
+  // Only worth breaking down when the total actually decomposes. A mission with no
+  // attachments would otherwise read "280.5 MB — Image 280.5 MB", stating one number twice.
+  const known = [
     c.image_size_bytes != null ? `Image ${formatBytes(c.image_size_bytes)}` : null,
     c.attachments_size_bytes != null
       ? `Attachments ${formatBytes(c.attachments_size_bytes)}`
       : null,
   ].filter(Boolean);
+  const parts = known.length > 1 ? known : [];
+  // The layer caveat is about the IMAGE. A static mission is an attachment bundle with no
+  // layers at all, so its figure is exact and the caveat would describe something that
+  // cannot happen. With no breakdown and no caveat there is nothing left to say — omit
+  // the tooltip entirely rather than attach an empty one.
+  const caveat = c.image_size_bytes != null
+    ? "Shared layers already on disk are not re-downloaded, so a later pull transfers less."
+    : "";
+  const tooltip = [parts.join(" · "), caveat].filter(Boolean).join(". ");
+  // No icon: this sits directly beside the Pull button, which already carries the download
+  // glyph. A second identical icon read as two separate affordances rather than one action
+  // and its cost.
   return (
     <span
       data-testid="mission-download-size"
-      title={
-        parts.length > 0
-          ? `${parts.join(" · ")}. Shared layers already on disk are not re-downloaded.`
-          : undefined
-      }
-      className="inline-flex items-center gap-1 whitespace-nowrap text-caption text-text-tertiary"
+      title={tooltip || undefined}
+      className={cn("whitespace-nowrap text-caption text-text-tertiary", className)}
     >
-      <Download className="size-3" aria-hidden />
-      up to {formatBytes(c.download_size_bytes)}
+      {formatBytes(c.download_size_bytes)}
     </span>
   );
 }
@@ -223,8 +233,9 @@ export function MissionCard({ mission: c }: { mission: CatalogEntry }) {
               <PullProgressBlock pull={pull} />
             </div>
           ) : (
-            // Size sits beside the button, not up with the badges: it is the last thing
-            // read before committing, so it belongs at the point of commitment.
+            // Size sits immediately beside the button, not flush right: it is the cost OF
+            // this action, and pushing it to the far edge separated the two enough that it
+            // read as unrelated card metadata rather than a caption on the button.
             <div className="flex w-full flex-wrap items-center gap-x-2 gap-y-1">
               <Button size="sm" onClick={() => pull.start()}>
                 <Download className="size-3.5" />

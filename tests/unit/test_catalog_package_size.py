@@ -188,6 +188,81 @@ def test_mission_list_quotes_the_download_size(monkeypatch: pytest.MonkeyPatch):
     assert "260.7 MB" in result.output
 
 
+def _wire_show(monkeypatch: pytest.MonkeyPatch, entry: dict[str, Any]) -> None:
+    """`mission show` reads the catalog row (for the entry) then the manifest."""
+
+    def fake_get(self: RestClient, path: str, **kwargs: Any) -> Any:
+        if path == "/missions":
+            return [entry]
+        assert path.endswith("/manifest")
+        return {
+            "schema_version": "2.0",
+            "metadata": {"mission_id": entry["mission_id"], "name": entry["name"]},
+        }
+
+    monkeypatch.setattr(RestClient, "get", fake_get)
+
+
+_SHOW_ENTRY = {
+    "source": "library",
+    "mission_id": "chrono-canary",
+    "name": "Chrono Canary",
+    "proficiency": "expert",
+    "installed": False,
+    "image_size_bytes": 260306509,
+    "attachments_size_bytes": 384284,
+    "download_size_bytes": 260690793,
+}
+
+
+def test_mission_show_quotes_the_download_size(monkeypatch: pytest.MonkeyPatch):
+    """`mission show` is the CLI's detail page — it must quote the same cost the card does."""
+    _wire_show(monkeypatch, dict(_SHOW_ENTRY))
+
+    result = runner.invoke(app, ["mission", "show", "chrono-canary"])
+
+    assert result.exit_code == 0, result.output
+    assert "Download" in result.output
+    assert "260.7 MB" in result.output
+
+
+def test_mission_show_breaks_down_a_two_part_download(monkeypatch: pytest.MonkeyPatch):
+    _wire_show(monkeypatch, dict(_SHOW_ENTRY))
+
+    result = runner.invoke(app, ["mission", "show", "chrono-canary"])
+
+    assert "260.3 MB" in result.output  # image
+    assert "384.3 KB" in result.output  # attachments
+
+
+def test_mission_show_omits_a_redundant_single_part_breakdown(monkeypatch: pytest.MonkeyPatch):
+    """One component must not be restated as its own breakdown."""
+    _wire_show(
+        monkeypatch,
+        {
+            **_SHOW_ENTRY,
+            "attachments_size_bytes": None,
+            "image_size_bytes": 280500000,
+            "download_size_bytes": 280500000,
+        },
+    )
+
+    result = runner.invoke(app, ["mission", "show", "chrono-canary"])
+
+    assert "280.5 MB" in result.output
+    assert "image" not in result.output.lower()
+
+
+def test_mission_show_omits_the_size_once_installed(monkeypatch: pytest.MonkeyPatch):
+    """The download already happened; there is no cost left to quote."""
+    _wire_show(monkeypatch, {**_SHOW_ENTRY, "installed": True, "download_size_bytes": None})
+
+    result = runner.invoke(app, ["mission", "show", "chrono-canary"])
+
+    assert result.exit_code == 0, result.output
+    assert "Download" not in result.output
+
+
 def test_mission_list_shows_a_dash_when_the_size_is_unknown(monkeypatch: pytest.MonkeyPatch):
     """An installed mission carries no size — the download already happened."""
     _wire_missions(
