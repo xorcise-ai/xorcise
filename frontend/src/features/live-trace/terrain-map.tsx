@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
 import { Maximize2, Minimize2, Minus, Plus, Radio } from "lucide-react";
 import { foldIndexForEvent, foldTerrain, probingPathEdgeIds, pulseIdsForIndex, type FoldedNode } from "./terrain-fold";
 import { layoutTerrainV2, type LaidOutEdge, type LaidOutGroup, type LaidOutNode } from "./terrain-layout";
@@ -748,7 +749,10 @@ export function TerrainMapView({
     return () => el.removeEventListener("wheel", onWheel);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `layout` re-runs the attach when the
     // container (re)mounts: it only renders once layout exists, so the first mount is never missed.
-  }, [layout, showWheelTip]);
+    // `expanded` is load-bearing too: the fullscreen portal toggle re-creates the viewport
+    // ELEMENT, so without it this native listener stays bound to the detached old node and
+    // wheel zoom dies after a toggle (for a terminal run `layout` never changes to re-run it).
+  }, [layout, showWheelTip, expanded]);
   useEffect(() => {
     // A new subject (run / mission) starts following again from scratch.
     fittedDims.current = null;
@@ -781,7 +785,10 @@ export function TerrainMapView({
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [fitToView, hasLayout]);
+    // `expanded` re-attaches the observer to the element the fullscreen portal toggle just
+    // re-created — observe() fires once on attach, which is also what refits the graph to the
+    // new viewport size on both expand and collapse (unless the user has taken control).
+  }, [fitToView, hasLayout, expanded]);
 
   if (isError)
     return (
@@ -816,10 +823,14 @@ export function TerrainMapView({
   // No-model degradation notice: only meaningful once there's a mission (segment) group.
   const hasMissionGroup = (terrain.groups ?? []).some((g) => g.kind === "segment");
 
-  return (
+  const body = (
     // Collapsed, the wrapper is layout-transparent (`contents`) so the card sits in the page
-    // exactly as before; expanded, it becomes the fixed backdrop the card fills. One element
-    // whose class flips — not two subtrees — so React never remounts the map mid-toggle.
+    // exactly as before; expanded, it becomes the fixed backdrop the card fills — rendered
+    // through a body-level portal (see the return below), because `fixed` positions against
+    // the nearest TRANSFORMED ancestor, not the viewport: the narrow layout's TabsContent
+    // animates `transform` (animate-fade-up), which trapped the overlay inside the Terrain
+    // pane. The component instance (zoom/pan/queries) survives the toggle; only the DOM
+    // subtree re-homes, and the element-bound effects above re-attach off `expanded`.
     <div
       className={expanded ? "fixed inset-0 z-50 flex bg-black/60 p-3 sm:p-6" : "contents"}
       role={expanded ? "dialog" : undefined}
@@ -1051,4 +1062,9 @@ export function TerrainMapView({
       </div>
     </div>
   );
+  // Fullscreen must escape every ancestor: a transformed/filtered/overflow-clipping parent
+  // (the tabs' entrance animation, a pane's overflow-hidden) becomes `fixed`'s containing
+  // block and pins the overlay inside the pane. Portaling to <body> is the standard escape.
+  // `expanded` only flips on a user click, so this never runs during SSR/prerender.
+  return expanded ? createPortal(body, document.body) : body;
 }

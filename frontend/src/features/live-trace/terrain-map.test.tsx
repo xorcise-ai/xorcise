@@ -1101,6 +1101,41 @@ describe("TerrainMap", () => {
       expect(screen.getByTestId("terrain-svg")).toBeInTheDocument();
     });
 
+    test("the expanded overlay portals to document.body, escaping transformed ancestors", async () => {
+      server.use(http.get("*/runs/r1/terrain2", () => HttpResponse.json(graph)));
+      renderWithProviders(<TerrainMap runId="r1" expandable />);
+      await screen.findByText("web");
+      fireEvent.click(screen.getByRole("button", { name: "fullscreen" }));
+      // REGRESSION: the narrow layout mounts the map under an ancestor that animates
+      // `transform` (TabsContent's fade-up entrance) — `fixed` positions against such an
+      // ancestor, not the viewport, so anything short of a body-level portal pins the
+      // "fullscreen" overlay inside the Terrain pane.
+      expect(screen.getByRole("dialog").parentElement).toBe(document.body);
+    });
+
+    test("wheel zoom still works after a fullscreen round-trip (re-created viewport re-binds)", async () => {
+      server.use(http.get("*/runs/r1/terrain2", () => HttpResponse.json(graph)));
+      renderWithProviders(<TerrainMap runId="r1" expandable />);
+      await screen.findByText("web");
+      fireEvent.click(screen.getByRole("button", { name: "fullscreen" }));
+      fireEvent.click(screen.getByRole("button", { name: "exit fullscreen" }));
+      // The portal toggle re-creates the viewport ELEMENT; the native wheel listener must
+      // re-attach to it (for a terminal run `layout` never changes to re-run the attach).
+      const viewport = screen.getByTestId("terrain-viewport");
+      const scale = () => {
+        const layer = screen.getByTestId("terrain-svg").parentElement as HTMLElement;
+        const m = /scale\(([\d.]+)\)/.exec(layer.style.transform || "");
+        return m ? parseFloat(m[1]) : 1;
+      };
+      const before = scale();
+      act(() => {
+        viewport.dispatchEvent(
+          new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -100, ctrlKey: true }),
+        );
+      });
+      expect(scale()).toBeGreaterThan(before);
+    });
+
     test("clicking the backdrop closes; clicking inside the card does not", async () => {
       server.use(http.get("*/runs/r1/terrain2", () => HttpResponse.json(graph)));
       renderWithProviders(<TerrainMap runId="r1" expandable />);
