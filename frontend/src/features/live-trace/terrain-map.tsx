@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { Minus, Plus, Radio } from "lucide-react";
+import { createPortal } from "react-dom";
+import { Maximize2, Minimize2, Minus, Plus, Radio } from "lucide-react";
 import { foldIndexForEvent, foldTerrain, probingPathEdgeIds, pulseIdsForIndex, type FoldedNode } from "./terrain-fold";
 import { layoutTerrainV2, type LaidOutEdge, type LaidOutGroup, type LaidOutNode } from "./terrain-layout";
 import { edgeColor, groupStyle, nodeColor, otelActive, T } from "./terrain-colors";
@@ -486,6 +487,7 @@ export function TerrainMap({
   active = false,
   selectedEventId = null,
   attributionOff = false,
+  expandable = false,
   onHoverEvents,
   onReturnToLive,
 }: {
@@ -494,6 +496,7 @@ export function TerrainMap({
   selectedEventId?: string | null;
   onReturnToLive?: () => void;
   attributionOff?: boolean;
+  expandable?: boolean;
   onHoverEvents?: (eventIds: string[]) => void;
 }) {
   const { terrain, isError } = useRunTerrain(runId, active);
@@ -505,6 +508,7 @@ export function TerrainMap({
       active={active}
       selectedEventId={selectedEventId}
       attributionOff={attributionOff}
+      expandable={expandable}
       onHoverEvents={onHoverEvents}
       onReturnToLive={onReturnToLive}
     />
@@ -518,6 +522,7 @@ export function TerrainMapView({
   active = false,
   selectedEventId = null,
   attributionOff = false,
+  expandable = false,
   caption,
   onHoverEvents,
   onReturnToLive,
@@ -539,6 +544,9 @@ export function TerrainMapView({
    *  configured — RunLive derives this from `useConfig().terrain.configured` so TerrainMap
    *  stays presentational/query-free. */
   attributionOff?: boolean;
+  /** Offer the fullscreen toggle (bottom-right cluster): expanded, the card re-homes into a
+   *  fixed full-viewport overlay — Escape, the backdrop, or the toggle collapse it. */
+  expandable?: boolean;
   /** Footer caption override — the default speaks run-language (amber ring / trace events);
    *  the mission preview passes its own. */
   caption?: string;
@@ -622,6 +630,18 @@ export function TerrainMapView({
 
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  // Fullscreen toggle (expandable only): the SAME component instance re-homes into a fixed
+  // overlay — no second map, no remount — so pan/zoom and the shared terrain query carry
+  // over, and the ResizeObserver's auto-fit refits the graph to the larger viewport.
+  const [expanded, setExpanded] = useState(false);
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setExpanded(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [expanded]);
   // Hover state for the node popover (description + collapsed routes, Change 2). An edge's
   // route-used note (Change 3) is rendered persistently at the edge midpoint instead — no hover
   // state needed for it.
@@ -729,7 +749,10 @@ export function TerrainMapView({
     return () => el.removeEventListener("wheel", onWheel);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `layout` re-runs the attach when the
     // container (re)mounts: it only renders once layout exists, so the first mount is never missed.
-  }, [layout, showWheelTip]);
+    // `expanded` is load-bearing too: the fullscreen portal toggle re-creates the viewport
+    // ELEMENT, so without it this native listener stays bound to the detached old node and
+    // wheel zoom dies after a toggle (for a terminal run `layout` never changes to re-run it).
+  }, [layout, showWheelTip, expanded]);
   useEffect(() => {
     // A new subject (run / mission) starts following again from scratch.
     fittedDims.current = null;
@@ -762,7 +785,10 @@ export function TerrainMapView({
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [fitToView, hasLayout]);
+    // `expanded` re-attaches the observer to the element the fullscreen portal toggle just
+    // re-created — observe() fires once on attach, which is also what refits the graph to the
+    // new viewport size on both expand and collapse (unless the user has taken control).
+  }, [fitToView, hasLayout, expanded]);
 
   if (isError)
     return (
@@ -797,8 +823,25 @@ export function TerrainMapView({
   // No-model degradation notice: only meaningful once there's a mission (segment) group.
   const hasMissionGroup = (terrain.groups ?? []).some((g) => g.kind === "segment");
 
-  return (
-    <div className="flex h-full flex-col rounded-md border border-border bg-card">
+  const body = (
+    // Collapsed, the wrapper is layout-transparent (`contents`) so the card sits in the page
+    // exactly as before; expanded, it becomes the fixed backdrop the card fills — rendered
+    // through a body-level portal (see the return below), because `fixed` positions against
+    // the nearest TRANSFORMED ancestor, not the viewport: the narrow layout's TabsContent
+    // animates `transform` (animate-fade-up), which trapped the overlay inside the Terrain
+    // pane. The component instance (zoom/pan/queries) survives the toggle; only the DOM
+    // subtree re-homes, and the element-bound effects above re-attach off `expanded`.
+    <div
+      className={expanded ? "fixed inset-0 z-50 flex bg-black/60 p-3 sm:p-6" : "contents"}
+      role={expanded ? "dialog" : undefined}
+      aria-modal={expanded || undefined}
+      aria-label={expanded ? "Terrain map — fullscreen" : undefined}
+      onClick={expanded ? () => setExpanded(false) : undefined}
+    >
+      <div
+        className="flex h-full w-full flex-col rounded-md border border-border bg-card"
+        onClick={expanded ? (e) => e.stopPropagation() : undefined}
+      >
       {terrain.summary && (
         // The authored summary, in full. It used to be ONE `truncate`d line with the rest
         // revealed on hover, which cut every shipped mission's summary mid-sentence — they
@@ -960,6 +1003,21 @@ export function TerrainMapView({
           className="absolute bottom-2 right-2 flex items-center gap-1 text-text-secondary"
           onPointerDown={(e) => e.stopPropagation()}
         >
+          {expandable && (
+            <button
+              type="button"
+              aria-label={expanded ? "exit fullscreen" : "fullscreen"}
+              title={expanded ? "Exit fullscreen (Esc)" : "Fullscreen"}
+              onClick={() => setExpanded((v) => !v)}
+              className="flex items-center self-stretch rounded border border-border bg-card px-2 hover:text-foreground"
+            >
+              {expanded ? (
+                <Minimize2 className="size-3" aria-hidden />
+              ) : (
+                <Maximize2 className="size-3" aria-hidden />
+              )}
+            </button>
+          )}
           <button
             type="button"
             aria-label="zoom out"
@@ -1001,6 +1059,12 @@ export function TerrainMapView({
           target attribution off — set a model in Settings
         </p>
       )}
+      </div>
     </div>
   );
+  // Fullscreen must escape every ancestor: a transformed/filtered/overflow-clipping parent
+  // (the tabs' entrance animation, a pane's overflow-hidden) becomes `fixed`'s containing
+  // block and pins the overlay inside the pane. Portaling to <body> is the standard escape.
+  // `expanded` only flips on a user click, so this never runs during SSR/prerender.
+  return expanded ? createPortal(body, document.body) : body;
 }

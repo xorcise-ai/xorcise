@@ -494,6 +494,9 @@ export function RunLive({ runId }: { runId: string | null }) {
               active={!terminal}
               selectedEventId={selectedEventId}
               attributionOff={attributionOff}
+              // fullscreen toggle — the split pane is fine for glancing, not for reading a
+              // large graph; expanded, the same map instance fills the viewport.
+              expandable
               onHoverEvents={setHoveredEventIds}
               onReturnToLive={() => setSelectedEventId(null)}
             />
