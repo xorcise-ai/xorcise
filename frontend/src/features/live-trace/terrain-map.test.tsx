@@ -578,7 +578,7 @@ describe("TerrainMap", () => {
   });
 
   test("exposes zoom + fit controls", async () => {
-    mount(
+    const { container } = mount(
       terrain({
         groups: [{ id: "g", label: "Group", description: null, kind: "agent", order: 0, hidden: false, discovered: true }],
         nodes: [
@@ -590,6 +590,18 @@ describe("TerrainMap", () => {
     expect(await screen.findByLabelText("zoom in")).toBeInTheDocument();
     expect(await screen.findByLabelText("fit to view")).toBeInTheDocument();
     expect(await screen.findByLabelText("zoom out")).toBeInTheDocument();
+    const viewport = container.querySelector('[data-testid="terrain-viewport"]');
+    const card = screen.getByTestId("terrain-map-card");
+    const canvas = screen.getByTestId("terrain-canvas");
+    const footer = screen.getByTestId("terrain-footer");
+    const controls = screen.getByTestId("terrain-view-controls");
+    expect(card.className).toContain("min-h-[360px]");
+    expect(canvas.className).toContain("min-h-0");
+    expect(canvas.className).not.toContain("min-h-[360px]");
+    expect(viewport).not.toContainElement(controls);
+    expect(footer).toContainElement(controls);
+    expect(controls.className).toContain("flex-wrap");
+    expect(controls.className).not.toContain("absolute");
   });
 
   test("the + / − buttons actually change the map's zoom scale", async () => {

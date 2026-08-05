@@ -451,13 +451,14 @@ function Legend() {
   // graph the operator wants to see. Minimised, it's a single "Legend" pill one click from the key.
   const [open, setOpen] = useState(true);
   return (
-    <div className="absolute right-2 top-2 rounded-md border border-border bg-card/90 backdrop-blur">
+    <div
+      className="absolute right-2 top-2 z-20 max-w-[calc(100%-1rem)] rounded-md border border-border bg-card/90 backdrop-blur"
+      onPointerDown={(e) => e.stopPropagation()}
+    >
       <button
         type="button"
         aria-label={open ? "Minimise legend" : "Expand legend"}
         aria-expanded={open}
-        // stop the pointerdown reaching the viewport, which would otherwise start a map pan.
-        onPointerDown={(e) => e.stopPropagation()}
         onClick={() => setOpen((o) => !o)}
         className="flex w-full items-center justify-between gap-3 px-2.5 py-1.5 text-label uppercase text-text-tertiary hover:text-text-secondary"
       >
@@ -1008,9 +1009,10 @@ export function TerrainMapView({
       onClick={expanded ? () => setExpanded(false) : undefined}
     >
       <div
-        // `relative` anchors the expanded-summary overlay below, which spans the card from
-        // its top edge OVER the map — never through the layout.
-        className="relative flex h-full w-full flex-col rounded-md border border-border bg-card"
+        // `relative` anchors the summary layer, which grows over the map without changing its
+        // dimensions or causing the auto-fit observer to visually zoom the graph.
+        data-testid="terrain-map-card"
+        className="relative flex h-full min-h-[360px] w-full flex-col overflow-hidden rounded-md border border-border bg-card"
         onClick={expanded ? (e) => e.stopPropagation() : undefined}
       >
       {terrain.summary && (
@@ -1050,56 +1052,57 @@ export function TerrainMapView({
           </div>
         </div>
       )}
-      <div className="relative min-h-[360px] flex-1">
+      {/* The component owns the 360px overall floor; the canvas row itself must be allowed to
+          shrink so the summary and in-flow footer can never be pushed beyond the clipped card. */}
+      <div data-testid="terrain-canvas" className="relative min-h-0 flex-1">
         <div
           ref={containerRef}
           data-testid="terrain-viewport"
           // Inset a few px from the card's rounded border and clip HERE, so panned/zoomed content
           // stays inside a clean gutter and never butts up against (or paints over) the outer
           // border — the fit measures this inset box, so a fitted graph gets the gutter too.
-          className="absolute inset-[3px] overflow-hidden rounded-[4px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          className="absolute inset-[3px] isolate overflow-hidden rounded-[4px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           // focusable so focus/blur/Escape can gate plain-wheel zoom (the wheel listener itself is
           // native + non-passive, attached in the effect above)
           tabIndex={0}
-        onFocus={() => {
-          wheelActiveRef.current = true;
-        }}
-        onBlur={() => {
-          wheelActiveRef.current = false;
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") wheelActiveRef.current = false;
-        }}
-        onPointerDown={(e) => {
-          wheelActiveRef.current = true; // engaging the map opts into plain-wheel zoom
-          drag.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y };
-          setDragging(true);
-          e.currentTarget.setPointerCapture(e.pointerId);
-        }}
-        onPointerMove={(e) => {
-          if (!drag.current) return;
-          userControlled.current = true; // a manual pan opts out of auto-fit
-          setPan({
-            x: drag.current.px + (e.clientX - drag.current.x),
-            y: drag.current.py + (e.clientY - drag.current.y),
-          });
-        }}
-        onPointerUp={() => {
-          drag.current = null;
-          setDragging(false);
-        }}
-        style={{ cursor: dragging ? "grabbing" : "grab" }}
-      >
-        <div
-          style={{
-            transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-            transformOrigin: "0 0",
-            transition: dragging ? "none" : "transform 0.15s ease-out",
+          onFocus={() => {
+            wheelActiveRef.current = true;
           }}
+          onBlur={() => {
+            wheelActiveRef.current = false;
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") wheelActiveRef.current = false;
+          }}
+          onPointerDown={(e) => {
+            wheelActiveRef.current = true; // engaging the map opts into plain-wheel zoom
+            drag.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y };
+            setDragging(true);
+            e.currentTarget.setPointerCapture(e.pointerId);
+          }}
+          onPointerMove={(e) => {
+            if (!drag.current) return;
+            userControlled.current = true; // a manual pan opts out of auto-fit
+            setPan({
+              x: drag.current.px + (e.clientX - drag.current.x),
+              y: drag.current.py + (e.clientY - drag.current.y),
+            });
+          }}
+          onPointerUp={() => {
+            drag.current = null;
+            setDragging(false);
+          }}
+          style={{ cursor: dragging ? "grabbing" : "grab" }}
         >
-          {graph}
+          <div
+            style={{
+              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+              transformOrigin: "0 0",
+              transition: dragging ? "none" : "transform 0.15s ease-out",
+            }}
+          >
+            {graph}
           </div>
-        </div>
 
         <Legend />
 
@@ -1109,7 +1112,7 @@ export function TerrainMapView({
             pointerdown so the pannable container beneath can't capture the click. */}
         {selectedEventId && onReturnToLive && (
           <div
-            className="absolute left-1/2 top-2 z-20 -translate-x-1/2"
+            className="absolute left-1/2 top-2 z-20 max-w-[calc(100%-1rem)] -translate-x-1/2"
             onPointerDown={(e) => e.stopPropagation()}
           >
             <button
@@ -1127,17 +1130,28 @@ export function TerrainMapView({
         {wheelTip && (
           <div
             data-testid="wheel-tip"
-            className="pointer-events-none absolute left-1/2 top-2 -translate-x-1/2 whitespace-nowrap rounded-md border border-border bg-card/90 px-2.5 py-1.5 text-caption text-text-secondary backdrop-blur"
+            className="pointer-events-none absolute left-1/2 top-2 z-20 max-w-[calc(100%-1rem)] -translate-x-1/2 truncate whitespace-nowrap rounded-md border border-border bg-card/90 px-2.5 py-1.5 text-caption text-text-secondary backdrop-blur"
           >
             Ctrl/⌘ + scroll to zoom — or click the map
           </div>
         )}
 
-        {/* stopPropagation on pointerdown: the container captures the pointer for panning
-            (setPointerCapture), which otherwise swallows these buttons' click events. */}
+        </div>
+      </div>
+
+      {/* One in-flow footer owns both the caption and view controls. Because the toolbar is no
+          longer absolutely positioned over the canvas, it cannot intersect either terrain border;
+          flex-wrap lets it fall below the caption cleanly in very narrow panes. */}
+      <div
+        data-testid="terrain-footer"
+        className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-t border-border px-4 py-2"
+      >
+        <p className="min-w-[16rem] flex-1 text-caption text-text-tertiary">
+          {caption ?? "Amber ring = what just changed · hover a node to highlight its trace events."}
+        </p>
         <div
-          className="absolute bottom-2 right-2 flex items-center gap-1 text-text-secondary"
-          onPointerDown={(e) => e.stopPropagation()}
+          data-testid="terrain-view-controls"
+          className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1 text-text-secondary"
         >
           {expandable && (
             <button
@@ -1145,7 +1159,7 @@ export function TerrainMapView({
               aria-label={expanded ? "exit fullscreen" : "fullscreen"}
               title={expanded ? "Exit fullscreen (Esc)" : "Fullscreen"}
               onClick={() => setExpanded((v) => !v)}
-              className="flex items-center self-stretch rounded border border-border bg-card px-2 hover:text-foreground"
+              className="flex h-7 items-center rounded border border-border bg-card px-2 hover:text-foreground"
             >
               {expanded ? (
                 <Minimize2 className="size-3" aria-hidden />
@@ -1158,7 +1172,7 @@ export function TerrainMapView({
             type="button"
             aria-label="zoom out"
             onClick={() => zoomBy(0.9)}
-            className="rounded border border-border bg-card px-2 py-0.5 text-dense hover:text-foreground"
+            className="h-7 rounded border border-border bg-card px-2 text-dense hover:text-foreground"
           >
             −
           </button>
@@ -1169,7 +1183,7 @@ export function TerrainMapView({
               userControlled.current = false; // resume auto-fit following
               fitToView();
             }}
-            className="rounded border border-border bg-card px-2 py-0.5 text-dense hover:text-foreground"
+            className="h-7 rounded border border-border bg-card px-2 text-dense hover:text-foreground"
           >
             Fit
           </button>
@@ -1177,19 +1191,12 @@ export function TerrainMapView({
             type="button"
             aria-label="zoom in"
             onClick={() => zoomBy(1.1)}
-            className="rounded border border-border bg-card px-2 py-0.5 text-dense hover:text-foreground"
+            className="h-7 rounded border border-border bg-card px-2 text-dense hover:text-foreground"
           >
             +
           </button>
         </div>
       </div>
-
-      {/* Only the facts the legend doesn't already carry: the amber (just-changed) ring and the
-          hover interaction. The colour→state mapping lives in the legend, so it's dropped here to
-          keep this caption short enough to wrap cleanly inside the card. */}
-      <p className="shrink-0 border-t border-border px-4 py-2 text-caption text-text-tertiary">
-        {caption ?? "Amber ring = what just changed · hover a node to highlight its trace events."}
-      </p>
       {attributionOff && hasMissionGroup && (
         <p className="shrink-0 border-t border-border px-4 py-2 text-caption italic text-text-tertiary">
           target attribution off — set a model in Settings
