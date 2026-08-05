@@ -177,6 +177,18 @@ def show_mission(
     field("Environment", _ENVIRONMENT_LABELS.get(env, md.get("type") or DASH))
     field("Difficulty", difficulty_label(md.get("proficiency")))
     field("Specialty", str(md.get("specialty") or DASH).replace("-", " ").title())
+    # Pull cost — the CLI half of the GUI's "not yet installed" preview. Only while the
+    # download is still ahead of you: an installed mission has its bytes on disk already,
+    # so there is no cost left to quote. The split is shown only when the total genuinely
+    # decomposes; a lab with no attachments would otherwise restate one number as two.
+    if not installed:
+        download = entry.get("download_size_bytes")
+        if download is not None:
+            image, attachments = entry.get("image_size_bytes"), entry.get("attachments_size_bytes")
+            detail = ""
+            if image is not None and attachments is not None:
+                detail = f"  (image {size_label(image)} · attachments {size_label(attachments)})"
+            field("Download", f"{size_label(download)}{detail}")
 
     # Prose, wrapped. These were single unwrapped lines — a real objective runs to
     # ~1,500 characters and broke `| less`, editors and pasted tickets.
