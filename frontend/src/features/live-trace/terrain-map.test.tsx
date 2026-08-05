@@ -577,6 +577,47 @@ describe("TerrainMap", () => {
     expect(screen.getByText("discovered")).toBeInTheDocument();
   });
 
+  test("fit reclaims the legend column when the legend is minimised (issue #23)", async () => {
+    // Three nodes in one band → a WIDE graph, so the fit is width-limited and the legend
+    // reserve directly shrinks the zoom (the regime where the bug rendered the whole graph
+    // smaller than the viewport allowed).
+    const { container } = mount(
+      terrain({
+        groups: [{ id: "g", label: "Group", description: null, kind: "segment", order: 0, hidden: false, discovered: true }],
+        nodes: [
+          { id: "a", label: "a", group: "g", type: "service", objective: false, description: null,
+            discovery_condition: null, completion_condition: null, state: "defined" },
+          { id: "b", label: "b", group: "g", type: "service", objective: false, description: null,
+            discovery_condition: null, completion_condition: null, state: "defined" },
+          { id: "c", label: "c", group: "g", type: "service", objective: false, description: null,
+            discovery_condition: null, completion_condition: null, state: "defined" },
+        ] as ResolvedTerrainV2["nodes"],
+      }),
+    );
+    await screen.findByText("a");
+    const scale = () => {
+      const layer = container.querySelector('[data-testid="terrain-svg"]')!.parentElement as HTMLElement;
+      const m = /scale\(([\d.]+)\)/.exec(layer.style.transform || "");
+      return m ? parseFloat(m[1]) : 1;
+    };
+    // jsdom reports 0×0, which makes fitToView bail — give the viewport a real size. A very
+    // tall box keeps the fit width-limited regardless of the layout's exact aspect.
+    const viewport = container.querySelector('[data-testid="terrain-viewport"]') as HTMLElement;
+    Object.defineProperty(viewport, "clientWidth", { value: 600, configurable: true });
+    Object.defineProperty(viewport, "clientHeight", { value: 5000, configurable: true });
+
+    fireEvent.click(screen.getByLabelText("fit to view"));
+    const withLegend = scale();
+    // Minimising the legend refits automatically (the user hasn't panned/zoomed) and the
+    // freed 132px column goes to the graph — the fit zoom grows.
+    fireEvent.click(screen.getByLabelText("Minimise legend"));
+    const withoutLegend = scale();
+    expect(withoutLegend).toBeGreaterThan(withLegend);
+    // Reopening reserves the column again so no node can land under the open legend.
+    fireEvent.click(screen.getByLabelText("Expand legend"));
+    expect(scale()).toBeLessThan(withoutLegend);
+  });
+
   test("exposes zoom + fit controls", async () => {
     const { container } = mount(
       terrain({

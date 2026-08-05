@@ -446,10 +446,11 @@ const LEGEND: { label: string; color: string; edge?: boolean; dash?: boolean }[]
   { label: "probing edge", color: T.yellow, edge: true, dash: true },
 ];
 
-function Legend() {
-  // Collapsible: the eight-row key is handy on first read but then just occupies the corner of a
-  // graph the operator wants to see. Minimised, it's a single "Legend" pill one click from the key.
-  const [open, setOpen] = useState(true);
+// Collapsible: the eight-row key is handy on first read but then just occupies the corner of a
+// graph the operator wants to see. Minimised, it's a single "Legend" pill one click from the key.
+// `open` is OWNED BY THE MAP, not here — the fit reserves the legend's column only while it is
+// open (issue #23), so the map must see the state to refit on toggle.
+function Legend({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   return (
     <div
       className="absolute right-2 top-2 z-20 max-w-[calc(100%-1rem)] rounded-md border border-border bg-card/90 backdrop-blur"
@@ -459,7 +460,7 @@ function Legend() {
         type="button"
         aria-label={open ? "Minimise legend" : "Expand legend"}
         aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
+        onClick={onToggle}
         className="flex w-full items-center justify-between gap-3 px-2.5 py-1.5 text-label uppercase text-text-tertiary hover:text-text-secondary"
       >
         Legend
@@ -744,14 +745,22 @@ export function TerrainMapView({
   // subscribes once instead of re-subscribing on every 1.5s poll (each poll makes a new `layout`).
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
+  // Legend state lives HERE (not in Legend) because the fit below reserves the legend's
+  // column only while it is open (issue #23). Mirrored into a ref — the `layoutRef` pattern —
+  // so `fitToView` can read it while staying identity-stable for the ResizeObserver.
+  const [legendOpen, setLegendOpen] = useState(true);
+  const legendOpenRef = useRef(legendOpen);
+  legendOpenRef.current = legendOpen;
   // Flips false→true once the graph resolves (and stays true) — gates the ResizeObserver so it
   // attaches only after the viewport it observes exists, without churning on every poll.
   const hasLayout = layout !== null;
 
   // Fit the whole graph into the viewport. The top-right holds the legend overlay, so the fit
-  // RESERVES that column and centres the graph in the remaining area — a fitted node can't land
-  // under the legend (which was clipping the OTel-collector node). A small pad keeps the graph off
-  // the gutter too.
+  // RESERVES that column while the legend is OPEN and centres the graph in the remaining area —
+  // a fitted node can't land under the open legend (which was clipping the OTel-collector node).
+  // Minimised, the legend is a ~90×28px pill: no reserve — a permanently dead 132px column costs
+  // more than the pill's rare overlap with the graph's top-right corner (issue #23). A small pad
+  // keeps the graph off the gutter too.
   const fitToView = useCallback(() => {
     const el = containerRef.current;
     const lo = layoutRef.current;
@@ -760,7 +769,7 @@ export function TerrainMapView({
     const ch = el.clientHeight;
     if (!cw || !ch) return;
     const PAD = 10;
-    const LEGEND_RESERVE = 132; // ≈ the legend overlay's width; kept clear on the right
+    const LEGEND_RESERVE = legendOpenRef.current ? 132 : 0; // ≈ the OPEN legend's width
     const availW = Math.max(80, cw - LEGEND_RESERVE - PAD);
     const availH = Math.max(80, ch - PAD * 2);
     const fit = clampZoom(Math.min(availW / lo.width, availH / lo.height));
@@ -770,6 +779,11 @@ export function TerrainMapView({
       y: Math.max(PAD, (ch - lo.height * fit) / 2),
     });
   }, []);
+  useEffect(() => {
+    // Toggling the legend changes how much width the fit may use — refit under the SAME
+    // hand-off rule as the ResizeObserver: never yank a view the user has panned/zoomed.
+    if (!userControlled.current) fitToView();
+  }, [legendOpen, fitToView]);
   // Zoom by `factor`, keeping `anchor` (container-local px; defaults to the VIEWPORT CENTER)
   // fixed — so content doesn't fly toward the 0,0 transform origin. The +/- buttons zoom about
   // the center; the wheel passes the cursor position so zoom is cursor-anchored.
@@ -1104,7 +1118,7 @@ export function TerrainMapView({
             {graph}
           </div>
 
-        <Legend />
+        <Legend open={legendOpen} onToggle={() => setLegendOpen((o) => !o)} />
 
         {/* Return-to-live escape from time-travel. Shown whenever a span is selected (the map is
             frozen at that fold): a prominent top-centre pill — same idiom as the Trace's pill — that
