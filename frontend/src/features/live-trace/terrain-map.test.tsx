@@ -1,6 +1,6 @@
 import { http, HttpResponse } from "msw";
 import { describe, expect, test, vi } from "vitest";
-import { act, fireEvent, screen } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw/server";
 import type { ResolvedTerrainV2 } from "@/lib/api/types";
@@ -65,29 +65,60 @@ describe("TerrainMap", () => {
     ],
   } as Partial<ResolvedTerrainV2>;
 
-  test("renders the mission summary in full, with no truncation", async () => {
+  test("shows exactly two summary lines and expands the same layer over the map", async () => {
     const summary =
       "A purely offline Windows DFIR reconstruction: parse the corrupted Microsoft-Windows-RPC event log and assemble the flag from five recovered facts.";
     mount(terrain({ ...oneNode, summary }));
-    // ONE copy, wrapped. It used to render twice — a `truncate`d line plus a hover overlay
-    // holding the rest — which cut every shipped mission's summary mid-sentence. A sentence
-    // you have to hover to finish is a sentence nobody reads, so it wraps and the duplicate
-    // overlay is gone with it.
-    const rendered = await screen.findAllByText(summary);
-    expect(rendered).toHaveLength(1);
-    expect(rendered[0]).not.toHaveClass("truncate");
-    // and nothing is layered over the graph any more
-    expect(rendered[0].className).not.toContain("absolute");
-    expect(rendered[0].className).not.toContain("opacity-0");
+    // One full accessible copy lives inside its own two-line clipping viewport.
+    const p = await screen.findByTestId("terrain-summary");
+    expect(p).toHaveTextContent(/assemble the flag from five recovered facts/);
+    expect(p.className).toContain("overflow-hidden");
+    const panel = screen.getByTestId("terrain-summary-overlay");
+    expect(panel.className).toContain("absolute");
+    expect(panel.querySelectorAll("p")).toHaveLength(1);
+    expect(panel).not.toHaveAttribute("data-expanded");
+    Object.defineProperty(panel, "scrollHeight", { value: 180, configurable: true });
+    Object.defineProperty(panel.parentElement, "offsetHeight", { value: 52, configurable: true });
+    // No dead control while nothing overflows (jsdom measures 0/0 → fits) …
+    expect(screen.queryByRole("button", { name: /show more/i })).toBeNull();
+    // … the inline toggle appears once the natural copy is taller than two lines.
+    Object.defineProperty(p, "scrollHeight", { value: 66, configurable: true });
+    Object.defineProperty(p, "clientHeight", { value: 66, configurable: true });
+    act(() => {
+      window.dispatchEvent(new Event("resize"));
+    });
+    const more = await screen.findByRole("button", { name: /show more/i });
+    expect(p.style.maxHeight).toBe("35.2px");
+    expect(more.className).toContain("absolute");
+    expect(more.className).toContain("right-4");
+    expect(more.className).toContain("text-primary");
+    expect(more).toHaveAttribute("aria-expanded", "false");
+    expect(more).toHaveAttribute("aria-controls", p.id);
+    fireEvent.click(more);
+    // The SAME panel and paragraph remain mounted and extend over the map; only the control label
+    // and expansion state change, so there is no duplicate-sheet swap.
+    expect(screen.getByTestId("terrain-summary-overlay")).toBe(panel);
+    expect(screen.getByTestId("terrain-summary")).toBe(p);
+    expect(panel).toHaveAttribute("data-expanded", "true");
+    expect(p.style.maxHeight).toBe("66px");
+    // Full copy (66px) plus the panel chrome (52px slot - 35.2px two-line copy).
+    expect(panel.style.maxHeight).toBe("82.8px");
+    expect(panel.style.overflowY).toBe("hidden");
+    const less = screen.getByRole("button", { name: /show less/i });
+    expect(less).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(less);
+    expect(panel).not.toHaveAttribute("data-expanded");
+    expect(p.style.maxHeight).toBe("35.2px");
+    expect(screen.getByRole("button", { name: /show more/i })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
   });
 
-  test("renders no summary paragraph when the terrain has none", async () => {
+  test("renders no summary block when the terrain has none", async () => {
     const { container } = mount(terrain({ ...oneNode, summary: null }));
     await screen.findByText("web");
-    // No bordered summary paragraph above the viewport when summary is null.
-    // The selector tracks the rendered class list: `p.truncate` stopped existing when the
-    // summary stopped being truncated, so asserting on it would pass vacuously.
-    expect(container.querySelector("p.border-b")).toBeNull();
+    expect(container.querySelector('[data-testid="terrain-summary"]')).toBeNull();
   });
 
   test("a long node label is clamped to two lines and keeps the full text in a title (no sideways overlap)", async () => {
@@ -546,8 +577,49 @@ describe("TerrainMap", () => {
     expect(screen.getByText("discovered")).toBeInTheDocument();
   });
 
+  test("fit reclaims the legend column when the legend is minimised (issue #23)", async () => {
+    // Three nodes in one band → a WIDE graph, so the fit is width-limited and the legend
+    // reserve directly shrinks the zoom (the regime where the bug rendered the whole graph
+    // smaller than the viewport allowed).
+    const { container } = mount(
+      terrain({
+        groups: [{ id: "g", label: "Group", description: null, kind: "segment", order: 0, hidden: false, discovered: true }],
+        nodes: [
+          { id: "a", label: "a", group: "g", type: "service", objective: false, description: null,
+            discovery_condition: null, completion_condition: null, state: "defined" },
+          { id: "b", label: "b", group: "g", type: "service", objective: false, description: null,
+            discovery_condition: null, completion_condition: null, state: "defined" },
+          { id: "c", label: "c", group: "g", type: "service", objective: false, description: null,
+            discovery_condition: null, completion_condition: null, state: "defined" },
+        ] as ResolvedTerrainV2["nodes"],
+      }),
+    );
+    await screen.findByText("a");
+    const scale = () => {
+      const layer = container.querySelector('[data-testid="terrain-svg"]')!.parentElement as HTMLElement;
+      const m = /scale\(([\d.]+)\)/.exec(layer.style.transform || "");
+      return m ? parseFloat(m[1]) : 1;
+    };
+    // jsdom reports 0×0, which makes fitToView bail — give the viewport a real size. A very
+    // tall box keeps the fit width-limited regardless of the layout's exact aspect.
+    const viewport = container.querySelector('[data-testid="terrain-viewport"]') as HTMLElement;
+    Object.defineProperty(viewport, "clientWidth", { value: 600, configurable: true });
+    Object.defineProperty(viewport, "clientHeight", { value: 5000, configurable: true });
+
+    fireEvent.click(screen.getByLabelText("fit to view"));
+    const withLegend = scale();
+    // Minimising the legend refits automatically (the user hasn't panned/zoomed) and the
+    // freed 132px column goes to the graph — the fit zoom grows.
+    fireEvent.click(screen.getByLabelText("Minimise legend"));
+    const withoutLegend = scale();
+    expect(withoutLegend).toBeGreaterThan(withLegend);
+    // Reopening reserves the column again so no node can land under the open legend.
+    fireEvent.click(screen.getByLabelText("Expand legend"));
+    expect(scale()).toBeLessThan(withoutLegend);
+  });
+
   test("exposes zoom + fit controls", async () => {
-    mount(
+    const { container } = mount(
       terrain({
         groups: [{ id: "g", label: "Group", description: null, kind: "agent", order: 0, hidden: false, discovered: true }],
         nodes: [
@@ -559,6 +631,18 @@ describe("TerrainMap", () => {
     expect(await screen.findByLabelText("zoom in")).toBeInTheDocument();
     expect(await screen.findByLabelText("fit to view")).toBeInTheDocument();
     expect(await screen.findByLabelText("zoom out")).toBeInTheDocument();
+    const viewport = container.querySelector('[data-testid="terrain-viewport"]');
+    const card = screen.getByTestId("terrain-map-card");
+    const canvas = screen.getByTestId("terrain-canvas");
+    const footer = screen.getByTestId("terrain-footer");
+    const controls = screen.getByTestId("terrain-view-controls");
+    expect(card.className).toContain("min-h-[360px]");
+    expect(canvas.className).toContain("min-h-0");
+    expect(canvas.className).not.toContain("min-h-[360px]");
+    expect(viewport).not.toContainElement(controls);
+    expect(footer).toContainElement(controls);
+    expect(controls.className).toContain("flex-wrap");
+    expect(controls.className).not.toContain("absolute");
   });
 
   test("the + / − buttons actually change the map's zoom scale", async () => {

@@ -1,8 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { createPortal } from "react-dom";
-import { Maximize2, Minimize2, Minus, Plus, Radio } from "lucide-react";
+import { ChevronDown, Maximize2, Minimize2, Minus, Plus, Radio } from "lucide-react";
 import { foldIndexForEvent, foldTerrain, probingPathEdgeIds, pulseIdsForIndex, type FoldedNode } from "./terrain-fold";
 import { layoutTerrainV2, type LaidOutEdge, type LaidOutGroup, type LaidOutNode } from "./terrain-layout";
 import { edgeColor, groupStyle, nodeColor, otelActive, T } from "./terrain-colors";
@@ -37,6 +46,10 @@ import type { ResolvedTerrainV2 } from "@/lib/api/types";
  */
 
 const AMBER = "var(--color-primary)";
+
+/** `useLayoutEffect` that degrades to `useEffect` on the server. Summary measurements must be
+ *  committed before paint, but these pages are statically prerendered with no DOM to measure. */
+const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 /** Clamp a zoom factor to the pan/zoom bounds. Module-scope so `fitToView` can be a STABLE
  *  callback (the ResizeObserver + auto-fit-follow effects re-run/re-subscribe off its identity). */
@@ -433,19 +446,21 @@ const LEGEND: { label: string; color: string; edge?: boolean; dash?: boolean }[]
   { label: "probing edge", color: T.yellow, edge: true, dash: true },
 ];
 
-function Legend() {
-  // Collapsible: the eight-row key is handy on first read but then just occupies the corner of a
-  // graph the operator wants to see. Minimised, it's a single "Legend" pill one click from the key.
-  const [open, setOpen] = useState(true);
+// Collapsible: the eight-row key is handy on first read but then just occupies the corner of a
+// graph the operator wants to see. Minimised, it's a single "Legend" pill one click from the key.
+// `open` is OWNED BY THE MAP, not here — the fit reserves the legend's column only while it is
+// open (issue #23), so the map must see the state to refit on toggle.
+function Legend({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   return (
-    <div className="absolute right-2 top-2 rounded-md border border-border bg-card/90 backdrop-blur">
+    <div
+      className="absolute right-2 top-2 z-20 max-w-[calc(100%-1rem)] rounded-md border border-border bg-card/90 backdrop-blur"
+      onPointerDown={(e) => e.stopPropagation()}
+    >
       <button
         type="button"
         aria-label={open ? "Minimise legend" : "Expand legend"}
         aria-expanded={open}
-        // stop the pointerdown reaching the viewport, which would otherwise start a map pan.
-        onPointerDown={(e) => e.stopPropagation()}
-        onClick={() => setOpen((o) => !o)}
+        onClick={onToggle}
         className="flex w-full items-center justify-between gap-3 px-2.5 py-1.5 text-label uppercase text-text-tertiary hover:text-text-secondary"
       >
         Legend
@@ -642,6 +657,77 @@ export function TerrainMapView({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [expanded]);
+  // Summary clamp (issue #22): collapsed by default; `summaryOverflows` gates the toggle so
+  // a summary that fits in two lines shows no dead "Show more" control. Measured (scroll vs
+  // client height) rather than guessed from character count — wrap width varies pane to
+  // pane. Re-measured on window resize (jsdom's ResizeObserver-free path too) and via a
+  // ResizeObserver on the element itself; `expanded` re-binds to the element the fullscreen
+  // portal toggle creates.
+  const [summaryExpanded, setSummaryExpanded] = useState(false);
+  const [summaryOverflows, setSummaryOverflows] = useState(false);
+  const summaryId = useId();
+  const summaryRef = useRef<HTMLParagraphElement | null>(null);
+  const summarySlotRef = useRef<HTMLDivElement | null>(null);
+  const summaryPanelRef = useRef<HTMLDivElement | null>(null);
+  const summaryTwoLineHeight = useCallback(() => {
+    const copy = summaryRef.current;
+    if (!copy) return 0;
+    const style = window.getComputedStyle(copy);
+    const rawLineHeight = Number.parseFloat(style.lineHeight);
+    const fontSize = Number.parseFloat(style.fontSize);
+    // Browsers normally resolve line-height to px, but WebKit/jsdom may expose the unitless 1.6.
+    // Treat values smaller than the font size as multipliers; never fall back to clientHeight,
+    // because that is the FULL paragraph and was what let four lines leak into the collapsed UI.
+    const lineHeight =
+      Number.isFinite(rawLineHeight) && rawLineHeight > 0
+        ? Number.isFinite(fontSize) && fontSize > 0 && rawLineHeight < fontSize
+          ? rawLineHeight * fontSize
+          : rawLineHeight
+        : 17.6; // caption token: 11px × 1.6
+    return lineHeight * 2;
+  }, []);
+  const sizeSummaryPanel = useCallback(() => {
+    // One permanently-mounted layer supplies both states: the slot reserves exactly two lines in
+    // layout, while this panel grows to its full natural height OVER the map. The reader explicitly
+    // asked to open the prose, so covering more of the canvas is calmer than introducing a small
+    // nested scroller; collapsing restores the entire terrain immediately.
+    const panel = summaryPanelRef.current;
+    const slot = summarySlotRef.current;
+    const copy = summaryRef.current;
+    if (!panel || !slot || !copy) return;
+    const collapsed = slot.offsetHeight;
+    const twoLines = summaryTwoLineHeight();
+    // `collapsed - twoLines` is the fixed panel chrome: top padding plus the amber action row.
+    // Add it to the copy's full scroll height rather than asking the already-clipped panel for its
+    // scrollHeight, which would only report the collapsed child.
+    const natural = Math.max(collapsed, copy.scrollHeight + Math.max(0, collapsed - twoLines));
+    const target = summaryExpanded ? natural : collapsed;
+    copy.style.maxHeight = `${summaryExpanded ? copy.scrollHeight : twoLines}px`;
+    panel.style.maxHeight = `${target}px`;
+    panel.style.overflowY = "hidden";
+  }, [summaryExpanded, summaryTwoLineHeight]);
+  useIsomorphicLayoutEffect(() => {
+    sizeSummaryPanel();
+  }, [sizeSummaryPanel, expanded, terrain?.summary, summaryOverflows]);
+  useEffect(() => {
+    const el = summaryRef.current;
+    if (!el) return;
+    const measure = () => {
+      // The copy itself is never clamped (the surrounding panel clips it), so compare its natural
+      // height with two computed line boxes. `clientHeight` is the jsdom fallback used by tests.
+      const twoLines = summaryTwoLineHeight();
+      setSummaryOverflows(el.scrollHeight > twoLines + 1);
+      sizeSummaryPanel();
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    ro?.observe(el);
+    return () => {
+      window.removeEventListener("resize", measure);
+      ro?.disconnect();
+    };
+  }, [terrain?.summary, expanded, sizeSummaryPanel, summaryTwoLineHeight]);
   // Hover state for the node popover (description + collapsed routes, Change 2). An edge's
   // route-used note (Change 3) is rendered persistently at the edge midpoint instead — no hover
   // state needed for it.
@@ -659,14 +745,22 @@ export function TerrainMapView({
   // subscribes once instead of re-subscribing on every 1.5s poll (each poll makes a new `layout`).
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
+  // Legend state lives HERE (not in Legend) because the fit below reserves the legend's
+  // column only while it is open (issue #23). Mirrored into a ref — the `layoutRef` pattern —
+  // so `fitToView` can read it while staying identity-stable for the ResizeObserver.
+  const [legendOpen, setLegendOpen] = useState(true);
+  const legendOpenRef = useRef(legendOpen);
+  legendOpenRef.current = legendOpen;
   // Flips false→true once the graph resolves (and stays true) — gates the ResizeObserver so it
   // attaches only after the viewport it observes exists, without churning on every poll.
   const hasLayout = layout !== null;
 
   // Fit the whole graph into the viewport. The top-right holds the legend overlay, so the fit
-  // RESERVES that column and centres the graph in the remaining area — a fitted node can't land
-  // under the legend (which was clipping the OTel-collector node). A small pad keeps the graph off
-  // the gutter too.
+  // RESERVES that column while the legend is OPEN and centres the graph in the remaining area —
+  // a fitted node can't land under the open legend (which was clipping the OTel-collector node).
+  // Minimised, the legend is a ~90×28px pill: no reserve — a permanently dead 132px column costs
+  // more than the pill's rare overlap with the graph's top-right corner (issue #23). A small pad
+  // keeps the graph off the gutter too.
   const fitToView = useCallback(() => {
     const el = containerRef.current;
     const lo = layoutRef.current;
@@ -675,7 +769,7 @@ export function TerrainMapView({
     const ch = el.clientHeight;
     if (!cw || !ch) return;
     const PAD = 10;
-    const LEGEND_RESERVE = 132; // ≈ the legend overlay's width; kept clear on the right
+    const LEGEND_RESERVE = legendOpenRef.current ? 132 : 0; // ≈ the OPEN legend's width
     const availW = Math.max(80, cw - LEGEND_RESERVE - PAD);
     const availH = Math.max(80, ch - PAD * 2);
     const fit = clampZoom(Math.min(availW / lo.width, availH / lo.height));
@@ -685,6 +779,11 @@ export function TerrainMapView({
       y: Math.max(PAD, (ch - lo.height * fit) / 2),
     });
   }, []);
+  useEffect(() => {
+    // Toggling the legend changes how much width the fit may use — refit under the SAME
+    // hand-off rule as the ResizeObserver: never yank a view the user has panned/zoomed.
+    if (!userControlled.current) fitToView();
+  }, [legendOpen, fitToView]);
   // Zoom by `factor`, keeping `anchor` (container-local px; defaults to the VIEWPORT CENTER)
   // fixed — so content doesn't fly toward the 0,0 transform origin. The +/- buttons zoom about
   // the center; the wheel passes the cursor position so zoom is cursor-anchored.
@@ -754,9 +853,11 @@ export function TerrainMapView({
     // wheel zoom dies after a toggle (for a terminal run `layout` never changes to re-run it).
   }, [layout, showWheelTip, expanded]);
   useEffect(() => {
-    // A new subject (run / mission) starts following again from scratch.
+    // A new subject (run / mission) starts following again from scratch — auto-fit AND the
+    // summary clamp (an expanded summary is a per-subject reading choice, not a setting).
     fittedDims.current = null;
     userControlled.current = false;
+    setSummaryExpanded(false);
   }, [resetKey]);
   useEffect(() => {
     // Fit on the FIRST render, and re-fit whenever the graph's drawn size changes (live nodes
@@ -790,6 +891,106 @@ export function TerrainMapView({
     // new viewport size on both expand and collapse (unless the user has taken control).
   }, [fitToView, hasLayout, expanded]);
 
+  // The drawn graph, MEMOISED on the inputs that actually change it. Everything below this line
+  // — the summary sheet, the legend, the wheel tip, `dragging`, and every pan frame — used to
+  // re-render the entire SVG subtree (every group, edge, node, plus a `foreignObject` per edge
+  // note whose fresh inline style re-applied the custom properties feeding `.tm-edge-note`'s
+  // max-height transition). That is the "the whole terrain re-renders" jank on a summary toggle,
+  // and it also ran on EVERY pointermove of a pan. Hoisted here so unrelated UI state can't
+  // touch the graph: React reconciles the sheet alone. Declared before the early returns below
+  // (hooks are unconditional) and null-guards its own inputs.
+  const graph = useMemo(() => {
+    if (!layout || !folded) return null;
+    // Reverse hover link: the event ids of updates that targeted this node.
+    const eventIdsForNode = (nodeId: string): string[] =>
+      updates
+        .filter((u) => u.target_kind === "node" && u.target_id === nodeId && u.event_id)
+        .map((u) => u.event_id as string);
+    // Route-used annotation: the note of the MOST-RECENT update targeting this edge, up to the
+    // current fold boundary `k` — nothing shown when no such update carries a note.
+    const noteForEdge = (edgeId: string): string | null => {
+      const upTo = Math.min(k, updates.length - 1);
+      for (let i = upTo; i >= 0; i--) {
+        const u = updates[i];
+        if (u.target_kind === "edge" && u.target_id === edgeId && u.note) return u.note;
+      }
+      return null;
+    };
+    return (
+      <svg
+        width={layout.width}
+        height={layout.height}
+        role="img"
+        aria-label="terrain map"
+        data-testid="terrain-svg"
+      >
+        {layout.groups.map((lg) => (
+          <GroupBox
+            key={lg.fgroup.group.id}
+            lg={lg}
+            pulsed={folded.pulse.groups.has(lg.fgroup.group.id)}
+            otel={otel}
+            enumerated={groupEnumerated.get(lg.fgroup.group.id) ?? false}
+          />
+        ))}
+        {layout.edges.map((le) => (
+          <EdgeLine
+            key={le.fedge.edge.id}
+            le={le}
+            pulsed={probingEdges.has(le.fedge.edge.id)}
+            note={noteForEdge(le.fedge.edge.id)}
+          />
+        ))}
+        {layout.nodes.map((ln) => (
+          <NodeMark
+            key={ln.fnode.node.id}
+            ln={ln}
+            // amber delta ring only during time-travel; the live "where the agent is" cue is the
+            // hot halo below — so exactly one highlight shows per mode
+            pulsed={!!selectedEventId && folded.pulse.nodes.has(ln.fnode.node.id)}
+            hot={ln.fnode.node.id === hotDrawnId}
+            color={nodeColor(ln.fnode, groupKind.get(ln.fnode.node.group), otel)}
+            onEnter={() => {
+              onHoverEvents?.(eventIdsForNode(ln.fnode.node.id));
+              setHoverNodeId(ln.fnode.node.id);
+            }}
+            onLeave={() => {
+              onHoverEvents?.([]);
+              setHoverNodeId((h) => (h === ln.fnode.node.id ? null : h));
+            }}
+          />
+        ))}
+        {/* persistent route-used note on every acted-on edge — the action lives on the line
+            it acted on, not gated behind hover (drawn on top of everything else) */}
+        {layout.edges.map((le) => {
+          const noteText = noteForEdge(le.fedge.edge.id);
+          return noteText ? (
+            <EdgeNoteTooltip key={`note-${le.fedge.edge.id}`} le={le} note={noteText} />
+          ) : null;
+        })}
+        {/* hover popover, drawn on top of everything else */}
+        {hoverNodeId &&
+          (() => {
+            const ln = layout.nodes.find((n) => n.fnode.node.id === hoverNodeId);
+            return ln ? <NodeTooltip ln={ln} /> : null;
+          })()}
+      </svg>
+    );
+  }, [
+    layout,
+    folded,
+    otel,
+    groupKind,
+    groupEnumerated,
+    probingEdges,
+    selectedEventId,
+    hotDrawnId,
+    hoverNodeId,
+    updates,
+    k,
+    onHoverEvents,
+  ]);
+
   if (isError)
     return (
       <div className="rounded-md border border-border bg-card p-4 text-body text-err">
@@ -802,23 +1003,6 @@ export function TerrainMapView({
         No terrain yet.
       </div>
     );
-
-  // Reverse hover link: the event ids of updates that targeted this node.
-  const eventIdsForNode = (nodeId: string): string[] =>
-    updates
-      .filter((u) => u.target_kind === "node" && u.target_id === nodeId && u.event_id)
-      .map((u) => u.event_id as string);
-
-  // Route-used annotation (Change 3): the note of the MOST-RECENT update targeting this edge, up
-  // to the current fold boundary `k` — nothing shown when no such update carries a note.
-  const noteForEdge = (edgeId: string): string | null => {
-    const upTo = Math.min(k, updates.length - 1);
-    for (let i = upTo; i >= 0; i--) {
-      const u = updates[i];
-      if (u.target_kind === "edge" && u.target_id === edgeId && u.note) return u.note;
-    }
-    return null;
-  };
 
   // No-model degradation notice: only meaningful once there's a mission (segment) group.
   const hasMissionGroup = (terrain.groups ?? []).some((g) => g.kind === "segment");
@@ -839,133 +1023,102 @@ export function TerrainMapView({
       onClick={expanded ? () => setExpanded(false) : undefined}
     >
       <div
-        className="flex h-full w-full flex-col rounded-md border border-border bg-card"
+        // `relative` anchors the summary layer, which grows over the map without changing its
+        // dimensions or causing the auto-fit observer to visually zoom the graph.
+        data-testid="terrain-map-card"
+        className="relative flex h-full min-h-[360px] w-full flex-col overflow-hidden rounded-md border border-border bg-card"
         onClick={expanded ? (e) => e.stopPropagation() : undefined}
       >
       {terrain.summary && (
-        // The authored summary, in full. It used to be ONE `truncate`d line with the rest
-        // revealed on hover, which cut every shipped mission's summary mid-sentence — they
-        // run to two or three lines. A sentence you have to hover to finish is a sentence
-        // nobody reads, so it wraps.
-        //
-        // The hover overlay went with it: it existed only to reveal what truncation hid, and
-        // a duplicate that fades in over identical text is worse than no overlay at all. What
-        // it bought was a fixed header height so the graph never shifted; the graph is the
-        // flex-1 region below and simply takes the residual height, so a two-line summary
-        // costs one line of map rather than breaking the layout.
-        <p className="shrink-0 border-b border-border px-4 py-2 text-caption text-text-secondary">
-          {terrain.summary}
-        </p>
+        // A fixed two-line slot keeps the terrain's geometry stable. The ONE summary panel is
+        // always present and clipped to that slot; its amber action sits over only the end of the
+        // final visible line, so the prose keeps the full card width instead of yielding a column.
+        <div ref={summarySlotRef} className="tm-summary-slot relative z-30 shrink-0 text-caption">
+          <div
+            ref={summaryPanelRef}
+            data-testid="terrain-summary-overlay"
+            data-expanded={summaryExpanded || undefined}
+            className="tm-summary-panel absolute inset-x-0 top-0 box-border overflow-hidden border-b border-border bg-card px-4 py-2"
+          >
+            <p
+              id={summaryId}
+              ref={summaryRef}
+              data-testid="terrain-summary"
+              className="tm-summary-copy overflow-hidden text-caption text-text-secondary"
+            >
+              {terrain.summary}
+            </p>
+            {summaryOverflows && (
+              <button
+                type="button"
+                aria-controls={summaryId}
+                aria-expanded={summaryExpanded}
+                onClick={() => setSummaryExpanded((value) => !value)}
+                className="tm-summary-toggle absolute bottom-1.5 right-4 flex h-5 items-center gap-1 whitespace-nowrap pl-8 text-label uppercase text-primary transition-colors hover:text-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {summaryExpanded ? "Show less" : "Show more"}
+                <ChevronDown
+                  aria-hidden
+                  className={`size-3 transition-transform duration-200 ${summaryExpanded ? "rotate-180" : ""}`}
+                />
+              </button>
+            )}
+          </div>
+        </div>
       )}
-      <div className="relative min-h-[360px] flex-1">
+      {/* The component owns the 360px overall floor; the canvas row itself must be allowed to
+          shrink so the summary and in-flow footer can never be pushed beyond the clipped card. */}
+      <div data-testid="terrain-canvas" className="relative min-h-0 flex-1">
         <div
           ref={containerRef}
           data-testid="terrain-viewport"
           // Inset a few px from the card's rounded border and clip HERE, so panned/zoomed content
           // stays inside a clean gutter and never butts up against (or paints over) the outer
           // border — the fit measures this inset box, so a fitted graph gets the gutter too.
-          className="absolute inset-[3px] overflow-hidden rounded-[4px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          className="absolute inset-[3px] isolate overflow-hidden rounded-[4px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           // focusable so focus/blur/Escape can gate plain-wheel zoom (the wheel listener itself is
           // native + non-passive, attached in the effect above)
           tabIndex={0}
-        onFocus={() => {
-          wheelActiveRef.current = true;
-        }}
-        onBlur={() => {
-          wheelActiveRef.current = false;
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") wheelActiveRef.current = false;
-        }}
-        onPointerDown={(e) => {
-          wheelActiveRef.current = true; // engaging the map opts into plain-wheel zoom
-          drag.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y };
-          setDragging(true);
-          e.currentTarget.setPointerCapture(e.pointerId);
-        }}
-        onPointerMove={(e) => {
-          if (!drag.current) return;
-          userControlled.current = true; // a manual pan opts out of auto-fit
-          setPan({
-            x: drag.current.px + (e.clientX - drag.current.x),
-            y: drag.current.py + (e.clientY - drag.current.y),
-          });
-        }}
-        onPointerUp={() => {
-          drag.current = null;
-          setDragging(false);
-        }}
-        style={{ cursor: dragging ? "grabbing" : "grab" }}
-      >
-        <div
-          style={{
-            transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-            transformOrigin: "0 0",
-            transition: dragging ? "none" : "transform 0.15s ease-out",
+          onFocus={() => {
+            wheelActiveRef.current = true;
           }}
+          onBlur={() => {
+            wheelActiveRef.current = false;
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") wheelActiveRef.current = false;
+          }}
+          onPointerDown={(e) => {
+            wheelActiveRef.current = true; // engaging the map opts into plain-wheel zoom
+            drag.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y };
+            setDragging(true);
+            e.currentTarget.setPointerCapture(e.pointerId);
+          }}
+          onPointerMove={(e) => {
+            if (!drag.current) return;
+            userControlled.current = true; // a manual pan opts out of auto-fit
+            setPan({
+              x: drag.current.px + (e.clientX - drag.current.x),
+              y: drag.current.py + (e.clientY - drag.current.y),
+            });
+          }}
+          onPointerUp={() => {
+            drag.current = null;
+            setDragging(false);
+          }}
+          style={{ cursor: dragging ? "grabbing" : "grab" }}
         >
-          <svg
-            width={layout.width}
-            height={layout.height}
-            role="img"
-            aria-label="terrain map"
-            data-testid="terrain-svg"
+          <div
+            style={{
+              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+              transformOrigin: "0 0",
+              transition: dragging ? "none" : "transform 0.15s ease-out",
+            }}
           >
-            {layout.groups.map((lg) => (
-              <GroupBox
-                key={lg.fgroup.group.id}
-                lg={lg}
-                pulsed={folded!.pulse.groups.has(lg.fgroup.group.id)}
-                otel={otel}
-                enumerated={groupEnumerated.get(lg.fgroup.group.id) ?? false}
-              />
-            ))}
-            {layout.edges.map((le) => (
-              <EdgeLine
-                key={le.fedge.edge.id}
-                le={le}
-                pulsed={probingEdges.has(le.fedge.edge.id)}
-                note={noteForEdge(le.fedge.edge.id)}
-              />
-            ))}
-            {layout.nodes.map((ln) => (
-              <NodeMark
-                key={ln.fnode.node.id}
-                ln={ln}
-                // amber delta ring only during time-travel; the live "where the agent is" cue is the
-                // hot halo below — so exactly one highlight shows per mode
-                pulsed={!!selectedEventId && folded!.pulse.nodes.has(ln.fnode.node.id)}
-                hot={ln.fnode.node.id === hotDrawnId}
-                color={nodeColor(ln.fnode, groupKind.get(ln.fnode.node.group), otel)}
-                onEnter={() => {
-                  onHoverEvents?.(eventIdsForNode(ln.fnode.node.id));
-                  setHoverNodeId(ln.fnode.node.id);
-                }}
-                onLeave={() => {
-                  onHoverEvents?.([]);
-                  setHoverNodeId((h) => (h === ln.fnode.node.id ? null : h));
-                }}
-              />
-            ))}
-            {/* persistent route-used note on every acted-on edge — the action lives on the line
-                it acted on, not gated behind hover (drawn on top of everything else) */}
-            {layout.edges.map((le) => {
-              const noteText = noteForEdge(le.fedge.edge.id);
-              return noteText ? (
-                <EdgeNoteTooltip key={`note-${le.fedge.edge.id}`} le={le} note={noteText} />
-              ) : null;
-            })}
-            {/* hover popover, drawn on top of everything else */}
-            {hoverNodeId &&
-              (() => {
-                const ln = layout.nodes.find((n) => n.fnode.node.id === hoverNodeId);
-                return ln ? <NodeTooltip ln={ln} /> : null;
-              })()}
-          </svg>
+            {graph}
           </div>
-        </div>
 
-        <Legend />
+        <Legend open={legendOpen} onToggle={() => setLegendOpen((o) => !o)} />
 
         {/* Return-to-live escape from time-travel. Shown whenever a span is selected (the map is
             frozen at that fold): a prominent top-centre pill — same idiom as the Trace's pill — that
@@ -973,7 +1126,7 @@ export function TerrainMapView({
             pointerdown so the pannable container beneath can't capture the click. */}
         {selectedEventId && onReturnToLive && (
           <div
-            className="absolute left-1/2 top-2 z-20 -translate-x-1/2"
+            className="absolute left-1/2 top-2 z-20 max-w-[calc(100%-1rem)] -translate-x-1/2"
             onPointerDown={(e) => e.stopPropagation()}
           >
             <button
@@ -991,17 +1144,28 @@ export function TerrainMapView({
         {wheelTip && (
           <div
             data-testid="wheel-tip"
-            className="pointer-events-none absolute left-1/2 top-2 -translate-x-1/2 whitespace-nowrap rounded-md border border-border bg-card/90 px-2.5 py-1.5 text-caption text-text-secondary backdrop-blur"
+            className="pointer-events-none absolute left-1/2 top-2 z-20 max-w-[calc(100%-1rem)] -translate-x-1/2 truncate whitespace-nowrap rounded-md border border-border bg-card/90 px-2.5 py-1.5 text-caption text-text-secondary backdrop-blur"
           >
             Ctrl/⌘ + scroll to zoom — or click the map
           </div>
         )}
 
-        {/* stopPropagation on pointerdown: the container captures the pointer for panning
-            (setPointerCapture), which otherwise swallows these buttons' click events. */}
+        </div>
+      </div>
+
+      {/* One in-flow footer owns both the caption and view controls. Because the toolbar is no
+          longer absolutely positioned over the canvas, it cannot intersect either terrain border;
+          flex-wrap lets it fall below the caption cleanly in very narrow panes. */}
+      <div
+        data-testid="terrain-footer"
+        className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-t border-border px-4 py-2"
+      >
+        <p className="min-w-[16rem] flex-1 text-caption text-text-tertiary">
+          {caption ?? "Amber ring = what just changed · hover a node to highlight its trace events."}
+        </p>
         <div
-          className="absolute bottom-2 right-2 flex items-center gap-1 text-text-secondary"
-          onPointerDown={(e) => e.stopPropagation()}
+          data-testid="terrain-view-controls"
+          className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1 text-text-secondary"
         >
           {expandable && (
             <button
@@ -1009,7 +1173,7 @@ export function TerrainMapView({
               aria-label={expanded ? "exit fullscreen" : "fullscreen"}
               title={expanded ? "Exit fullscreen (Esc)" : "Fullscreen"}
               onClick={() => setExpanded((v) => !v)}
-              className="flex items-center self-stretch rounded border border-border bg-card px-2 hover:text-foreground"
+              className="flex h-7 items-center rounded border border-border bg-card px-2 hover:text-foreground"
             >
               {expanded ? (
                 <Minimize2 className="size-3" aria-hidden />
@@ -1022,7 +1186,7 @@ export function TerrainMapView({
             type="button"
             aria-label="zoom out"
             onClick={() => zoomBy(0.9)}
-            className="rounded border border-border bg-card px-2 py-0.5 text-dense hover:text-foreground"
+            className="h-7 rounded border border-border bg-card px-2 text-dense hover:text-foreground"
           >
             −
           </button>
@@ -1033,7 +1197,7 @@ export function TerrainMapView({
               userControlled.current = false; // resume auto-fit following
               fitToView();
             }}
-            className="rounded border border-border bg-card px-2 py-0.5 text-dense hover:text-foreground"
+            className="h-7 rounded border border-border bg-card px-2 text-dense hover:text-foreground"
           >
             Fit
           </button>
@@ -1041,19 +1205,12 @@ export function TerrainMapView({
             type="button"
             aria-label="zoom in"
             onClick={() => zoomBy(1.1)}
-            className="rounded border border-border bg-card px-2 py-0.5 text-dense hover:text-foreground"
+            className="h-7 rounded border border-border bg-card px-2 text-dense hover:text-foreground"
           >
             +
           </button>
         </div>
       </div>
-
-      {/* Only the facts the legend doesn't already carry: the amber (just-changed) ring and the
-          hover interaction. The colour→state mapping lives in the legend, so it's dropped here to
-          keep this caption short enough to wrap cleanly inside the card. */}
-      <p className="shrink-0 border-t border-border px-4 py-2 text-caption text-text-tertiary">
-        {caption ?? "Amber ring = what just changed · hover a node to highlight its trace events."}
-      </p>
       {attributionOff && hasMissionGroup && (
         <p className="shrink-0 border-t border-border px-4 py-2 text-caption italic text-text-tertiary">
           target attribution off — set a model in Settings
