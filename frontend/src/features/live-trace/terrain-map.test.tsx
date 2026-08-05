@@ -65,49 +65,54 @@ describe("TerrainMap", () => {
     ],
   } as Partial<ResolvedTerrainV2>;
 
-  test("clamps the summary to two lines; expanding draws OVER the map, never through the layout (issue #22)", async () => {
+  test("shows exactly two summary lines and expands the same layer over the map", async () => {
     const summary =
       "A purely offline Windows DFIR reconstruction: parse the corrupted Microsoft-Windows-RPC event log and assemble the flag from five recovered facts.";
     mount(terrain({ ...oneNode, summary }));
-    // The in-flow strip: clamped, with the FULL text in the DOM (line-clamp hides visually
-    // only), so assistive tech and find-in-page see the whole sentence.
+    // One full accessible copy lives inside its own two-line clipping viewport.
     const p = await screen.findByTestId("terrain-summary");
     expect(p).toHaveTextContent(/assemble the flag from five recovered facts/);
-    expect(p.className).toContain("line-clamp-2");
-    // No dead "Show more" while nothing overflows (jsdom measures 0/0 → fits) …
+    expect(p.className).toContain("overflow-hidden");
+    const panel = screen.getByTestId("terrain-summary-overlay");
+    expect(panel.className).toContain("absolute");
+    expect(panel.querySelectorAll("p")).toHaveLength(1);
+    expect(panel).not.toHaveAttribute("data-expanded");
+    Object.defineProperty(panel, "scrollHeight", { value: 180, configurable: true });
+    Object.defineProperty(panel.parentElement, "offsetHeight", { value: 52, configurable: true });
+    // No dead control while nothing overflows (jsdom measures 0/0 → fits) …
     expect(screen.queryByRole("button", { name: /show more/i })).toBeNull();
-    // … the toggle appears once the clamped box actually overflows.
+    // … the inline toggle appears once the natural copy is taller than two lines.
     Object.defineProperty(p, "scrollHeight", { value: 66, configurable: true });
-    Object.defineProperty(p, "clientHeight", { value: 33, configurable: true });
+    Object.defineProperty(p, "clientHeight", { value: 66, configurable: true });
     act(() => {
       window.dispatchEvent(new Event("resize"));
     });
     const more = await screen.findByRole("button", { name: /show more/i });
-    // an explicit CLICK target announcing its state — never hover-gated text
+    expect(p.style.maxHeight).toBe("35.2px");
+    expect(more.className).toContain("absolute");
+    expect(more.className).toContain("right-4");
+    expect(more.className).toContain("text-primary");
     expect(more).toHaveAttribute("aria-expanded", "false");
+    expect(more).toHaveAttribute("aria-controls", p.id);
     fireEvent.click(more);
-    // LAYOUT-FROZEN: the in-flow strip stays clamped — the first cut removed the clamp
-    // in place, which pushed the viewport down and shoved the zoom cluster out of a
-    // fixed-height card. The full text arrives as an absolutely-positioned overlay drawn
-    // over the map instead, its text aria-hidden (the strip already carries the one
-    // accessible copy — never announce the same sentence twice).
-    expect(p.className).toContain("line-clamp-2");
-    const overlay = screen.getByTestId("terrain-summary-overlay");
-    expect(overlay.className).toContain("absolute");
-    expect(overlay.querySelector("p")).toHaveAttribute("aria-hidden", "true");
-    expect(overlay.querySelector("p")).toHaveTextContent(/five recovered facts/);
-    // one toggle at a time: Show more is covered/gone, Show less lives in the overlay
-    expect(screen.queryByRole("button", { name: /show more/i })).toBeNull();
+    // The SAME panel and paragraph remain mounted and extend over the map; only the control label
+    // and expansion state change, so there is no duplicate-sheet swap.
+    expect(screen.getByTestId("terrain-summary-overlay")).toBe(panel);
+    expect(screen.getByTestId("terrain-summary")).toBe(p);
+    expect(panel).toHaveAttribute("data-expanded", "true");
+    expect(p.style.maxHeight).toBe("66px");
+    // Full copy (66px) plus the panel chrome (52px slot - 35.2px two-line copy).
+    expect(panel.style.maxHeight).toBe("82.8px");
+    expect(panel.style.overflowY).toBe("hidden");
     const less = screen.getByRole("button", { name: /show less/i });
     expect(less).toHaveAttribute("aria-expanded", "true");
     fireEvent.click(less);
-    // The sheet OUTLIVES the state change so its closing motion can play (useExitTransition),
-    // then unmounts — collapsing must animate, not vanish in a frame.
-    expect(screen.getByTestId("terrain-summary-overlay")).toHaveAttribute("data-closing", "true");
-    await waitFor(() =>
-      expect(screen.queryByTestId("terrain-summary-overlay")).toBeNull(),
+    expect(panel).not.toHaveAttribute("data-expanded");
+    expect(p.style.maxHeight).toBe("35.2px");
+    expect(screen.getByRole("button", { name: /show more/i })).toHaveAttribute(
+      "aria-expanded",
+      "false",
     );
-    expect(await screen.findByRole("button", { name: /show more/i })).toBeInTheDocument();
   });
 
   test("renders no summary block when the terrain has none", async () => {
