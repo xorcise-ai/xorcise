@@ -1,6 +1,6 @@
 import { http, HttpResponse } from "msw";
 import { describe, expect, test, vi } from "vitest";
-import { act, fireEvent, screen } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/msw/server";
 import type { ResolvedTerrainV2 } from "@/lib/api/types";
@@ -101,7 +101,12 @@ describe("TerrainMap", () => {
     const less = screen.getByRole("button", { name: /show less/i });
     expect(less).toHaveAttribute("aria-expanded", "true");
     fireEvent.click(less);
-    expect(screen.queryByTestId("terrain-summary-overlay")).toBeNull();
+    // The sheet OUTLIVES the state change so its closing motion can play (useExitTransition),
+    // then unmounts — collapsing must animate, not vanish in a frame.
+    expect(screen.getByTestId("terrain-summary-overlay")).toHaveAttribute("data-closing", "true");
+    await waitFor(() =>
+      expect(screen.queryByTestId("terrain-summary-overlay")).toBeNull(),
+    );
     expect(await screen.findByRole("button", { name: /show more/i })).toBeInTheDocument();
   });
 
