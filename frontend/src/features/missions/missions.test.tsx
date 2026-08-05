@@ -176,6 +176,26 @@ describe("MissionCatalog", () => {
     // A row that declares no type renders no badge rather than a guessed one.
     expect(screen.queryByText("Lab")).not.toBeInTheDocument();
   });
+
+  it("presents Other providers as the house coming-soon preview, not an empty-results box", async () => {
+    server.use(http.get("*/api/missions", () => HttpResponse.json(catalog)));
+    renderWithProviders(<MissionCatalog />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: /Other providers/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText("One catalog, many providers.")).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/Coming soon/i)).toBeInTheDocument();
+    // The shape of the flow, illustrative only.
+    expect(screen.getByText("Connect a provider")).toBeInTheDocument();
+    expect(screen.getByText("Pull and run")).toBeInTheDocument();
+
+    // Not the filters-matched-nothing state, which is a different problem with a way out.
+    expect(
+      screen.queryByRole("button", { name: /Clear filters/i }),
+    ).not.toBeInTheDocument();
+  });
 });
 
 describe("MissionDetail", () => {

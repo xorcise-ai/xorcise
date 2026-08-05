@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { Layers, LayoutGrid, List, Search } from "lucide-react";
+import { LayoutGrid, List, Search } from "lucide-react";
 import { cn } from "@/components/ui/cn";
 import { Button } from "@/components/ui/button";
 import { SkeletonCardGrid } from "@/components/ui/skeleton";
@@ -20,6 +20,7 @@ import { FilterBar } from "./filter-bar";
 import { MissionCard, MissionRow } from "./mission-card";
 import { LibraryStats } from "./library-stats";
 import { IngestButton } from "./ingest-button";
+import { OtherProviders } from "./other-providers";
 import type { CatalogEntry, CatalogStatus } from "@/lib/api/types";
 
 /** localStorage key the catalog uses to remember the grid/list view between visits. */
@@ -83,15 +84,18 @@ export function MissionCatalog() {
       {missions.data && (
         <Tabs defaultValue={defaultTab} className="flex min-h-0 flex-1 flex-col">
           {/* One unbounded scroller for the whole catalog: the stats dashboard scrolls up and off,
-             while the filters + provider tabs row below stays pinned to the top. */}
-          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+             while the filters + provider tabs row below stays pinned to the top.
+             A flex COLUMN, so the tab body below can claim the leftover height instead of
+             guessing it from 100vh — Other providers needs a canvas that exactly fills the
+             pane, and a vh estimate overshot it by the height of this strip and scrolled. */}
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto pr-1">
             {all.length > 0 && (
-              <div className="mb-3">
+              <div className="mb-3 shrink-0">
                 <LibraryStats missions={all} />
               </div>
             )}
 
-            <div className="sticky top-0 z-20 border-b border-border bg-background pb-2">
+            <div className="sticky top-0 z-20 shrink-0 border-b border-border bg-background pb-2">
               <FilterBar
                 filters={filters}
                 onChange={setFilters}
@@ -120,7 +124,10 @@ export function MissionCatalog() {
               />
             </div>
 
-            <div className="pt-3">
+            {/* flex-1 with the default min-height:auto — grows to fill when a tab's content
+                is short (Other providers), stays at content height and lets the scroller
+                scroll when it is long (a 26-card grid). */}
+            <div className="flex flex-1 flex-col pt-3">
               {/* ── Your Own (local, ingested) ── */}
               <TabsContent value="your_own" className="space-y-2">
                 <p className="text-dense text-text-secondary">
@@ -157,9 +164,9 @@ export function MissionCatalog() {
                 )}
               </TabsContent>
 
-              {/* ── Other providers (placeholder) ── */}
-              <TabsContent value="other">
-                <ComingSoon />
+              {/* ── Other providers (committed, not shipped) ── */}
+              <TabsContent value="other" className="flex flex-1 flex-col">
+                <OtherProviders />
               </TabsContent>
             </div>
           </div>
@@ -325,19 +332,6 @@ function NoResults({ onClear }: { onClear: () => void }) {
       <Button variant="outline" size="sm" onClick={onClear}>
         Clear filters
       </Button>
-    </div>
-  );
-}
-
-function ComingSoon() {
-  return (
-    <div className="flex flex-col items-center gap-2 rounded-md border border-dashed border-border bg-card/40 px-6 py-6 text-center">
-      <Layers className="size-5 text-text-secondary" />
-      <p className="text-body font-medium text-heading">More providers coming soon</p>
-      <p className="max-w-sm text-body text-text-secondary">
-        Third-party mission providers will appear here, alongside Your Own and the
-        XORCISE remote library.
-      </p>
     </div>
   );
 }
