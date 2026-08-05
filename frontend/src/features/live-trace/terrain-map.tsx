@@ -1,8 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { createPortal } from "react-dom";
 import { Maximize2, Minimize2, Minus, Plus, Radio } from "lucide-react";
+import { useExitTransition } from "@/components/ui/use-exit-transition";
 import { foldIndexForEvent, foldTerrain, probingPathEdgeIds, pulseIdsForIndex, type FoldedNode } from "./terrain-fold";
 import { layoutTerrainV2, type LaidOutEdge, type LaidOutGroup, type LaidOutNode } from "./terrain-layout";
 import { edgeColor, groupStyle, nodeColor, otelActive, T } from "./terrain-colors";
@@ -37,6 +46,16 @@ import type { ResolvedTerrainV2 } from "@/lib/api/types";
  */
 
 const AMBER = "var(--color-primary)";
+
+/** Summary-sheet open/close duration. Must match `.tm-summary-sheet`'s transition in
+ *  globals.css — it keeps the closing sheet mounted exactly long enough to animate out. */
+const SUMMARY_SHEET_MS = 200;
+
+/** `useLayoutEffect` that degrades to `useEffect` on the server. The sheet's open/close motion
+ *  must be committed BEFORE paint (a passive effect would show one frame at the wrong height),
+ *  but these pages are statically prerendered, where React warns that a layout effect does
+ *  nothing — and there is no DOM to measure anyway. */
+const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 /** Clamp a zoom factor to the pan/zoom bounds. Module-scope so `fitToView` can be a STABLE
  *  callback (the ResizeObserver + auto-fit-follow effects re-run/re-subscribe off its identity). */
@@ -651,6 +670,33 @@ export function TerrainMapView({
   const [summaryExpanded, setSummaryExpanded] = useState(false);
   const [summaryOverflows, setSummaryOverflows] = useState(false);
   const summaryRef = useRef<HTMLParagraphElement | null>(null);
+  const summaryStripRef = useRef<HTMLDivElement | null>(null);
+  const summarySheetRef = useRef<HTMLDivElement | null>(null);
+  // The sheet outlives `summaryExpanded` by the animation duration so its CLOSING motion can
+  // play — the same seam the Dialog uses. Without it, collapsing unmounted the sheet instantly
+  // and the summary vanished in one frame while opening animated: motion in one direction only.
+  const { mounted: summarySheetMounted, closing: summarySheetClosing } = useExitTransition(
+    summaryExpanded,
+    SUMMARY_SHEET_MS,
+  );
+  useIsomorphicLayoutEffect(() => {
+    // Drive the growth: from the strip's own height (so the sheet starts exactly congruent with
+    // the two clamped lines it covers) to its content height, capped to the card. Written to
+    // inline max-height BEFORE paint, with a forced reflow between the two writes so the browser
+    // has a start value to interpolate from — a single write would just land at the end state.
+    const el = summarySheetRef.current;
+    const strip = summaryStripRef.current;
+    if (!el || !strip) return;
+    const collapsed = strip.offsetHeight;
+    const full = Math.min(el.scrollHeight, el.parentElement?.clientHeight ?? el.scrollHeight);
+    if (summarySheetClosing) {
+      el.style.maxHeight = `${collapsed}px`;
+      return;
+    }
+    el.style.maxHeight = `${collapsed}px`;
+    void el.offsetHeight; // reflow: commit the start value before the target
+    el.style.maxHeight = `${full}px`;
+  }, [summarySheetMounted, summarySheetClosing, terrain?.summary]);
   useEffect(() => {
     const el = summaryRef.current;
     if (!el) return;
@@ -814,6 +860,106 @@ export function TerrainMapView({
     // new viewport size on both expand and collapse (unless the user has taken control).
   }, [fitToView, hasLayout, expanded]);
 
+  // The drawn graph, MEMOISED on the inputs that actually change it. Everything below this line
+  // — the summary sheet, the legend, the wheel tip, `dragging`, and every pan frame — used to
+  // re-render the entire SVG subtree (every group, edge, node, plus a `foreignObject` per edge
+  // note whose fresh inline style re-applied the custom properties feeding `.tm-edge-note`'s
+  // max-height transition). That is the "the whole terrain re-renders" jank on a summary toggle,
+  // and it also ran on EVERY pointermove of a pan. Hoisted here so unrelated UI state can't
+  // touch the graph: React reconciles the sheet alone. Declared before the early returns below
+  // (hooks are unconditional) and null-guards its own inputs.
+  const graph = useMemo(() => {
+    if (!layout || !folded) return null;
+    // Reverse hover link: the event ids of updates that targeted this node.
+    const eventIdsForNode = (nodeId: string): string[] =>
+      updates
+        .filter((u) => u.target_kind === "node" && u.target_id === nodeId && u.event_id)
+        .map((u) => u.event_id as string);
+    // Route-used annotation: the note of the MOST-RECENT update targeting this edge, up to the
+    // current fold boundary `k` — nothing shown when no such update carries a note.
+    const noteForEdge = (edgeId: string): string | null => {
+      const upTo = Math.min(k, updates.length - 1);
+      for (let i = upTo; i >= 0; i--) {
+        const u = updates[i];
+        if (u.target_kind === "edge" && u.target_id === edgeId && u.note) return u.note;
+      }
+      return null;
+    };
+    return (
+      <svg
+        width={layout.width}
+        height={layout.height}
+        role="img"
+        aria-label="terrain map"
+        data-testid="terrain-svg"
+      >
+        {layout.groups.map((lg) => (
+          <GroupBox
+            key={lg.fgroup.group.id}
+            lg={lg}
+            pulsed={folded.pulse.groups.has(lg.fgroup.group.id)}
+            otel={otel}
+            enumerated={groupEnumerated.get(lg.fgroup.group.id) ?? false}
+          />
+        ))}
+        {layout.edges.map((le) => (
+          <EdgeLine
+            key={le.fedge.edge.id}
+            le={le}
+            pulsed={probingEdges.has(le.fedge.edge.id)}
+            note={noteForEdge(le.fedge.edge.id)}
+          />
+        ))}
+        {layout.nodes.map((ln) => (
+          <NodeMark
+            key={ln.fnode.node.id}
+            ln={ln}
+            // amber delta ring only during time-travel; the live "where the agent is" cue is the
+            // hot halo below — so exactly one highlight shows per mode
+            pulsed={!!selectedEventId && folded.pulse.nodes.has(ln.fnode.node.id)}
+            hot={ln.fnode.node.id === hotDrawnId}
+            color={nodeColor(ln.fnode, groupKind.get(ln.fnode.node.group), otel)}
+            onEnter={() => {
+              onHoverEvents?.(eventIdsForNode(ln.fnode.node.id));
+              setHoverNodeId(ln.fnode.node.id);
+            }}
+            onLeave={() => {
+              onHoverEvents?.([]);
+              setHoverNodeId((h) => (h === ln.fnode.node.id ? null : h));
+            }}
+          />
+        ))}
+        {/* persistent route-used note on every acted-on edge — the action lives on the line
+            it acted on, not gated behind hover (drawn on top of everything else) */}
+        {layout.edges.map((le) => {
+          const noteText = noteForEdge(le.fedge.edge.id);
+          return noteText ? (
+            <EdgeNoteTooltip key={`note-${le.fedge.edge.id}`} le={le} note={noteText} />
+          ) : null;
+        })}
+        {/* hover popover, drawn on top of everything else */}
+        {hoverNodeId &&
+          (() => {
+            const ln = layout.nodes.find((n) => n.fnode.node.id === hoverNodeId);
+            return ln ? <NodeTooltip ln={ln} /> : null;
+          })()}
+      </svg>
+    );
+  }, [
+    layout,
+    folded,
+    otel,
+    groupKind,
+    groupEnumerated,
+    probingEdges,
+    selectedEventId,
+    hotDrawnId,
+    hoverNodeId,
+    updates,
+    k,
+    onHoverEvents,
+  ]);
+
   if (isError)
     return (
       <div className="rounded-md border border-border bg-card p-4 text-body text-err">
@@ -826,23 +972,6 @@ export function TerrainMapView({
         No terrain yet.
       </div>
     );
-
-  // Reverse hover link: the event ids of updates that targeted this node.
-  const eventIdsForNode = (nodeId: string): string[] =>
-    updates
-      .filter((u) => u.target_kind === "node" && u.target_id === nodeId && u.event_id)
-      .map((u) => u.event_id as string);
-
-  // Route-used annotation (Change 3): the note of the MOST-RECENT update targeting this edge, up
-  // to the current fold boundary `k` — nothing shown when no such update carries a note.
-  const noteForEdge = (edgeId: string): string | null => {
-    const upTo = Math.min(k, updates.length - 1);
-    for (let i = upTo; i >= 0; i--) {
-      const u = updates[i];
-      if (u.target_kind === "edge" && u.target_id === edgeId && u.note) return u.note;
-    }
-    return null;
-  };
 
   // No-model degradation notice: only meaningful once there's a mission (segment) group.
   const hasMissionGroup = (terrain.groups ?? []).some((g) => g.kind === "segment");
@@ -883,7 +1012,7 @@ export function TerrainMapView({
         // shoved the zoom cluster out of a fixed-height card (the mission page's 480px box);
         // nothing in this card may move because prose was opened. line-clamp hides visually
         // only, so this in-flow copy keeps the full text for assistive tech / find-in-page.
-        <div className="shrink-0 border-b border-border px-4 py-2">
+        <div ref={summaryStripRef} className="shrink-0 border-b border-border px-4 py-2">
           <p
             ref={summaryRef}
             data-testid="terrain-summary"
@@ -903,17 +1032,23 @@ export function TerrainMapView({
           )}
         </div>
       )}
-      {terrain.summary && summaryExpanded && (
-        // The expanded summary, as a LAYOUT-INERT overlay over the top of the map. Same
-        // padding as the strip, so its first two lines land exactly over their clamped
-        // copies — it reads as the strip growing over the graph, not a popover appearing.
-        // The text is aria-hidden (the in-flow strip already carries the full accessible
-        // copy — never announce the same sentence twice); the Show less control stays
-        // outside the hidden node so it remains focusable. z-30 clears the map region's
-        // pills (z-20); max-h + scroll is the backstop for a summary taller than the card.
+      {terrain.summary && summarySheetMounted && (
+        // The expanded summary, as a LAYOUT-INERT sheet over the top of the map. Same padding
+        // as the strip, so its first two lines land exactly over their clamped copies — it
+        // reads as the strip growing over the graph, not a popover appearing. It GROWS: the
+        // layout effect above animates max-height from the strip's own height to the sheet's
+        // content height (`.tm-summary-sheet` carries the transition, and drops it under
+        // prefers-reduced-motion), and reverses on close — so the motion is continuous in
+        // both directions instead of a snap. The text is aria-hidden (the in-flow strip
+        // already carries the full accessible copy — never announce the same sentence twice);
+        // the Show less control stays outside the hidden node so it remains focusable. z-30
+        // clears the map region's pills (z-20); overflow-y handles a summary taller than the
+        // card, which the measured cap clamps to.
         <div
+          ref={summarySheetRef}
           data-testid="terrain-summary-overlay"
-          className="absolute inset-x-0 top-0 z-30 max-h-full overflow-y-auto rounded-t-md border-b border-border bg-card px-4 py-2 shadow-lg"
+          data-closing={summarySheetClosing || undefined}
+          className="tm-summary-sheet absolute inset-x-0 top-0 z-30 overflow-y-auto rounded-t-md border-b border-border bg-card px-4 py-2 shadow-lg"
         >
           <p aria-hidden="true" className="text-caption text-text-secondary">
             {terrain.summary}
@@ -975,64 +1110,7 @@ export function TerrainMapView({
             transition: dragging ? "none" : "transform 0.15s ease-out",
           }}
         >
-          <svg
-            width={layout.width}
-            height={layout.height}
-            role="img"
-            aria-label="terrain map"
-            data-testid="terrain-svg"
-          >
-            {layout.groups.map((lg) => (
-              <GroupBox
-                key={lg.fgroup.group.id}
-                lg={lg}
-                pulsed={folded!.pulse.groups.has(lg.fgroup.group.id)}
-                otel={otel}
-                enumerated={groupEnumerated.get(lg.fgroup.group.id) ?? false}
-              />
-            ))}
-            {layout.edges.map((le) => (
-              <EdgeLine
-                key={le.fedge.edge.id}
-                le={le}
-                pulsed={probingEdges.has(le.fedge.edge.id)}
-                note={noteForEdge(le.fedge.edge.id)}
-              />
-            ))}
-            {layout.nodes.map((ln) => (
-              <NodeMark
-                key={ln.fnode.node.id}
-                ln={ln}
-                // amber delta ring only during time-travel; the live "where the agent is" cue is the
-                // hot halo below — so exactly one highlight shows per mode
-                pulsed={!!selectedEventId && folded!.pulse.nodes.has(ln.fnode.node.id)}
-                hot={ln.fnode.node.id === hotDrawnId}
-                color={nodeColor(ln.fnode, groupKind.get(ln.fnode.node.group), otel)}
-                onEnter={() => {
-                  onHoverEvents?.(eventIdsForNode(ln.fnode.node.id));
-                  setHoverNodeId(ln.fnode.node.id);
-                }}
-                onLeave={() => {
-                  onHoverEvents?.([]);
-                  setHoverNodeId((h) => (h === ln.fnode.node.id ? null : h));
-                }}
-              />
-            ))}
-            {/* persistent route-used note on every acted-on edge — the action lives on the line
-                it acted on, not gated behind hover (drawn on top of everything else) */}
-            {layout.edges.map((le) => {
-              const noteText = noteForEdge(le.fedge.edge.id);
-              return noteText ? (
-                <EdgeNoteTooltip key={`note-${le.fedge.edge.id}`} le={le} note={noteText} />
-              ) : null;
-            })}
-            {/* hover popover, drawn on top of everything else */}
-            {hoverNodeId &&
-              (() => {
-                const ln = layout.nodes.find((n) => n.fnode.node.id === hoverNodeId);
-                return ln ? <NodeTooltip ln={ln} /> : null;
-              })()}
-          </svg>
+          {graph}
           </div>
         </div>
 

@@ -395,8 +395,18 @@ body {
   -webkit-mask-image: none;
   mask-image: none;
 }
+/* Expanded terrain summary, drawn OVER the map (never through the layout, so the graph and its
+   zoom controls can't be pushed). Only max-height is animated — the sheet's own height is set
+   inline by the component, from the collapsed strip's height to its content height — so opening
+   and closing read as one continuous growth out of the two-line strip it covers. */
+.tm-summary-sheet {
+  transition: max-height 0.2s ease;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .tm-edge-note { transition: none; }
+  /* Calm (guide §11/§12): the sheet still opens and closes, it just arrives at its size. */
+  .tm-summary-sheet { transition: none; }
   /* Guide §11/§12: no glow/flicker loops in the workspace under reduced motion
      (Calm). Freeze the terrain pulses/glow/flow to their resting state. */
   .tm-ring-amber,
