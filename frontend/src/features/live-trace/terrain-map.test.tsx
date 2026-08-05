@@ -65,14 +65,12 @@ describe("TerrainMap", () => {
     ],
   } as Partial<ResolvedTerrainV2>;
 
-  test("clamps the summary to two lines behind an explicit toggle (issue #22)", async () => {
+  test("clamps the summary to two lines; expanding draws OVER the map, never through the layout (issue #22)", async () => {
     const summary =
       "A purely offline Windows DFIR reconstruction: parse the corrupted Microsoft-Windows-RPC event log and assemble the flag from five recovered facts.";
     mount(terrain({ ...oneNode, summary }));
-    // ONE copy, clamped by default — but the FULL text stays in the DOM (line-clamp hides
-    // visually only), so assistive tech and find-in-page still see the whole sentence and
-    // nothing is layered over the graph. A paragraph-length summary must not squash the
-    // map viewport below; the graph yields height only when the reader asks for the prose.
+    // The in-flow strip: clamped, with the FULL text in the DOM (line-clamp hides visually
+    // only), so assistive tech and find-in-page see the whole sentence.
     const p = await screen.findByTestId("terrain-summary");
     expect(p).toHaveTextContent(/assemble the flag from five recovered facts/);
     expect(p.className).toContain("line-clamp-2");
@@ -88,11 +86,23 @@ describe("TerrainMap", () => {
     // an explicit CLICK target announcing its state — never hover-gated text
     expect(more).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(more);
-    expect(p.className).not.toContain("line-clamp-2");
+    // LAYOUT-FROZEN: the in-flow strip stays clamped — the first cut removed the clamp
+    // in place, which pushed the viewport down and shoved the zoom cluster out of a
+    // fixed-height card. The full text arrives as an absolutely-positioned overlay drawn
+    // over the map instead, its text aria-hidden (the strip already carries the one
+    // accessible copy — never announce the same sentence twice).
+    expect(p.className).toContain("line-clamp-2");
+    const overlay = screen.getByTestId("terrain-summary-overlay");
+    expect(overlay.className).toContain("absolute");
+    expect(overlay.querySelector("p")).toHaveAttribute("aria-hidden", "true");
+    expect(overlay.querySelector("p")).toHaveTextContent(/five recovered facts/);
+    // one toggle at a time: Show more is covered/gone, Show less lives in the overlay
+    expect(screen.queryByRole("button", { name: /show more/i })).toBeNull();
     const less = screen.getByRole("button", { name: /show less/i });
     expect(less).toHaveAttribute("aria-expanded", "true");
     fireEvent.click(less);
-    expect(p.className).toContain("line-clamp-2");
+    expect(screen.queryByTestId("terrain-summary-overlay")).toBeNull();
+    expect(await screen.findByRole("button", { name: /show more/i })).toBeInTheDocument();
   });
 
   test("renders no summary block when the terrain has none", async () => {

@@ -863,41 +863,69 @@ export function TerrainMapView({
       onClick={expanded ? () => setExpanded(false) : undefined}
     >
       <div
-        className="flex h-full w-full flex-col rounded-md border border-border bg-card"
+        // `relative` anchors the expanded-summary overlay below, which spans the card from
+        // its top edge OVER the map — never through the layout.
+        className="relative flex h-full w-full flex-col rounded-md border border-border bg-card"
         onClick={expanded ? (e) => e.stopPropagation() : undefined}
       >
       {terrain.summary && (
         // Clamped to TWO lines behind an EXPLICIT toggle (issue #22). This block has now
-        // swung twice, so the history matters: the original map truncated the summary to one
-        // line and revealed the rest only on hover — a sentence you have to hover to finish
-        // is a sentence nobody reads — so a later pass made it wrap in full. That assumed
-        // summaries "run to two or three lines"; shipped missions run to paragraph length,
-        // and every wrapped line comes straight out of the map viewport below (squashing it
-        // to its min-h floor, then scrolling) — the pane's job is the graph, not the prose.
+        // swung THREE times, so the history matters: the original map truncated the summary
+        // to one line and revealed the rest only on hover — a sentence you have to hover to
+        // finish is a sentence nobody reads — so a later pass made it wrap in full. That
+        // assumed summaries "run to two or three lines"; shipped missions run to paragraph
+        // length, and every wrapped line came straight out of the map viewport below.
         //
-        // The clamp keeps both earlier principles: no hover-gated text (the toggle is a
-        // persistent CLICK target that announces its state via aria-expanded), and no
-        // duplicate overlay (line-clamp hides visually only — the full text stays in the
-        // DOM, so assistive tech and find-in-page still see all of it). The graph yields
-        // height only while the reader has explicitly asked for the prose.
+        // The clamp keeps the no-hover principle (the toggle is a persistent CLICK target
+        // announcing its state via aria-expanded), and the strip is LAYOUT-FROZEN: it stays
+        // clamped even while "expanded" — the full text renders as the overlay below, drawn
+        // OVER the map. The first cut expanded in-flow, which pushed the viewport down and
+        // shoved the zoom cluster out of a fixed-height card (the mission page's 480px box);
+        // nothing in this card may move because prose was opened. line-clamp hides visually
+        // only, so this in-flow copy keeps the full text for assistive tech / find-in-page.
         <div className="shrink-0 border-b border-border px-4 py-2">
           <p
             ref={summaryRef}
             data-testid="terrain-summary"
-            className={`text-caption text-text-secondary ${summaryExpanded ? "" : "line-clamp-2"}`}
+            className="line-clamp-2 text-caption text-text-secondary"
           >
             {terrain.summary}
           </p>
-          {(summaryOverflows || summaryExpanded) && (
+          {summaryOverflows && !summaryExpanded && (
             <button
               type="button"
-              aria-expanded={summaryExpanded}
-              onClick={() => setSummaryExpanded((v) => !v)}
+              aria-expanded={false}
+              onClick={() => setSummaryExpanded(true)}
               className="mt-1 text-caption text-text-tertiary underline-offset-2 hover:text-foreground hover:underline"
             >
-              {summaryExpanded ? "Show less" : "Show more"}
+              Show more
             </button>
           )}
+        </div>
+      )}
+      {terrain.summary && summaryExpanded && (
+        // The expanded summary, as a LAYOUT-INERT overlay over the top of the map. Same
+        // padding as the strip, so its first two lines land exactly over their clamped
+        // copies — it reads as the strip growing over the graph, not a popover appearing.
+        // The text is aria-hidden (the in-flow strip already carries the full accessible
+        // copy — never announce the same sentence twice); the Show less control stays
+        // outside the hidden node so it remains focusable. z-30 clears the map region's
+        // pills (z-20); max-h + scroll is the backstop for a summary taller than the card.
+        <div
+          data-testid="terrain-summary-overlay"
+          className="absolute inset-x-0 top-0 z-30 max-h-full overflow-y-auto rounded-t-md border-b border-border bg-card px-4 py-2 shadow-lg"
+        >
+          <p aria-hidden="true" className="text-caption text-text-secondary">
+            {terrain.summary}
+          </p>
+          <button
+            type="button"
+            aria-expanded={true}
+            onClick={() => setSummaryExpanded(false)}
+            className="mt-1 text-caption text-text-tertiary underline-offset-2 hover:text-foreground hover:underline"
+          >
+            Show less
+          </button>
         </div>
       )}
       <div className="relative min-h-[360px] flex-1">
