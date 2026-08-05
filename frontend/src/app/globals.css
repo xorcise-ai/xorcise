@@ -395,18 +395,31 @@ body {
   -webkit-mask-image: none;
   mask-image: none;
 }
-/* Expanded terrain summary, drawn OVER the map (never through the layout, so the graph and its
-   zoom controls can't be pushed). Only max-height is animated — the sheet's own height is set
-   inline by the component, from the collapsed strip's height to its content height — so opening
-   and closing read as one continuous growth out of the two-line strip it covers. */
-.tm-summary-sheet {
-  transition: max-height 0.2s ease;
+/* Terrain summary: the copy uses the full width and the amber action occupies only the end of the
+   final visible line. A short card-coloured fade protects the label without reserving a wide
+   right-hand column on both lines; the persistent panel still grows over the map. */
+.tm-summary-slot {
+  height: calc(2lh + 1rem);
+}
+.tm-summary-panel {
+  max-height: calc(2lh + 1rem);
+  transition: max-height 0.2s cubic-bezier(0.2, 0, 0, 1);
+}
+.tm-summary-copy {
+  max-height: 2lh;
+  transition: max-height 0.2s cubic-bezier(0.2, 0, 0, 1);
+}
+.tm-summary-toggle {
+  background: linear-gradient(to right, transparent, var(--color-card) 1.75rem);
+  transition: color 0.15s ease;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .tm-edge-note { transition: none; }
-  /* Calm (guide §11/§12): the sheet still opens and closes, it just arrives at its size. */
-  .tm-summary-sheet { transition: none; }
+  /* Calm (guide §11/§12): the summary still opens and closes, it just arrives at its size. */
+  .tm-summary-panel,
+  .tm-summary-copy,
+  .tm-summary-toggle svg { transition: none; }
   /* Guide §11/§12: no glow/flicker loops in the workspace under reduced motion
      (Calm). Freeze the terrain pulses/glow/flow to their resting state. */
   .tm-ring-amber,

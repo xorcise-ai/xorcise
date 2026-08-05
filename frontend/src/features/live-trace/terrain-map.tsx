@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -10,8 +11,7 @@ import {
   type CSSProperties,
 } from "react";
 import { createPortal } from "react-dom";
-import { Maximize2, Minimize2, Minus, Plus, Radio } from "lucide-react";
-import { useExitTransition } from "@/components/ui/use-exit-transition";
+import { ChevronDown, Maximize2, Minimize2, Minus, Plus, Radio } from "lucide-react";
 import { foldIndexForEvent, foldTerrain, probingPathEdgeIds, pulseIdsForIndex, type FoldedNode } from "./terrain-fold";
 import { layoutTerrainV2, type LaidOutEdge, type LaidOutGroup, type LaidOutNode } from "./terrain-layout";
 import { edgeColor, groupStyle, nodeColor, otelActive, T } from "./terrain-colors";
@@ -47,14 +47,8 @@ import type { ResolvedTerrainV2 } from "@/lib/api/types";
 
 const AMBER = "var(--color-primary)";
 
-/** Summary-sheet open/close duration. Must match `.tm-summary-sheet`'s transition in
- *  globals.css — it keeps the closing sheet mounted exactly long enough to animate out. */
-const SUMMARY_SHEET_MS = 200;
-
-/** `useLayoutEffect` that degrades to `useEffect` on the server. The sheet's open/close motion
- *  must be committed BEFORE paint (a passive effect would show one frame at the wrong height),
- *  but these pages are statically prerendered, where React warns that a layout effect does
- *  nothing — and there is no DOM to measure anyway. */
+/** `useLayoutEffect` that degrades to `useEffect` on the server. Summary measurements must be
+ *  committed before paint, but these pages are statically prerendered with no DOM to measure. */
 const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 /** Clamp a zoom factor to the pan/zoom bounds. Module-scope so `fitToView` can be a STABLE
@@ -665,42 +659,64 @@ export function TerrainMapView({
   // a summary that fits in two lines shows no dead "Show more" control. Measured (scroll vs
   // client height) rather than guessed from character count — wrap width varies pane to
   // pane. Re-measured on window resize (jsdom's ResizeObserver-free path too) and via a
-  // ResizeObserver on the element itself; `expanded` in the deps re-binds to the element the
-  // fullscreen portal toggle re-creates, `summaryExpanded` re-measures after each toggle.
+  // ResizeObserver on the element itself; `expanded` re-binds to the element the fullscreen
+  // portal toggle creates.
   const [summaryExpanded, setSummaryExpanded] = useState(false);
   const [summaryOverflows, setSummaryOverflows] = useState(false);
+  const summaryId = useId();
   const summaryRef = useRef<HTMLParagraphElement | null>(null);
-  const summaryStripRef = useRef<HTMLDivElement | null>(null);
-  const summarySheetRef = useRef<HTMLDivElement | null>(null);
-  // The sheet outlives `summaryExpanded` by the animation duration so its CLOSING motion can
-  // play — the same seam the Dialog uses. Without it, collapsing unmounted the sheet instantly
-  // and the summary vanished in one frame while opening animated: motion in one direction only.
-  const { mounted: summarySheetMounted, closing: summarySheetClosing } = useExitTransition(
-    summaryExpanded,
-    SUMMARY_SHEET_MS,
-  );
+  const summarySlotRef = useRef<HTMLDivElement | null>(null);
+  const summaryPanelRef = useRef<HTMLDivElement | null>(null);
+  const summaryTwoLineHeight = useCallback(() => {
+    const copy = summaryRef.current;
+    if (!copy) return 0;
+    const style = window.getComputedStyle(copy);
+    const rawLineHeight = Number.parseFloat(style.lineHeight);
+    const fontSize = Number.parseFloat(style.fontSize);
+    // Browsers normally resolve line-height to px, but WebKit/jsdom may expose the unitless 1.6.
+    // Treat values smaller than the font size as multipliers; never fall back to clientHeight,
+    // because that is the FULL paragraph and was what let four lines leak into the collapsed UI.
+    const lineHeight =
+      Number.isFinite(rawLineHeight) && rawLineHeight > 0
+        ? Number.isFinite(fontSize) && fontSize > 0 && rawLineHeight < fontSize
+          ? rawLineHeight * fontSize
+          : rawLineHeight
+        : 17.6; // caption token: 11px × 1.6
+    return lineHeight * 2;
+  }, []);
+  const sizeSummaryPanel = useCallback(() => {
+    // One permanently-mounted layer supplies both states: the slot reserves exactly two lines in
+    // layout, while this panel grows to its full natural height OVER the map. The reader explicitly
+    // asked to open the prose, so covering more of the canvas is calmer than introducing a small
+    // nested scroller; collapsing restores the entire terrain immediately.
+    const panel = summaryPanelRef.current;
+    const slot = summarySlotRef.current;
+    const copy = summaryRef.current;
+    if (!panel || !slot || !copy) return;
+    const collapsed = slot.offsetHeight;
+    const twoLines = summaryTwoLineHeight();
+    // `collapsed - twoLines` is the fixed panel chrome: top padding plus the amber action row.
+    // Add it to the copy's full scroll height rather than asking the already-clipped panel for its
+    // scrollHeight, which would only report the collapsed child.
+    const natural = Math.max(collapsed, copy.scrollHeight + Math.max(0, collapsed - twoLines));
+    const target = summaryExpanded ? natural : collapsed;
+    copy.style.maxHeight = `${summaryExpanded ? copy.scrollHeight : twoLines}px`;
+    panel.style.maxHeight = `${target}px`;
+    panel.style.overflowY = "hidden";
+  }, [summaryExpanded, summaryTwoLineHeight]);
   useIsomorphicLayoutEffect(() => {
-    // Drive the growth: from the strip's own height (so the sheet starts exactly congruent with
-    // the two clamped lines it covers) to its content height, capped to the card. Written to
-    // inline max-height BEFORE paint, with a forced reflow between the two writes so the browser
-    // has a start value to interpolate from — a single write would just land at the end state.
-    const el = summarySheetRef.current;
-    const strip = summaryStripRef.current;
-    if (!el || !strip) return;
-    const collapsed = strip.offsetHeight;
-    const full = Math.min(el.scrollHeight, el.parentElement?.clientHeight ?? el.scrollHeight);
-    if (summarySheetClosing) {
-      el.style.maxHeight = `${collapsed}px`;
-      return;
-    }
-    el.style.maxHeight = `${collapsed}px`;
-    void el.offsetHeight; // reflow: commit the start value before the target
-    el.style.maxHeight = `${full}px`;
-  }, [summarySheetMounted, summarySheetClosing, terrain?.summary]);
+    sizeSummaryPanel();
+  }, [sizeSummaryPanel, expanded, terrain?.summary, summaryOverflows]);
   useEffect(() => {
     const el = summaryRef.current;
     if (!el) return;
-    const measure = () => setSummaryOverflows(el.scrollHeight > el.clientHeight + 1);
+    const measure = () => {
+      // The copy itself is never clamped (the surrounding panel clips it), so compare its natural
+      // height with two computed line boxes. `clientHeight` is the jsdom fallback used by tests.
+      const twoLines = summaryTwoLineHeight();
+      setSummaryOverflows(el.scrollHeight > twoLines + 1);
+      sizeSummaryPanel();
+    };
     measure();
     window.addEventListener("resize", measure);
     const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
@@ -709,7 +725,7 @@ export function TerrainMapView({
       window.removeEventListener("resize", measure);
       ro?.disconnect();
     };
-  }, [terrain?.summary, summaryExpanded, expanded]);
+  }, [terrain?.summary, expanded, sizeSummaryPanel, summaryTwoLineHeight]);
   // Hover state for the node popover (description + collapsed routes, Change 2). An edge's
   // route-used note (Change 3) is rendered persistently at the edge midpoint instead — no hover
   // state needed for it.
@@ -998,69 +1014,40 @@ export function TerrainMapView({
         onClick={expanded ? (e) => e.stopPropagation() : undefined}
       >
       {terrain.summary && (
-        // Clamped to TWO lines behind an EXPLICIT toggle (issue #22). This block has now
-        // swung THREE times, so the history matters: the original map truncated the summary
-        // to one line and revealed the rest only on hover — a sentence you have to hover to
-        // finish is a sentence nobody reads — so a later pass made it wrap in full. That
-        // assumed summaries "run to two or three lines"; shipped missions run to paragraph
-        // length, and every wrapped line came straight out of the map viewport below.
-        //
-        // The clamp keeps the no-hover principle (the toggle is a persistent CLICK target
-        // announcing its state via aria-expanded), and the strip is LAYOUT-FROZEN: it stays
-        // clamped even while "expanded" — the full text renders as the overlay below, drawn
-        // OVER the map. The first cut expanded in-flow, which pushed the viewport down and
-        // shoved the zoom cluster out of a fixed-height card (the mission page's 480px box);
-        // nothing in this card may move because prose was opened. line-clamp hides visually
-        // only, so this in-flow copy keeps the full text for assistive tech / find-in-page.
-        <div ref={summaryStripRef} className="shrink-0 border-b border-border px-4 py-2">
-          <p
-            ref={summaryRef}
-            data-testid="terrain-summary"
-            className="line-clamp-2 text-caption text-text-secondary"
+        // A fixed two-line slot keeps the terrain's geometry stable. The ONE summary panel is
+        // always present and clipped to that slot; its amber action sits over only the end of the
+        // final visible line, so the prose keeps the full card width instead of yielding a column.
+        <div ref={summarySlotRef} className="tm-summary-slot relative z-30 shrink-0 text-caption">
+          <div
+            ref={summaryPanelRef}
+            data-testid="terrain-summary-overlay"
+            data-expanded={summaryExpanded || undefined}
+            className="tm-summary-panel absolute inset-x-0 top-0 box-border overflow-hidden border-b border-border bg-card px-4 py-2"
           >
-            {terrain.summary}
-          </p>
-          {summaryOverflows && !summaryExpanded && (
-            <button
-              type="button"
-              aria-expanded={false}
-              onClick={() => setSummaryExpanded(true)}
-              className="mt-1 text-caption text-text-tertiary underline-offset-2 hover:text-foreground hover:underline"
+            <p
+              id={summaryId}
+              ref={summaryRef}
+              data-testid="terrain-summary"
+              className="tm-summary-copy overflow-hidden text-caption text-text-secondary"
             >
-              Show more
-            </button>
-          )}
-        </div>
-      )}
-      {terrain.summary && summarySheetMounted && (
-        // The expanded summary, as a LAYOUT-INERT sheet over the top of the map. Same padding
-        // as the strip, so its first two lines land exactly over their clamped copies — it
-        // reads as the strip growing over the graph, not a popover appearing. It GROWS: the
-        // layout effect above animates max-height from the strip's own height to the sheet's
-        // content height (`.tm-summary-sheet` carries the transition, and drops it under
-        // prefers-reduced-motion), and reverses on close — so the motion is continuous in
-        // both directions instead of a snap. The text is aria-hidden (the in-flow strip
-        // already carries the full accessible copy — never announce the same sentence twice);
-        // the Show less control stays outside the hidden node so it remains focusable. z-30
-        // clears the map region's pills (z-20); overflow-y handles a summary taller than the
-        // card, which the measured cap clamps to.
-        <div
-          ref={summarySheetRef}
-          data-testid="terrain-summary-overlay"
-          data-closing={summarySheetClosing || undefined}
-          className="tm-summary-sheet absolute inset-x-0 top-0 z-30 overflow-y-auto rounded-t-md border-b border-border bg-card px-4 py-2 shadow-lg"
-        >
-          <p aria-hidden="true" className="text-caption text-text-secondary">
-            {terrain.summary}
-          </p>
-          <button
-            type="button"
-            aria-expanded={true}
-            onClick={() => setSummaryExpanded(false)}
-            className="mt-1 text-caption text-text-tertiary underline-offset-2 hover:text-foreground hover:underline"
-          >
-            Show less
-          </button>
+              {terrain.summary}
+            </p>
+            {summaryOverflows && (
+              <button
+                type="button"
+                aria-controls={summaryId}
+                aria-expanded={summaryExpanded}
+                onClick={() => setSummaryExpanded((value) => !value)}
+                className="tm-summary-toggle absolute bottom-1.5 right-4 flex h-5 items-center gap-1 whitespace-nowrap pl-8 text-label uppercase text-primary transition-colors hover:text-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {summaryExpanded ? "Show less" : "Show more"}
+                <ChevronDown
+                  aria-hidden
+                  className={`size-3 transition-transform duration-200 ${summaryExpanded ? "rotate-180" : ""}`}
+                />
+              </button>
+            )}
+          </div>
         </div>
       )}
       <div className="relative min-h-[360px] flex-1">
