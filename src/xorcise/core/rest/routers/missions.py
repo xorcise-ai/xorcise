@@ -14,6 +14,7 @@ from xorcise.core.config import get_settings
 from xorcise.core.contracts.catalog import CatalogEntry
 from xorcise.core.contracts.errors import NotFoundError
 from xorcise.core.contracts.mission import MissionManifest, MissionMetadata
+from xorcise.core.contracts.terrain import ResolvedTerrainV2
 from xorcise.core.missions.errors import MissionCollisionError
 from xorcise.core.rest.catalog_view import build_catalog_view_deps, fetch_manifest, list_catalog
 from xorcise.core.rest.ingest import ingest_bundle
@@ -345,3 +346,23 @@ def mission_manifest(mission_id: str) -> MissionManifest:
         return fetch_manifest(mission_id, build_catalog_view_deps(get_settings()))
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"no mission '{mission_id}'") from exc
+
+
+@router.get("/{mission_id}/terrain", response_model=ResolvedTerrainV2)
+def mission_terrain(mission_id: str) -> ResolvedTerrainV2:
+    """The mission's projected v2 terrain — the same base graph a run of it starts from.
+
+    Runs the run-scoped projector over the manifest (installed copy, else the library) with
+    no run attached: infra scaffold + authored/static-ips mission plane, every element in its
+    base state, no updates. This is what the mission detail page draws so the ACTUAL terrain
+    map — not a simplification — is visible before a run (or a pull). Unknown id → 404."""
+    # Lazy: same plane-isolation rule as runs.py's terrain endpoint — keep the runs module off
+    # this router's import path at boot (the projector itself is pure, contracts-only).
+    from xorcise.core.runs.terrain_v2 import project_terrain_v2
+
+    try:
+        manifest = fetch_manifest(mission_id, build_catalog_view_deps(get_settings()))
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"no mission '{mission_id}'") from exc
+    # run_id "" — mission-scoped, there is no run; the graph is identical to a fresh run's.
+    return project_terrain_v2("", mission_id, manifest)
