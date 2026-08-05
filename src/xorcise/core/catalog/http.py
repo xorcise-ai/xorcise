@@ -106,6 +106,12 @@ def _to_item(row: dict[str, object]) -> LibraryItem:
         # skills listed"), so an older catalog still degrades cleanly.
         type=_opt_str(row.get("type")),
         skills=_str_tuple(row.get("skills")),
+        # Pull cost, so the card can quote the download before the user commits. Absent on
+        # a catalog deployed before these fields existed -> None ("size unknown"), so an
+        # older remote still browses cleanly.
+        image_size_bytes=_opt_int(row.get("image_size_bytes")),
+        attachments_size_bytes=_opt_int(row.get("attachments_size_bytes")),
+        download_size_bytes=_opt_int(row.get("download_size_bytes")),
     )
 
 
@@ -115,3 +121,16 @@ def _str_tuple(value: object) -> tuple[str, ...]:
 
 def _opt_str(value: object) -> str | None:
     return None if value is None else str(value)
+
+
+def _opt_int(value: object) -> int | None:
+    """A byte count from the wire, or None if absent/unusable.
+
+    Browse must survive a malformed row: a non-numeric size degrades this one field to
+    "unknown" rather than raising and taking the whole catalog view down."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

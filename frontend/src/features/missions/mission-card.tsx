@@ -44,6 +44,41 @@ function EnvironmentBadge({ type }: { type: string }) {
 }
 
 /**
+ * What this mission will cost to download, shown while it is still a decision.
+ *
+ * "up to" is load-bearing, not hedging: this is the mission's full compressed size, but
+ * missions share base layers, so a pull that reuses layers already on disk transfers
+ * strictly less. Quoting it as an exact figure would make a correct pull look broken —
+ * the same confusion that made cached-layer pulls read as "stuck at 0 bytes".
+ *
+ * Renders nothing when the size is unknown (an installed mission, or a catalog that
+ * predates the field) rather than a confident "0 B".
+ */
+function DownloadSize({ mission: c }: { mission: CatalogEntry }) {
+  if (c.download_size_bytes == null) return null;
+  const parts = [
+    c.image_size_bytes != null ? `Image ${formatBytes(c.image_size_bytes)}` : null,
+    c.attachments_size_bytes != null
+      ? `Attachments ${formatBytes(c.attachments_size_bytes)}`
+      : null,
+  ].filter(Boolean);
+  return (
+    <span
+      data-testid="mission-download-size"
+      title={
+        parts.length > 0
+          ? `${parts.join(" · ")}. Shared layers already on disk are not re-downloaded.`
+          : undefined
+      }
+      className="inline-flex items-center gap-1 whitespace-nowrap text-caption text-text-tertiary"
+    >
+      <Download className="size-3" aria-hidden />
+      up to {formatBytes(c.download_size_bytes)}
+    </span>
+  );
+}
+
+/**
  * Determinate-when-sized progress + phase/bytes/ETA caption for an in-flight pull.
  * Shared by the catalog card and the detail page so both render the same live job.
  * Falls back to an indeterminate bar while docker hasn't sized the download yet
@@ -188,10 +223,15 @@ export function MissionCard({ mission: c }: { mission: CatalogEntry }) {
               <PullProgressBlock pull={pull} />
             </div>
           ) : (
-            <Button size="sm" onClick={() => pull.start()}>
-              <Download className="size-3.5" />
-              Pull
-            </Button>
+            // Size sits beside the button, not up with the badges: it is the last thing
+            // read before committing, so it belongs at the point of commitment.
+            <div className="flex w-full flex-wrap items-center gap-x-2 gap-y-1">
+              <Button size="sm" onClick={() => pull.start()}>
+                <Download className="size-3.5" />
+                Pull
+              </Button>
+              <DownloadSize mission={c} />
+            </div>
           )}
           {pull.isSuccess && (
             <span className="text-caption text-ok">Installed — ready to run.</span>
@@ -252,6 +292,11 @@ export function MissionRow({ mission: c }: { mission: CatalogEntry }) {
           {c.proficiency && <DifficultyBadge proficiency={c.proficiency} />}
           {c.type && <EnvironmentBadge type={c.type} />}
         </div>
+        {!installed && !pull.isPulling && (
+          <span className="hidden shrink-0 lg:inline-flex">
+            <DownloadSize mission={c} />
+          </span>
+        )}
         <Badge variant={installed ? "ok" : "muted"} className="hidden shrink-0 sm:inline-flex">
           {installed ? "installed" : "available"}
         </Badge>

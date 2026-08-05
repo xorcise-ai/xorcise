@@ -20,6 +20,7 @@ from xorcise.core.cli._ux import (
     next_step,
     print_table,
     prose,
+    size_label,
     source_label,
     ux_table,
 )
@@ -123,7 +124,10 @@ def list_missions(
                 markup=False,
             )
         return
-    table = ux_table("Source", "Id", "Name", "Difficulty", "State", title="Missions")
+    # Size sits beside State because the two answer one question together: an Available
+    # mission is a download you have not made yet, and this is what it will cost. An
+    # installed row has no size to quote (already on disk) and reads as a dash.
+    table = ux_table("Source", "Id", "Name", "Difficulty", "State", "Size", title="Missions")
     ordered = sorted(
         missions,
         key=lambda c: (not c.get("installed"), str(c.get("name") or "").lower()),
@@ -135,6 +139,7 @@ def list_missions(
             str(c.get("name") or DASH),
             difficulty_label(c.get("proficiency")),
             "Installed" if c.get("installed") else "Available",
+            size_label(c.get("download_size_bytes")),
         )
     print_table(table)
 

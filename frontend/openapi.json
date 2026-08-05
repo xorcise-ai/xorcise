@@ -729,6 +729,28 @@
       "CatalogEntry": {
         "additionalProperties": false,
         "properties": {
+          "attachments_size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attachments Size Bytes"
+          },
+          "download_size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Download Size Bytes"
+          },
           "image": {
             "anyOf": [
               {
@@ -739,6 +761,17 @@
               }
             ],
             "title": "Image"
+          },
+          "image_size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Size Bytes"
           },
           "installed": {
             "default": false,
