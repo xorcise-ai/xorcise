@@ -65,29 +65,40 @@ describe("TerrainMap", () => {
     ],
   } as Partial<ResolvedTerrainV2>;
 
-  test("renders the mission summary in full, with no truncation", async () => {
+  test("clamps the summary to two lines behind an explicit toggle (issue #22)", async () => {
     const summary =
       "A purely offline Windows DFIR reconstruction: parse the corrupted Microsoft-Windows-RPC event log and assemble the flag from five recovered facts.";
     mount(terrain({ ...oneNode, summary }));
-    // ONE copy, wrapped. It used to render twice — a `truncate`d line plus a hover overlay
-    // holding the rest — which cut every shipped mission's summary mid-sentence. A sentence
-    // you have to hover to finish is a sentence nobody reads, so it wraps and the duplicate
-    // overlay is gone with it.
-    const rendered = await screen.findAllByText(summary);
-    expect(rendered).toHaveLength(1);
-    expect(rendered[0]).not.toHaveClass("truncate");
-    // and nothing is layered over the graph any more
-    expect(rendered[0].className).not.toContain("absolute");
-    expect(rendered[0].className).not.toContain("opacity-0");
+    // ONE copy, clamped by default — but the FULL text stays in the DOM (line-clamp hides
+    // visually only), so assistive tech and find-in-page still see the whole sentence and
+    // nothing is layered over the graph. A paragraph-length summary must not squash the
+    // map viewport below; the graph yields height only when the reader asks for the prose.
+    const p = await screen.findByTestId("terrain-summary");
+    expect(p).toHaveTextContent(/assemble the flag from five recovered facts/);
+    expect(p.className).toContain("line-clamp-2");
+    // No dead "Show more" while nothing overflows (jsdom measures 0/0 → fits) …
+    expect(screen.queryByRole("button", { name: /show more/i })).toBeNull();
+    // … the toggle appears once the clamped box actually overflows.
+    Object.defineProperty(p, "scrollHeight", { value: 66, configurable: true });
+    Object.defineProperty(p, "clientHeight", { value: 33, configurable: true });
+    act(() => {
+      window.dispatchEvent(new Event("resize"));
+    });
+    const more = await screen.findByRole("button", { name: /show more/i });
+    // an explicit CLICK target announcing its state — never hover-gated text
+    expect(more).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(more);
+    expect(p.className).not.toContain("line-clamp-2");
+    const less = screen.getByRole("button", { name: /show less/i });
+    expect(less).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(less);
+    expect(p.className).toContain("line-clamp-2");
   });
 
-  test("renders no summary paragraph when the terrain has none", async () => {
+  test("renders no summary block when the terrain has none", async () => {
     const { container } = mount(terrain({ ...oneNode, summary: null }));
     await screen.findByText("web");
-    // No bordered summary paragraph above the viewport when summary is null.
-    // The selector tracks the rendered class list: `p.truncate` stopped existing when the
-    // summary stopped being truncated, so asserting on it would pass vacuously.
-    expect(container.querySelector("p.border-b")).toBeNull();
+    expect(container.querySelector('[data-testid="terrain-summary"]')).toBeNull();
   });
 
   test("a long node label is clamped to two lines and keeps the full text in a title (no sideways overlap)", async () => {

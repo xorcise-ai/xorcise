@@ -642,6 +642,28 @@ export function TerrainMapView({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [expanded]);
+  // Summary clamp (issue #22): collapsed by default; `summaryOverflows` gates the toggle so
+  // a summary that fits in two lines shows no dead "Show more" control. Measured (scroll vs
+  // client height) rather than guessed from character count — wrap width varies pane to
+  // pane. Re-measured on window resize (jsdom's ResizeObserver-free path too) and via a
+  // ResizeObserver on the element itself; `expanded` in the deps re-binds to the element the
+  // fullscreen portal toggle re-creates, `summaryExpanded` re-measures after each toggle.
+  const [summaryExpanded, setSummaryExpanded] = useState(false);
+  const [summaryOverflows, setSummaryOverflows] = useState(false);
+  const summaryRef = useRef<HTMLParagraphElement | null>(null);
+  useEffect(() => {
+    const el = summaryRef.current;
+    if (!el) return;
+    const measure = () => setSummaryOverflows(el.scrollHeight > el.clientHeight + 1);
+    measure();
+    window.addEventListener("resize", measure);
+    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    ro?.observe(el);
+    return () => {
+      window.removeEventListener("resize", measure);
+      ro?.disconnect();
+    };
+  }, [terrain?.summary, summaryExpanded, expanded]);
   // Hover state for the node popover (description + collapsed routes, Change 2). An edge's
   // route-used note (Change 3) is rendered persistently at the edge midpoint instead — no hover
   // state needed for it.
@@ -754,9 +776,11 @@ export function TerrainMapView({
     // wheel zoom dies after a toggle (for a terminal run `layout` never changes to re-run it).
   }, [layout, showWheelTip, expanded]);
   useEffect(() => {
-    // A new subject (run / mission) starts following again from scratch.
+    // A new subject (run / mission) starts following again from scratch — auto-fit AND the
+    // summary clamp (an expanded summary is a per-subject reading choice, not a setting).
     fittedDims.current = null;
     userControlled.current = false;
+    setSummaryExpanded(false);
   }, [resetKey]);
   useEffect(() => {
     // Fit on the FIRST render, and re-fit whenever the graph's drawn size changes (live nodes
@@ -843,19 +867,38 @@ export function TerrainMapView({
         onClick={expanded ? (e) => e.stopPropagation() : undefined}
       >
       {terrain.summary && (
-        // The authored summary, in full. It used to be ONE `truncate`d line with the rest
-        // revealed on hover, which cut every shipped mission's summary mid-sentence — they
-        // run to two or three lines. A sentence you have to hover to finish is a sentence
-        // nobody reads, so it wraps.
+        // Clamped to TWO lines behind an EXPLICIT toggle (issue #22). This block has now
+        // swung twice, so the history matters: the original map truncated the summary to one
+        // line and revealed the rest only on hover — a sentence you have to hover to finish
+        // is a sentence nobody reads — so a later pass made it wrap in full. That assumed
+        // summaries "run to two or three lines"; shipped missions run to paragraph length,
+        // and every wrapped line comes straight out of the map viewport below (squashing it
+        // to its min-h floor, then scrolling) — the pane's job is the graph, not the prose.
         //
-        // The hover overlay went with it: it existed only to reveal what truncation hid, and
-        // a duplicate that fades in over identical text is worse than no overlay at all. What
-        // it bought was a fixed header height so the graph never shifted; the graph is the
-        // flex-1 region below and simply takes the residual height, so a two-line summary
-        // costs one line of map rather than breaking the layout.
-        <p className="shrink-0 border-b border-border px-4 py-2 text-caption text-text-secondary">
-          {terrain.summary}
-        </p>
+        // The clamp keeps both earlier principles: no hover-gated text (the toggle is a
+        // persistent CLICK target that announces its state via aria-expanded), and no
+        // duplicate overlay (line-clamp hides visually only — the full text stays in the
+        // DOM, so assistive tech and find-in-page still see all of it). The graph yields
+        // height only while the reader has explicitly asked for the prose.
+        <div className="shrink-0 border-b border-border px-4 py-2">
+          <p
+            ref={summaryRef}
+            data-testid="terrain-summary"
+            className={`text-caption text-text-secondary ${summaryExpanded ? "" : "line-clamp-2"}`}
+          >
+            {terrain.summary}
+          </p>
+          {(summaryOverflows || summaryExpanded) && (
+            <button
+              type="button"
+              aria-expanded={summaryExpanded}
+              onClick={() => setSummaryExpanded((v) => !v)}
+              className="mt-1 text-caption text-text-tertiary underline-offset-2 hover:text-foreground hover:underline"
+            >
+              {summaryExpanded ? "Show less" : "Show more"}
+            </button>
+          )}
+        </div>
       )}
       <div className="relative min-h-[360px] flex-1">
         <div
