@@ -30,6 +30,11 @@ class LibraryItem:
     skills: tuple[str, ...] = ()
     technologies: tuple[str, ...] = ()
     image: str | None = None
+    # Pull cost, quoted by the catalog before anything is downloaded. See
+    # contracts.catalog.CatalogEntry for the full semantics; None means unknown, not zero.
+    image_size_bytes: int | None = None
+    attachments_size_bytes: int | None = None
+    download_size_bytes: int | None = None
 
 
 @dataclass(frozen=True)

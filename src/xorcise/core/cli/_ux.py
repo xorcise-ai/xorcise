@@ -161,6 +161,29 @@ def difficulty_label(proficiency: str | None) -> str:
     return proficiency.title() if proficiency else DASH
 
 
+def size_label(size_bytes: int | None) -> str:
+    """Byte count → the download size a person reads, or a dash when it is unknown.
+
+    Decimal units, mirroring the GUI's formatBytes (frontend missions/queries.ts) so the
+    CLI and the console quote the same mission with the same number — the parity rule
+    run_state_label follows for run outcomes.
+
+    None means UNKNOWN, not zero: an installed mission carries no size (it is already
+    downloaded) and a catalog predating the size fields serves none. Rendering "0 B"
+    there would state a falsehood, so it reads as a dash.
+    """
+    if size_bytes is None:
+        return DASH
+    n = float(size_bytes)
+    if n >= 1e9:
+        return f"{n / 1e9:.1f} GB"
+    if n >= 1e6:
+        return f"{n / 1e6:.1f} MB"
+    if n >= 1e3:
+        return f"{n / 1e3:.1f} KB"
+    return f"{max(0, round(n))} B"
+
+
 def run_state_label(state: str | None, trigger: str | None = None) -> str:
     """Server-side run state (+ terminal trigger) → the user-facing result word.
 

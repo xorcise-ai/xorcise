@@ -1393,8 +1393,14 @@ export interface components {
         };
         /** CatalogEntry */
         CatalogEntry: {
+            /** Attachments Size Bytes */
+            attachments_size_bytes?: number | null;
+            /** Download Size Bytes */
+            download_size_bytes?: number | null;
             /** Image */
             image?: string | null;
+            /** Image Size Bytes */
+            image_size_bytes?: number | null;
             /**
              * Installed
              * @default false

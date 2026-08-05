@@ -28,6 +28,20 @@ class CatalogEntry(_Frozen):
     technologies: tuple[str, ...] = ()
     installed: bool = False
     image: str | None = None
+    # What pulling this mission COSTS, so the browse card can say so before the user
+    # commits. Two independent parts — the OCI image the runner pulls and the attachment
+    # bundle fetched out-of-band — either of which may be absent (a static mission has no
+    # image; a lab may declare no attachments). `download_size_bytes` is their sum.
+    #
+    # None means UNKNOWN, never zero: an installed row carries no size (the download is
+    # already done) and a catalog that predates these fields serves none, so the UI must
+    # render "size unknown" rather than a confident "0 B".
+    #
+    # These are COMPRESSED transfer bytes, not extracted disk footprint, and shared base
+    # layers mean a real pull often transfers less — present them as "up to".
+    image_size_bytes: int | None = None
+    attachments_size_bytes: int | None = None
+    download_size_bytes: int | None = None
 
 
 class CatalogStatus(_Frozen):

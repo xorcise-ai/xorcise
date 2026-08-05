@@ -98,6 +98,13 @@ def list_catalog(deps: CatalogViewDeps) -> tuple[CatalogEntry, ...]:
                 technologies=item.technologies,
                 installed=False,
                 image=item.image,
+                # Only the library rows carry a size: these are the ones still facing a
+                # download, which is the decision the number informs. An installed row
+                # leaves them None — its bytes are already on disk, so quoting a download
+                # there would answer a question nobody is asking.
+                image_size_bytes=item.image_size_bytes,
+                attachments_size_bytes=item.attachments_size_bytes,
+                download_size_bytes=item.download_size_bytes,
             )
         )
 
