@@ -130,8 +130,12 @@ export function MissionCatalog() {
                 scroll when it is long (a 26-card grid). */}
             <div className="flex flex-1 flex-col pt-3">
               {/* ── Your Own (local, ingested) ── */}
-              <TabsContent value="your_own" className="space-y-2">
-                <p className="text-dense text-text-secondary">
+              {/* A flex column, like the Other providers panel, so an empty tab can claim
+                  the height left under the lede and centre in it rather than hanging off
+                  the top. With missions present the grid sizes to its content as before
+                  and the scroller scrolls. */}
+              <TabsContent value="your_own" className="flex flex-1 flex-col gap-2">
+                <p className="shrink-0 text-dense text-text-secondary">
                   Missions you’ve ingested locally from a bundle.
                 </p>
                 <Grid
@@ -341,13 +345,22 @@ function Grid({
  */
 function NoLocalMissions() {
   return (
-    <div className="mx-auto flex w-full max-w-[42rem] flex-col gap-3 py-2 sm:py-6">
-      <IngestComingSoon align="center" />
-      {/* Outside the panel deliberately: the panel's own rule is that it renders nothing
-          that looks actionable, so the "what can I do right now" line lives beside it. */}
-      <p className="text-center text-caption text-text-tertiary">
-        Until then, XORCISE Remote has missions ready to pull.
-      </p>
+    // Same centring as the Other providers panel: fill the track the tab has left, then
+    // centre in it. Top-aligned below `sm`, where the stats strip already fills a phone
+    // and centring would only push this further down the scroll.
+    // py-2, not py-6: this tab carries a lede line the Other providers tab does not, so it
+    // has ~32px less to spend, and on a 1280x720 window the larger padding grew this box
+    // past its flex track and put a 19px scrollbar on a pane with nothing below the fold.
+    // The panel is centred in the track anyway — the padding only keeps it off the edges.
+    <div className="flex flex-1 items-start justify-center py-2 sm:items-center">
+      <div className="flex w-full max-w-[42rem] flex-col gap-3">
+        <IngestComingSoon align="center" />
+        {/* Outside the panel deliberately: the panel's own rule is that it renders nothing
+            that looks actionable, so the "what can I do right now" line lives beside it. */}
+        <p className="text-center text-caption text-text-tertiary">
+          Until then, XORCISE Remote has missions ready to pull.
+        </p>
+      </div>
     </div>
   );
 }
