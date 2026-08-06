@@ -20,6 +20,7 @@ import { FilterBar } from "./filter-bar";
 import { MissionCard, MissionRow } from "./mission-card";
 import { LibraryStats } from "./library-stats";
 import { IngestButton } from "./ingest-button";
+import { IngestComingSoon } from "./ingest-coming-soon";
 import { OtherProviders } from "./other-providers";
 import type { CatalogEntry, CatalogStatus } from "@/lib/api/types";
 
@@ -138,7 +139,7 @@ export function MissionCatalog() {
                   view={view}
                   filtersActive={filtersActive}
                   onClearFilters={clearFilters}
-                  empty="No local missions yet. Ingest a bundle to add one."
+                  empty={<NoLocalMissions />}
                 />
               </TabsContent>
 
@@ -159,7 +160,11 @@ export function MissionCatalog() {
                     view={view}
                     filtersActive={filtersActive}
                     onClearFilters={clearFilters}
-                    empty="No remote missions available yet."
+                    empty={
+                      <p className="text-body text-text-secondary">
+                        No remote missions available yet.
+                      </p>
+                    }
                   />
                 )}
               </TabsContent>
@@ -284,16 +289,16 @@ function Grid({
 }: {
   items: CatalogEntry[];
   view: MissionView;
-  empty: string;
+  /** Rendered as given, not wrapped: one tab's empty state is a sentence, another's is a
+   *  panel, and a shared <p> around both would have set the panel in body type. */
+  empty: ReactNode;
   filtersActive: boolean;
   onClearFilters: () => void;
 }) {
   if (items.length === 0) {
-    return filtersActive ? (
-      <NoResults onClear={onClearFilters} />
-    ) : (
-      <p className="text-body text-text-secondary">{empty}</p>
-    );
+    // Filters first: "nothing matched your search" is a different problem from "this tab
+    // has nothing in it", and only the first one has a way out.
+    return filtersActive ? <NoResults onClear={onClearFilters} /> : empty;
   }
   // List view: one dense row per mission.
   if (view === "list") {
@@ -317,6 +322,33 @@ function Grid({
         </li>
       ))}
     </ul>
+  );
+}
+
+/**
+ * Your Own with nothing in it — which, until ingestion ships, is every install.
+ *
+ * It used to read "No local missions yet. Ingest a bundle to add one." That sentence
+ * instructed the reader to perform the one action the build cannot do: the Ingest button
+ * eight pixels above it opens a coming-soon preview, not a file browser. An empty state
+ * that names an unavailable action as the remedy is worse than one that says nothing,
+ * because the reader spends their time looking for the control rather than moving on.
+ *
+ * So it says the true thing instead, in the same words the Ingest dialog uses — the panel
+ * is literally the same component — and then points at the shelf that does work today.
+ * Only reached when NO filters are active; a search that matches nothing still gets
+ * `NoResults`, which is a different problem with a different way out.
+ */
+function NoLocalMissions() {
+  return (
+    <div className="mx-auto flex w-full max-w-[42rem] flex-col gap-3 py-2 sm:py-6">
+      <IngestComingSoon align="center" />
+      {/* Outside the panel deliberately: the panel's own rule is that it renders nothing
+          that looks actionable, so the "what can I do right now" line lives beside it. */}
+      <p className="text-center text-caption text-text-tertiary">
+        Until then, XORCISE Remote has missions ready to pull.
+      </p>
+    </div>
   );
 }
 

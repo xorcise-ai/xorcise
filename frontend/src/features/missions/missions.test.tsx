@@ -177,6 +177,46 @@ describe("MissionCatalog", () => {
     expect(screen.queryByText("Lab")).not.toBeInTheDocument();
   });
 
+  it("tells the truth on an empty Your Own instead of naming an action that cannot be done", async () => {
+    // Library-only catalog, so Your Own is empty and Remote holds everything.
+    server.use(
+      http.get("*/api/missions", () =>
+        HttpResponse.json([catalog[1]]),
+      ),
+    );
+    renderWithProviders(<MissionCatalog />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: /Your Own/i }));
+
+    // The same promise the Ingest dialog makes, from the same component.
+    await waitFor(() =>
+      expect(screen.getByText("Bring your own missions.")).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/Coming soon/i)).toBeInTheDocument();
+    expect(screen.getByText(/XORCISE Remote has missions ready to pull/i)).toBeInTheDocument();
+
+    // The old copy instructed the reader to ingest a bundle — the one thing this build
+    // cannot do, since the Ingest button opens the same coming-soon preview.
+    expect(screen.queryByText(/Ingest a bundle to add one/i)).not.toBeInTheDocument();
+  });
+
+  it("still shows the filters-matched-nothing state on Your Own when a search is active", async () => {
+    server.use(http.get("*/api/missions", () => HttpResponse.json(catalog)));
+    renderWithProviders(<MissionCatalog />);
+
+    fireEvent.change(await screen.findByPlaceholderText(/Search missions/i), {
+      target: { value: "nothing-matches-this" },
+    });
+
+    // An empty result from a search has a way out; an empty tab does not. They must not
+    // collapse into the same state. Asserted on the NoResults heading, not on "Clear
+    // filters" — the FilterBar renders a button by that name too whenever a filter is on.
+    await waitFor(() =>
+      expect(screen.getByText(/No missions match your filters/i)).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("Bring your own missions.")).not.toBeInTheDocument();
+  });
+
   it("presents Other providers as the house coming-soon preview, not an empty-results box", async () => {
     server.use(http.get("*/api/missions", () => HttpResponse.json(catalog)));
     renderWithProviders(<MissionCatalog />);
