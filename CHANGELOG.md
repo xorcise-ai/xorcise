@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are derived from git tags (hatch-vcs).
 
+## [0.1.2] - 2026-08-06
+
+### Added
+
+- **Missions quote their download size before you pull** — the catalog now carries each
+  mission's compressed size, and every surface where a pull gets decided quotes it: the
+  mission card in the console (with the image/attachment split in its tooltip), the mission
+  detail page, `xorcise mission list` (a new Size column) and `xorcise mission show`. The
+  figure is a ceiling, not a prediction — missions share base layers, so a pull that reuses
+  layers already on disk transfers less. An unknown size reads as unknown, never as "0 B",
+  and an installed mission quotes no size at all: its bytes are already on disk.
+- **The mission detail page draws the real terrain map** — the hand-rolled linear
+  Agent → Service flow is gone; the page now renders the same map the live run view uses,
+  projected from the mission manifest with no run attached, so what you study on the
+  mission page is exactly the graph a run of it starts from.
+- **The live run's terrain map goes fullscreen** — a toggle expands the same map instance
+  into a full-viewport overlay, so pan, zoom and the live feed carry over; Escape, the
+  backdrop or the toggle collapse it back into the split pane.
+
+### Fixed
+
+- **The terrain map's chrome no longer steals space from the graph** — a paragraph-length
+  mission summary now clamps to two lines behind Show more instead of squashing the graph,
+  the view toolbar no longer overlaps the canvas at constrained widths, and a minimised
+  legend no longer costs the graph a dead column on the right. The graph is also memoised,
+  so panning no longer re-renders every node and edge on each pointer move.
+
+### Changed
+
+- **Empty catalog tabs say what is actually true** — the Other providers tab is now a
+  designed coming-soon state (a provider constellation drawn in the terrain map's own
+  vocabulary) instead of a dead-end box identical to "no search results", and an empty
+  Your Own tab no longer instructs you to ingest a bundle — an action this build cannot
+  perform yet. Both surfaces share one coming-soon panel and point at the mission library
+  that works today.
+
 ## [0.1.1] - 2026-08-04
 
 ### Added
