@@ -114,6 +114,14 @@ class DockerDriver(ABC):
     def image_exists(self, image: str) -> bool:
         """Whether the image is already in the local store (local-store-first pull)."""
 
+    def published_port_services(self, image: str) -> tuple[str, ...]:
+        """Services whose authored Compose definitions publish ports on the Docker host.
+
+        Real drivers inspect the already-pulled fused image without starting it. The default is
+        empty for non-Docker drivers; their placeholder images have no mission stack to inspect.
+        """
+        return ()
+
     @abstractmethod
     def reap_managed(self) -> list[str]:
         """Force-remove every xorcise-managed per-run container; return what was reaped.
@@ -175,6 +183,7 @@ class StubDockerDriver(DockerDriver):
         # unknown, so existing stub-mode behaviour (a plain READY) is preserved.
         self.container_states: dict[str, ContainerState] = {}
         self.service_states: dict[str, tuple[ServiceState, ...]] = {}
+        self.port_services: dict[str, tuple[str, ...]] = {}
         self.compose_projects: set[str] = set()  # test-settable projects holding a network
         self.removed_projects: list[str] = []  # projects released by remove_run_resources
         self.specs: list[ContainerSpec] = []  # every run()'s spec, for assertions
@@ -198,6 +207,9 @@ class StubDockerDriver(DockerDriver):
 
     def image_exists(self, image: str) -> bool:
         return image in self.present
+
+    def published_port_services(self, image: str) -> tuple[str, ...]:
+        return self.port_services.get(image, ())
 
     def run(self, spec: ContainerSpec) -> ContainerHandle:
         self._counter += 1

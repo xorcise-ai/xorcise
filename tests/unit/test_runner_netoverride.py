@@ -1,6 +1,7 @@
 from xorcise.core.runner.netoverride import (
     build_net_override,
     carve_entry_subnets,
+    dump_net_override,
     target_ips_for,
 )
 
@@ -27,6 +28,21 @@ def test_build_override_pins_subnets_and_adds_router():
     assert isinstance(networks, dict) and isinstance(services, dict)
     assert networks["dmz"]["ipam"]["config"][0]["subnet"] == "10.200.1.0/25"
     assert "xorcise-router" in services
+
+
+def test_build_override_resets_authored_ports_without_losing_static_ip():
+    override = build_net_override(
+        "run-1",
+        {"default": "10.200.1.0/24"},
+        static_ips={"web": {"default": 10}},
+        reset_ports_for=("web", "eval-harness"),
+    )
+    rendered = dump_net_override(override)
+
+    assert rendered.count("ports: !reset []") == 2
+    services = override["services"]
+    assert isinstance(services, dict)
+    assert services["web"]["networks"]["default"]["ipv4_address"] == "10.200.1.10"
 
 
 def test_router_is_official_tailscale_image_in_kernel_mode():

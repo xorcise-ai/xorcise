@@ -14,8 +14,6 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-import yaml
-
 from xorcise.core.contracts.control import (
     CollectTargetsResult,
     DeployRequest,
@@ -28,7 +26,7 @@ from xorcise.core.contracts.control import (
 )
 from xorcise.core.contracts.errors import NotFoundError
 from xorcise.core.runner.docker import ContainerHandle, ContainerSpec, DockerDriver
-from xorcise.core.runner.netoverride import build_net_override
+from xorcise.core.runner.netoverride import build_net_override, dump_net_override
 
 # Where the entrypoint writes the delivered Headscale CA (in the OUTER fused container); the
 # net-override bind-mounts this into the router. Kept in sync with the entrypoint.
@@ -65,11 +63,16 @@ class RunnerControlService:
                 f"deploy({request.run_id}): empty tailnet auth key — the router key was not "
                 "minted; refusing to deploy a router that cannot join the tailnet"
             )
+        reset_ports_for = self.driver.published_port_services(request.mission.image)
         handle = self.driver.run(
             ContainerSpec(
                 image=request.mission.image,
                 name=request.run_id,
-                env=self._deploy_env(request.run_id, request.network),
+                env=self._deploy_env(
+                    request.run_id,
+                    request.network,
+                    reset_ports_for=reset_ports_for,
+                ),
             )
         )
         endpoints = RunnerEndpoints(
@@ -84,7 +87,13 @@ class RunnerControlService:
         self._torn_down.discard(request.run_id)
         return endpoints
 
-    def _deploy_env(self, run_id: RunId, network: NetworkSpec) -> tuple[tuple[str, str], ...]:
+    def _deploy_env(
+        self,
+        run_id: RunId,
+        network: NetworkSpec,
+        *,
+        reset_ports_for: Sequence[str] = (),
+    ) -> tuple[tuple[str, str], ...]:
         """The env the fused entrypoint needs: the per-run net-override (the mission nets +
         the Tailscale router as an inner container) plus the secrets compose interpolates into
         it. The override is base64'd so multi-line YAML rides a single env var cleanly; the
@@ -108,8 +117,9 @@ class RunnerControlService:
             extra_hosts=network.extra_hosts,
             ca_cert_path=ca_path,
             static_ips=network.static_ips,
+            reset_ports_for=reset_ports_for,
         )
-        override_b64 = base64.b64encode(yaml.safe_dump(override).encode()).decode()
+        override_b64 = base64.b64encode(dump_net_override(override).encode()).decode()
         env = [
             ("XORCISE_PROJECT", run_id),
             ("XORCISE_LOGIN_SERVER", network.login_server or self.login_server),

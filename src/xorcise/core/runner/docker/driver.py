@@ -6,10 +6,16 @@ the `runner` extra; only constructing the driver requires the SDK + a daemon.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json as _json
 import platform as _platform
-from collections.abc import Callable
+import tarfile
+from collections.abc import Callable, Mapping
+from pathlib import PurePosixPath
 from typing import Any
+
+import yaml
 
 from xorcise.core.runner.docker import (
     MANAGED_LABEL,
@@ -21,6 +27,27 @@ from xorcise.core.runner.docker import (
     PullProgress,
     ServiceState,
 )
+
+_MISSION_COMPOSE_PATH = "/mission/docker-compose.yml"
+_MAX_COMPOSE_BYTES = 4 * 1024 * 1024
+
+
+def _published_port_services(content: bytes | str) -> tuple[str, ...]:
+    """Parse authored Compose and return services that declare host publications."""
+    try:
+        compose = yaml.safe_load(content)
+    except yaml.YAMLError as exc:
+        raise RuntimeError("mission docker-compose.yml is not valid YAML") from exc
+    if not isinstance(compose, Mapping):
+        raise RuntimeError("mission docker-compose.yml must contain a mapping")
+    services = compose.get("services")
+    if not isinstance(services, Mapping):
+        raise RuntimeError("mission docker-compose.yml must contain a services mapping")
+    return tuple(
+        str(name)
+        for name, spec in services.items()
+        if isinstance(spec, Mapping) and "ports" in spec
+    )
 
 
 def _parse_compose_ps(output: bytes | str) -> tuple[ServiceState, ...]:
@@ -86,6 +113,7 @@ class DockerSdkDriver(DockerDriver):
             client = docker.from_env()
         self._client = client
         self._platform = platform
+        self._published_ports_by_image_id: dict[str, tuple[str, ...]] = {}
 
     def pull(
         self,
@@ -137,6 +165,72 @@ class DockerSdkDriver(DockerDriver):
             return True
         except docker.errors.ImageNotFound:
             return False
+
+    def published_port_services(self, image: str) -> tuple[str, ...]:
+        """Inspect a fused image's authored Compose without executing mission code.
+
+        ``get_archive`` only operates on containers, so create a stopped throwaway container,
+        read the one bounded file, and remove it in all cases. Cache by immutable image id: stable
+        local tags are overwritten when missions update, while ids identify the exact filesystem
+        that was inspected.
+        """
+        import docker.errors
+
+        try:
+            image_obj = self._client.images.get(image)
+        except docker.errors.ImageNotFound as exc:
+            from xorcise.core.contracts.errors import ImageNotInstalledError
+
+            raise ImageNotInstalledError(f"image {image!r} is not in the local store") from exc
+        image_id = str(image_obj.id)
+        cached = self._published_ports_by_image_id.get(image_id)
+        if cached is not None:
+            return cached
+
+        container = self._client.containers.create(
+            image_id,
+            entrypoint=["/bin/true"],
+            platform=self._platform or None,
+        )
+        try:
+            stream, stat = container.get_archive(_MISSION_COMPOSE_PATH)
+            size = int(stat.get("size") or 0)
+            if size > _MAX_COMPOSE_BYTES:
+                raise RuntimeError(
+                    f"mission docker-compose.yml is too large ({size} bytes; "
+                    f"maximum {_MAX_COMPOSE_BYTES})"
+                )
+            archive = b"".join(stream)
+            with tarfile.open(fileobj=io.BytesIO(archive), mode="r:*") as tar:
+                member = next(
+                    (
+                        item
+                        for item in tar.getmembers()
+                        if item.isfile() and PurePosixPath(item.name).name == "docker-compose.yml"
+                    ),
+                    None,
+                )
+                if member is None or member.size > _MAX_COMPOSE_BYTES:
+                    raise RuntimeError("mission docker-compose.yml could not be read safely")
+                extracted = tar.extractfile(member)
+                if extracted is None:
+                    raise RuntimeError("mission docker-compose.yml could not be read")
+                content = extracted.read(_MAX_COMPOSE_BYTES + 1)
+                if len(content) > _MAX_COMPOSE_BYTES:
+                    raise RuntimeError("mission docker-compose.yml exceeds the size limit")
+            services = _published_port_services(content)
+        except Exception as exc:
+            if isinstance(exc, RuntimeError):
+                raise
+            raise RuntimeError(
+                f"could not inspect {_MISSION_COMPOSE_PATH} in mission image {image!r}"
+            ) from exc
+        finally:
+            with contextlib.suppress(Exception):
+                container.remove(force=True)
+
+        self._published_ports_by_image_id[image_id] = services
+        return services
 
     def run(self, spec: ContainerSpec) -> ContainerHandle:
         # The fused image is local-only (no registry). containers.run auto-PULLS a missing image,

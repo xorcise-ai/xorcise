@@ -11,11 +11,32 @@ import ipaddress
 import math
 from collections.abc import Mapping, Sequence
 
+import yaml
+
 from xorcise.core.runner.docker import MANAGED_LABEL, RUN_ID_LABEL
 
 # The Tailscale router runs as its own inner container from the official image; the builder
 # bakes this into the fused image's images.tar so no run-time pull is needed at deploy.
 ROUTER_IMAGE = "tailscale/tailscale:stable"
+
+
+class _ResetList(list[object]):
+    """A Compose ``!reset []`` value used to clear an authored sequence."""
+
+
+class _ComposeOverrideDumper(yaml.SafeDumper):
+    pass
+
+
+_ComposeOverrideDumper.add_representer(
+    _ResetList,
+    lambda dumper, value: dumper.represent_sequence("!reset", value),
+)
+
+
+def dump_net_override(override: Mapping[str, object]) -> str:
+    """Serialize a network override while preserving Compose-specific reset tags."""
+    return yaml.dump(override, Dumper=_ComposeOverrideDumper, sort_keys=False)
 
 
 def carve_entry_subnets(run_cidr: str, entry_networks: Sequence[str]) -> dict[str, str]:
@@ -69,6 +90,7 @@ def build_net_override(
     extra_hosts: Sequence[str] = (),
     ca_cert_path: str = "",
     static_ips: Mapping[str, Mapping[str, int]] | None = None,
+    reset_ports_for: Sequence[str] = (),
 ) -> dict[str, object]:
     """Compose override pinning each entry network's subnet + a Tailscale router service.
 
@@ -135,6 +157,11 @@ def build_net_override(
     # carved subnet so docker stops handing out sequential IPs. A service on an un-carved network
     # is skipped. Compose merges these networks blocks with the base mission compose.
     services: dict[str, object] = {"xorcise-router": router}
+    # Mission services are reached at their container IP + container port over the tailnet.
+    # A host publish is both unnecessary and, in macOS host-daemon mode, a collision with the
+    # operator's machine. Compose appends ports across files unless the later value uses !reset.
+    for service in reset_ports_for:
+        services[str(service)] = {"ports": _ResetList()}
     for service, by_net in (static_ips or {}).items():
         for net, octet in by_net.items():
             cidr = entry_subnets.get(net)

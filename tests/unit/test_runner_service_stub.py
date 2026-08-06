@@ -81,6 +81,18 @@ def test_deploy_delivers_net_override_and_authkey_env():
     assert "tskey-abc" not in base64.b64decode(env["XORCISE_NET_OVERRIDE_B64"]).decode()
 
 
+def test_deploy_resets_every_host_publish_reported_by_the_image():
+    driver = StubDockerDriver()
+    image = "xorcise/mission-c:0"
+    driver.port_services[image] = ("web", "kusto")
+
+    RunnerControlService(driver).deploy(_req())
+
+    rendered = base64.b64decode(dict(driver.specs[0].env)["XORCISE_NET_OVERRIDE_B64"]).decode()
+    assert "web:\n    ports: !reset []" in rendered
+    assert "kusto:\n    ports: !reset []" in rendered
+
+
 def test_deploy_delivers_ca_and_extra_hosts_when_airgapped():
     driver = StubDockerDriver()
     svc = RunnerControlService(driver, login_server="https://headscale.local:8443")
