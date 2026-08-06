@@ -25,16 +25,28 @@ import { cn } from "./cn";
 export function ComingSoonPanel({
   headline,
   steps,
+  align = "start",
   className,
   children,
 }: {
   headline: string;
   /** Illustrative, not interactive — the shape of the flow. */
   steps: { icon: ReactElement<{ className?: string }>; label: string }[];
+  /**
+   * `start` (default) is the reading layout the two original hosts use — a dialog and a
+   * settings card, where the panel sits in a column of other left-aligned content.
+   *
+   * `center` is for a panel that IS the surface, with nothing to align to: it centres the
+   * axis, drops the measure caps so the prose fills the box instead of stopping short of
+   * it, and moves the sparkle to the corner so it stops pulling the top row off-centre.
+   * Opt-in rather than inferred, so neither existing host shifts.
+   */
+  align?: "start" | "center";
   className?: string;
   /** Body prose. */
   children: ReactNode;
 }) {
+  const centered = align === "center";
   return (
     <div
       className={cn(
@@ -48,21 +60,46 @@ export function ComingSoonPanel({
         aria-hidden
         className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(232,184,75,0.16),transparent_52%)]"
       />
-      <div className="relative p-5">
-        <div className="mb-5 flex items-center justify-between gap-3">
+      <div className={cn("relative p-5", centered && "text-center")}>
+        {centered && (
+          <Sparkles
+            className="absolute right-5 top-5 size-4 text-primary/70"
+            aria-hidden
+          />
+        )}
+        <div
+          className={cn(
+            "mb-5 flex items-center gap-3",
+            centered ? "justify-center" : "justify-between",
+          )}
+        >
           <span className="inline-flex items-center gap-2 rounded-full border border-primary/25 bg-primary/5 px-2.5 py-1 text-label uppercase text-primary">
             <span className="size-1.5 rounded-full bg-primary shadow-[0_0_8px_rgba(232,184,75,0.7)]" />
             Coming soon
           </span>
-          <Sparkles className="size-4 text-primary/70" aria-hidden />
+          {!centered && <Sparkles className="size-4 text-primary/70" aria-hidden />}
         </div>
 
         <div className="grid gap-5 @3xl:grid-cols-[1.35fr_1fr] @3xl:items-center @3xl:gap-8">
           <div>
             {/* Measure caps, not layout limits. Narrow: the dialog is the cap. Wide: the
-                column is, and prose stops at the 68ch readable band the type rules set. */}
-            <h3 className="max-w-sm text-lead text-heading @3xl:max-w-none">{headline}</h3>
-            <p className="mt-2 max-w-md text-body text-text-secondary @3xl:max-w-[68ch]">
+                column is, and prose stops at the 68ch readable band the type rules set.
+                Centred, the panel's own width IS the cap — it is sized to the measure at
+                the call site — so the caps come off and the prose fills the box. */}
+            <h3
+              className={cn(
+                "text-lead text-heading @3xl:max-w-none",
+                centered ? "text-balance" : "max-w-sm",
+              )}
+            >
+              {headline}
+            </h3>
+            <p
+              className={cn(
+                "mt-2 text-body text-text-secondary @3xl:max-w-[68ch]",
+                centered ? "text-pretty" : "max-w-md",
+              )}
+            >
               {children}
             </p>
           </div>
@@ -71,7 +108,12 @@ export function ComingSoonPanel({
               row of two-word chips would each be 400px of mostly nothing. */}
           <div className="grid gap-2 @sm:grid-cols-3 @3xl:grid-cols-1">
             {steps.map((step) => (
-              <PreviewStep key={step.label} icon={step.icon} label={step.label} />
+              <PreviewStep
+                key={step.label}
+                icon={step.icon}
+                label={step.label}
+                centered={centered}
+              />
             ))}
           </div>
         </div>
@@ -83,12 +125,20 @@ export function ComingSoonPanel({
 function PreviewStep({
   icon,
   label,
+  centered,
 }: {
   icon: ReactElement<{ className?: string }>;
   label: string;
+  centered?: boolean;
 }) {
   return (
-    <div className="flex items-center gap-2 rounded-md border border-border bg-card/70 px-3 py-2.5 text-caption text-foreground">
+    <div
+      className={cn(
+        "flex items-center gap-2 rounded-md border border-border bg-card/70 px-3 py-2.5 text-caption text-foreground",
+        // Left-aligned chips under centred prose read as a list that lost its bullets.
+        centered && "justify-center text-center",
+      )}
+    >
       <span className="text-primary [&>svg]:size-3.5" aria-hidden>
         {icon}
       </span>

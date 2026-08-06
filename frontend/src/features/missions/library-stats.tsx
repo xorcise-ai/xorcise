@@ -84,7 +84,13 @@ export function LibraryStats({ missions }: { missions: CatalogEntry[] }) {
 
   return (
     <Card className="bg-raised">
-      <CardContent className="flex flex-wrap items-stretch gap-x-6 gap-y-4 p-4">
+      {/* An explicit grid, not flex-wrap. Wrapping let the row decide for itself how many
+          cells fit, and on a ~500px pane that came out 3-up with difficulty dropped alone
+          onto a second row — the widest cell, given the whole width, with nothing beside
+          it. Four cells split cleanly, so the layout is stated: one column on a phone, 2x2
+          once there is room for two, one row at lg where all four fit without squeezing
+          the difficulty meter (it needs ~210px and cannot compress). */}
+      <CardContent className="grid grid-cols-1 items-stretch gap-x-6 gap-y-4 p-4 min-[30rem]:grid-cols-2 lg:grid-cols-4">
         {/* ── headline count — number stacked over the label ── */}
         <Section>
           <div>
@@ -151,14 +157,24 @@ export function LibraryStats({ missions }: { missions: CatalogEntry[] }) {
 
         {/* ── difficulty distribution — dot-matrix pips (matches the card badge) ── */}
         <Section divider>
-          <div className="space-y-2">
+          {/* Capped, unlike its neighbours. Every other cell has something that USES spare
+              width — a bar that stretches, a number that grows. A difficulty row is a
+              label, five fixed dots and a count: about 210px of content, and nothing in it
+              can absorb a pixel more. Uncapped, the cell still stretched with the strip,
+              and when the strip wraps on a narrow pane this block takes a whole row on its
+              own — which is where it was last reported, the count marooned 300px from the
+              meter it belongs to. The cap is what keeps the row reading as one unit. */}
+          <div className="max-w-[17rem] space-y-2">
             <p className="text-label uppercase text-text-tertiary">
               difficulty
             </p>
             {stats.byDifficulty.map((b) => (
               <div
                 key={b.label}
-                className="grid grid-cols-[104px_auto_18px] items-center gap-2 text-caption text-text-secondary"
+                /* 1fr on the LABEL, not the pips: an `auto` middle track absorbs the spare
+                   width and left-aligns five fixed-width dots inside it, which detaches the
+                   meter from its count. Spare width belongs to the truncating label. */
+                className="grid grid-cols-[1fr_auto_18px] items-center gap-2 text-caption text-text-secondary"
               >
                 <span className="truncate" title={b.label}>
                   {b.label}
@@ -182,12 +198,18 @@ export function LibraryStats({ missions }: { missions: CatalogEntry[] }) {
 }
 
 /**
- * A strip cell. Cells share the row width evenly (`flex-1`) so the strip spreads across the pane;
- * `divider` draws the left rule that separates it from the previous cell.
+ * A strip cell. `min-w-0` so a grid cell can shrink under its content and let the labels
+ * inside truncate as intended — grid items default to `min-width: auto`, which would push
+ * the widest cell past its track instead.
+ *
+ * `divider` draws the left rule at lg and only at lg, where the four cells sit in ONE row
+ * and every rule separates two cells. In the 2x2 and stacked layouts the same rule lands
+ * on the cell that STARTS a row, where it reads as a stray vertical line down the left of
+ * the card; the grid gap already does the separating there.
  */
 function Section({ children, divider }: { children: React.ReactNode; divider?: boolean }) {
   return (
-    <div className={cn("min-w-40 flex-1", divider && "sm:border-l sm:border-border sm:pl-6")}>
+    <div className={cn("min-w-0", divider && "lg:border-l lg:border-border lg:pl-6")}>
       {children}
     </div>
   );

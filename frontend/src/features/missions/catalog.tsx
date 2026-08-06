@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { Layers, LayoutGrid, List, Search } from "lucide-react";
+import { LayoutGrid, List, Search } from "lucide-react";
 import { cn } from "@/components/ui/cn";
 import { Button } from "@/components/ui/button";
 import { SkeletonCardGrid } from "@/components/ui/skeleton";
@@ -20,6 +20,8 @@ import { FilterBar } from "./filter-bar";
 import { MissionCard, MissionRow } from "./mission-card";
 import { LibraryStats } from "./library-stats";
 import { IngestButton } from "./ingest-button";
+import { IngestComingSoon } from "./ingest-coming-soon";
+import { OtherProviders } from "./other-providers";
 import type { CatalogEntry, CatalogStatus } from "@/lib/api/types";
 
 /** localStorage key the catalog uses to remember the grid/list view between visits. */
@@ -83,15 +85,18 @@ export function MissionCatalog() {
       {missions.data && (
         <Tabs defaultValue={defaultTab} className="flex min-h-0 flex-1 flex-col">
           {/* One unbounded scroller for the whole catalog: the stats dashboard scrolls up and off,
-             while the filters + provider tabs row below stays pinned to the top. */}
-          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+             while the filters + provider tabs row below stays pinned to the top.
+             A flex COLUMN, so the tab body below can claim the leftover height instead of
+             guessing it from 100vh — Other providers needs a canvas that exactly fills the
+             pane, and a vh estimate overshot it by the height of this strip and scrolled. */}
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto pr-1">
             {all.length > 0 && (
-              <div className="mb-3">
+              <div className="mb-3 shrink-0">
                 <LibraryStats missions={all} />
               </div>
             )}
 
-            <div className="sticky top-0 z-20 border-b border-border bg-background pb-2">
+            <div className="sticky top-0 z-20 shrink-0 border-b border-border bg-background pb-2">
               <FilterBar
                 filters={filters}
                 onChange={setFilters}
@@ -120,10 +125,17 @@ export function MissionCatalog() {
               />
             </div>
 
-            <div className="pt-3">
+            {/* flex-1 with the default min-height:auto — grows to fill when a tab's content
+                is short (Other providers), stays at content height and lets the scroller
+                scroll when it is long (a 26-card grid). */}
+            <div className="flex flex-1 flex-col pt-3">
               {/* ── Your Own (local, ingested) ── */}
-              <TabsContent value="your_own" className="space-y-2">
-                <p className="text-dense text-text-secondary">
+              {/* A flex column, like the Other providers panel, so an empty tab can claim
+                  the height left under the lede and centre in it rather than hanging off
+                  the top. With missions present the grid sizes to its content as before
+                  and the scroller scrolls. */}
+              <TabsContent value="your_own" className="flex flex-1 flex-col gap-2">
+                <p className="shrink-0 text-dense text-text-secondary">
                   Missions you’ve ingested locally from a bundle.
                 </p>
                 <Grid
@@ -131,7 +143,7 @@ export function MissionCatalog() {
                   view={view}
                   filtersActive={filtersActive}
                   onClearFilters={clearFilters}
-                  empty="No local missions yet. Ingest a bundle to add one."
+                  empty={<NoLocalMissions />}
                 />
               </TabsContent>
 
@@ -152,14 +164,18 @@ export function MissionCatalog() {
                     view={view}
                     filtersActive={filtersActive}
                     onClearFilters={clearFilters}
-                    empty="No remote missions available yet."
+                    empty={
+                      <p className="text-body text-text-secondary">
+                        No remote missions available yet.
+                      </p>
+                    }
                   />
                 )}
               </TabsContent>
 
-              {/* ── Other providers (placeholder) ── */}
-              <TabsContent value="other">
-                <ComingSoon />
+              {/* ── Other providers (committed, not shipped) ── */}
+              <TabsContent value="other" className="flex flex-1 flex-col">
+                <OtherProviders />
               </TabsContent>
             </div>
           </div>
@@ -277,16 +293,16 @@ function Grid({
 }: {
   items: CatalogEntry[];
   view: MissionView;
-  empty: string;
+  /** Rendered as given, not wrapped: one tab's empty state is a sentence, another's is a
+   *  panel, and a shared <p> around both would have set the panel in body type. */
+  empty: ReactNode;
   filtersActive: boolean;
   onClearFilters: () => void;
 }) {
   if (items.length === 0) {
-    return filtersActive ? (
-      <NoResults onClear={onClearFilters} />
-    ) : (
-      <p className="text-body text-text-secondary">{empty}</p>
-    );
+    // Filters first: "nothing matched your search" is a different problem from "this tab
+    // has nothing in it", and only the first one has a way out.
+    return filtersActive ? <NoResults onClear={onClearFilters} /> : empty;
   }
   // List view: one dense row per mission.
   if (view === "list") {
@@ -313,6 +329,42 @@ function Grid({
   );
 }
 
+/**
+ * Your Own with nothing in it — which, until ingestion ships, is every install.
+ *
+ * It used to read "No local missions yet. Ingest a bundle to add one." That sentence
+ * instructed the reader to perform the one action the build cannot do: the Ingest button
+ * eight pixels above it opens a coming-soon preview, not a file browser. An empty state
+ * that names an unavailable action as the remedy is worse than one that says nothing,
+ * because the reader spends their time looking for the control rather than moving on.
+ *
+ * So it says the true thing instead, in the same words the Ingest dialog uses — the panel
+ * is literally the same component — and then points at the shelf that does work today.
+ * Only reached when NO filters are active; a search that matches nothing still gets
+ * `NoResults`, which is a different problem with a different way out.
+ */
+function NoLocalMissions() {
+  return (
+    // Same centring as the Other providers panel: fill the track the tab has left, then
+    // centre in it. Top-aligned below `sm`, where the stats strip already fills a phone
+    // and centring would only push this further down the scroll.
+    // py-2, not py-6: this tab carries a lede line the Other providers tab does not, so it
+    // has ~32px less to spend, and on a 1280x720 window the larger padding grew this box
+    // past its flex track and put a 19px scrollbar on a pane with nothing below the fold.
+    // The panel is centred in the track anyway — the padding only keeps it off the edges.
+    <div className="flex flex-1 items-start justify-center py-2 sm:items-center">
+      <div className="flex w-full max-w-[42rem] flex-col gap-3">
+        <IngestComingSoon align="center" />
+        {/* Outside the panel deliberately: the panel's own rule is that it renders nothing
+            that looks actionable, so the "what can I do right now" line lives beside it. */}
+        <p className="text-center text-caption text-text-tertiary">
+          Until then, XORCISE Remote has missions ready to pull.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 /** Shown when filters narrow a tab to nothing — explains and offers a way out. */
 function NoResults({ onClear }: { onClear: () => void }) {
   return (
@@ -325,19 +377,6 @@ function NoResults({ onClear }: { onClear: () => void }) {
       <Button variant="outline" size="sm" onClick={onClear}>
         Clear filters
       </Button>
-    </div>
-  );
-}
-
-function ComingSoon() {
-  return (
-    <div className="flex flex-col items-center gap-2 rounded-md border border-dashed border-border bg-card/40 px-6 py-6 text-center">
-      <Layers className="size-5 text-text-secondary" />
-      <p className="text-body font-medium text-heading">More providers coming soon</p>
-      <p className="max-w-sm text-body text-text-secondary">
-        Third-party mission providers will appear here, alongside Your Own and the
-        XORCISE remote library.
-      </p>
     </div>
   );
 }
