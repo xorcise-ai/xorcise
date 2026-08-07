@@ -13,14 +13,31 @@
 # at `up` time, so the auth key never lands on disk inside the override file.
 set -eu
 
-# 1. Docker daemon. Linux uses the original isolated DinD runtime. On macOS the runner mounts
-# Docker Desktop's socket at this explicit path: nested amd64 containers cannot start through
-# Rosetta (the outer amd64 image can), so compose the exact same stack as host-daemon siblings.
+# 1. Docker daemon. Two topologies, selected by whether the runner mounted the host's socket:
+# present => host-daemon SIBLINGS (macOS default); absent => the original isolated DinD runtime.
+# The runner decides (see runner/docker/rosetta.py); this branch only obeys.
 if [ -S /var/run/docker-host.sock ]; then
     export DOCKER_HOST=unix:///var/run/docker-host.sock
 else
+    # docker:*-dind ships ENV DOCKER_HOST=tcp://docker:2375 for the compose "dind sidecar"
+    # pattern. `dockerd-entrypoint.sh dockerd` does NOT consult it (that branch only runs when
+    # called with no args), so the daemon listens on the default unix socket while this shell's
+    # client dials a host named `docker` that does not exist — the wait below then never
+    # succeeds. Clearing it is what makes the DinD arm work at all.
+    unset DOCKER_HOST
     dockerd-entrypoint.sh dockerd >/var/log/dockerd.log 2>&1 &
-    until docker info >/dev/null 2>&1; do sleep 1; done
+    # Bounded: an unbounded wait turned any daemon that could never come up into a silent hang
+    # for the whole run, with no diagnosis anywhere. 120s is far above a normal boot (~2-10s).
+    waited=0
+    until docker info >/dev/null 2>&1; do
+        waited=$((waited + 1))
+        if [ "$waited" -gt 120 ]; then
+            echo "xorcise: inner dockerd did not come up within 120s" >&2
+            tail -50 /var/log/dockerd.log >&2 || true
+            exit 1
+        fi
+        sleep 1
+    done
 fi
 
 # 2. preload the baked inner stack (mission services + the Tailscale router image)

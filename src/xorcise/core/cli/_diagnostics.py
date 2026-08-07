@@ -265,6 +265,64 @@ def control_plane(container: str = "headscale", *, timeout: float = 5.0) -> Chec
     return Check("control plane", False, f"{container!r} is not reachable", _PLANE_FIX)
 
 
+def _clip(text: str, limit: int = 140) -> str:
+    """Keep one diagnostic to one readable line. A nested-runtime failure arrives as a whole
+    OCI error chain whose meaning is at the END, so the tail is what survives the clip."""
+    text = " ".join(text.split())
+    return text if len(text) <= limit else "…" + text[-(limit - 1) :]
+
+
+def container_runtime() -> Check:
+    """macOS only: which topology the mission stack will be composed with, and whether nested
+    Rosetta actually works on this host.
+
+    Advisory by design — being in host-daemon (sibling) mode is the shipped default, not a
+    fault. It fails only when the operator PINNED `dind` on a host that cannot support it,
+    which would otherwise surface as a mission that mysteriously cannot start amd64 services.
+
+    Deliberately NOT part of `_environment_checks()`: it starts a small privileged container
+    (~1-2 s, pulling a ~4 MB image the first time), which is fine for an explicit diagnostic
+    command but not for the check list `up` runs on every start.
+
+    The probe runs even when the setting pins the mode, because collecting real verdicts from
+    real macOS hosts is the whole purpose of shipping the probe ahead of the default flip.
+    """
+    from xorcise.core.config import get_settings
+    from xorcise.core.rest.docker_runtime import inspect_runtime
+
+    def _client() -> object:
+        import docker  # type: ignore[import-untyped]
+
+        return docker.from_env()
+
+    try:
+        decision, probe = inspect_runtime(get_settings(), _client)
+    except Exception as exc:  # noqa: BLE001 — an advisory check must never break `doctor`
+        return Check("container runtime", True, f"undetermined ({exc})", level="warning")
+
+    # Report the probe's own wording rather than a flattened "available". Tier 1 only proves the
+    # binfmt handler is registered; Tier 2 proves an amd64 child actually runs, and the two can
+    # disagree (they DO on the dind base XORCISE currently ships). A bare "available" would
+    # promise the second while only having measured the first.
+    verdict = "not run" if probe is None else _clip(probe.detail)
+    reason = _clip(decision.reason)
+    # Under `auto` the probe verdict IS the reason for the mode, and printing it twice pushes the
+    # useful half of a long runtime error off the line.
+    detail = f"{decision.mode}; probe: {verdict}"
+    if reason != verdict:
+        detail = f"{decision.mode} ({reason}); probe: {verdict}"
+    if decision.mode == "dind" and probe is not None and not probe.ok:
+        return Check(
+            "container runtime",
+            False,
+            detail,
+            "this host cannot run nested amd64 — go back to the default: "
+            "XORCISE_MACOS_CONTAINER_RUNTIME=host-daemon",
+            level="warning",
+        )
+    return Check("container runtime", True, detail, level="warning")
+
+
 def external_control_plane(url: str, *, timeout: float = 5.0) -> Check:
     """Is a CONFIGURED remote control plane actually answering?
 

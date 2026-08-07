@@ -152,6 +152,37 @@ def test_run_on_macos_mounts_docker_desktop_socket_for_host_compose(monkeypatch)
     )
 
 
+def test_run_on_macos_in_dind_mode_mounts_no_socket(monkeypatch) -> None:
+    """The ENTIRE mechanism for getting DinD on macOS is not mounting the socket: the fused
+    image's entrypoint branches on its presence, so leaving it out hands the stack to the inner
+    daemon. Both the mount AND the DOCKER_HOST override have to be absent — either one alone
+    would still route compose at the host daemon."""
+    from xorcise.core.runner.docker import driver
+
+    monkeypatch.setattr(driver, "_host_is_macos", lambda: True)
+    client = _FakeClient()
+    DockerSdkDriver(client=client, use_host_daemon=False).run(
+        ContainerSpec(image="xorcise/fused:0", name="run-1")
+    )
+    assert "volumes" not in client.containers.run_kwargs
+    assert "DOCKER_HOST" not in client.containers.run_kwargs["environment"]
+
+
+def test_run_on_linux_ignores_the_host_daemon_flag(monkeypatch) -> None:
+    """`use_host_daemon` is a macOS-only topology switch; Linux has no sibling path at all, so
+    even the default True must not leak a socket mount there."""
+    from xorcise.core.runner.docker import driver
+
+    monkeypatch.setattr(driver, "_host_is_macos", lambda: False)
+    for flag in (True, False):
+        client = _FakeClient()
+        DockerSdkDriver(client=client, use_host_daemon=flag).run(
+            ContainerSpec(image="xorcise/fused:0", name="run-1")
+        )
+        assert "volumes" not in client.containers.run_kwargs
+        assert "DOCKER_HOST" not in client.containers.run_kwargs["environment"]
+
+
 def test_run_on_linux_keeps_isolated_dind(monkeypatch) -> None:
     from xorcise.core.runner.docker import driver
 

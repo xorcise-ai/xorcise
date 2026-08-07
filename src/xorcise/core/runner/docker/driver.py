@@ -74,18 +74,32 @@ def _host_is_macos() -> bool:
 
 
 class DockerSdkDriver(DockerDriver):
-    def __init__(self, client: Any = None, *, platform: str = "linux/amd64") -> None:
+    def __init__(
+        self,
+        client: Any = None,
+        *,
+        platform: str = "linux/amd64",
+        use_host_daemon: bool = True,
+    ) -> None:
         # `docker` is imported lazily so the module imports cleanly without the runner extra;
         # tests inject a fake `client` to exercise pull wiring without a daemon.
         # `platform` is passed to pull + run so amd64-only mission images resolve on an
         # arm64 host (Apple Silicon) instead of 404-ing on a missing arm64 manifest; "" ⇒ let docker
         # pick the host platform (the previous behavior).
+        #
+        # `use_host_daemon` selects the macOS topology (no effect off macOS). The driver does NOT
+        # probe and reads no config — the decision is INJECTED by the composition point
+        # (rest/docker_runtime.py), which is the only layer allowed to consult both the settings
+        # and the operator's home. That keeps this class unit-testable and the topology decision
+        # in exactly one place. It defaults to True so every existing construction keeps today's
+        # behaviour unchanged.
         if client is None:
             import docker  # type: ignore[import-untyped]  # only the runner extra ships it
 
             client = docker.from_env()
         self._client = client
         self._platform = platform
+        self._use_host_daemon = use_host_daemon
 
     def pull(
         self,
@@ -151,11 +165,14 @@ class DockerSdkDriver(DockerDriver):
         # in-process bookkeeping — even after a server restart or an abandoned run.
         kwargs: dict[str, Any] = {}
         environment = dict(spec.env)
-        if _host_is_macos():
-            # Docker Desktop can run the amd64 fused image through Rosetta, but Rosetta fails for
-            # its nested DinD children. Let the entrypoint compose those children as host-daemon
-            # siblings instead. The socket is deliberately mounted at a non-default path so the
-            # Linux/DinD branch remains capability-detected inside the image.
+        if _host_is_macos() and self._use_host_daemon:
+            # Host-daemon (sibling) mode. Historically unconditional on macOS, on the premise that
+            # "Rosetta fails for nested DinD children" — no longer true on current Docker Desktop,
+            # so it is now a resolved decision (see runner/docker/rosetta.py). Leaving the socket
+            # unmounted is the ENTIRE change needed to get DinD: the entrypoint's branch is
+            # capability-detected on the socket's presence, so the Linux/DinD path takes over.
+            # The socket is deliberately mounted at a non-default path to keep that detection
+            # working inside the image.
             kwargs["volumes"] = {
                 "/var/run/docker.sock": {"bind": "/var/run/docker-host.sock", "mode": "rw"}
             }
