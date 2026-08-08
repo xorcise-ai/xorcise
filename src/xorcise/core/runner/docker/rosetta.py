@@ -56,13 +56,20 @@ from typing import Any, Literal
 
 # Host-arch image used to read the VM's binfmt registration. Tiny (~4 MB) and pulled on demand.
 BINFMT_PROBE_IMAGE = "alpine:3.20"
-# amd64 DinD used for the ground-truth nested check. This MUST track the `FROM` in
-# containers/mission-base/Dockerfile (asserted by tests/topology/test_dind_base_parity.py).
-# The capability is a property of the ENGINE VERSION INSIDE the image, not of the host: engine
-# <= 27 installs the `/proc/<pid>/exe` prestart hook that Rosetta cannot exec (see the module
-# docstring), 28+ does not. So probing a newer dind than the one we ship would report a
-# capability the fused image does not have — a false green on an identical host.
-# Prefer passing the fused mission image itself when one is available: same base, already local.
+# DinD image used for the ground-truth nested check, run at `linux/amd64` — the shape XORCISE
+# ships today. This MUST track the `FROM` in containers/mission-base/Dockerfile (asserted by
+# tests/topology/test_dind_base_parity.py).
+#
+# The capability is NOT a property of the host. It fails only when BOTH hold: the wrapper is
+# amd64 (so its dockerd runs under Rosetta) AND the engine is <= 27 (so it installs the
+# `/proc/<pid>/exe` prestart hook Rosetta cannot exec — see the module docstring). Break either
+# and nesting works; verified on an unchanged host:
+#     amd64 wrapper + engine 27  -> fails
+#     amd64 wrapper + engine 28  -> works   (hook removed upstream, moby#47406)
+#     arm64 wrapper + engine 27  -> works   (dockerd is native; Rosetta never sees the hook)
+# So probing a different image than the one we ship — different engine OR different arch —
+# reports a capability the fused image does not have. Prefer passing the fused mission image
+# itself when one is available: exactly the shipped artifact, and already local.
 NESTED_PROBE_IMAGE = "docker:27-dind"
 # Ceiling for the Tier 2 container: inner dockerd boot + an inner amd64 pull + exec.
 NESTED_PROBE_TIMEOUT = 180
