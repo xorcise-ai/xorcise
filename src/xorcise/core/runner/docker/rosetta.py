@@ -2,9 +2,27 @@
 
 WHY THIS EXISTS. On macOS the runner mounts Docker Desktop's socket into the fused image and
 composes the mission stack as HOST-DAEMON SIBLINGS (`driver.py`), on the premise that "Rosetta
-fails for nested DinD children". That premise no longer holds on current Docker Desktop: the VM
-registers Rosetta in binfmt_misc with the `F` (fix binary) flag, which makes the kernel open the
-interpreter at REGISTRATION time and hold the fd — so the interpreter needs no presence in any
+fails for nested DinD children". The OBSERVATION was real; the diagnosis was wrong, and nesting
+was never the cause. Root-caused empirically:
+
+  * Rosetta cannot exec a binary reached through the `/proc/<pid>/exe` magic symlink. Minimal
+    repro, in a PLAIN amd64 container with no DinD anywhere:
+        /bin/busybox true    -> ok
+        /proc/<pid>/exe true -> "rosetta error: failed to open elf at true"
+    It reports argv[1] as the ELF it tried to open, i.e. the path never resolved and its
+    argument parsing shifted by one.
+  * Docker <= 27 installs an OCI **prestart hook** on every container it creates:
+        {"path": "/proc/<dockerd-pid>/exe",
+         "args": ["libnetwork-setkey", "-exec-root=/var/run/docker", ...]}
+    which is exactly that unsupported exec — hence the observed
+    "failed to open elf at -exec-root=/var/run/docker".
+  * Docker 28 removed the hook. Verified across engines: 27.5.1 hook present -> nested amd64
+    fails; 28.5.2 and 29.7.1 no hook -> nested amd64 works.
+
+So sibling mode never "avoided nesting" — it moved container creation off the inner Docker 27
+daemon (which has the hook) onto Docker Desktop's daemon (which does not). Nesting itself is
+fine: the VM registers Rosetta in binfmt_misc with the `F` (fix binary) flag, so the kernel opens
+the interpreter at REGISTRATION time and holds the fd — the interpreter needs no presence in any
 container's mount namespace, and every nested container inherits the registration because
 binfmt_misc is per-kernel.
 
@@ -39,10 +57,11 @@ from typing import Any, Literal
 # Host-arch image used to read the VM's binfmt registration. Tiny (~4 MB) and pulled on demand.
 BINFMT_PROBE_IMAGE = "alpine:3.20"
 # amd64 DinD used for the ground-truth nested check. This MUST track the `FROM` in
-# containers/mission-base/Dockerfile (asserted by tests/topology/test_dind_base_parity.py):
-# nested Rosetta is NOT uniform across dind releases — `docker:dind` 29.x runs an amd64 child
-# fine where this base dies with "rosetta error: failed to open elf" — so probing a newer image
-# than the one we actually ship would report a capability the fused image does not have.
+# containers/mission-base/Dockerfile (asserted by tests/topology/test_dind_base_parity.py).
+# The capability is a property of the ENGINE VERSION INSIDE the image, not of the host: engine
+# <= 27 installs the `/proc/<pid>/exe` prestart hook that Rosetta cannot exec (see the module
+# docstring), 28+ does not. So probing a newer dind than the one we ship would report a
+# capability the fused image does not have — a false green on an identical host.
 # Prefer passing the fused mission image itself when one is available: same base, already local.
 NESTED_PROBE_IMAGE = "docker:27-dind"
 # Ceiling for the Tier 2 container: inner dockerd boot + an inner amd64 pull + exec.

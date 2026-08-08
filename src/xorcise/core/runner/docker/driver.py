@@ -167,8 +167,11 @@ class DockerSdkDriver(DockerDriver):
         environment = dict(spec.env)
         if _host_is_macos() and self._use_host_daemon:
             # Host-daemon (sibling) mode. Historically unconditional on macOS, on the premise that
-            # "Rosetta fails for nested DinD children" — no longer true on current Docker Desktop,
-            # so it is now a resolved decision (see runner/docker/rosetta.py). Leaving the socket
+            # "Rosetta fails for nested DinD children". The observation was real but the cause was
+            # not nesting: Docker <= 27 installs an OCI prestart hook that execs `/proc/<pid>/exe`,
+            # which Rosetta cannot do, and 28+ dropped that hook. Siblings worked because they are
+            # created by Docker Desktop's (much newer) daemon. It is now a resolved decision —
+            # see runner/docker/rosetta.py for the root-cause evidence. Leaving the socket
             # unmounted is the ENTIRE change needed to get DinD: the entrypoint's branch is
             # capability-detected on the socket's presence, so the Linux/DinD path takes over.
             # The socket is deliberately mounted at a non-default path to keep that detection
