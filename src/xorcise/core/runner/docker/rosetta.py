@@ -1,9 +1,19 @@
-"""Nested-Rosetta capability probe + macOS container-runtime decision (runner part-island).
+"""Nested-container capability probe (runner part-island).
 
-WHY THIS EXISTS. On macOS the runner mounts Docker Desktop's socket into the fused image and
-composes the mission stack as HOST-DAEMON SIBLINGS (`driver.py`), on the premise that "Rosetta
-fails for nested DinD children". The OBSERVATION was real; the diagnosis was wrong, and nesting
-was never the cause. Root-caused empirically:
+WHAT THIS GATES. The mission stack always runs INSIDE the fused container (DinD). The former
+host-daemon "sibling" topology — which composed the mission stack on the OPERATOR's own daemon —
+has been REMOVED, because everything it touched was shared global state: parallel runs collided
+on missions' fixed `container_name`s and published host ports, teardown leaked un-labelled
+containers onto the operator's daemon, and mission bind mounts resolved against the wrong
+filesystem. Every one of those is invisible with one run and fatal with several.
+
+Removing the fallback makes nesting a PRECONDITION rather than a preference, which is why this
+module now answers one question — can this host run a container inside a container? — and why a
+"no" has to fail a run loudly instead of silently degrading it.
+
+WHY IT CAN FAIL AT ALL. Historically the runner mounted Docker Desktop's socket on macOS, on the
+premise that "Rosetta fails for nested DinD children". The OBSERVATION was real; the diagnosis
+was wrong, and nesting was never the cause. Root-caused empirically:
 
   * Rosetta cannot exec a binary reached through the `/proc/<pid>/exe` magic symlink. Minimal
     repro, in a PLAIN amd64 container with no DinD anywhere:
@@ -26,19 +36,18 @@ the interpreter at REGISTRATION time and holds the fd — the interpreter needs 
 container's mount namespace, and every nested container inherits the registration because
 binfmt_misc is per-kernel.
 
-Sibling mode is the direct cause of three defects that all vanish under DinD: mission-authored
-`ports:` binding on the operator's Mac, teardown leaking un-labelled mission containers, and
-mission bind mounts being denied because the path lives inside the outer container.
+The base image is now pinned >= 28, so that specific cause is fixed. The probe remains because
+the OTHER gates are host properties no base image can fix: Apple Silicon, macOS >= 13, the VMM
+being Apple's Virtualization framework (Docker VMM has no Rosetta at all), and the Rosetta toggle
+being on. Those — and regressions like docker/for-mac#7322 — all present identically as "amd64
+won't run" and are invisible in any version string. Rosetta is also slated for removal in
+macOS 28, with the Linux-VM path's fate publicly unresolved. A behavioural probe is correct
+across all of that; a version check is not.
 
-WHY A PROBE, NOT A VERSION CHECK. Four independent gates must all hold and only one is a macOS
-version: Apple Silicon, macOS >= 13, the VMM being Apple's Virtualization framework (Docker VMM
-has no Rosetta at all), and the Rosetta toggle being on. Gates 3 and 4 — and regressions like
-docker/for-mac#7322 — all present identically as "amd64 won't run" and are invisible in any
-version string. Rosetta is also slated for removal in macOS 28, with the Linux-VM path's fate
-publicly unresolved. A behavioural probe is correct across all of that; a version check is not.
-
-Everything here fails CLOSED: any error, timeout or ambiguity yields ok=False, so an unknown host
-takes the proven sibling path.
+Everything here fails CLOSED: any error, timeout or ambiguity yields ok=False. With the sibling
+fallback gone, failing closed means failing the RUN — which is the point. A run that cannot
+isolate its containers is worse than no run, because it lands them on the operator's daemon
+where the next parallel run collides with them.
 
 LAYER: part-island (`runner`). stdlib only at module scope; `docker` is never imported here — the
 caller injects a client. Persistence of the Tier 2 verdict is the CALLER's job (`rest`), because
@@ -77,7 +86,7 @@ NESTED_PROBE_IMAGE = "docker:29.7.1-dind"
 # Ceiling for the Tier 2 container: inner dockerd boot + an inner amd64 pull + exec.
 NESTED_PROBE_TIMEOUT = 180
 
-RuntimeMode = Literal["dind", "host-daemon"]
+RuntimeMode = Literal["dind"]  # the sibling topology is gone; DinD is the only runtime
 
 _SENTINEL = "XORCISE_NESTED_ARCH="
 _ERR_SENTINEL = "XORCISE_NESTED_ERR="
@@ -126,14 +135,22 @@ class RosettaProbe:
 
 
 @dataclass(frozen=True)
-class RuntimeDecision:
-    mode: RuntimeMode
-    reason: str
-    probe: RosettaProbe | None = None
+class NestedSupport:
+    """Whether this host can run the mission stack inside the fused container.
 
-    @property
-    def use_host_daemon(self) -> bool:
-        return self.mode == "host-daemon"
+    There is no longer a fallback: the host-daemon sibling topology was removed because it
+    composed the mission stack on the OPERATOR's daemon, where parallel runs collide on fixed
+    `container_name`s and published host ports, teardown leaks un-labelled containers, and
+    mission bind mounts resolve against the wrong filesystem. So this is a PRECONDITION, and a
+    negative verdict must fail a run loudly rather than silently degrade it.
+
+    `detail` is written for the operator — it is what a failed run prints.
+    """
+
+    ok: bool
+    detail: str
+    fingerprint: str = ""
+    remediation: str = ""
 
 
 def host_is_macos() -> bool:
@@ -307,38 +324,66 @@ def verify_nested_amd64(
     return RosettaProbe(False, f"nested child reported {arch!r}, expected 'x86_64'")
 
 
-# ----------------------------------------------------------------------- decision (pure)
+# --------------------------------------------------------------- precondition (pure)
+
+# Remediation is split from the verdict so `doctor` and a failed run print the SAME fix, and so
+# the wording lives next to the check that produces it rather than at three call sites.
+_FIX_ROSETTA = (
+    "enable Rosetta for x86/amd64 emulation in Docker Desktop "
+    "(Settings → General → 'Use Rosetta for x86_64/amd64 emulation on Apple Silicon'), and make "
+    "sure the VM is the Apple Virtualization framework — Docker VMM does not support Rosetta. "
+    "Then restart Docker Desktop"
+)
+_FIX_GENERIC = (
+    "XORCISE runs each mission's containers INSIDE its own container, which this host could not "
+    "do. Check that Docker can run privileged containers, then re-run 'xorcise doctor'"
+)
 
 
-def decide(
-    setting: str,
+def clip_detail(text: str, limit: int = 160) -> str:
+    """Keep a verdict readable. A nested-runtime failure arrives as a whole OCI error chain whose
+    meaning ("rosetta error: …") is at the END, so the TAIL is what survives the clip — head-
+    clipping would leave a line of runc boilerplate that says nothing. Clipped here, at the
+    source, so `doctor` and a failed run show the same readable string."""
+    text = " ".join(text.split())
+    return text if len(text) <= limit else "…" + text[-(limit - 1) :]
+
+
+def check_nested_support(
     *,
-    is_macos: bool,
+    skip: bool,
     probe_tier1: Callable[[], RosettaProbe],
     probe_tier2: Callable[[RosettaProbe], RosettaProbe],
-) -> RuntimeDecision:
-    """Resolve the container runtime for this host. Pure: both tiers are injected, so every
-    branch is unit-testable without a daemon.
+) -> NestedSupport:
+    """Can this host run the mission stack nested? Pure: both tiers are injected.
 
-    Linux never reaches the sibling path at all — DinD is the original design and the only path
-    there — so the probe is skipped outright rather than answered.
+    Tier 2 — actually starting a container inside a container — is the ONLY gate, because it is
+    the thing we need and it means the same on every platform. Tier 1 (the Rosetta binfmt
+    registration) is deliberately NOT a gate: Linux has no such handler at all, so gating on it
+    would fail every Linux host. It earns its keep twice over anyway — as the cache fingerprint
+    (so toggling Rosetta off invalidates a stale positive) and as the explanation for WHY Tier 2
+    failed, which is otherwise buried in an OCI error chain.
 
-    Under `auto` the tiers are ordered cheap-first and BOTH must pass: Tier 1 is a per-deploy
-    guard, Tier 2 is ground truth. Falling back to host-daemon on a Tier 2 failure is deliberate
-    (see the plan's open question 2): silently degrading is safer than failing a run outright, and
-    `doctor` surfaces the verdict so a misconfigured host is still visible.
+    `skip` is the escape hatch for hosts where the PROBE cannot run but nesting is known good
+    (restricted CI, no privileged containers). It skips the check; it can never re-enable the
+    removed sibling topology.
     """
-    if not is_macos:
-        return RuntimeDecision("dind", "not macOS — DinD is the only path")
-    if setting == "host-daemon":
-        return RuntimeDecision("host-daemon", "pinned by macos_container_runtime")
-    if setting == "dind":
-        return RuntimeDecision("dind", "pinned by macos_container_runtime")
+    if skip:
+        return NestedSupport(True, "nested-container check skipped by configuration")
 
-    tier1 = probe_tier1()
-    if not tier1.ok:
-        return RuntimeDecision("host-daemon", tier1.detail, tier1)
+    tier1 = probe_tier1()  # cheap; needed for the fingerprint whatever the verdict
     tier2 = probe_tier2(tier1)
-    if not tier2.ok:
-        return RuntimeDecision("host-daemon", tier2.detail, tier2)
-    return RuntimeDecision("dind", tier2.detail, tier2)
+    if tier2.ok:
+        return NestedSupport(True, tier2.detail, tier1.fingerprint)
+
+    # Tier 1 explains a Tier 2 failure when the cause is Rosetta; otherwise the generic fix.
+    rosetta_at_fault = not tier1.ok or "rosetta" in tier2.detail.lower()
+    detail = clip_detail(tier2.detail)
+    if not tier1.ok:  # append the actionable half AFTER clipping, so it is never what gets cut
+        detail = f"{detail} (rosetta: {tier1.detail})"
+    return NestedSupport(
+        False,
+        detail,
+        tier1.fingerprint,
+        _FIX_ROSETTA if rosetta_at_fault else _FIX_GENERIC,
+    )

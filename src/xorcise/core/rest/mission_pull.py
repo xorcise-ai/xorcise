@@ -118,29 +118,12 @@ def _real_docker_driver() -> DockerDriver:
             "(check you are in the right virtualenv: python -c 'import docker')"
         )
     from xorcise.core.config import get_settings
-    from xorcise.core.rest.docker_runtime import log_decision, resolve_runtime
     from xorcise.core.runner.docker.driver import DockerSdkDriver
 
-    settings = get_settings()
-    # Resolve the macOS topology BEFORE constructing the driver: `use_host_daemon` is a
-    # constructor arg precisely so the driver itself never probes or reads config. The client
-    # factory is lazy — under the default (`host-daemon`) the setting decides on its own and no
-    # daemon connection is opened here, leaving the fail-loud diagnosis below the only place a
-    # missing daemon is reported.
-    def _client() -> object:
-        import docker  # type: ignore[import-untyped]
-
-        return docker.from_env()
-
-    decision = resolve_runtime(settings, _client)
-    log_decision(decision)
     try:
         # pin the pull/run platform (default linux/amd64) so amd64-only mission images
         # resolve on an arm64 host; overridable via XORCISE_DOCKER_PLATFORM.
-        return DockerSdkDriver(
-            platform=settings.docker_platform,
-            use_host_daemon=decision.use_host_daemon,
-        )
+        return DockerSdkDriver(platform=get_settings().docker_platform)
     except Exception as exc:  # daemon unreachable / docker.from_env failure
         raise RuntimeError(
             "Docker daemon is not reachable — start Docker or set XORCISE_USE_STUBS=1"

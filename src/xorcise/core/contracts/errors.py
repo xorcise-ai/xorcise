@@ -28,6 +28,20 @@ class ImageNotInstalledError(ContractError):
     runner must fail loud (the caller re-ingests) rather than attempt a doomed registry pull."""
 
 
+class NestedContainersUnavailableError(ContractError):
+    """This host cannot run a container inside a container, so a lab mission cannot be deployed.
+
+    XORCISE runs every mission's stack INSIDE the run's own container. There is no fallback: the
+    old host-daemon topology composed the stack on the operator's own daemon, where parallel runs
+    collide on fixed `container_name`s and published ports and teardown leaks containers, so a
+    silent degrade is worse than a clean refusal.
+
+    Raised BEFORE any subnet reservation, control-plane fence or image pull, so a host that cannot
+    run missions costs the operator an error message rather than a half-built run. `str(exc)`
+    carries the probe's verdict AND the remediation — the CLI guard renders ContractError verbatim.
+    """
+
+
 class PullError(ContractError):
     """Fetching the mission image failed; nothing was installed. Lives here (LEAF) so the
     catalog island can raise it without importing the delivery layer."""

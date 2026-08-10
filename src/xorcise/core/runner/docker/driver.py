@@ -7,7 +7,6 @@ the `runner` extra; only constructing the driver requires the SDK + a daemon.
 from __future__ import annotations
 
 import json as _json
-import platform as _platform
 from collections.abc import Callable
 from typing import Any
 
@@ -68,38 +67,19 @@ def _split_ref(image: str) -> tuple[str, str | None]:
     return image, None
 
 
-def _host_is_macos() -> bool:
-    """Whether the Docker client is running on a macOS host (test seam)."""
-    return _platform.system() == "Darwin"
-
-
 class DockerSdkDriver(DockerDriver):
-    def __init__(
-        self,
-        client: Any = None,
-        *,
-        platform: str = "linux/amd64",
-        use_host_daemon: bool = True,
-    ) -> None:
+    def __init__(self, client: Any = None, *, platform: str = "linux/amd64") -> None:
         # `docker` is imported lazily so the module imports cleanly without the runner extra;
         # tests inject a fake `client` to exercise pull wiring without a daemon.
         # `platform` is passed to pull + run so amd64-only mission images resolve on an
         # arm64 host (Apple Silicon) instead of 404-ing on a missing arm64 manifest; "" ⇒ let docker
         # pick the host platform (the previous behavior).
-        #
-        # `use_host_daemon` selects the macOS topology (no effect off macOS). The driver does NOT
-        # probe and reads no config — the decision is INJECTED by the composition point
-        # (rest/docker_runtime.py), which is the only layer allowed to consult both the settings
-        # and the operator's home. That keeps this class unit-testable and the topology decision
-        # in exactly one place. It defaults to True so every existing construction keeps today's
-        # behaviour unchanged.
         if client is None:
             import docker  # type: ignore[import-untyped]  # only the runner extra ships it
 
             client = docker.from_env()
         self._client = client
         self._platform = platform
-        self._use_host_daemon = use_host_daemon
 
     def pull(
         self,
@@ -163,42 +143,36 @@ class DockerSdkDriver(DockerDriver):
         # Fused image runs an inner dockerd → privileged + /dev/net/tun for Tailscale.
         # The managed label lets `xorcise down` reap this container without any
         # in-process bookkeeping — even after a server restart or an abandoned run.
-        kwargs: dict[str, Any] = {}
-        environment = dict(spec.env)
-        if _host_is_macos() and self._use_host_daemon:
-            # Host-daemon (sibling) mode. Historically unconditional on macOS, on the premise that
-            # "Rosetta fails for nested DinD children". The observation was real but the cause was
-            # not nesting: Docker <= 27 installs an OCI prestart hook that execs `/proc/<pid>/exe`,
-            # which Rosetta cannot do, and 28+ dropped that hook. Siblings worked because they are
-            # created by Docker Desktop's (much newer) daemon. It is now a resolved decision —
-            # see runner/docker/rosetta.py for the root-cause evidence. Leaving the socket
-            # unmounted is the ENTIRE change needed to get DinD: the entrypoint's branch is
-            # capability-detected on the socket's presence, so the Linux/DinD path takes over.
-            # The socket is deliberately mounted at a non-default path to keep that detection
-            # working inside the image.
-            kwargs["volumes"] = {
-                "/var/run/docker.sock": {"bind": "/var/run/docker-host.sock", "mode": "rw"}
-            }
-            # Also makes already-published fused images (whose entrypoint predates the socket
-            # capability check) use the mounted host daemon for load/compose. Their background
-            # inner dockerd remains harmless and `wait` keeps the lifecycle container alive.
-            environment["DOCKER_HOST"] = "unix:///var/run/docker-host.sock"
+        #
+        # The host's Docker socket is deliberately NOT mounted. Doing so used to make the
+        # entrypoint compose the mission stack as SIBLINGS on the operator's own daemon, which
+        # put every run's containers into one shared namespace: parallel runs collided on the
+        # missions' fixed container_names and published host ports, teardown leaked un-labelled
+        # containers, and mission bind mounts resolved against the host filesystem. The stack now
+        # always runs on the inner daemon. The entrypoint still branches on the socket's presence,
+        # so not mounting it is what selects DinD.
         container = self._client.containers.run(
             spec.image,
             name=spec.name,
             detach=True,
             privileged=True,
             devices=["/dev/net/tun:/dev/net/tun"],
-            environment=environment,
+            environment=dict(spec.env),
             labels={MANAGED_LABEL: "true", RUN_ID_LABEL: spec.name},
             platform=self._platform or None,  # run the amd64 image on an arm64 host
-            **kwargs,
         )
         return ContainerHandle(container_id=container.id, image=spec.image)
 
     def _remove_run_resources(self, run_id: str) -> None:
-        """Remove the outer lifecycle container plus macOS host-compose siblings, then the run's
-        network + volumes. Idempotent."""
+        """Remove the run's outer lifecycle container, then any host-daemon leftovers it owns.
+        Idempotent.
+
+        Removing the outer container is now sufficient for a run's OWN stack: the mission
+        containers live on its inner daemon and die with it. The host-daemon sweeps below are
+        kept deliberately — they are the only thing that cleans up runs created BEFORE the
+        sibling topology was removed, and they cost one filtered list call against labels no
+        DinD-era run sets. Deleting them would strand those containers forever, since nothing
+        else knows they exist."""
         import contextlib
 
         from docker.errors import NotFound
@@ -207,12 +181,12 @@ class DockerSdkDriver(DockerDriver):
             all=True, filters={"label": f"{RUN_ID_LABEL}={run_id}"}
         ):
             container.remove(force=True)
-        # Compose networks/volumes carry its standard project label. A network cannot be removed
-        # while any container is still ATTACHED — and on macOS the mission stack is composed
-        # against the HOST daemon as siblings that carry ONLY the compose-project label, not our
-        # run-id label, so the sweep above misses them and a bare network.remove() 403s
-        # ("has active endpoints"). Force-remove whatever the network still holds, by ATTACHMENT
-        # (labels can't be relied on), before removing it — this is the e397d231 teardown leak.
+        # Legacy sibling-era cleanup. Compose networks/volumes carry its standard project label.
+        # A network cannot be removed while any container is still ATTACHED, and sibling mission
+        # containers carried ONLY the compose-project label, not our run-id label — so the sweep
+        # above missed them and a bare network.remove() 403s ("has active endpoints").
+        # Force-remove whatever the network still holds, by ATTACHMENT (labels can't be relied
+        # on), before removing it — this is the e397d231 teardown leak.
         for network in self._client.networks.list(
             filters={"label": f"com.docker.compose.project={run_id}"}
         ):
@@ -302,8 +276,8 @@ class DockerSdkDriver(DockerDriver):
 
     def compose_service_states(self, project: str) -> tuple[ServiceState, ...]:
         # The mission stack runs INSIDE the outer container (named == run id == compose project),
-        # so enumerate it with a nested `compose ps`. DOCKER_HOST is part of the container's config
-        # on macOS (host-daemon mode), so the exec inherits the same daemon the entrypoint used.
+        # so enumerate it with a nested `compose ps`. The exec inherits the container's env, and
+        # therefore the same inner daemon the entrypoint composed against.
         from docker.errors import NotFound
 
         try:

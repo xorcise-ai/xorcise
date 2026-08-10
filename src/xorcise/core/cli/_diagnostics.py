@@ -272,23 +272,19 @@ def _clip(text: str, limit: int = 140) -> str:
     return text if len(text) <= limit else "…" + text[-(limit - 1) :]
 
 
-def container_runtime() -> Check:
-    """macOS only: which topology the mission stack will be composed with, and whether nested
-    Rosetta actually works on this host.
+def nested_containers() -> Check:
+    """Can this host run a mission's containers INSIDE the run container?
 
-    Advisory by design — being in host-daemon (sibling) mode is the shipped default, not a
-    fault. It fails only when the operator PINNED `dind` on a host that cannot support it,
-    which would otherwise surface as a mission that mysteriously cannot start amd64 services.
+    A real blocker, not an advisory line: there is no host-daemon fallback any more, so a host
+    that cannot nest cannot run a lab mission at all. Surfacing it here is what turns "my run
+    failed" into "my host needs Rosetta enabled" before the operator ever creates a run.
 
-    Deliberately NOT part of `_environment_checks()`: it starts a small privileged container
-    (~1-2 s, pulling a ~4 MB image the first time), which is fine for an explicit diagnostic
-    command but not for the check list `up` runs on every start.
-
-    The probe runs even when the setting pins the mode, because collecting real verdicts from
-    real macOS hosts is the whole purpose of shipping the probe ahead of the default flip.
+    Deliberately NOT part of `_environment_checks()`. It starts a privileged container, which is
+    fine for an explicit diagnostic but not for the list `up` runs on every start — and `up`
+    must keep working regardless, since static missions and the UI need nothing nested.
     """
     from xorcise.core.config import get_settings
-    from xorcise.core.rest.docker_runtime import inspect_runtime
+    from xorcise.core.rest.docker_runtime import nested_support
 
     def _client() -> object:
         import docker  # type: ignore[import-untyped]
@@ -296,31 +292,15 @@ def container_runtime() -> Check:
         return docker.from_env()
 
     try:
-        decision, probe = inspect_runtime(get_settings(), _client)
-    except Exception as exc:  # noqa: BLE001 — an advisory check must never break `doctor`
-        return Check("container runtime", True, f"undetermined ({exc})", level="warning")
-
-    # Report the probe's own wording rather than a flattened "available". Tier 1 only proves the
-    # binfmt handler is registered; Tier 2 proves an amd64 child actually runs, and the two can
-    # disagree (they DO on the dind base XORCISE currently ships). A bare "available" would
-    # promise the second while only having measured the first.
-    verdict = "not run" if probe is None else _clip(probe.detail)
-    reason = _clip(decision.reason)
-    # Under `auto` the probe verdict IS the reason for the mode, and printing it twice pushes the
-    # useful half of a long runtime error off the line.
-    detail = f"{decision.mode}; probe: {verdict}"
-    if reason != verdict:
-        detail = f"{decision.mode} ({reason}); probe: {verdict}"
-    if decision.mode == "dind" and probe is not None and not probe.ok:
-        return Check(
-            "container runtime",
-            False,
-            detail,
-            "this host cannot run nested amd64 — go back to the default: "
-            "XORCISE_MACOS_CONTAINER_RUNTIME=host-daemon",
-            level="warning",
-        )
-    return Check("container runtime", True, detail, level="warning")
+        support = nested_support(get_settings(), _client)
+    except Exception as exc:  # noqa: BLE001 — an undetermined probe must not crash `doctor`
+        # Deliberately a WARNING, not a failure: "the probe itself broke" is a different claim
+        # from "this host cannot nest", and only the second should fail the verdict.
+        return Check("nested containers", True, f"undetermined ({_clip(str(exc))})",
+                     level="warning")
+    if support.ok:
+        return Check("nested containers", True, _clip(support.detail))
+    return Check("nested containers", False, _clip(support.detail), support.remediation)
 
 
 def external_control_plane(url: str, *, timeout: float = 5.0) -> Check:

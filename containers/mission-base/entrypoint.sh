@@ -13,32 +13,31 @@
 # at `up` time, so the auth key never lands on disk inside the override file.
 set -eu
 
-# 1. Docker daemon. Two topologies, selected by whether the runner mounted the host's socket:
-# present => host-daemon SIBLINGS (macOS default); absent => the original isolated DinD runtime.
-# The runner decides (see runner/docker/rosetta.py); this branch only obeys.
-if [ -S /var/run/docker-host.sock ]; then
-    export DOCKER_HOST=unix:///var/run/docker-host.sock
-else
-    # docker:*-dind ships ENV DOCKER_HOST=tcp://docker:2375 for the compose "dind sidecar"
-    # pattern. `dockerd-entrypoint.sh dockerd` does NOT consult it (that branch only runs when
-    # called with no args), so the daemon listens on the default unix socket while this shell's
-    # client dials a host named `docker` that does not exist — the wait below then never
-    # succeeds. Clearing it is what makes the DinD arm work at all.
-    unset DOCKER_HOST
-    dockerd-entrypoint.sh dockerd >/var/log/dockerd.log 2>&1 &
-    # Bounded: an unbounded wait turned any daemon that could never come up into a silent hang
-    # for the whole run, with no diagnosis anywhere. 120s is far above a normal boot (~2-10s).
-    waited=0
-    until docker info >/dev/null 2>&1; do
-        waited=$((waited + 1))
-        if [ "$waited" -gt 120 ]; then
-            echo "xorcise: inner dockerd did not come up within 120s" >&2
-            tail -50 /var/log/dockerd.log >&2 || true
-            exit 1
-        fi
-        sleep 1
-    done
-fi
+# 1. Inner Docker daemon. The mission stack ALWAYS runs on it — there is no host-daemon
+# "sibling" mode any more. That mode composed the stack on the operator's own daemon, so parallel
+# runs collided on missions' fixed container_names and published host ports, teardown leaked
+# un-labelled containers, and bind mounts resolved against the wrong filesystem. The runner no
+# longer mounts the host socket; if one is somehow present it is ignored.
+#
+# docker:*-dind ships ENV DOCKER_HOST=tcp://docker:2375 for the compose "dind sidecar" pattern.
+# `dockerd-entrypoint.sh dockerd` does NOT consult it (that branch only runs when called with no
+# args), so the daemon listens on the default unix socket while this shell's client dials a host
+# named `docker` that does not exist — the wait below would then never succeed. Clearing it is
+# what makes this work at all.
+unset DOCKER_HOST
+dockerd-entrypoint.sh dockerd >/var/log/dockerd.log 2>&1 &
+# Bounded: an unbounded wait turned any daemon that could never come up into a silent hang for
+# the whole run, with no diagnosis anywhere. 120s is far above a normal boot (~1-10s).
+waited=0
+until docker info >/dev/null 2>&1; do
+    waited=$((waited + 1))
+    if [ "$waited" -gt 120 ]; then
+        echo "xorcise: inner dockerd did not come up within 120s" >&2
+        tail -50 /var/log/dockerd.log >&2 || true
+        exit 1
+    fi
+    sleep 1
+done
 
 # 2. preload the baked inner stack (mission services + the Tailscale router image)
 [ -f /mission/images.tar ] && docker load -i /mission/images.tar
@@ -56,10 +55,7 @@ fi
 docker compose -p "${XORCISE_PROJECT:-mission}" \
     -f /mission/docker-compose.yml -f /mission/net-override.yml up -d
 
-# In host-daemon mode compose children are siblings, not children of this process. Keep the
-# run's deterministic outer container alive as the lifecycle handle used by status/teardown.
-if [ -S /var/run/docker-host.sock ]; then
-    while sleep 3600; do :; done
-else
-    wait
-fi
+# Block on the inner dockerd so this container stays alive as the run's lifecycle handle (the
+# one status/teardown address by name == run id). The mission containers are its children, so
+# they die with it — which is exactly why teardown no longer has to chase siblings.
+wait

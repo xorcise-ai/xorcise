@@ -7,11 +7,9 @@ pinned here rather than exercised through a driver.
 
 from __future__ import annotations
 
-import pytest
-
 from xorcise.core.runner.docker.rosetta import (
     RosettaProbe,
-    decide,
+    check_nested_support,
     fingerprint,
     parse_binfmt,
 )
@@ -110,53 +108,64 @@ def test_fingerprint_is_stable_for_an_unchanged_host() -> None:
     assert fingerprint(**args) == fingerprint(**args)
 
 
-# ----------------------------------------------------------------------------- decision
+# ------------------------------------------------------------------ precondition
 
-OK = RosettaProbe(True, "nested amd64 verified")
-BAD = RosettaProbe(False, "no rosetta binfmt handler in the Docker VM")
+OK = RosettaProbe(True, "nested amd64 verified", "fp-a")
+BAD = RosettaProbe(False, "no rosetta binfmt handler in the Docker VM", "fp-a")
 
 
 def _never(*_a: object, **_k: object) -> RosettaProbe:
     raise AssertionError("probe must not run")
 
 
-@pytest.mark.parametrize("setting", ["auto", "dind", "host-daemon"])
-def test_linux_is_always_dind_and_never_probes(setting: str) -> None:
-    """Linux never had a sibling path — probing there would be pure cost."""
-    d = decide(setting, is_macos=False, probe_tier1=_never, probe_tier2=_never)
-    assert d.mode == "dind"
-    assert d.use_host_daemon is False
+def test_supported_when_the_nested_probe_passes() -> None:
+    s = check_nested_support(skip=False, probe_tier1=lambda: OK, probe_tier2=lambda _t: OK)
+    assert s.ok
+    assert s.fingerprint == "fp-a"
 
 
-@pytest.mark.parametrize("setting,mode", [("host-daemon", "host-daemon"), ("dind", "dind")])
-def test_a_pinned_setting_short_circuits_the_probe(setting: str, mode: str) -> None:
-    """The support escape hatch has to work on a host where the probe itself misbehaves."""
-    d = decide(setting, is_macos=True, probe_tier1=_never, probe_tier2=_never)
-    assert d.mode == mode
-    assert "pinned" in d.reason
+def test_unsupported_when_the_nested_probe_fails() -> None:
+    s = check_nested_support(skip=False, probe_tier1=lambda: OK, probe_tier2=lambda _t: BAD)
+    assert s.ok is False
+    assert BAD.detail in s.detail
+    assert s.remediation, "an unsupported host must be told what to do about it"
 
 
-def test_auto_takes_dind_when_both_tiers_pass() -> None:
-    d = decide("auto", is_macos=True, probe_tier1=lambda: OK, probe_tier2=lambda _t: OK)
-    assert d.mode == "dind"
-    assert d.use_host_daemon is False
-    assert d.probe == OK
+def test_tier1_is_not_a_gate() -> None:
+    """The load-bearing property. Linux has no Rosetta binfmt handler AT ALL, so gating on Tier 1
+    would refuse to run on every Linux host — where nesting is the original, always-working
+    topology. Only actually nesting a container decides."""
+    s = check_nested_support(skip=False, probe_tier1=lambda: BAD, probe_tier2=lambda _t: OK)
+    assert s.ok is True
 
 
-def test_auto_falls_back_when_tier1_fails_and_never_pays_for_tier2() -> None:
-    d = decide("auto", is_macos=True, probe_tier1=lambda: BAD, probe_tier2=_never)
-    assert d.mode == "host-daemon"
-    assert d.reason == BAD.detail
+def test_tier1_explains_a_rosetta_failure() -> None:
+    """When Tier 1 also failed, its verdict is the actionable half — a bare OCI error chain does
+    not tell an operator to go turn Rosetta on."""
+    s = check_nested_support(skip=False, probe_tier1=lambda: BAD, probe_tier2=lambda _t: BAD)
+    assert s.ok is False
+    assert "rosetta" in s.detail.lower()
+    assert "Rosetta" in s.remediation
 
 
-def test_auto_falls_back_when_tier2_fails() -> None:
-    """Tier 1 can pass on a host where the whole chain still does not work — ground truth wins."""
-    d = decide("auto", is_macos=True, probe_tier1=lambda: OK, probe_tier2=lambda _t: BAD)
-    assert d.mode == "host-daemon"
-    assert d.probe == BAD
+def test_a_non_rosetta_failure_gets_the_generic_fix() -> None:
+    """Tier 1 fine + nesting broken is not a Rosetta problem, so it must not tell the operator to
+    go fiddle with Rosetta settings that are already correct."""
+    other = RosettaProbe(False, "the DinD probe's inner daemon never came up (exit 1)", "fp-a")
+    s = check_nested_support(skip=False, probe_tier1=lambda: OK, probe_tier2=lambda _t: other)
+    assert s.ok is False
+    assert "Rosetta" not in s.remediation
+    assert "privileged" in s.remediation
 
 
-def test_auto_passes_the_tier1_verdict_into_tier2() -> None:
+def test_skip_bypasses_the_probe_entirely() -> None:
+    """The escape hatch is for hosts where the PROBE cannot run, so it must not run the probe."""
+    s = check_nested_support(skip=True, probe_tier1=_never, probe_tier2=_never)
+    assert s.ok is True
+    assert "skipped" in s.detail
+
+
+def test_tier1_verdict_is_handed_to_tier2() -> None:
     """Tier 2's cache key is Tier 1's fingerprint, so the handoff must actually happen."""
     seen: list[RosettaProbe] = []
     tier1 = RosettaProbe(True, "handler present", "fp-123")
@@ -165,5 +174,5 @@ def test_auto_passes_the_tier1_verdict_into_tier2() -> None:
         seen.append(t)
         return OK
 
-    decide("auto", is_macos=True, probe_tier1=lambda: tier1, probe_tier2=_tier2)
+    check_nested_support(skip=False, probe_tier1=lambda: tier1, probe_tier2=_tier2)
     assert seen == [tier1]

@@ -119,9 +119,8 @@ def test_real_docker_driver_threads_the_platform_setting(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     class _Capture:
-        def __init__(self, *, platform: str, use_host_daemon: bool) -> None:
+        def __init__(self, *, platform: str) -> None:
             captured["platform"] = platform
-            captured["use_host_daemon"] = use_host_daemon
 
     monkeypatch.setattr(drv, "DockerSdkDriver", _Capture)
     monkeypatch.setattr(
@@ -131,47 +130,6 @@ def test_real_docker_driver_threads_the_platform_setting(monkeypatch) -> None:
     assert captured["platform"] == "linux/probe"
 
 
-@pytest.mark.parametrize(
-    "setting,is_macos,expected",
-    [
-        ("host-daemon", True, True),
-        ("dind", True, False),
-        ("auto", False, False),  # off macOS the setting is moot — DinD is the only path
-        ("host-daemon", False, False),
-    ],
-)
-def test_real_docker_driver_threads_the_container_runtime(
-    monkeypatch, setting: str, is_macos: bool, expected: bool
-) -> None:
-    """The driver never probes and never reads config: the topology is INJECTED here, so this
-    factory is the one place where a wrong answer would silently change how every mission stack
-    is composed. The pinned settings are asserted without a daemon because they short-circuit
-    the probe — which is itself the property that makes the escape hatch trustworthy."""
-    import importlib.util
-
-    import xorcise.core.rest.docker_runtime as dr
-    import xorcise.core.rest.mission_pull as cp
-    import xorcise.core.runner.docker.driver as drv
-
-    real_find_spec = importlib.util.find_spec
-    monkeypatch.setattr(
-        importlib.util,
-        "find_spec",
-        lambda name, *a, **k: object() if name == "docker" else real_find_spec(name, *a, **k),
-    )
-    monkeypatch.setattr(dr, "host_is_macos", lambda: is_macos)
-    captured: dict[str, object] = {}
-
-    class _Capture:
-        def __init__(self, *, platform: str, use_host_daemon: bool) -> None:
-            captured["use_host_daemon"] = use_host_daemon
-
-    monkeypatch.setattr(drv, "DockerSdkDriver", _Capture)
-    monkeypatch.setattr(
-        "xorcise.core.config.get_settings", lambda: _s(macos_container_runtime=setting)
-    )
-    cp._real_docker_driver()
-    assert captured["use_host_daemon"] is expected
 
 
 def test_probe_headscale_remediation_when_unreachable() -> None:

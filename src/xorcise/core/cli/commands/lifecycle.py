@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import platform
 import signal
 import subprocess
 import sys
@@ -22,7 +21,6 @@ import typer
 from xorcise import __version__
 from xorcise.core.cli._diagnostics import (
     Check,
-    container_runtime,
     control_plane,
     disk_space,
     docker_compose_v2,
@@ -30,6 +28,7 @@ from xorcise.core.cli._diagnostics import (
     docker_present,
     external_control_plane,
     home_present,
+    nested_containers,
     openssl_present,
     probe_channel,
     python_version,
@@ -687,13 +686,13 @@ def doctor(
         )
         raise typer.Exit(1) from exc
     env_checks = _environment_checks()
-    # macOS-only, and only under `doctor` — it starts a container, so it must not join the check
-    # list `up` runs. Gated on the docker daemon being up, so a Docker-less Mac gets one
-    # actionable line rather than two.
-    if platform.system() == "Darwin" and all(
-        c.ok for c in env_checks if c.name in {"docker", "docker daemon"}
-    ):
-        env_checks.append(container_runtime())
+    # Only under `doctor` — it starts a privileged container, so it must not join the check list
+    # `up` runs (and `up` must work on a host that cannot nest: static missions and the UI need
+    # nothing nested). Gated on the docker daemon being up, so a Docker-less host gets one
+    # actionable line rather than two; and skipped in stub mode, which deploys nothing and so has
+    # no nesting precondition to check (same reasoning as the control-plane probe below).
+    if not s.use_stubs and all(c.ok for c in env_checks if c.name in {"docker", "docker daemon"}):
+        env_checks.append(nested_containers())
     port_checks: list[Check] = []
     server_ports = _running_server_ports()
     # Probe the ports the server actually runs on (runtime overlay, same resolution

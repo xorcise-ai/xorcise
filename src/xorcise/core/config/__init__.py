@@ -120,13 +120,14 @@ class Settings(BaseSettings):
     # arm64 host (Apple Silicon) must request linux/amd64 or the pull 404s on a missing arm64
     # manifest; Docker Desktop then runs it under emulation. Empty ⇒ docker picks the host platform.
     docker_platform: str = "linux/amd64"
-    # How the mission stack is composed on a macOS host. "host-daemon" mounts Docker Desktop's
-    # socket into the fused image and composes the stack as SIBLINGS on the operator's own daemon
-    # (today's behaviour); "dind" keeps the stack inside the outer container, as on Linux. "auto"
-    # probes for nested Rosetta and takes DinD when it genuinely works, else falls back to
-    # host-daemon. Ignored off macOS, where DinD is the only path. Ships pinned to host-daemon —
-    # `auto` is opt-in until the per-run image-load cost of DinD is measured and mitigated.
-    macos_container_runtime: Literal["auto", "dind", "host-daemon"] = "host-daemon"
+    # The mission stack ALWAYS runs inside the run's own container (DinD). The former
+    # host-daemon "sibling" topology is gone — it put every mission's containers on the operator's
+    # daemon, so parallel runs collided on fixed container_names and published ports.
+    # "enforce" verifies the host can actually nest containers and fails run creation with a
+    # diagnosis if not. "skip" bypasses only the CHECK — for hosts where the probe itself cannot
+    # run (restricted CI, no privileged containers) but nesting is known good. It can never
+    # restore the sibling topology.
+    nested_container_check: Literal["enforce", "skip"] = "enforce"
     # role + service endpoints (defaults mirror the module constants)
     role: str = "all"
     host: str = HOST

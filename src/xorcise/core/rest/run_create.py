@@ -80,6 +80,10 @@ def _no_live_subnets() -> set[str]:
     return set()
 
 
+def _no_nested_check() -> None:
+    """Default `require_nested`: the stub/unit path deploys nothing, so there is nothing to nest."""
+
+
 @dataclass(frozen=True)
 class RunCreateDeps:
     control: ControlPort
@@ -109,6 +113,10 @@ class RunCreateDeps:
     # a mission deploy fail, leaving the agent joined-but-target-dead). Empty by default (stub /
     # unit path with no Docker); boot wires the docker-backed lister.
     live_subnets: Callable[[], set[str]] = _no_live_subnets
+    # Raises NestedContainersUnavailableError if this host cannot run a mission's containers
+    # inside the run container — the only supported topology. Injected (not called inline) so the
+    # stub/unit path has nothing to probe and no Docker to reach; boot wires the real check.
+    require_nested: Callable[[], None] = _no_nested_check
 
 
 def _use_real_headscale(settings: Settings) -> bool:
@@ -194,6 +202,8 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
     control: ControlPort
     # Default: no Docker to enumerate (stub/unit path) → the allocator sees no leftover subnets.
     live_subnets: Callable[[], set[str]] = _no_live_subnets
+    # Default: the stub path deploys nothing, so nesting is not a precondition for it.
+    require_nested: Callable[[], None] = _no_nested_check
     if control_real:
         # Real runner: _real_docker_driver fails loud if Docker/the runner extra is absent.
         from xorcise.core.headscale import overlapping_subnets
@@ -210,6 +220,18 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
 
         def live_subnets() -> set[str]:
             return overlapping_subnets(base, prefix, driver.list_network_cidrs())
+
+        # The mission stack only ever runs nested, so verify the host can do that before a run
+        # commits to anything. Cached, so the cost is ~0.2s per run after the first.
+        from xorcise.core.rest.docker_runtime import require_nested_support
+
+        def require_nested() -> None:
+            def _client() -> object:
+                import docker  # type: ignore[import-untyped]
+
+                return docker.from_env()
+
+            require_nested_support(settings, _client)
     else:
         control = InProcessControlStub(api_key="local")
     ca_cert = Path(settings.headscale_ca_cert).read_text() if settings.headscale_ca_cert else ""
@@ -232,6 +254,7 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
         rest_port=settings.rest_port,  # agent-facing run-control base URL port
         observed=SqliteObservedFactsStore(),  # persist observed facts run-scoped
         live_subnets=live_subnets,  # reconcile allocation against live Docker networks
+        require_nested=require_nested,  # fail a lab run early if the host cannot nest containers
     )
 
 
@@ -545,6 +568,12 @@ def create_run(
             name=run_name,
             intel_policy=policy,
         )
+    # Only a LAB mission reaches here, and a lab mission needs its stack nested inside the run
+    # container. Checked HERE — after the static short-circuit, before the subnet reservation,
+    # the Headscale fence and the deploy — so a host that cannot nest costs one error message
+    # instead of a reserved CIDR, a minted auth key and a torn-down half-run. Static missions are
+    # deliberately unaffected: they have no runtime at all.
+    deps.require_nested()
     agent_user = _agent_user_for(run_id)
     assert installed.environment is not None  # is_lab ⇒ environment present (contract-enforced)
     entry_networks = tuple(installed.environment.entry_networks) or ("default",)

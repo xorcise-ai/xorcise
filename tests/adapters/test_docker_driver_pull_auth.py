@@ -138,59 +138,39 @@ def test_run_carries_the_platform() -> None:
     assert client.containers.run_kwargs["platform"] == "linux/amd64"
 
 
-def test_run_on_macos_mounts_docker_desktop_socket_for_host_compose(monkeypatch) -> None:
-    from xorcise.core.runner.docker import driver
+def test_run_never_mounts_the_host_docker_socket() -> None:
+    """The host-daemon (sibling) topology is gone, and NOT mounting the socket is what removes
+    it: the fused entrypoint branches on that socket's presence. Mounting it would put every
+    mission's containers back on the operator's own daemon, where parallel runs collide on the
+    missions' fixed container_names and published host ports.
 
-    monkeypatch.setattr(driver, "_host_is_macos", lambda: True)
+    Both halves are asserted because either alone would re-enable it — the mount gives the
+    entrypoint its trigger, and DOCKER_HOST redirects compose even without one.
+    """
     client = _FakeClient()
     DockerSdkDriver(client=client).run(ContainerSpec(image="xorcise/fused:0", name="run-1"))
-    assert client.containers.run_kwargs["volumes"] == {
-        "/var/run/docker.sock": {"bind": "/var/run/docker-host.sock", "mode": "rw"}
-    }
-    assert client.containers.run_kwargs["environment"]["DOCKER_HOST"] == (
-        "unix:///var/run/docker-host.sock"
-    )
-
-
-def test_run_on_macos_in_dind_mode_mounts_no_socket(monkeypatch) -> None:
-    """The ENTIRE mechanism for getting DinD on macOS is not mounting the socket: the fused
-    image's entrypoint branches on its presence, so leaving it out hands the stack to the inner
-    daemon. Both the mount AND the DOCKER_HOST override have to be absent — either one alone
-    would still route compose at the host daemon."""
-    from xorcise.core.runner.docker import driver
-
-    monkeypatch.setattr(driver, "_host_is_macos", lambda: True)
-    client = _FakeClient()
-    DockerSdkDriver(client=client, use_host_daemon=False).run(
-        ContainerSpec(image="xorcise/fused:0", name="run-1")
-    )
     assert "volumes" not in client.containers.run_kwargs
     assert "DOCKER_HOST" not in client.containers.run_kwargs["environment"]
 
 
-def test_run_on_linux_ignores_the_host_daemon_flag(monkeypatch) -> None:
-    """`use_host_daemon` is a macOS-only topology switch; Linux has no sibling path at all, so
-    even the default True must not leak a socket mount there."""
-    from xorcise.core.runner.docker import driver
-
-    monkeypatch.setattr(driver, "_host_is_macos", lambda: False)
-    for flag in (True, False):
+def test_run_is_platform_independent(monkeypatch) -> None:
+    """There is no macOS special case left. The driver used to branch on the host OS; if that
+    branch ever comes back it must not come back silently."""
+    for system in ("Darwin", "Linux"):
+        monkeypatch.setattr("platform.system", lambda s=system: s)
         client = _FakeClient()
-        DockerSdkDriver(client=client, use_host_daemon=flag).run(
-            ContainerSpec(image="xorcise/fused:0", name="run-1")
-        )
+        DockerSdkDriver(client=client).run(ContainerSpec(image="xorcise/fused:0", name="run-1"))
         assert "volumes" not in client.containers.run_kwargs
         assert "DOCKER_HOST" not in client.containers.run_kwargs["environment"]
 
 
-def test_run_on_linux_keeps_isolated_dind(monkeypatch) -> None:
-    from xorcise.core.runner.docker import driver
-
-    monkeypatch.setattr(driver, "_host_is_macos", lambda: False)
+def test_run_keeps_the_privileges_the_inner_daemon_needs() -> None:
+    """The inner dockerd and the per-run Tailscale router are the reason for both of these; a
+    DinD-only runtime cannot start without them."""
     client = _FakeClient()
     DockerSdkDriver(client=client).run(ContainerSpec(image="xorcise/fused:0", name="run-1"))
-    assert "volumes" not in client.containers.run_kwargs
-    assert "DOCKER_HOST" not in client.containers.run_kwargs["environment"]
+    assert client.containers.run_kwargs["privileged"] is True
+    assert client.containers.run_kwargs["devices"] == ["/dev/net/tun:/dev/net/tun"]
 
 
 def test_run_empty_platform_passes_none() -> None:
