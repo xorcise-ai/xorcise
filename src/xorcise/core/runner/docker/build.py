@@ -23,6 +23,14 @@ from xorcise.core.contracts.control import MissionRef
 from xorcise.core.contracts.mission import MissionManifest
 from xorcise.core.runner.netoverride import ROUTER_IMAGE
 
+# The router build actually pulls. Deliberately NOT netoverride.ROUTER_IMAGE (`:stable`): that
+# tag is the DEPLOY-time contract the per-run override resolves and must not change, whereas this
+# is the BUILD-time pin that decides which router a mission is fused with. Bump it consciously.
+#
+# Note this is a different Tailscale than runs.join.TAILSCALE_CLIENT_VERSION, which pins the
+# client handed to agents — the two are not currently kept in step.
+ROUTER_PIN = "tailscale/tailscale:v1.102.2"
+
 
 @dataclass(frozen=True)
 class BuildSpec:
@@ -141,7 +149,15 @@ class FusedImageBuilder:
 
         # Bake the Tailscale router image too — the per-run net-override runs it as a separate
         # inner container, so it must be in the tar to avoid a run-time pull at deploy.
-        subprocess.run(["docker", "pull", ROUTER_IMAGE], check=True)
+        #
+        # Pull the PIN, bake under the CANONICAL tag. netoverride.ROUTER_IMAGE (:stable) is what
+        # the per-run override asks compose for, so images.tar must carry the router under that
+        # tag or the mission dies at `up` on the hermetic inner daemon. But pulling a floating
+        # tag means re-fusing an old mission bakes whatever :stable means that day, so what gets
+        # pulled is pinned and then re-tagged. The cloud fuse (buildspec.fuse.yml) documents
+        # itself as a mirror of this function and does the same.
+        subprocess.run(["docker", "pull", ROUTER_PIN], check=True)
+        subprocess.run(["docker", "tag", ROUTER_PIN, ROUTER_IMAGE], check=True)
         inner_tags.append(ROUTER_IMAGE)
 
         with tempfile.TemporaryDirectory() as td:

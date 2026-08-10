@@ -67,10 +67,13 @@ BINFMT_PROBE_IMAGE = "alpine:3.20"
 #     amd64 wrapper + engine 27  -> fails
 #     amd64 wrapper + engine 28  -> works   (hook removed upstream, moby#47406)
 #     arm64 wrapper + engine 27  -> works   (dockerd is native; Rosetta never sees the hook)
+# The base is now pinned >= 28, so this probe is expected to PASS on a Rosetta-capable host.
+# It is kept rather than deleted because the other three gates (Apple Silicon, the Apple
+# Virtualization VMM, the Rosetta toggle) are still host properties the base cannot fix.
 # So probing a different image than the one we ship — different engine OR different arch —
 # reports a capability the fused image does not have. Prefer passing the fused mission image
 # itself when one is available: exactly the shipped artifact, and already local.
-NESTED_PROBE_IMAGE = "docker:27-dind"
+NESTED_PROBE_IMAGE = "docker:29.7.1-dind"
 # Ceiling for the Tier 2 container: inner dockerd boot + an inner amd64 pull + exec.
 NESTED_PROBE_TIMEOUT = 180
 
