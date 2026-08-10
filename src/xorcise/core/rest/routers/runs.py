@@ -11,7 +11,10 @@ from pydantic import BaseModel
 from xorcise.core import agents, reporting, runs
 from xorcise.core.config import get_settings
 from xorcise.core.contracts.agent_event import EventCursor, RunEventsView
-from xorcise.core.contracts.errors import ImageNotInstalledError
+from xorcise.core.contracts.errors import (
+    ImageNotInstalledError,
+    NestedContainersUnavailableError,
+)
 from xorcise.core.contracts.grading import GradeResult
 from xorcise.core.contracts.reporting import ResultConditions, RunStats
 from xorcise.core.contracts.run import (
@@ -104,6 +107,13 @@ def create_run(payload: RunCreate) -> RunCreatedEntry:
         ) from exc
     except PullError as exc:  # in-catalog but the fetch failed (e.g. registry unreachable)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except NestedContainersUnavailableError as exc:
+        # The host cannot run a mission's containers inside the run container, which is the only
+        # supported topology. Same family as the RuntimeError below — the environment cannot
+        # serve the request — so the same 503. Mapped EXPLICITLY because ContractError is not a
+        # RuntimeError: without this it falls through as an unhandled 500, and FastAPI's generic
+        # body drops the diagnosis and remediation the operator needs.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except RuntimeError as exc:  # fail-loud: Docker/Headscale not reachable
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return RunCreatedEntry(**run.model_dump(), run_control_key=mission.run_control_key)
