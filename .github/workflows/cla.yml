@@ -7,13 +7,19 @@
 # remote store), so an in-repo store would force `contents: write` onto a
 # `pull_request_target` workflow.
 #
+# The store is written by a GitHub App rather than a PAT, so signature commits are authored by
+# `xorcise-cla-bot[bot]` instead of whichever human owned the token, and there is no long-lived
+# credential to rotate — the installation token below is minted per run, scoped to the one
+# repository, and revoked when the job ends.
+#
 # OPERATIONAL PREREQUISITES — the check fails on every pull request without them:
 #   1. The private signature repository xorcise-ai/cla-signatures exists (default branch
 #      `main` — the `branch:` input below).
-#   2. A fine-grained PAT with `contents: read & write` on xorcise-ai/cla-signatures ONLY is
-#      stored as the `CLA_SIGNATURE_TOKEN` secret. Scope it to nothing else — this repository
-#      itself needs no PAT access. When the PAT expires the run fails with an empty
-#      PERSONAL_ACCESS_TOKEN in the log, so put the rotation date somewhere visible.
+#   2. The "XORCISE CLA Bot" GitHub App is installed on the xorcise-ai organisation with access
+#      to cla-signatures ONLY, holding `contents: read & write` (plus the mandatory metadata).
+#      It needs no access to this repository. Its client ID and private key are stored as the
+#      `CLA_BOT_CLIENT_ID` and `CLA_BOT_PRIVATE_KEY` secrets; the token step fails loudly if
+#      either is missing or the key is rotated without updating the secret.
 #   3. (Optional) Add a required-status-check rule for this workflow if the CLA is to be a
 #      hard merge gate rather than an advisory comment.
 
@@ -47,10 +53,23 @@ jobs:
        contains(github.event.comment.body, 'I have read the CLA Document and I hereby sign the CLA'))
     permissions:
       actions: write # re-run the PR's CLA check once a signature lands
-      contents: read # this repo stays read-only; signatures live in xorcise-ai/cla-signatures via the PAT
+      contents: read # this repo stays read-only; signatures live in xorcise-ai/cla-signatures via the App
       pull-requests: write # post and update the signing-status comment
       statuses: write # record the CLA result as a commit status
     steps:
+      - name: Mint a signature-store token as the CLA bot
+        id: cla-bot
+        # `owner` + `repositories` are what let this target a repository other than the one
+        # running the workflow; the App is not installed here at all. The token expires in an
+        # hour and is revoked at job end, so nothing durable is exposed to this trigger.
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.CLA_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.CLA_BOT_PRIVATE_KEY }}
+          owner: xorcise-ai
+          repositories: cla-signatures
+          permission-contents: write
+
       - name: CLA assistant # zizmor: ignore[archived-uses]
         # Upstream archived this repository in March 2026; v2.6.1 is the final release, pinned
         # to its commit — an archived action is frozen, which a SHA pin makes safe to keep
@@ -58,8 +77,10 @@ jobs:
         uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Fine-grained PAT, `contents: read & write` on xorcise-ai/cla-signatures ONLY.
-          PERSONAL_ACCESS_TOKEN: ${{ secrets.CLA_SIGNATURE_TOKEN }}
+          # Despite the name, the action uses this purely as the credential for the remote
+          # signature store — an App installation token scoped to cla-signatures serves, and
+          # is what makes the resulting commits read as the bot rather than a person.
+          PERSONAL_ACCESS_TOKEN: ${{ steps.cla-bot.outputs.token }}
         with:
           path-to-document: https://github.com/xorcise-ai/xorcise/blob/main/CLA.md
           # The org's private signature store — see the header for why it is not this repo.
