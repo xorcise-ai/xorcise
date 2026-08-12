@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from xorcise.core.missions import BundleBuilder, InstalledMission
 
 
-def _real_bundle_builder() -> BundleBuilder:
+def _real_bundle_builder(platform: str) -> BundleBuilder:
     """Construct the real FusedImageBuilder, failing loud (not stubbing) when the
     host cannot build. A local build drives Docker via subprocess, so the binary —
     not a pip extra — is what has to be there."""
@@ -41,14 +41,18 @@ def _real_bundle_builder() -> BundleBuilder:
             "Local mission build is unavailable — this XORCISE install is incomplete. "
             "Reinstall it: pip install --force-reinstall xorcise"
         ) from exc
-    return FusedImageBuilder()
+    return FusedImageBuilder(platform)
 
 
 def build_bundle_builder(settings: Settings) -> BundleBuilder:
     """Real FusedImageBuilder on a Docker-owning role; StubBundleBuilder under use_stubs."""
     from xorcise.core.missions import StubBundleBuilder
 
-    return _real_bundle_builder() if _use_real_docker(settings) else StubBundleBuilder()
+    if not _use_real_docker(settings):
+        return StubBundleBuilder()
+    # Same platform the runner pulls/runs with, so what gets BAKED matches what gets RUN — an
+    # arm64 blob inside an amd64 fused image only fails later, at `up`, on the inner daemon.
+    return _real_bundle_builder(settings.docker_platform)
 
 
 def guard_local_ingest_collision(

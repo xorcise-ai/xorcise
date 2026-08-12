@@ -130,8 +130,6 @@ def test_real_docker_driver_threads_the_platform_setting(monkeypatch) -> None:
     assert captured["platform"] == "linux/probe"
 
 
-
-
 def test_probe_headscale_remediation_when_unreachable() -> None:
     # an unreachable control plane must yield a remediation (like the Docker path),
     # not a bare HeadscaleError surfacing deep in create_run.
@@ -291,8 +289,17 @@ def test_build_bundle_builder_real_when_role_all(monkeypatch) -> None:
     from xorcise.core.missions import StubBundleBuilder
 
     sentinel = StubBundleBuilder()
-    monkeypatch.setattr(ing, "_real_bundle_builder", lambda: sentinel)
+    seen: list[str] = []
+
+    def _capture(platform: str) -> StubBundleBuilder:
+        seen.append(platform)
+        return sentinel
+
+    monkeypatch.setattr(ing, "_real_bundle_builder", _capture)
     assert ing.build_bundle_builder(_s(role="all", use_stubs=False)) is sentinel
+    # The builder bakes for the SAME platform the runner pulls/runs with; a mismatch only
+    # surfaces later, on the inner daemon, as an unreadable image config.
+    assert seen == [_s(role="all", use_stubs=False).docker_platform]
 
 
 def test_build_bundle_builder_stub_when_use_stubs() -> None:
@@ -313,10 +320,10 @@ def test_real_bundle_builder_failloud_no_extra(monkeypatch) -> None:
     # fixed by a pip extra (`runner` is an empty no-op).
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/docker")
     with pytest.raises(RuntimeError, match="install is incomplete"):
-        ing._real_bundle_builder()
+        ing._real_bundle_builder("linux/amd64")
     monkeypatch.setattr(shutil, "which", lambda name: None)
     with pytest.raises(RuntimeError, match="Docker CLI"):
-        ing._real_bundle_builder()
+        ing._real_bundle_builder("linux/amd64")
 
 
 def test_run_create_deps_all_three_real_on_role_all(monkeypatch, migrated_home) -> None:

@@ -41,6 +41,18 @@ class BuildSpec:
 
 BASE_IMAGE = "xorcise/mission-base"
 
+# Every pull and build below is pinned to ONE platform, and it must be the platform the fused
+# image itself runs as. Without the pin, `docker pull` resolves a multi-arch tag to the HOST's
+# architecture: on Apple Silicon that bakes arm64 blobs into an amd64 mission image, and the
+# inner daemon then fails at `up` with "failed to read config content: NotFound: content digest
+# sha256:...: not found" — a manifest/config mismatch that reads like a corrupt tar rather than
+# an architecture error. Single-arch images (amd64-only vendor images) are unaffected either
+# way, which is why the gap only shows up on the multi-arch ones like the Tailscale router.
+#
+# Mirrors config.docker_platform (the runner's pull/run platform); the caller passes that in so
+# the two cannot drift, and this default matches it for direct construction in tests.
+DEFAULT_PLATFORM = "linux/amd64"
+
 # The fused image is tagged with a STABLE per-mission tag, NOT the setuptools-scm
 # code version: pinning the tag to the code version changed it on every commit, so a mission
 # ingested at one commit recorded an image ref that a later commit (and a prune) stranded —
@@ -77,7 +89,12 @@ def _base_context() -> Path:
     )
 
 
-def ensure_base_image() -> None:
+def _platform_args(platform: str) -> list[str]:
+    """`--platform <p>` for docker build/pull, or nothing when the caller opted out."""
+    return ["--platform", platform] if platform else []
+
+
+def ensure_base_image(platform: str = DEFAULT_PLATFORM) -> None:
     """Build xorcise/mission-base from the bundled context if it isn't already present.
 
     The fused per-mission image is FROM this base; a fresh host has no copy (no published
@@ -87,7 +104,10 @@ def ensure_base_image() -> None:
     """
     if _image_present(BASE_IMAGE):
         return
-    subprocess.run(["docker", "build", "-t", BASE_IMAGE, str(_base_context())], check=True)
+    subprocess.run(
+        ["docker", "build", *_platform_args(platform), "-t", BASE_IMAGE, str(_base_context())],
+        check=True,
+    )
 
 
 def plan_inner_images(compose: Mapping[str, object]) -> tuple[BuildSpec, ...]:
@@ -100,6 +120,7 @@ def plan_inner_images(compose: Mapping[str, object]) -> tuple[BuildSpec, ...]:
         if not isinstance(spec, dict):
             continue
         build = spec.get("build")
+        image = spec.get("image")
         if build is not None:
             if isinstance(build, str):
                 ctx = build
@@ -107,9 +128,20 @@ def plan_inner_images(compose: Mapping[str, object]) -> tuple[BuildSpec, ...]:
                 ctx = str(build.get("context", "."))
             else:
                 ctx = "."
-            out.append(BuildSpec(service=str(name), build_context=ctx))
+            # Keep `image` alongside `build` when the service declares BOTH. It is the tag
+            # `docker compose up` resolves the service by at deploy, so the builder must bake the
+            # built image under it as well — dropping it here (the previous behaviour) meant the
+            # loaded images.tar was ignored and compose rebuilt from the bundle at deploy time,
+            # which cannot work on the hermetic inner daemon. Mirrors the cloud fuse pipeline,
+            # which passes the same `spec.get('image') or ''` through as its alias.
+            out.append(
+                BuildSpec(
+                    service=str(name),
+                    build_context=ctx,
+                    image=str(image) if image is not None else None,
+                )
+            )
         else:
-            image = spec.get("image")
             out.append(
                 BuildSpec(service=str(name), image=str(image) if image is not None else None)
             )
@@ -125,8 +157,12 @@ def _write_fused_dockerfile(ctx: Path) -> None:
 class FusedImageBuilder:
     """Builds the fused per-mission OCI image locally (no registry)."""
 
+    def __init__(self, platform: str = DEFAULT_PLATFORM) -> None:
+        self._platform = platform
+
     def build(self, bundle_dir: Path, manifest: MissionManifest) -> MissionRef:
-        ensure_base_image()  # fused image is FROM xorcise/mission-base — build it if absent
+        plat = _platform_args(self._platform)
+        ensure_base_image(self._platform)  # fused image is FROM mission-base — build if absent
         slug = manifest.metadata.mission_id
         # Only lab missions are fused; ingest never calls build() for a static manifest.
         assert manifest.environment is not None, (
@@ -140,11 +176,21 @@ class FusedImageBuilder:
             if s.build_context:
                 tag = f"xorcise-inner/{slug}-{s.service}:build"
                 subprocess.run(
-                    ["docker", "build", "-t", tag, str(bundle_dir / s.build_context)], check=True
+                    ["docker", "build", *plat, "-t", tag, str(bundle_dir / s.build_context)],
+                    check=True,
                 )
                 inner_tags.append(tag)
+                if s.image:
+                    # ALSO bake it under the tag the compose file references, so `compose up` at
+                    # deploy finds it in the loaded tar and uses it AS-IS. Without this the
+                    # service is rebuilt at deploy — which pulls its FROM base from docker.io on
+                    # an inner daemon that is meant to be hermetic, and on Apple Silicon also
+                    # trips the Rosetta prestart-hook bug that still affects BuildKit. Same image,
+                    # second tag: no extra build, no extra layer in images.tar.
+                    subprocess.run(["docker", "tag", tag, s.image], check=True)
+                    inner_tags.append(s.image)
             elif s.image:
-                subprocess.run(["docker", "pull", s.image], check=True)
+                subprocess.run(["docker", "pull", *plat, s.image], check=True)
                 inner_tags.append(s.image)
 
         # Bake the Tailscale router image too — the per-run net-override runs it as a separate
@@ -156,17 +202,41 @@ class FusedImageBuilder:
         # tag means re-fusing an old mission bakes whatever :stable means that day, so what gets
         # pulled is pinned and then re-tagged. The cloud fuse (buildspec.fuse.yml) documents
         # itself as a mirror of this function and does the same.
-        subprocess.run(["docker", "pull", ROUTER_PIN], check=True)
-        subprocess.run(["docker", "tag", ROUTER_PIN, ROUTER_IMAGE], check=True)
+        #
+        # The re-tag is a one-line FROM BUILD, not `docker tag`, and that is load-bearing on any
+        # host whose architecture differs from the fused image's. The router is the only
+        # MULTI-ARCH image in the fuse (the mission images are single-platform, which is why they
+        # never showed this). Under Docker's containerd image store a tag keeps pointing at the
+        # whole multi-arch INDEX, and `pull --platform` fetches only the one platform's blobs, so
+        # the index ends up referencing manifests whose content was never downloaded. Both export
+        # routes then dead-end: a plain `docker save` fails with "unable to create manifests file:
+        # NotFound: content digest sha256:...: not found" on the absent manifest, and
+        # `docker save --platform` rejects the image outright ("does not provide the specified
+        # platform") even though that platform IS present locally. Building FROM the pin
+        # materialises a genuine single-platform image, which exports cleanly. It adds no layers
+        # — only a fresh config — and is what makes images.tar loadable by the inner daemon.
+        subprocess.run(["docker", "pull", *plat, ROUTER_PIN], check=True)
+        subprocess.run(
+            ["docker", "build", *plat, "-t", ROUTER_IMAGE, "-"],
+            input=f"FROM {ROUTER_PIN}\n".encode(),
+            check=True,
+        )
         inner_tags.append(ROUTER_IMAGE)
 
         with tempfile.TemporaryDirectory() as td:
             ctx = Path(td)
+            # `save` is platform-pinned too, not just the pulls. Under Docker Desktop's
+            # containerd image store a tag keeps pointing at the multi-arch INDEX even after a
+            # `pull --platform`, and only the requested platform's blobs are fetched — so an
+            # unpinned save tries to write manifests for platforms whose content was never
+            # downloaded and dies with "unable to create manifests file: NotFound: content
+            # digest sha256:...: not found". Pinning here makes images.tar single-platform,
+            # which is also what the inner daemon needs.
             subprocess.run(
-                ["docker", "save", "-o", str(ctx / "images.tar"), *inner_tags], check=True
+                ["docker", "save", *plat, "-o", str(ctx / "images.tar"), *inner_tags], check=True
             )
             subprocess.run(["cp", "-r", str(bundle_dir), str(ctx / "bundle")], check=True)
             _write_fused_dockerfile(ctx)
             tag = fused_tag(slug)
-            subprocess.run(["docker", "build", "-t", tag, str(ctx)], check=True)
+            subprocess.run(["docker", "build", *plat, "-t", tag, str(ctx)], check=True)
         return MissionRef(mission_id=slug, image=tag)

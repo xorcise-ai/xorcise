@@ -77,7 +77,11 @@ def test_ensure_base_image_builds_when_absent(monkeypatch, tmp_path):
 
     monkeypatch.setattr(subprocess, "run", _record)
     ensure_base_image()
-    assert calls == [["docker", "build", "-t", BASE_IMAGE, str(tmp_path)]]
+    # Platform-pinned: the base is what the fused image is FROM, so building it for the host
+    # architecture is what makes the whole mission image the wrong architecture.
+    assert calls == [
+        ["docker", "build", "--platform", "linux/amd64", "-t", BASE_IMAGE, str(tmp_path)]
+    ]
 
 
 def test_ensure_base_image_propagates_build_failure(monkeypatch, tmp_path):
@@ -128,13 +132,53 @@ def test_router_is_pinned_and_baked_under_the_canonical_tag(monkeypatch, tmp_pat
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(subprocess, "run", _run)
-    monkeypatch.setattr(build_mod, "ensure_base_image", lambda: None)
+    monkeypatch.setattr(build_mod, "ensure_base_image", lambda *_a: None)
 
     manifest = _manifest_with_compose(tmp_path)
-    build_mod.FusedImageBuilder().build(tmp_path, manifest)
+    build_mod.FusedImageBuilder(platform="").build(tmp_path, manifest)
 
     assert ["docker", "pull", ROUTER_PIN] in calls, "router must be pulled by its pin"
-    assert ["docker", "tag", ROUTER_PIN, ROUTER_IMAGE] in calls, "pin must be re-tagged canonical"
+    # Re-tag is a FROM build, not `docker tag` — see the comment at the call site: `docker tag`
+    # leaves the multi-arch index in place and images.tar then cannot be exported at all.
+    assert ["docker", "build", "-t", ROUTER_IMAGE, "-"] in calls, "pin must be rebuilt canonical"
     save = next(c for c in calls if c[:2] == ["docker", "save"])
     assert ROUTER_IMAGE in save, "images.tar must carry the router under the canonical tag"
     assert ROUTER_PIN not in save, "the pin must not be what lands in images.tar"
+
+
+def test_every_pull_and_build_is_platform_pinned(monkeypatch, tmp_path):
+    """Nothing may resolve to the HOST architecture — the fused image is single-platform.
+
+    On Apple Silicon an unpinned `docker pull` of a multi-arch tag fetches arm64 and bakes it
+    into an amd64 mission image. Nothing complains at build time; the inner daemon fails much
+    later, at `up`, with "failed to read config content: NotFound: content digest sha256:...",
+    which reads like a corrupt images.tar rather than an architecture mismatch. Observed against
+    the Tailscale router, whose tag is multi-arch — the amd64-only mission images hid the gap.
+    """
+    from xorcise.core.runner.docker.build import ROUTER_PIN
+
+    calls: list[list[str]] = []
+
+    def _run(cmd, **kw):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", _run)
+    monkeypatch.setattr(build_mod, "ensure_base_image", lambda *_a: None)
+
+    manifest = _manifest_with_compose(tmp_path)
+    build_mod.FusedImageBuilder(platform="linux/amd64").build(tmp_path, manifest)
+
+    unpinned = [
+        c
+        for c in calls
+        if c[:2] in (["docker", "pull"], ["docker", "build"], ["docker", "save"])
+        and "--platform" not in c
+    ]
+    assert not unpinned, f"these resolve to the host architecture: {unpinned}"
+    assert ["docker", "pull", "--platform", "linux/amd64", ROUTER_PIN] in calls
+    # `save` in particular: under the containerd image store the tag still points at the
+    # multi-arch index after a pinned pull, so an unpinned save fails on blobs that were
+    # deliberately never fetched — a failure that looks like a corrupt tar, not an arch bug.
+    save = next(c for c in calls if c[:2] == ["docker", "save"])
+    assert save[2:4] == ["--platform", "linux/amd64"], save
