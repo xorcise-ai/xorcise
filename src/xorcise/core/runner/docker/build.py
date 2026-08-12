@@ -53,6 +53,7 @@ def base_major_from_labels(labels: Mapping[str, str] | None) -> int | None:
     except ValueError:
         return None
 
+
 # The router build actually pulls. Deliberately NOT netoverride.ROUTER_IMAGE (`:stable`): that
 # tag is the DEPLOY-time contract the per-run override resolves and must not change, whereas this
 # is the BUILD-time pin that decides which router a mission is fused with. Bump it consciously.

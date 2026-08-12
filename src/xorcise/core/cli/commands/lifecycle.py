@@ -692,6 +692,11 @@ def doctor(
     # actionable line rather than two; and skipped in stub mode, which deploys nothing and so has
     # no nesting precondition to check (same reasoning as the control-plane probe below).
     if not s.use_stubs and all(c.ok for c in env_checks if c.name in {"docker", "docker daemon"}):
+        # The nested probe boots a throwaway DinD (and pulls it on a cold host) — up to a few
+        # minutes with no output otherwise, which reads as a hang and gets Ctrl-C'd. Say so first,
+        # so the operator waits instead of killing it (and stranding the privileged probe).
+        if as_json is not True:
+            console.print("  [dim]○ probing nested containers (may take a minute)…[/dim]")
         env_checks.append(nested_containers())
     port_checks: list[Check] = []
     server_ports = _running_server_ports()

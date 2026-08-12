@@ -61,7 +61,7 @@ import hashlib
 import platform as _platform
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 # Host-arch image used to read the VM's binfmt registration. Tiny (~4 MB) and pulled on demand.
 BINFMT_PROBE_IMAGE = "alpine:3.20"
@@ -78,15 +78,16 @@ BINFMT_PROBE_IMAGE = "alpine:3.20"
 #     arm64 wrapper + engine 27  -> works   (dockerd is native; Rosetta never sees the hook)
 # The base is now pinned >= 28, so this probe is expected to PASS on a Rosetta-capable host.
 # It is kept rather than deleted because the other three gates (Apple Silicon, the Apple
-# Virtualization VMM, the Rosetta toggle) are still host properties the base cannot fix.
-# So probing a different image than the one we ship — different engine OR different arch —
-# reports a capability the fused image does not have. Prefer passing the fused mission image
-# itself when one is available: exactly the shipped artifact, and already local.
+# Virtualization VMM, the Rosetta toggle) are still host properties the base cannot fix. This
+# probes HOST capability (can this machine nest at all); base-generation compatibility of a
+# specific fused artifact is a separate, cheaper check (build.base_major_from_ref/_labels).
 NESTED_PROBE_IMAGE = "docker:29.7.1-dind"
 # Ceiling for the Tier 2 container: inner dockerd boot + an inner amd64 pull + exec.
 NESTED_PROBE_TIMEOUT = 180
 
-RuntimeMode = Literal["dind"]  # the sibling topology is gone; DinD is the only runtime
+# Reaper label (mirrors runner.docker.MANAGED_LABEL) stamped on the Tier 2 probe container so a
+# crash mid-probe cannot strand a privileged DinD that `xorcise down` can never find.
+_PROBE_LABEL = "xorcise.managed"
 
 _SENTINEL = "XORCISE_NESTED_ARCH="
 _ERR_SENTINEL = "XORCISE_NESTED_ERR="
@@ -285,6 +286,11 @@ def verify_nested_amd64(
             privileged=True,
             detach=True,
             platform="linux/amd64",  # the outer amd64 layer — Rosetta's first hop
+            # Labelled so a crash before the finally-remove leaves a container `xorcise down` can
+            # still reap — a stranded PRIVILEGED DinD is the worst thing to leak. Deliberately
+            # UNNAMED: a fixed name would 409 the next probe if a crashed one lingers; the reaper
+            # filters on the label, not the name.
+            labels={_PROBE_LABEL: "true"},
         )
         result = container.wait(timeout=timeout)
         logs = container.logs()
@@ -312,9 +318,7 @@ def verify_nested_amd64(
         return RosettaProbe(True, "nested amd64 verified (x86_64 inside an amd64 DinD)")
     status = (result or {}).get("StatusCode") if isinstance(result, dict) else result
     if not reached_child:
-        return RosettaProbe(
-            False, f"the DinD probe's inner daemon never came up (exit {status})"
-        )
+        return RosettaProbe(False, f"the DinD probe's inner daemon never came up (exit {status})")
     if not arch:
         # The daemon was healthy and the amd64 child still failed — the interesting case, and
         # the one whose cause is only in the runtime's stderr.
@@ -354,8 +358,9 @@ def check_nested_support(
     skip: bool,
     probe_tier1: Callable[[], RosettaProbe],
     probe_tier2: Callable[[RosettaProbe], RosettaProbe],
+    on_macos: bool | None = None,
 ) -> NestedSupport:
-    """Can this host run the mission stack nested? Pure: both tiers are injected.
+    """Can this host run the mission stack nested? Pure: both tiers (and the OS) are injected.
 
     Tier 2 — actually starting a container inside a container — is the ONLY gate, because it is
     the thing we need and it means the same on every platform. Tier 1 (the Rosetta binfmt
@@ -367,19 +372,27 @@ def check_nested_support(
     `skip` is the escape hatch for hosts where the PROBE cannot run but nesting is known good
     (restricted CI, no privileged containers). It skips the check; it can never re-enable the
     removed sibling topology.
+
+    `on_macos` gates the Rosetta remediation: Rosetta is macOS-only, and Tier 1 ALWAYS fails on
+    Linux (no rosetta binfmt handler exists there), so choosing the fix on `not tier1.ok` alone
+    handed every Linux nesting failure the "enable Rosetta in Docker Desktop" advice for settings
+    that do not exist. Defaults to the real host OS; injected in tests.
     """
     if skip:
         return NestedSupport(True, "nested-container check skipped by configuration")
 
+    macos = host_is_macos() if on_macos is None else on_macos
     tier1 = probe_tier1()  # cheap; needed for the fingerprint whatever the verdict
     tier2 = probe_tier2(tier1)
     if tier2.ok:
         return NestedSupport(True, tier2.detail, tier1.fingerprint)
 
-    # Tier 1 explains a Tier 2 failure when the cause is Rosetta; otherwise the generic fix.
-    rosetta_at_fault = not tier1.ok or "rosetta" in tier2.detail.lower()
+    # The Rosetta fix applies ONLY on macOS: on Apple Silicon a Tier 1 failure (or a "rosetta"
+    # error from Tier 2) is the actionable cause. Off macOS, Rosetta is irrelevant no matter what
+    # Tier 1 says, so the generic "can this host run privileged containers" fix is the honest one.
+    rosetta_at_fault = macos and (not tier1.ok or "rosetta" in tier2.detail.lower())
     detail = clip_detail(tier2.detail)
-    if not tier1.ok:  # append the actionable half AFTER clipping, so it is never what gets cut
+    if macos and not tier1.ok:  # append the actionable half AFTER clipping, so it is never cut
         detail = f"{detail} (rosetta: {tier1.detail})"
     return NestedSupport(
         False,

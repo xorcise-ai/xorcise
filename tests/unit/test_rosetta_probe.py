@@ -97,9 +97,7 @@ def test_fingerprint_changes_when_the_registration_changes() -> None:
     """Toggling Rosetta off, or switching VMM, rewrites the handler — a cached Tier 2 verdict
     must not survive that."""
     a = fingerprint(docker_version="29.6.2", macos_version="15.7.7", binfmt_raw=_reg())
-    b = fingerprint(
-        docker_version="29.6.2", macos_version="15.7.7", binfmt_raw=_reg(flags="POC")
-    )
+    b = fingerprint(docker_version="29.6.2", macos_version="15.7.7", binfmt_raw=_reg(flags="POC"))
     assert a != b
 
 
@@ -139,20 +137,37 @@ def test_tier1_is_not_a_gate() -> None:
     assert s.ok is True
 
 
-def test_tier1_explains_a_rosetta_failure() -> None:
-    """When Tier 1 also failed, its verdict is the actionable half — a bare OCI error chain does
-    not tell an operator to go turn Rosetta on."""
-    s = check_nested_support(skip=False, probe_tier1=lambda: BAD, probe_tier2=lambda _t: BAD)
+def test_tier1_explains_a_rosetta_failure_on_macos() -> None:
+    """On macOS, when Tier 1 also failed, its verdict is the actionable half — a bare OCI error
+    chain does not tell an operator to go turn Rosetta on."""
+    s = check_nested_support(
+        skip=False, probe_tier1=lambda: BAD, probe_tier2=lambda _t: BAD, on_macos=True
+    )
     assert s.ok is False
     assert "rosetta" in s.detail.lower()
     assert "Rosetta" in s.remediation
 
 
+def test_a_linux_failure_gets_the_generic_fix_not_rosetta() -> None:
+    """The finding-7 guard. Tier 1 ALWAYS fails on Linux (no rosetta binfmt handler exists), so
+    choosing the fix on `not tier1.ok` alone handed every Linux nesting failure the macOS-only
+    'enable Rosetta in Docker Desktop' advice. Off macOS it must be the generic fix, whatever
+    Tier 1 says."""
+    s = check_nested_support(
+        skip=False, probe_tier1=lambda: BAD, probe_tier2=lambda _t: BAD, on_macos=False
+    )
+    assert s.ok is False
+    assert "Rosetta" not in s.remediation
+    assert "privileged" in s.remediation
+
+
 def test_a_non_rosetta_failure_gets_the_generic_fix() -> None:
     """Tier 1 fine + nesting broken is not a Rosetta problem, so it must not tell the operator to
-    go fiddle with Rosetta settings that are already correct."""
+    go fiddle with Rosetta settings that are already correct — even on macOS."""
     other = RosettaProbe(False, "the DinD probe's inner daemon never came up (exit 1)", "fp-a")
-    s = check_nested_support(skip=False, probe_tier1=lambda: OK, probe_tier2=lambda _t: other)
+    s = check_nested_support(
+        skip=False, probe_tier1=lambda: OK, probe_tier2=lambda _t: other, on_macos=True
+    )
     assert s.ok is False
     assert "Rosetta" not in s.remediation
     assert "privileged" in s.remediation

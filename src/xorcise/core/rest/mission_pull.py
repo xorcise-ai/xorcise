@@ -153,6 +153,7 @@ def pull_mission(
     *,
     progress: PullProgressSink | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    precheck: Callable[[], None] | None = None,
 ) -> InstalledMission:
     """Acquire + install a library mission. Idempotent; failure leaves it not-installed.
 
@@ -163,7 +164,12 @@ def pull_mission(
     cancellable) is polled at every phase boundary AND inside the per-layer download callback; a
     True result raises PullCancelled to abort the download promptly. Cancel is only honoured up to
     the install step (install_pulled is atomic and the sole writer): a cancel checked before it
-    leaves the mission cleanly not-installed; once install begins it runs to completion."""
+    leaves the mission cleanly not-installed; once install begins it runs to completion.
+
+    `precheck` (keyword-only, default None) runs after the cheap manifest fetch identifies a LAB
+    mission but BEFORE the multi-GB image download — run-create wires the nesting gate here so a
+    host that cannot run the mission is refused without first paying the pull. The explicit
+    `xorcise mission pull` passes None: pre-staging a mission on a non-nesting host is allowed."""
     from xorcise.core.missions import get_installed, install_pulled
     from xorcise.core.missions.errors import MissionCollisionError
 
@@ -202,6 +208,9 @@ def pull_mission(
     image = _image_for(deps.source, mission_id)
     ref = MissionRef(mission_id=mission_id, image=image or "")
     if image is not None and not deps.driver.image_exists(image):
+        # A lab mission with a download ahead of it — gate now (nesting), before the pull.
+        if precheck is not None:
+            precheck()
         token = deps.source.pull_token(mission_id)  # None ⇒ image needs no registry auth
         report(PHASE_PREPARING_IMAGE)
         # Aggregate docker's per-layer events into running totals. The sum of layer totals

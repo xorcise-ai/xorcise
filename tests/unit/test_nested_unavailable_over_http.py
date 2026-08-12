@@ -44,9 +44,9 @@ def test_refusal_is_a_503_not_an_unhandled_500(refusing_server, migrated_home) -
 
 def test_the_diagnosis_and_the_fix_both_survive_the_hop(refusing_server, migrated_home) -> None:
     """The three things the operator needs: what happened, how to fix it, how to bypass it."""
-    detail = refusing_server.post(
-        "/api/runs", json={"agent": "a1", "mission": "c1"}
-    ).json()["detail"]
+    detail = refusing_server.post("/api/runs", json={"agent": "a1", "mission": "c1"}).json()[
+        "detail"
+    ]
     assert "cannot run a mission's containers inside the run container" in detail
     assert "enable Rosetta" in detail
     assert "XORCISE_NESTED_CONTAINER_CHECK=skip" in detail

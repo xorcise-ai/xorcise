@@ -84,6 +84,10 @@ def _no_nested_check() -> None:
     """Default `require_nested`: the stub/unit path deploys nothing, so there is nothing to nest."""
 
 
+def _no_base_check(image_ref: str) -> None:
+    """Default `check_base_compat`: the stub/unit path deploys no real image to gate."""
+
+
 @dataclass(frozen=True)
 class RunCreateDeps:
     control: ControlPort
@@ -117,6 +121,9 @@ class RunCreateDeps:
     # inside the run container — the only supported topology. Injected (not called inline) so the
     # stub/unit path has nothing to probe and no Docker to reach; boot wires the real check.
     require_nested: Callable[[], None] = _no_nested_check
+    # Raises BaseImageIncompatibleError if the mission's fused image was built on a base
+    # generation this XORCISE cannot run. Takes the image ref; boot wires label+tag inspection.
+    check_base_compat: Callable[[str], None] = _no_base_check
 
 
 def _use_real_headscale(settings: Settings) -> bool:
@@ -202,8 +209,9 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
     control: ControlPort
     # Default: no Docker to enumerate (stub/unit path) → the allocator sees no leftover subnets.
     live_subnets: Callable[[], set[str]] = _no_live_subnets
-    # Default: the stub path deploys nothing, so nesting is not a precondition for it.
+    # Default: the stub path deploys nothing, so nesting/base compat are not preconditions for it.
     require_nested: Callable[[], None] = _no_nested_check
+    check_base_compat: Callable[[str], None] = _no_base_check
     if control_real:
         # Real runner: _real_docker_driver fails loud if Docker/the runner extra is absent.
         from xorcise.core.headscale import overlapping_subnets
@@ -222,16 +230,30 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
             return overlapping_subnets(base, prefix, driver.list_network_cidrs())
 
         # The mission stack only ever runs nested, so verify the host can do that before a run
-        # commits to anything. Cached, so the cost is ~0.2s per run after the first.
-        from xorcise.core.rest.docker_runtime import require_nested_support
+        # commits to anything. Memoised in-process, so it costs ~nothing per run after the first
+        # (which boot pre-warms — see role_all).
+        from xorcise.core.rest.docker_runtime import (
+            require_base_compatible,
+            require_nested_support,
+        )
+
+        def _client() -> object:
+            import docker  # type: ignore[import-untyped]
+
+            try:
+                return docker.from_env()
+            except Exception as exc:  # daemon down / from_env failure — DockerException is NOT a
+                # RuntimeError, so unwrapped it escapes the runs router's except clauses as a raw
+                # 500; RuntimeError maps to a clean 503 with a remediation (mirrors mission_pull).
+                raise RuntimeError(
+                    "Docker daemon is not reachable — start Docker or set XORCISE_USE_STUBS=1"
+                ) from exc
 
         def require_nested() -> None:
-            def _client() -> object:
-                import docker  # type: ignore[import-untyped]
-
-                return docker.from_env()
-
             require_nested_support(settings, _client)
+
+        def check_base_compat(image_ref: str) -> None:
+            require_base_compatible(image_ref, label_lookup=driver.image_labels)
     else:
         control = InProcessControlStub(api_key="local")
     ca_cert = Path(settings.headscale_ca_cert).read_text() if settings.headscale_ca_cert else ""
@@ -255,6 +277,7 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
         observed=SqliteObservedFactsStore(),  # persist observed facts run-scoped
         live_subnets=live_subnets,  # reconcile allocation against live Docker networks
         require_nested=require_nested,  # fail a lab run early if the host cannot nest containers
+        check_base_compat=check_base_compat,  # refuse an artifact built on an incompatible base
     )
 
 
@@ -547,7 +570,12 @@ def create_run(
     if installed is None:
         # docker-run-style: auto-pull on demand. pull_mission raises
         # MissionNotInCatalogError / PullError if it cannot be obtained.
-        installed = pull_mission(mission_slug, deps.pull)
+        #
+        # `precheck` runs the nesting gate AFTER the cheap manifest fetch but BEFORE the multi-GB
+        # image pull, and only for a LAB mission (static missions have no image and need no
+        # nesting). Nesting is a HOST property, independent of the mission, so a host that cannot
+        # nest is refused without first downloading an image it could never run.
+        installed = pull_mission(mission_slug, deps.pull, precheck=deps.require_nested)
 
     run_id = uuid4().hex
     run_control_key = uuid4().hex  # per-run bearer for run-control (distinct from the tailnet key)
@@ -572,8 +600,13 @@ def create_run(
     # container. Checked HERE — after the static short-circuit, before the subnet reservation,
     # the Headscale fence and the deploy — so a host that cannot nest costs one error message
     # instead of a reserved CIDR, a minted auth key and a torn-down half-run. Static missions are
-    # deliberately unaffected: they have no runtime at all.
+    # deliberately unaffected: they have no runtime at all. (For an auto-pulled mission this
+    # already ran as the pull precheck, before the image download; re-running is cheap — the
+    # verdict is memoised — and covers the already-installed path that skips the pull.)
     deps.require_nested()
+    # And refuse an artifact fused on a base generation this XORCISE cannot run (e.g. a stale
+    # engine-27 fuse after an upgrade) — it would die at deploy with no host-daemon fallback.
+    deps.check_base_compat(installed.mission_ref.image)
     agent_user = _agent_user_for(run_id)
     assert installed.environment is not None  # is_lab ⇒ environment present (contract-enforced)
     entry_networks = tuple(installed.environment.entry_networks) or ("default",)

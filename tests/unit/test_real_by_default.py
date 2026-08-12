@@ -130,8 +130,6 @@ def test_real_docker_driver_threads_the_platform_setting(monkeypatch) -> None:
     assert captured["platform"] == "linux/probe"
 
 
-
-
 def test_probe_headscale_remediation_when_unreachable() -> None:
     # an unreachable control plane must yield a remediation (like the Docker path),
     # not a bare HeadscaleError surfacing deep in create_run.

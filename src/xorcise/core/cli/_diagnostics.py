@@ -265,13 +265,6 @@ def control_plane(container: str = "headscale", *, timeout: float = 5.0) -> Chec
     return Check("control plane", False, f"{container!r} is not reachable", _PLANE_FIX)
 
 
-def _clip(text: str, limit: int = 140) -> str:
-    """Keep one diagnostic to one readable line. A nested-runtime failure arrives as a whole
-    OCI error chain whose meaning is at the END, so the tail is what survives the clip."""
-    text = " ".join(text.split())
-    return text if len(text) <= limit else "…" + text[-(limit - 1) :]
-
-
 def nested_containers() -> Check:
     """Can this host run a mission's containers INSIDE the run container?
 
@@ -285,6 +278,7 @@ def nested_containers() -> Check:
     """
     from xorcise.core.config import get_settings
     from xorcise.core.rest.docker_runtime import nested_support
+    from xorcise.core.runner.docker.rosetta import clip_detail
 
     def _client() -> object:
         import docker  # type: ignore[import-untyped]
@@ -292,15 +286,18 @@ def nested_containers() -> Check:
         return docker.from_env()
 
     try:
-        support = nested_support(get_settings(), _client)
+        # fresh=True: doctor reports CURRENT health, so it re-probes rather than reading the
+        # server's memoised verdict — and a green doctor refreshes that memo (see nested_support).
+        support = nested_support(get_settings(), _client, fresh=True)
     except Exception as exc:  # noqa: BLE001 — an undetermined probe must not crash `doctor`
         # Deliberately a WARNING, not a failure: "the probe itself broke" is a different claim
         # from "this host cannot nest", and only the second should fail the verdict.
-        return Check("nested containers", True, f"undetermined ({_clip(str(exc))})",
-                     level="warning")
+        return Check(
+            "nested containers", True, f"undetermined ({clip_detail(str(exc))})", level="warning"
+        )
     if support.ok:
-        return Check("nested containers", True, _clip(support.detail))
-    return Check("nested containers", False, _clip(support.detail), support.remediation)
+        return Check("nested containers", True, clip_detail(support.detail))
+    return Check("nested containers", False, clip_detail(support.detail), support.remediation)
 
 
 def external_control_plane(url: str, *, timeout: float = 5.0) -> Check:

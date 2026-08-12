@@ -24,6 +24,14 @@ from pathlib import Path
 PROJECT = "xorcise-headscale"
 CONTAINER = "headscale"
 _DATA_VOLUME = "xorcise-headscale-data"
+
+# The orchestrator-router image, PINNED. It must not ride `tailscale/tailscale:stable`: the
+# mission fuse (runner/docker/build.py) re-tags its pinned router onto the host's local `:stable`,
+# and this compose service consumes `:stable` from the host store with compose's default
+# pull-policy (`missing`) — so a floating tag here would silently adopt whatever version the last
+# fuse baked. This part-island cannot import runner.docker.build.ROUTER_PIN (island independence),
+# so the value is duplicated here; keep the two in step when bumping the router.
+ROUTER_IMAGE_PIN = "tailscale/tailscale:v1.102.2"
 _BEGIN = "# >>> xorcise headscale (managed) >>>"
 _END = "# <<< xorcise headscale (managed) <<<"
 
@@ -373,7 +381,7 @@ def render_compose(
     hostname: str,
     *,
     collector_route: str = "",
-    router_image: str = "tailscale/tailscale:stable",
+    router_image: str = ROUTER_IMAGE_PIN,
     host_ip: str = "",
 ) -> str:
     """compose.yaml with absolute volume paths under `workdir`.

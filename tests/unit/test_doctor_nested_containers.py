@@ -39,7 +39,7 @@ def test_unsupported_host_fails_the_verdict(monkeypatch) -> None:
 
 
 def test_a_broken_probe_is_a_warning_not_a_failure(monkeypatch) -> None:
-    """"The probe blew up" and "this host cannot nest" are different claims. Only the second
+    """ "The probe blew up" and "this host cannot nest" are different claims. Only the second
     should fail the verdict — otherwise an unrelated Docker hiccup makes `doctor` exit 1 and
     accuse the host of something it was never shown to be guilty of."""
 
@@ -67,37 +67,63 @@ def test_a_long_runtime_error_keeps_its_tail(monkeypatch) -> None:
     assert len(detail) < 220
 
 
-def test_doctor_skips_the_check_when_docker_is_down(monkeypatch) -> None:
-    """It starts a privileged container, so it is confined to `doctor` AND gated on a reachable
-    daemon — a Docker-less host should get one actionable line, not two."""
+def test_doctor_runs_the_nested_probe_only_when_docker_is_up(monkeypatch) -> None:
+    """The gate in lifecycle.doctor: the privileged nested probe is appended ONLY when the docker
+    env checks pass. Invokes the REAL command (catch_exceptions=False, a recording stub) — the
+    previous version asserted against its own stub and never called doctor, so an inverted gate
+    would still have passed."""
+    from typer.testing import CliRunner
+
+    from xorcise.core.cli._shared import app
     from xorcise.core.cli.commands import lifecycle
 
-    def _must_not_run():
-        raise AssertionError("must not probe when the daemon is already known to be down")
+    monkeypatch.delenv("XORCISE_USE_STUBS", raising=False)  # isolate the DOCKER gate from stubs
+    monkeypatch.setenv("XORCISE_ROLE", "all")
+    probed: list[int] = []
 
-    monkeypatch.setattr(lifecycle, "nested_containers", _must_not_run)
+    def _record() -> diag.Check:
+        probed.append(1)
+        return diag.Check("nested containers", True, "ok")
+
+    monkeypatch.setattr(lifecycle, "nested_containers", _record)
+
     monkeypatch.setattr(
         lifecycle,
         "_environment_checks",
         lambda: [diag.Check("docker", False, "unreachable", "start Docker")],
     )
-    checks = lifecycle._environment_checks()
-    assert all(c.name != "nested containers" for c in checks)
+    CliRunner().invoke(app, ["doctor"], catch_exceptions=False)
+    assert probed == []  # docker down → gate keeps the privileged probe out
+
+    monkeypatch.setattr(
+        lifecycle, "_environment_checks", lambda: [diag.Check("docker", True, "reachable")]
+    )
+    CliRunner().invoke(app, ["doctor"], catch_exceptions=False)
+    assert probed == [1]  # docker up → probe runs
 
 
 def test_stub_mode_skips_the_nested_probe(monkeypatch) -> None:
     """Stub mode deploys nothing, so it has no nesting precondition — and probing anyway would
-    start a real privileged container from a Docker-less demo (and from the test suite)."""
+    start a real privileged container. Uses a RECORDING stub + catch_exceptions=False, so a probe
+    that slipped through is a hard failure rather than one CliRunner silently swallows."""
     from typer.testing import CliRunner
 
     from xorcise.core.cli._shared import app
+    from xorcise.core.cli.commands import lifecycle
 
+    probed: list[int] = []
+
+    def _record() -> diag.Check:
+        probed.append(1)
+        return diag.Check("nested containers", True, "ok")
+
+    monkeypatch.setattr(lifecycle, "nested_containers", _record)
+    # docker UP, but stubs are the suite default: the gate's `not s.use_stubs` must still skip.
     monkeypatch.setattr(
-        "xorcise.core.cli.commands.lifecycle.nested_containers",
-        lambda: (_ for _ in ()).throw(AssertionError("stub mode must not probe")),
+        lifecycle, "_environment_checks", lambda: [diag.Check("docker", True, "reachable")]
     )
-    monkeypatch.setenv("XORCISE_USE_STUBS", "1")
-    CliRunner().invoke(app, ["doctor"])  # must not raise the AssertionError above
+    CliRunner().invoke(app, ["doctor"], catch_exceptions=False)
+    assert probed == []
 
 
 def test_up_never_runs_the_nested_probe(monkeypatch) -> None:

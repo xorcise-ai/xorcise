@@ -154,6 +154,60 @@ def build_rest_app() -> FastAPI:
         if _readiness is not None:
             await _readiness.stop()
 
+    _prewarmed = False
+    _prewarm_task: object | None = None
+
+    @app.on_event("startup")
+    async def _prewarm_nested_support() -> None:
+        # Compute the host nesting verdict at boot so the FIRST real run-create reads it instantly
+        # instead of paying the 20-40 s probe inline (which, under the CLI's read timeout, is what
+        # made the first run appear to hang and get retried into a duplicate). Best-effort and
+        # memoised: a warm-up failure just leaves it cold for the first run to recompute.
+        #
+        # Fire-and-forget in a BACKGROUND task — NOT awaited. uvicorn runs the startup event
+        # before it accepts connections, so awaiting the multi-second probe here would delay
+        # readiness past `xorcise up`'s health window and fail boot. The probe warms the memo
+        # off to the side while the server serves.
+        nonlocal _prewarmed, _prewarm_task
+        if _prewarmed:
+            return  # one uvicorn.Server per bind address shares this app — warm once
+        _prewarmed = True
+        import asyncio
+        import logging
+
+        settings = get_settings()
+        if settings.use_stubs or settings.nested_container_check == "skip":
+            return  # nothing real to probe
+
+        async def _warm() -> None:
+            def _blocking() -> None:
+                from xorcise.core.rest.docker_runtime import prewarm_nested_support
+
+                def _client() -> object:
+                    import docker  # type: ignore[import-untyped]
+
+                    return docker.from_env()
+
+                prewarm_nested_support(settings, _client)
+
+            try:
+                await asyncio.to_thread(_blocking)
+            except Exception as exc:  # noqa: BLE001 — a warm-up must never break anything
+                logging.getLogger(__name__).debug("nested-support pre-warm skipped: %s", exc)
+
+        _prewarm_task = asyncio.create_task(_warm())
+
+    @app.on_event("shutdown")
+    async def _cancel_prewarm() -> None:
+        import asyncio
+        import contextlib
+
+        task = _prewarm_task
+        if isinstance(task, asyncio.Task) and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
     return app
 
 
