@@ -42,6 +42,16 @@ class NestedContainersUnavailableError(ContractError):
     """
 
 
+class BaseImageIncompatibleError(ContractError):
+    """The mission's fused image was built on a base generation this XORCISE cannot run.
+
+    The fused image is `FROM xorcise/mission-base`, and a base MAJOR bump is breaking (e.g. the
+    inner engine 27→29 move that removed the `/proc/<pid>/exe` prestart hook). An artifact fused
+    on an incompatible base majors will die at deploy — now with no host-daemon fallback — so this
+    refuses it up front with a direction-aware remediation (re-pull if the artifact is older,
+    upgrade XORCISE if it is newer). `str(exc)` carries both."""
+
+
 class PullError(ContractError):
     """Fetching the mission image failed; nothing was installed. Lives here (LEAF) so the
     catalog island can raise it without importing the delivery layer."""

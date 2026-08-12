@@ -10,6 +10,7 @@ Lifts the PoC's ensure_images/docker save.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import tempfile
 from collections.abc import Mapping
@@ -22,6 +23,35 @@ import yaml
 from xorcise.core.contracts.control import MissionRef
 from xorcise.core.contracts.mission import MissionManifest
 from xorcise.core.runner.netoverride import ROUTER_IMAGE
+
+# The base generation this XORCISE builds and can run. Only the MAJOR gates compatibility (a
+# major bump is breaking — e.g. the inner engine 27→29 move). This integer MUST equal the value
+# in `LABEL ai.xorcise.base.version` in containers/mission-base/Dockerfile (asserted by
+# tests/topology/test_dind_base_parity.py) and match the cloud's `base_version` generation.
+BASE_VERSION = "2"
+REQUIRED_BASE_MAJOR = int(BASE_VERSION)
+#: The label the base declares and every fused image inherits via `FROM`.
+BASE_VERSION_LABEL = "ai.xorcise.base.version"
+
+
+def base_major_from_ref(ref: str) -> int | None:
+    """The base MAJOR encoded in a fused image tag suffix (`…-base2`, `…-base2.1`), or None.
+
+    Covers every published/pulled artifact. A local fuse (`xorcise/mission-<slug>:local`) carries
+    no suffix — the label is read instead (base_major_from_labels)."""
+    m = re.search(r"-base(\d+)", ref or "")
+    return int(m.group(1)) if m else None
+
+
+def base_major_from_labels(labels: Mapping[str, str] | None) -> int | None:
+    """The base MAJOR from an image's inherited `ai.xorcise.base.version` label, or None."""
+    raw = (labels or {}).get(BASE_VERSION_LABEL)
+    if raw is None:
+        return None
+    try:
+        return int(str(raw).split(".", 1)[0])
+    except ValueError:
+        return None
 
 # The router build actually pulls. Deliberately NOT netoverride.ROUTER_IMAGE (`:stable`): that
 # tag is the DEPLOY-time contract the per-run override resolves and must not change, whereas this
@@ -58,6 +88,20 @@ def _image_present(ref: str) -> bool:
     return subprocess.run(["docker", "image", "inspect", ref], capture_output=True).returncode == 0
 
 
+def _image_label(ref: str, key: str) -> str | None:
+    """Read one label off a local image, or None if the image/label is absent."""
+    out = subprocess.run(
+        ["docker", "image", "inspect", "--format", f"{{{{index .Config.Labels {key!r}}}}}", ref],
+        capture_output=True,
+        text=True,
+    )
+    if out.returncode != 0:
+        return None
+    value = out.stdout.strip()
+    # docker prints "<no value>" for an absent label under this format.
+    return value or None if value != "<no value>" else None
+
+
 def _base_context() -> Path:
     """Locate the mission-base build context (Dockerfile + entrypoint.sh).
 
@@ -84,8 +128,14 @@ def ensure_base_image() -> None:
     registry — PRD-0017), so building on demand removes the manual `docker build` prerequisite.
     Building requires network egress (the base installs Tailscale); a failure is surfaced
     verbatim (CalledProcessError) rather than silently producing a half-built base.
+
+    Rebuilds when a present base is the WRONG generation — a bare presence check let an operator
+    upgrading XORCISE keep an old base (e.g. the engine-27 base whose Rosetta prestart hook this
+    generation exists to escape), silently defeating the fix. The packaged context's declared
+    version (BASE_VERSION) is the source of truth; a present base whose `ai.xorcise.base.version`
+    label differs (or is absent, i.e. pre-labeling) is rebuilt.
     """
-    if _image_present(BASE_IMAGE):
+    if _image_present(BASE_IMAGE) and _image_label(BASE_IMAGE, BASE_VERSION_LABEL) == BASE_VERSION:
         return
     subprocess.run(["docker", "build", "-t", BASE_IMAGE, str(_base_context())], check=True)
 
@@ -154,9 +204,13 @@ class FusedImageBuilder:
         # the per-run override asks compose for, so images.tar must carry the router under that
         # tag or the mission dies at `up` on the hermetic inner daemon. But pulling a floating
         # tag means re-fusing an old mission bakes whatever :stable means that day, so what gets
-        # pulled is pinned and then re-tagged. The cloud fuse (buildspec.fuse.yml) documents
-        # itself as a mirror of this function and does the same.
-        subprocess.run(["docker", "pull", ROUTER_PIN], check=True)
+        # pulled is pinned and then re-tagged. The cloud fuse (buildspec.fuse.yml in the SEPARATE
+        # cloud-infrastructure/xorcise-ai repo) documents itself as a mirror of this function.
+        #
+        # The pin is an immutable version tag, so skip the pull when it is already local — a
+        # per-fuse registry round-trip is pure waste, and it lets a re-fuse work offline.
+        if not _image_present(ROUTER_PIN):
+            subprocess.run(["docker", "pull", ROUTER_PIN], check=True)
         subprocess.run(["docker", "tag", ROUTER_PIN, ROUTER_IMAGE], check=True)
         inner_tags.append(ROUTER_IMAGE)
 

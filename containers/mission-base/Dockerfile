@@ -19,6 +19,12 @@
 # this line; tests/topology/test_dind_base_parity.py fails the build if they drift.
 FROM docker:29.7.1-dind
 
+# Base generation, inherited by every `FROM xorcise/mission-base` fused image. Only the MAJOR
+# gates client compatibility (a major bump is breaking, e.g. this engine 27→29 move). MUST equal
+# build.BASE_VERSION (asserted by tests/topology/test_dind_base_parity.py); bump BOTH together on
+# a breaking base change so an artifact fused on an incompatible base is refused, not deployed.
+LABEL ai.xorcise.base.version="2"
+
 RUN apk add --no-cache iptables ca-certificates docker-cli-compose
 
 COPY entrypoint.sh /usr/local/bin/xorcise-entrypoint.sh

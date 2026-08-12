@@ -114,6 +114,13 @@ class DockerDriver(ABC):
     def image_exists(self, image: str) -> bool:
         """Whether the image is already in the local store (local-store-first pull)."""
 
+    def image_labels(self, image: str) -> dict[str, str] | None:
+        """The image's config labels (inherited included), or None if absent/unreadable.
+
+        Non-abstract None default: only the real Docker driver inspects; other drivers degrade to
+        None, which the base-compat gate reads as 'label unknown' and falls back to the tag."""
+        return None
+
     @abstractmethod
     def reap_managed(self) -> list[str]:
         """Force-remove every xorcise-managed per-run container; return what was reaped.

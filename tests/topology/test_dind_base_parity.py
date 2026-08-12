@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from xorcise.core.runner.docker.build import BASE_VERSION, BASE_VERSION_LABEL
 from xorcise.core.runner.docker.rosetta import NESTED_PROBE_IMAGE
 
 pytestmark = pytest.mark.topology
@@ -33,4 +34,18 @@ def test_probe_image_matches_the_fused_image_base() -> None:
         f"FROM {froms[0]!r} — the probe would report a capability the shipped image lacks. "
         "Update NESTED_PROBE_IMAGE in runner/docker/rosetta.py and RE-VERIFY nesting on the new "
         "base before trusting it."
+    )
+
+
+def test_base_version_label_matches_the_code_constant() -> None:
+    """The base's declared generation (the label every fused image inherits and the client gates
+    on) must equal build.BASE_VERSION. Drift means the code refuses artifacts the base actually
+    produced, or vice versa — silent, since nothing else couples them."""
+    labels = re.findall(
+        rf'^LABEL\s+{re.escape(BASE_VERSION_LABEL)}="([^"]+)"', DOCKERFILE.read_text(), re.MULTILINE
+    )
+    assert labels, f"no `LABEL {BASE_VERSION_LABEL}=...` in {DOCKERFILE}"
+    assert labels[0] == BASE_VERSION, (
+        f"the base Dockerfile declares {BASE_VERSION_LABEL}={labels[0]!r} but build.BASE_VERSION "
+        f"is {BASE_VERSION!r} — bump BOTH together on a breaking base change."
     )

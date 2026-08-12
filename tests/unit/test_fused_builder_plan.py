@@ -56,14 +56,33 @@ def test_base_context_resolves_to_a_real_dockerfile():
     assert (ctx / "Dockerfile").is_file()
 
 
-def test_ensure_base_image_skips_when_present(monkeypatch):
+def test_ensure_base_image_skips_when_present_and_current(monkeypatch):
     monkeypatch.setattr(build_mod, "_image_present", lambda ref: True)
+    # present AND the right generation ⇒ no rebuild
+    monkeypatch.setattr(build_mod, "_image_label", lambda ref, key: build_mod.BASE_VERSION)
 
     def _boom(*a, **k):
-        raise AssertionError("must not docker build when base image already present")
+        raise AssertionError("must not docker build when base image is present and current")
 
     monkeypatch.setattr(subprocess, "run", _boom)
     ensure_base_image()  # no-op, no build
+
+
+def test_ensure_base_image_rebuilds_a_stale_generation(monkeypatch, tmp_path):
+    """A present base whose label is an OLD generation (or absent) must be rebuilt — a bare
+    presence check let an upgraded host keep the wrong base, silently defeating the fix."""
+    monkeypatch.setattr(build_mod, "_image_present", lambda ref: True)
+    monkeypatch.setattr(build_mod, "_image_label", lambda ref, key: "1")  # stale
+    monkeypatch.setattr(build_mod, "_base_context", lambda: tmp_path)
+    calls: list[list[str]] = []
+
+    def _record(cmd, **k):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", _record)
+    ensure_base_image()
+    assert calls == [["docker", "build", "-t", BASE_IMAGE, str(tmp_path)]]
 
 
 def test_ensure_base_image_builds_when_absent(monkeypatch, tmp_path):
@@ -129,6 +148,9 @@ def test_router_is_pinned_and_baked_under_the_canonical_tag(monkeypatch, tmp_pat
 
     monkeypatch.setattr(subprocess, "run", _run)
     monkeypatch.setattr(build_mod, "ensure_base_image", lambda: None)
+    # The pin is not already local, so it is pulled (the presence guard only skips a redundant
+    # re-pull; a fresh host still fetches it).
+    monkeypatch.setattr(build_mod, "_image_present", lambda ref: False)
 
     manifest = _manifest_with_compose(tmp_path)
     build_mod.FusedImageBuilder().build(tmp_path, manifest)

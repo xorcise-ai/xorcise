@@ -132,6 +132,14 @@ class DockerSdkDriver(DockerDriver):
         except docker.errors.ImageNotFound:
             return False
 
+    def image_labels(self, image: str) -> dict[str, str] | None:
+        """The image's config labels (inherited included), or None if it is not present."""
+        try:
+            img = self._client.images.get(image)
+        except Exception:  # noqa: BLE001 — absent/unreadable image ⇒ "no labels", never a crash
+            return None
+        return dict((img.attrs.get("Config") or {}).get("Labels") or {})
+
     def run(self, spec: ContainerSpec) -> ContainerHandle:
         # The fused image is local-only (no registry). containers.run auto-PULLS a missing image,
         # which for a local-only ref fails with a cryptic "pull access denied" — so fail loud

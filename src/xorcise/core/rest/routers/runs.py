@@ -12,6 +12,7 @@ from xorcise.core import agents, reporting, runs
 from xorcise.core.config import get_settings
 from xorcise.core.contracts.agent_event import EventCursor, RunEventsView
 from xorcise.core.contracts.errors import (
+    BaseImageIncompatibleError,
     ImageNotInstalledError,
     NestedContainersUnavailableError,
 )
@@ -105,6 +106,11 @@ def create_run(payload: RunCreate) -> RunCreatedEntry:
             status_code=409,
             detail=f"{exc} — run 'xorcise mission ingest <bundle>' to (re)build it",
         ) from exc
+    except BaseImageIncompatibleError as exc:
+        # The mission's fused image was built on a base generation this XORCISE cannot run — a
+        # client/artifact mismatch, not a server fault. 409 (like the not-installed case), and the
+        # message carries the direction-aware remediation (re-pull vs upgrade XORCISE).
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except PullError as exc:  # in-catalog but the fetch failed (e.g. registry unreachable)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except NestedContainersUnavailableError as exc:
