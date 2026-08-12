@@ -51,8 +51,19 @@ def build_rest_app() -> FastAPI:
     app.include_router(harnesses.router, prefix="/api")
     mount_ui(app)
 
+    # Process-wide background singletons. Each startup hook below is guarded because `serve`
+    # builds one uvicorn.Server per bind address and hands them all the SAME app object — and the
+    # agent-facing specs below resolve to MORE THAN ONE address (see _agent_facing_bind_hosts),
+    # so every startup event fires once per address, not once per app. Unguarded, that produced
+    # two watchdogs scanning the same runs: both closed out the same run ~3 ms apart and the
+    # loser's teardown failed with 409 "removal of container ... already in progress". Worse,
+    # each hook assigns to its nonlocal, so the second instance overwrote the first and shutdown
+    # stopped only one — the other kept ticking until the process exited.
     _watchdog: BudgetWatchdog | None = None
     _readiness: ReadinessWatchdog | None = None
+    # Separate from `_readiness` because the gate cannot be assigned until after an await; see
+    # the claim in _start_readiness_gate.
+    _readiness_claimed = False
 
     _reconcile_task: object | None = None
 
@@ -65,6 +76,10 @@ def build_rest_app() -> FastAPI:
         import logging
 
         from xorcise.core.rest.reconcile import reconcile_all_on_startup
+
+        nonlocal _reconcile_task
+        if _reconcile_task is not None:
+            return  # second listener on the same app — one reconcile per process
 
         async def _run() -> None:
             try:
@@ -79,7 +94,6 @@ def build_rest_app() -> FastAPI:
                 log.warning("startup reconcile failed: %s", exc)
                 log.debug("startup reconcile failure detail", exc_info=True)
 
-        nonlocal _reconcile_task
         _reconcile_task = asyncio.create_task(_run())
 
     @app.on_event("shutdown")
@@ -98,6 +112,8 @@ def build_rest_app() -> FastAPI:
     @app.on_event("startup")
     async def _start_watchdog() -> None:
         nonlocal _watchdog
+        if _watchdog is not None:
+            return  # second listener on the same app — one watchdog per process
         from xorcise.core import runs
         from xorcise.core.rest.budget_watchdog import BudgetWatchdog
         from xorcise.core.rest.run_terminate import terminate_run
@@ -121,7 +137,16 @@ def build_rest_app() -> FastAPI:
         # for the inner mission stack, so without this such a run stays non-terminal forever with
         # a live agent working a target that never existed. Best-effort, like the boot reconcile —
         # it is a safety net, so a plane we cannot reach disables it rather than failing boot.
-        nonlocal _readiness
+        nonlocal _readiness, _readiness_claimed
+        # Claim the slot SYNCHRONOUSLY, before the first await. Guarding on `_readiness is not
+        # None` alone is a check-then-act race: this hook awaits build_run_create_deps (Docker +
+        # Headscale probes) before it can assign, and the concurrently-starting second listener
+        # reaches the same check while that await is still pending — so both proceed and two
+        # gates end up scanning the same runs. asyncio is single-threaded, so a flag set with no
+        # await between check and set is atomic against the other startup task.
+        if _readiness_claimed:
+            return  # another listener on the same app already owns the gate
+        _readiness_claimed = True
         import asyncio
         import logging
 
