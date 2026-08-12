@@ -37,6 +37,7 @@ from xorcise.core.contracts.errors import (
 )
 from xorcise.core.runner.docker.build import (
     REQUIRED_BASE_MAJOR,
+    base_compat,
     base_major_from_labels,
     base_major_from_ref,
 )
@@ -159,12 +160,16 @@ def require_base_compatible(
     major = base_major_from_labels(label_lookup(image_ref)) if label_lookup else None
     if major is None:
         major = base_major_from_ref(image_ref)
-    if major is None:
+    # ONE verdict shared with the catalog browse surface (base_compat), so a card never says
+    # "runnable" for something a run would refuse. The remediation here is command-level; the
+    # frontend renders the shorter compat.hint.
+    compat = base_compat(major)
+    if compat.compatible is None:
         log.warning("could not determine the base generation of %s — allowing the run", image_ref)
         return
-    if major == REQUIRED_BASE_MAJOR:
+    if compat.compatible:
         return
-    if major < REQUIRED_BASE_MAJOR:
+    if compat.base_major is not None and compat.base_major < REQUIRED_BASE_MAJOR:
         fix = (
             "this mission was built on an older base — update it: "
             "xorcise mission delete <mission> && xorcise mission pull <mission>"
@@ -172,6 +177,6 @@ def require_base_compatible(
     else:
         fix = "this mission needs a newer XORCISE — upgrade it (e.g. pip install -U xorcise)"
     raise BaseImageIncompatibleError(
-        f"mission image {image_ref!r} was built on base generation {major}, but this XORCISE "
-        f"runs base {REQUIRED_BASE_MAJOR}. {fix}"
+        f"mission image {image_ref!r} was built on base generation {compat.base_major}, but this "
+        f"XORCISE runs base {REQUIRED_BASE_MAJOR}. {fix}"
     )

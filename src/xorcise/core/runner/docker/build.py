@@ -54,6 +54,32 @@ def base_major_from_labels(labels: Mapping[str, str] | None) -> int | None:
         return None
 
 
+@dataclass(frozen=True)
+class BaseCompat:
+    """Whether an artifact's base generation is runnable by this XORCISE.
+
+    ONE verdict for two audiences: the run-create gate (which raises) and the catalog browse
+    surface (which shows a warning before the user commits) both derive `compatible` from here,
+    so a card can never say "runnable" for something a run would refuse. `hint` is a short,
+    UI-facing remediation; the run error composes its own command-level detail from the same
+    verdict."""
+
+    base_major: int | None  # the artifact's base generation, or None if undeterminable
+    compatible: bool | None  # None = undeterminable (no signal) → treat as allowed
+    hint: str | None  # short remediation when incompatible; None otherwise
+
+
+def base_compat(major: int | None) -> BaseCompat:
+    """The compatibility verdict for a resolved base major (pure). None major ⇒ undeterminable."""
+    if major is None:
+        return BaseCompat(None, None, None)
+    if major == REQUIRED_BASE_MAJOR:
+        return BaseCompat(major, True, None)
+    if major < REQUIRED_BASE_MAJOR:
+        return BaseCompat(major, False, "Reinstall this mission to get the current base.")
+    return BaseCompat(major, False, "Update XORCISE to run this mission.")
+
+
 # The router build actually pulls. Deliberately NOT netoverride.ROUTER_IMAGE (`:stable`): that
 # tag is the DEPLOY-time contract the per-run override resolves and must not change, whereas this
 # is the BUILD-time pin that decides which router a mission is fused with. Bump it consciously.

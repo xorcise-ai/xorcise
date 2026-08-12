@@ -78,6 +78,9 @@ def _installed_entry(
 ) -> CatalogEntry:
     """A CatalogEntry from an installed manifest's metadata. `source` reflects the install
     origin — "library" for a remote pull, "your_own" for a local ingest."""
+    from xorcise.core.rest.catalog_view import base_compat_of
+
+    compat = base_compat_of(image)
     return CatalogEntry(
         source=source,
         mission_id=m.mission_id,
@@ -90,6 +93,9 @@ def _installed_entry(
         technologies=m.technologies,
         installed=True,
         image=image,
+        base_version=compat.base_major,
+        compatible=compat.compatible,
+        compat_hint=compat.hint,
     )
 
 

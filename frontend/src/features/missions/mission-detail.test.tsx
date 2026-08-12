@@ -234,3 +234,39 @@ describe("MissionDetail deterministic check prerequisites", () => {
     expect(within(flag).queryByText("Requires")).toBeNull();
   });
 });
+
+describe("MissionDetail base-generation compatibility", () => {
+  it("shows the incompatibility banner when the artifact's base is not runnable", async () => {
+    server.use(
+      http.get("*/api/missions", () =>
+        HttpResponse.json([
+          {
+            ...INSTALLED,
+            compatible: false,
+            base_version: 1,
+            compat_hint: "Reinstall this mission to get the current base.",
+          },
+        ]),
+      ),
+    );
+    renderWithProviders(<MissionDetail id="idor" />);
+
+    const banner = await screen.findByTestId("mission-incompatible-banner");
+    expect(within(banner).getByText(/Not runnable on this XORCISE/i)).toBeInTheDocument();
+    expect(within(banner).getByText(/Reinstall this mission/i)).toBeInTheDocument();
+    expect(within(banner).getByText(/built for base 1/i)).toBeInTheDocument();
+  });
+
+  it("shows no banner for a compatible mission", async () => {
+    server.use(
+      http.get("*/api/missions", () =>
+        HttpResponse.json([{ ...INSTALLED, compatible: true }]),
+      ),
+    );
+    renderWithProviders(<MissionDetail id="idor" />);
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "IDOR" })).toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId("mission-incompatible-banner")).toBeNull();
+  });
+});

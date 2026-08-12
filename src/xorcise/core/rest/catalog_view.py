@@ -24,12 +24,24 @@ if TYPE_CHECKING:
     # Type-only: keep the catalog island off the control-plane boot path (role isolation),
     # same trick as run_create.py's ports import. The concrete import is lazy, below.
     from xorcise.core.catalog.source import CatalogSource
+    from xorcise.core.runner.docker.build import BaseCompat
 
 
 @dataclass(frozen=True)
 class CatalogViewDeps:
     source: CatalogSource
     install_root: Path
+
+
+def base_compat_of(image: str | None) -> BaseCompat:
+    """Base-generation compatibility for a browse row, from its image ref (pure, no Docker).
+
+    Shares build.base_compat with the run-create gate, so the card's verdict and the run's can
+    never disagree. A ref with no `-baseN` generation (a local `:local` fuse) is undeterminable —
+    no warning; the run-create gate still guards it via the image label."""
+    from xorcise.core.runner.docker.build import base_compat, base_major_from_ref
+
+    return base_compat(base_major_from_ref(image or ""))
 
 
 def build_catalog_source(settings: Settings) -> CatalogSource:
@@ -63,6 +75,7 @@ def list_catalog(deps: CatalogViewDeps) -> tuple[CatalogEntry, ...]:
             continue
         meta = ic.manifest.metadata
         installed_ids.add(meta.mission_id)
+        compat = base_compat_of(ic.mission_ref.image)
         installed_entries.append(
             CatalogEntry(
                 # origin decides the tab: a pulled library mission stays under XORCISE Remote,
@@ -78,6 +91,9 @@ def list_catalog(deps: CatalogViewDeps) -> tuple[CatalogEntry, ...]:
                 technologies=meta.technologies,
                 installed=True,
                 image=ic.mission_ref.image,
+                base_version=compat.base_major,
+                compatible=compat.compatible,
+                compat_hint=compat.hint,
             )
         )
 
@@ -85,6 +101,7 @@ def list_catalog(deps: CatalogViewDeps) -> tuple[CatalogEntry, ...]:
     for item in deps.source.list_library():
         if item.mission_id in installed_ids:
             continue  # already an installed row (flagged there with its true origin)
+        compat = base_compat_of(item.image)
         library.append(
             CatalogEntry(
                 source="library",
@@ -105,6 +122,9 @@ def list_catalog(deps: CatalogViewDeps) -> tuple[CatalogEntry, ...]:
                 image_size_bytes=item.image_size_bytes,
                 attachments_size_bytes=item.attachments_size_bytes,
                 download_size_bytes=item.download_size_bytes,
+                base_version=compat.base_major,
+                compatible=compat.compatible,
+                compat_hint=compat.hint,
             )
         )
 

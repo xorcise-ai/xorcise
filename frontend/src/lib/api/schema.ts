@@ -1395,6 +1395,12 @@ export interface components {
         CatalogEntry: {
             /** Attachments Size Bytes */
             attachments_size_bytes?: number | null;
+            /** Base Version */
+            base_version?: number | null;
+            /** Compat Hint */
+            compat_hint?: string | null;
+            /** Compatible */
+            compatible?: boolean | null;
             /** Download Size Bytes */
             download_size_bytes?: number | null;
             /** Image */

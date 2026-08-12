@@ -160,3 +160,25 @@ def test_router_is_pinned_and_baked_under_the_canonical_tag(monkeypatch, tmp_pat
     save = next(c for c in calls if c[:2] == ["docker", "save"])
     assert ROUTER_IMAGE in save, "images.tar must carry the router under the canonical tag"
     assert ROUTER_PIN not in save, "the pin must not be what lands in images.tar"
+
+
+def test_base_compat_verdict_by_generation():
+    """The single verdict the run-create gate and the catalog browse card both read, so a card
+    can never say 'runnable' for something a run refuses. base2 is what this XORCISE runs."""
+    from xorcise.core.runner.docker.build import REQUIRED_BASE_MAJOR, base_compat
+
+    assert REQUIRED_BASE_MAJOR == 2  # if this bumps, the wordings below still hold by direction
+
+    same = base_compat(2)
+    assert same.compatible is True and same.hint is None
+
+    older = base_compat(1)
+    assert older.compatible is False and older.base_major == 1
+    assert "einstall" in (older.hint or "")  # reinstall the mission
+
+    newer = base_compat(9)
+    assert newer.compatible is False and newer.base_major == 9
+    assert "XORCISE" in (newer.hint or "")  # update XORCISE
+
+    unknown = base_compat(None)  # a local :local fuse carries no generation in its tag
+    assert unknown.compatible is None and unknown.hint is None

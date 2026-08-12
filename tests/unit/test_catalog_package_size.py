@@ -141,6 +141,38 @@ def test_browse_entry_exposes_the_size_to_the_ui(tmp_path: Path):
     assert entry.download_size_bytes == 260690793
 
 
+def test_browse_entry_exposes_base_incompatibility_to_the_ui(tmp_path: Path):
+    """The browse card must be able to warn BEFORE a run: _IMAGE is `-base1`, older than the base2
+    this XORCISE runs, so the entry carries compatible=False and a remediation hint — the same
+    verdict the run-create gate would raise on."""
+    source = _FakeSource(
+        (LibraryItem(mission_id="chrono-canary", name="Chrono Canary", image=_IMAGE),)
+    )
+
+    entry = list_catalog(CatalogViewDeps(source=source, install_root=tmp_path))[0]
+
+    assert entry.base_version == 1
+    assert entry.compatible is False
+    assert entry.compat_hint and "einstall" in entry.compat_hint
+
+
+def test_browse_entry_is_compatible_for_the_current_generation(tmp_path: Path):
+    source = _FakeSource(
+        (
+            LibraryItem(
+                mission_id="chrono-canary",
+                name="Chrono Canary",
+                image="registry.example.com/xorcise/mis-chrono-canary:abc-base2",
+            ),
+        )
+    )
+
+    entry = list_catalog(CatalogViewDeps(source=source, install_root=tmp_path))[0]
+
+    assert entry.compatible is True
+    assert entry.compat_hint is None
+
+
 # --- CLI surface -----------------------------------------------------------------
 # `xorcise mission list` is the CLI half of the browse card, so it quotes the same
 # number in the same vocabulary the GUI uses (frontend formatBytes) — the parity rule
