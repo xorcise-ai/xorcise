@@ -128,7 +128,9 @@ def test_run_create_renders(monkeypatch):
         return [{"mission_id": "c", "name": "C", "installed": True}]
 
     monkeypatch.setattr(RestClient, "get", fake_get)
-    monkeypatch.setattr(RestClient, "post", lambda self, path, json: {"run_id": "run-001"})
+    monkeypatch.setattr(
+        RestClient, "post", lambda self, path, json, timeout=None: {"run_id": "run-001"}
+    )
     result = runner.invoke(app, ["run", "create", "--agent", "a", "--mission", "c"])
     assert result.exit_code == 0
     assert "run-001" in result.stdout
