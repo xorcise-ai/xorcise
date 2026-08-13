@@ -2,8 +2,12 @@
 #
 # Each per-mission fused image (built locally by xorcise.core.runner.docker.build) is
 # `FROM xorcise/mission-base`, with the mission's inner stack baked in as
-# /mission/images.tar (loaded on boot — no inner pull at deploy). Local build only; the
-# registry publish/sign cycle is not yet built.
+# /mission/images.tar (loaded on boot — no inner pull at deploy).
+#
+# Published by .github/workflows/mission-base-release.yml to
+# ghcr.io/xorcise-ai/mission-base on a `mission-base-v*` tag, as ONE multi-platform OCI
+# index (linux/amd64 + linux/arm64). That index is the canonical artifact; a local
+# `docker build` of this file is a development convenience, not a release.
 #
 # Tailscale is deliberately NOT installed here. The per-run network router runs as a SEPARATE
 # inner container (the official tailscale/tailscale image, baked into images.tar) in its own
@@ -24,6 +28,25 @@ FROM docker:29.7.1-dind
 # build.BASE_VERSION (asserted by tests/topology/test_dind_base_parity.py); bump BOTH together on
 # a breaking base change so an artifact fused on an incompatible base is refused, not deployed.
 LABEL ai.xorcise.base.version="2"
+
+# The full release SemVer, e.g. 2.4.1. The MAJOR above is what the client gates on; this is
+# what a human reads in an error, a support thread or `docker inspect`, and it is the only way
+# to tell two builds of generation 2 apart without comparing digests.
+#
+# Supplied by the release workflow from the git tag, NOT hand-edited here: a version literal in
+# a Dockerfile is a second place to forget. It defaults to 0.0.0-dev so a local build is
+# self-evidently not a release — an unset ARG would silently label a dev image as one.
+# The release workflow refuses to publish if the tag's MAJOR disagrees with the label above.
+ARG BASE_RELEASE=0.0.0-dev
+LABEL ai.xorcise.base.release="${BASE_RELEASE}"
+
+# Standard OCI metadata, so `docker inspect` and registry UIs describe this image without
+# needing to know XORCISE's own label namespace.
+LABEL org.opencontainers.image.title="XORCISE mission-base" \
+      org.opencontainers.image.description="Base layer for fused XORCISE mission images: docker-in-docker, compose, runner control." \
+      org.opencontainers.image.source="https://github.com/xorcise-ai/xorcise" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.version="${BASE_RELEASE}"
 
 RUN apk add --no-cache iptables ca-certificates docker-cli-compose
 

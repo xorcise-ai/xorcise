@@ -1,0 +1,299 @@
+# mission-base release pipeline. Merging publishes nothing; pushing a `mission-base-v*` tag does.
+#
+# This is the artifact side of the compatibility contract the runtime already enforces. The
+# client refuses a mission fused on a base generation it cannot run — but a gate is only as good
+# as the artifact it points at, and until now there was no published mission-base at all
+# ("local build only", per the old Dockerfile header). Anyone needing one built their own and
+# versioned it themselves, which is two sources of truth for one image with nothing to detect
+# them disagreeing.
+#
+# ghcr.io/xorcise-ai/mission-base is now that single source of truth. This repository owns the
+# source, the SemVer, the multi-arch build, the index, the labels and the signature; nothing
+# downstream re-derives a version of its own.
+#
+# Trust boundary, mirroring .github/workflows/release.yml:
+#   * triggers ONLY on a pushed `mission-base-v*` tag;
+#   * no `workflow_dispatch` — that would let anyone with write access publish from any ref;
+#   * NO CACHING — a cache is writable from other branches, and a poisoned layer must never
+#     reach a signed release. A base image build is minutes; correctness is worth those minutes.
+#   * the tag is the only version input, so there is no second place to forget to bump.
+#
+# Separate from release.yml on purpose. That workflow ships the Python distribution on `v*`;
+# these are different artifacts on different cadences, and coupling them would mean every
+# library release rebuilt and republished a base image that had not changed.
+name: mission-base release
+
+on:
+  push:
+    tags:
+      - "mission-base-v*"
+
+permissions: {}
+
+concurrency:
+  # Keyed to the tag. Never cancel — a half-pushed multi-arch index is the worst state to be in:
+  # the tag exists but resolves to an index missing a platform.
+  group: mission-base-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: xorcise-ai/mission-base
+  # Architecture is NOT encoded in the release tag — one tag resolves to an index spanning both.
+  # arm64 is not optional: Apple Silicon is where the nesting failure this base fixes actually
+  # bites, so an amd64-only "release" would miss the platform that most needs it.
+  PLATFORMS: linux/amd64,linux/arm64
+
+jobs:
+  # 1. GATE — cheap checks that must pass before anything is built or pushed.
+  #
+  # Runs first and alone, because every failure it catches is one that would otherwise be
+  # discovered AFTER an immutable tag exists in a public registry. GHCR tags can be deleted, but
+  # anything that already pulled the bad digest has it forever.
+  verify:
+    name: verify the tag against the Dockerfile
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      release: ${{ steps.tag.outputs.release }}
+      major: ${{ steps.tag.outputs.major }}
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Parse the release version out of the tag
+        id: tag
+        run: |
+          set -euo pipefail
+          release="${GITHUB_REF_NAME#mission-base-v}"
+          # Strict SemVer. A tag like `mission-base-v2.4` would otherwise publish an image
+          # labelled "2.4", which is a floating alias masquerading as an immutable release.
+          if ! printf '%s' "$release" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "::error::tag '${GITHUB_REF_NAME}' does not carry a MAJOR.MINOR.PATCH version" >&2
+            exit 1
+          fi
+          echo "release=$release"            >> "$GITHUB_OUTPUT"
+          echo "major=${release%%.*}"        >> "$GITHUB_OUTPUT"
+
+      - name: The tag's MAJOR must equal the compatibility label
+        env:
+          MAJOR: ${{ steps.tag.outputs.major }}
+          RELEASE: ${{ steps.tag.outputs.release }}
+        run: |
+          set -euo pipefail
+          # ai.xorcise.base.version is the number the runtime gate compares. If the tag says 3.x
+          # while the Dockerfile still declares generation 2, the published image asserts a
+          # compatibility it was not built for — and every client trusts the label, not the tag.
+          # This is the one mismatch that silently produces a WRONG artifact rather than a failed
+          # build, so it is checked before any layer is built.
+          label="$(grep -oP '^LABEL\s+ai\.xorcise\.base\.version="\K[^"]+' \
+                   containers/mission-base/Dockerfile || true)"
+          if [ -z "$label" ]; then
+            echo "::error::no ai.xorcise.base.version label in containers/mission-base/Dockerfile" >&2
+            exit 1
+          fi
+          if [ "$label" != "$MAJOR" ]; then
+            echo "::error::tag ${RELEASE} has MAJOR ${MAJOR} but the Dockerfile declares generation ${label}." >&2
+            echo "::error::A MAJOR bump is a compatibility break: update the label AND build.BASE_VERSION together." >&2
+            exit 1
+          fi
+          echo "generation ${label} == tag MAJOR ${MAJOR}"
+
+  # 2. PUBLISH — build both architectures and push ONE index.
+  #
+  # `docker/build-push-action` with a multi-platform `platforms:` produces a single OCI image
+  # index and pushes it under one tag. Deliberately not two per-arch builds joined afterwards
+  # with `manifest create`: that path can push arch-suffixed tags as a side effect, and those
+  # tags then become an unofficial contract people pin to.
+  publish:
+    name: build + push the multi-arch index
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write # push to GHCR under this repository's owner
+      id-token: write # mint the OIDC identity that signs the provenance attestation
+      attestations: write # record the attestation against this repository
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # arm64 is emulated here. Slower than a native runner, but this image is a handful of apk
+      # packages over an upstream base — correctness of the index matters far more than build time.
+      - name: Set up QEMU for the non-native architecture
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: containers/mission-base
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          provenance: true
+          sbom: false
+          # The ONLY tag pushed is the immutable SemVer. No `latest`, no `2`, no `2.4`:
+          # a floating alias on the canonical artifact invites a downstream pipeline to pin to
+          # it, and a reproducible mission build must consume version + digest. Aliases can be
+          # added later as a deliberate, separate decision — they cannot be un-published once
+          # something depends on them.
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.verify.outputs.release }}
+          build-args: |
+            BASE_RELEASE=${{ needs.verify.outputs.release }}
+          # Annotations go on the INDEX as well as the manifests; a registry UI reads the index.
+          annotations: |
+            index:org.opencontainers.image.title=XORCISE mission-base
+            index:org.opencontainers.image.version=${{ needs.verify.outputs.release }}
+            index:org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            index:org.opencontainers.image.revision=${{ github.sha }}
+            index:org.opencontainers.image.licenses=Apache-2.0
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  # 3. INSPECT — prove the published artifact is what the contract promises.
+  #
+  # Pulls the tag back from GHCR as a client would. The build succeeding says the workflow ran;
+  # only reading the registry says the right thing landed. Every assertion here corresponds to a
+  # way a "successful" publish can still be wrong.
+  inspect:
+    name: verify the published index
+    needs: [verify, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read # pull the just-published index back out of GHCR to inspect it
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: The tag must resolve to a multi-platform index carrying the right labels
+        env:
+          REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.verify.outputs.release }}
+          RELEASE: ${{ needs.verify.outputs.release }}
+          MAJOR: ${{ needs.verify.outputs.major }}
+          WANT_PLATFORMS: ${{ env.PLATFORMS }}
+        run: |
+          set -euo pipefail
+          echo "inspecting $REF"
+          docker buildx imagetools inspect "$REF" --raw > index.json
+
+          # (a) It must be an INDEX, not a single-arch manifest. A single-arch push still
+          #     "succeeds" and still resolves for the pusher's own architecture — the failure
+          #     only appears for a user on the other platform, which is precisely the audience
+          #     multi-arch exists for.
+          mt="$(jq -r '.mediaType' index.json)"
+          case "$mt" in
+            application/vnd.oci.image.index.v1+json|application/vnd.docker.distribution.manifest.list.v2+json) ;;
+            *) echo "::error::$REF is $mt, not a multi-platform index" >&2; exit 1 ;;
+          esac
+
+          # (b) Every promised platform must actually be present. An index with one child is
+          #     still an index.
+          got="$(jq -r '[.manifests[]
+                         | select(.platform.os != "unknown")
+                         | "\(.platform.os)/\(.platform.architecture)"] | sort | join(",")' index.json)"
+          for want in ${WANT_PLATFORMS//,/ }; do
+            printf '%s' "$got" | grep -q "$want" \
+              || { echo "::error::$REF is missing $want (has: $got)" >&2; exit 1; }
+          done
+          echo "platforms: $got"
+
+          # (c) The labels the client gates on must be present and correct ON EACH platform.
+          #     Checking only one would miss a build-arg that failed to reach the emulated leg.
+          for plat in ${WANT_PLATFORMS//,/ }; do
+            cfg="$(docker buildx imagetools inspect "$REF" --format \
+                   '{{ json (index .Image "'"$plat"'") }}')"
+            gen="$(printf '%s' "$cfg" | jq -r '.config.Labels["ai.xorcise.base.version"] // ""')"
+            rel="$(printf '%s' "$cfg" | jq -r '.config.Labels["ai.xorcise.base.release"] // ""')"
+            [ "$gen" = "$MAJOR" ]   || { echo "::error::$plat: base.version=$gen, want $MAJOR" >&2; exit 1; }
+            [ "$rel" = "$RELEASE" ] || { echo "::error::$plat: base.release=$rel, want $RELEASE" >&2; exit 1; }
+            echo "$plat: generation $gen, release $rel"
+          done
+
+      # Every `${{ }}` stays in `env:` and the script reads shell variables. Interpolating
+      # directly into a `run:` body splices the value into the script before bash sees it, so a
+      # crafted value would execute — zizmor's template-injection audit fails the build on it.
+      - name: Report the canonical identity
+        env:
+          REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.verify.outputs.release }}
+          RELEASE: ${{ needs.verify.outputs.release }}
+          DIGEST: ${{ needs.publish.outputs.digest }}
+        run: |
+          {
+            echo "### mission-base ${RELEASE} published"
+            echo
+            echo '```'
+            echo "ref    ${REF}"
+            echo "digest ${DIGEST}"
+            echo '```'
+            echo
+            echo "Consume **version + digest**, never a floating alias."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # 4. PROMOTE — deliberately a stub.
+  #
+  # The contract's end state is release-driven promotion: after a verified publish, this
+  # workflow calls the XORCISE control plane with {mission_base_version, ghcr_ref, index_digest}
+  # over short-lived GitHub OIDC, and the cloud marks the release active. That endpoint does not
+  # exist yet.
+  #
+  # This job exists as an explicit, failing-loudly-absent seam rather than a half-wired HTTP call
+  # to a URL that 404s, because a promotion step that "succeeds" against nothing is worse than
+  # one that is visibly not implemented. It prints what it WOULD send, so the payload shape is
+  # reviewable now and the cloud side has something concrete to build against.
+  promote:
+    name: promote to the control plane (not yet implemented)
+    needs: [verify, publish, inspect]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Show the promotion payload this release would send
+        env:
+          RELEASE: ${{ needs.verify.outputs.release }}
+          DIGEST: ${{ needs.publish.outputs.digest }}
+          REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.verify.outputs.release }}
+        run: |
+          set -euo pipefail
+          payload="$(jq -nc \
+            --arg v "$RELEASE" \
+            --arg r "$REF" \
+            --arg d "$DIGEST" \
+            '{mission_base_version:$v, ghcr_ref:$r, index_digest:$d}')"
+          echo "$payload"
+          {
+            echo "### Promotion payload (not sent — endpoint not built)"
+            echo
+            echo '```json'
+            echo "$payload" | jq .
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
