@@ -93,7 +93,7 @@ def _installed_entry(
         technologies=m.technologies,
         installed=True,
         image=image,
-        base_version=compat.base_major,
+        base_major=compat.base_major,
         compatible=compat.compatible,
         compat_hint=compat.hint,
     )

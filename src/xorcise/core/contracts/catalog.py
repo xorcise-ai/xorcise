@@ -48,9 +48,13 @@ class CatalogEntry(_Frozen):
     #
     # `compatible` is None when undeterminable (a local `:local` fuse carries no generation in its
     # tag) — the UI shows no warning, and the run-create gate still guards via the image label.
-    # `base_version` is the artifact's generation; `compat_hint` is a short remediation shown when
-    # `compatible` is False.
-    base_version: int | None = None
+    # `base_major` is the artifact's base-generation MAJOR (the only component that gates
+    # compatibility); `compat_hint` is a short remediation shown when `compatible` is False.
+    #
+    # Named `base_major`, NOT `base_version`: the upcoming remote versioning contract reserves the
+    # public field `mission_base_version` for the full base SemVer (e.g. "2.4.1") and explicitly
+    # discourages `base_version` as a competing public name. This int is just the compat major.
+    base_major: int | None = None
     compatible: bool | None = None
     compat_hint: str | None = None
 

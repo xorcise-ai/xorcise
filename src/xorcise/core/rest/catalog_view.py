@@ -91,7 +91,7 @@ def list_catalog(deps: CatalogViewDeps) -> tuple[CatalogEntry, ...]:
                 technologies=meta.technologies,
                 installed=True,
                 image=ic.mission_ref.image,
-                base_version=compat.base_major,
+                base_major=compat.base_major,
                 compatible=compat.compatible,
                 compat_hint=compat.hint,
             )
@@ -122,7 +122,7 @@ def list_catalog(deps: CatalogViewDeps) -> tuple[CatalogEntry, ...]:
                 image_size_bytes=item.image_size_bytes,
                 attachments_size_bytes=item.attachments_size_bytes,
                 download_size_bytes=item.download_size_bytes,
-                base_version=compat.base_major,
+                base_major=compat.base_major,
                 compatible=compat.compatible,
                 compat_hint=compat.hint,
             )

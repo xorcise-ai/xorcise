@@ -243,7 +243,7 @@ describe("MissionDetail base-generation compatibility", () => {
           {
             ...INSTALLED,
             compatible: false,
-            base_version: 1,
+            base_major: 1,
             compat_hint: "Reinstall this mission to get the current base.",
           },
         ]),

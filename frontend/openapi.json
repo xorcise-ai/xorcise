@@ -740,7 +740,7 @@
             ],
             "title": "Attachments Size Bytes"
           },
-          "base_version": {
+          "base_major": {
             "anyOf": [
               {
                 "type": "integer"
@@ -749,7 +749,7 @@
                 "type": "null"
               }
             ],
-            "title": "Base Version"
+            "title": "Base Major"
           },
           "compat_hint": {
             "anyOf": [

@@ -151,7 +151,7 @@ def test_browse_entry_exposes_base_incompatibility_to_the_ui(tmp_path: Path):
 
     entry = list_catalog(CatalogViewDeps(source=source, install_root=tmp_path))[0]
 
-    assert entry.base_version == 1
+    assert entry.base_major == 1
     assert entry.compatible is False
     assert entry.compat_hint and "einstall" in entry.compat_hint
 

@@ -285,10 +285,10 @@ export function MissionDetail({ id }: { id: string | null }) {
               <p className="max-w-full break-words text-body text-text-secondary">
                 {c.compat_hint ??
                   "This mission was built on a different base generation than this XORCISE runs."}
-                {c.base_version != null && (
+                {c.base_major != null && (
                   <span className="text-text-tertiary">
                     {" "}
-                    (built for base {c.base_version})
+                    (built for base {c.base_major})
                   </span>
                 )}
               </p>
