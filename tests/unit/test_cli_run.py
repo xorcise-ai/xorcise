@@ -30,7 +30,7 @@ def test_run_create_requires_agent_and_mission():
 def test_run_create_passes_budget_to_server(monkeypatch):
     captured: dict[str, object] = {}
 
-    def fake_post(self, path: str, json: dict[str, object]):
+    def fake_post(self, path: str, json: dict[str, object], timeout: float | None = None):
         captured["path"] = path
         captured["json"] = json
         return {"run_id": RID}
@@ -49,7 +49,7 @@ def test_run_create_passes_budget_to_server(monkeypatch):
 def test_run_create_omits_budget_when_unset(monkeypatch):
     seen: list[dict[str, object]] = []
 
-    def fake_post(self, path: str, json: dict[str, object]):
+    def fake_post(self, path: str, json: dict[str, object], timeout: float | None = None):
         seen.append(json)
         return {"run_id": RID}
 

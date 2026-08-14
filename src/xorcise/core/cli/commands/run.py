@@ -273,7 +273,11 @@ def create_run(
     body: dict[str, object] = {"agent": agent, "mission": mission}
     if budget is not None:
         body["budget_seconds"] = budget
-    created = client.post("/runs", json=body)
+    # Run-create runs the host nesting probe synchronously on a cold cache (a throwaway DinD boot,
+    # up to ~3 min on a fresh host), far past the 5 s default. Without a longer timeout the CLI
+    # gives up while the server keeps going and still creates the run — and the retry the timeout
+    # message invites mints a SECOND run. Wait instead.
+    created = client.post("/runs", json=body, timeout=300.0)
     if as_json is True:
         emit_json(created)
         return

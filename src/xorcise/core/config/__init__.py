@@ -120,6 +120,14 @@ class Settings(BaseSettings):
     # arm64 host (Apple Silicon) must request linux/amd64 or the pull 404s on a missing arm64
     # manifest; Docker Desktop then runs it under emulation. Empty ⇒ docker picks the host platform.
     docker_platform: str = "linux/amd64"
+    # The mission stack ALWAYS runs inside the run's own container (DinD). The former
+    # host-daemon "sibling" topology is gone — it put every mission's containers on the operator's
+    # daemon, so parallel runs collided on fixed container_names and published ports.
+    # "enforce" verifies the host can actually nest containers and fails run creation with a
+    # diagnosis if not. "skip" bypasses only the CHECK — for hosts where the probe itself cannot
+    # run (restricted CI, no privileged containers) but nesting is known good. It can never
+    # restore the sibling topology.
+    nested_container_check: Literal["enforce", "skip"] = "enforce"
     # role + service endpoints (defaults mirror the module constants)
     role: str = "all"
     host: str = HOST

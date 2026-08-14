@@ -183,3 +183,31 @@ describe("MissionCard pull (job-based)", () => {
     expect(screen.queryByRole("button", { name: /pull/i })).toBeNull();
   });
 });
+
+describe("MissionCard base-generation compatibility", () => {
+  it("shows an 'update required' badge for an incompatible artifact, with the hint in its tooltip", async () => {
+    renderWithProviders(
+      <MissionCard
+        mission={{
+          ...LIBRARY,
+          compatible: false,
+          compat_hint: "Reinstall this mission to get the current base.",
+        }}
+      />,
+    );
+    const badge = await screen.findByText(/update required/i);
+    expect(badge).toBeInTheDocument();
+    expect(badge).toHaveAttribute(
+      "title",
+      "Reinstall this mission to get the current base.",
+    );
+  });
+
+  it("shows no compatibility badge for a runnable mission", async () => {
+    renderWithProviders(<MissionCard mission={{ ...LIBRARY, compatible: true }} />);
+    await waitFor(() =>
+      expect(screen.getByText("SQLi Login")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/update required/i)).toBeNull();
+  });
+});

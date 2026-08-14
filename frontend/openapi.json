@@ -740,6 +740,39 @@
             ],
             "title": "Attachments Size Bytes"
           },
+          "base_major": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Major"
+          },
+          "compat_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compat Hint"
+          },
+          "compatible": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compatible"
+          },
           "download_size_bytes": {
             "anyOf": [
               {

@@ -1,7 +1,14 @@
+import re
 import subprocess
 
 import pytest
+import yaml
 
+from xorcise.core.contracts.mission import (
+    EnvironmentSpec,
+    MissionManifest,
+    MissionMetadata,
+)
 from xorcise.core.runner.docker import build as build_mod
 from xorcise.core.runner.docker.build import (
     BASE_IMAGE,
@@ -49,14 +56,33 @@ def test_base_context_resolves_to_a_real_dockerfile():
     assert (ctx / "Dockerfile").is_file()
 
 
-def test_ensure_base_image_skips_when_present(monkeypatch):
+def test_ensure_base_image_skips_when_present_and_current(monkeypatch):
     monkeypatch.setattr(build_mod, "_image_present", lambda ref: True)
+    # present AND the right generation ⇒ no rebuild
+    monkeypatch.setattr(build_mod, "_image_label", lambda ref, key: build_mod.BASE_VERSION)
 
     def _boom(*a, **k):
-        raise AssertionError("must not docker build when base image already present")
+        raise AssertionError("must not docker build when base image is present and current")
 
     monkeypatch.setattr(subprocess, "run", _boom)
     ensure_base_image()  # no-op, no build
+
+
+def test_ensure_base_image_rebuilds_a_stale_generation(monkeypatch, tmp_path):
+    """A present base whose label is an OLD generation (or absent) must be rebuilt — a bare
+    presence check let an upgraded host keep the wrong base, silently defeating the fix."""
+    monkeypatch.setattr(build_mod, "_image_present", lambda ref: True)
+    monkeypatch.setattr(build_mod, "_image_label", lambda ref, key: "1")  # stale
+    monkeypatch.setattr(build_mod, "_base_context", lambda: tmp_path)
+    calls: list[list[str]] = []
+
+    def _record(cmd, **k):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", _record)
+    ensure_base_image()
+    assert calls == [["docker", "build", "-t", BASE_IMAGE, str(tmp_path)]]
 
 
 def test_ensure_base_image_builds_when_absent(monkeypatch, tmp_path):
@@ -83,3 +109,76 @@ def test_ensure_base_image_propagates_build_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(subprocess, "run", _fail)
     with pytest.raises(subprocess.CalledProcessError):
         ensure_base_image()
+
+
+def _manifest_with_compose(tmp_path) -> MissionManifest:
+    """A minimal lab manifest whose compose has one pull-only service (no build context)."""
+    (tmp_path / "docker-compose.yml").write_text(
+        yaml.safe_dump({"services": {"web": {"image": "nginx:alpine"}}})
+    )
+    return MissionManifest(
+        schema_version="2.0",
+        metadata=MissionMetadata(mission_id="m1", name="m1", objective="Solve it.", type="lab"),
+        environment=EnvironmentSpec(),
+    )
+
+
+def test_router_is_pinned_and_baked_under_the_canonical_tag(monkeypatch, tmp_path):
+    """The router must be PULLED pinned but BAKED under netoverride.ROUTER_IMAGE.
+
+    Two failure modes this guards, which pull in opposite directions:
+      * pulling the floating `:stable` means re-fusing an old mission bakes whatever that tag
+        means today — the mission is no longer reproducible;
+      * baking under anything OTHER than the canonical tag means the per-run net-override asks
+        compose for an image images.tar does not contain, and the mission dies at `up` on the
+        hermetic inner daemon (no inner pull at deploy).
+    Satisfying one by breaking the other is the easy mistake, so both are asserted together.
+    """
+    from xorcise.core.runner.docker.build import ROUTER_PIN
+    from xorcise.core.runner.netoverride import ROUTER_IMAGE
+
+    assert ROUTER_PIN != ROUTER_IMAGE, "the pull must be pinned, not the floating deploy tag"
+    assert re.fullmatch(r"tailscale/tailscale:v\d+\.\d+\.\d+", ROUTER_PIN), ROUTER_PIN
+
+    calls: list[list[str]] = []
+
+    def _run(cmd, **kw):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", _run)
+    monkeypatch.setattr(build_mod, "ensure_base_image", lambda: None)
+    # The pin is not already local, so it is pulled (the presence guard only skips a redundant
+    # re-pull; a fresh host still fetches it).
+    monkeypatch.setattr(build_mod, "_image_present", lambda ref: False)
+
+    manifest = _manifest_with_compose(tmp_path)
+    build_mod.FusedImageBuilder().build(tmp_path, manifest)
+
+    assert ["docker", "pull", ROUTER_PIN] in calls, "router must be pulled by its pin"
+    assert ["docker", "tag", ROUTER_PIN, ROUTER_IMAGE] in calls, "pin must be re-tagged canonical"
+    save = next(c for c in calls if c[:2] == ["docker", "save"])
+    assert ROUTER_IMAGE in save, "images.tar must carry the router under the canonical tag"
+    assert ROUTER_PIN not in save, "the pin must not be what lands in images.tar"
+
+
+def test_base_compat_verdict_by_generation():
+    """The single verdict the run-create gate and the catalog browse card both read, so a card
+    can never say 'runnable' for something a run refuses. base2 is what this XORCISE runs."""
+    from xorcise.core.runner.docker.build import REQUIRED_BASE_MAJOR, base_compat
+
+    assert REQUIRED_BASE_MAJOR == 2  # if this bumps, the wordings below still hold by direction
+
+    same = base_compat(2)
+    assert same.compatible is True and same.hint is None
+
+    older = base_compat(1)
+    assert older.compatible is False and older.base_major == 1
+    assert "einstall" in (older.hint or "")  # reinstall the mission
+
+    newer = base_compat(9)
+    assert newer.compatible is False and newer.base_major == 9
+    assert "XORCISE" in (newer.hint or "")  # update XORCISE
+
+    unknown = base_compat(None)  # a local :local fuse carries no generation in its tag
+    assert unknown.compatible is None and unknown.hint is None

@@ -151,7 +151,15 @@ export function MissionCard({ mission: c }: { mission: CatalogEntry }) {
         <div className="flex flex-wrap items-center gap-1.5">
           {c.source === "your_own" && <Badge variant="muted">custom</Badge>}
           {c.type && <EnvironmentBadge type={c.type} />}
-          <span className="ml-auto">
+          <span className="ml-auto flex items-center gap-1.5">
+            {/* Base-generation mismatch — surfaced HERE so it is seen before a run is attempted,
+                not discovered as a failed run-create. The hint (reinstall the mission, or update
+                XORCISE) rides the tooltip; the detail page spells it out. */}
+            {c.compatible === false && (
+              <Badge variant="warn" title={c.compat_hint ?? undefined}>
+                update required
+              </Badge>
+            )}
             {installed ? (
               <Badge variant="ok">installed</Badge>
             ) : (

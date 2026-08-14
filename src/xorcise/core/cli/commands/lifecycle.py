@@ -28,6 +28,7 @@ from xorcise.core.cli._diagnostics import (
     docker_present,
     external_control_plane,
     home_present,
+    nested_containers,
     openssl_present,
     probe_channel,
     python_version,
@@ -685,6 +686,18 @@ def doctor(
         )
         raise typer.Exit(1) from exc
     env_checks = _environment_checks()
+    # Only under `doctor` — it starts a privileged container, so it must not join the check list
+    # `up` runs (and `up` must work on a host that cannot nest: static missions and the UI need
+    # nothing nested). Gated on the docker daemon being up, so a Docker-less host gets one
+    # actionable line rather than two; and skipped in stub mode, which deploys nothing and so has
+    # no nesting precondition to check (same reasoning as the control-plane probe below).
+    if not s.use_stubs and all(c.ok for c in env_checks if c.name in {"docker", "docker daemon"}):
+        # The nested probe boots a throwaway DinD (and pulls it on a cold host) — up to a few
+        # minutes with no output otherwise, which reads as a hang and gets Ctrl-C'd. Say so first,
+        # so the operator waits instead of killing it (and stranding the privileged probe).
+        if as_json is not True:
+            console.print("  [dim]○ probing nested containers (may take a minute)…[/dim]")
+        env_checks.append(nested_containers())
     port_checks: list[Check] = []
     server_ports = _running_server_ports()
     # Probe the ports the server actually runs on (runtime overlay, same resolution

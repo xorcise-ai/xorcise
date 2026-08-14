@@ -42,6 +42,21 @@ class CatalogEntry(_Frozen):
     image_size_bytes: int | None = None
     attachments_size_bytes: int | None = None
     download_size_bytes: int | None = None
+    # Base-generation compatibility, so the browse card and detail page can warn BEFORE a run is
+    # attempted — the incompatibility used to surface only as a failed run-create. Derived from
+    # the image ref's `-baseN` generation vs what this XORCISE runs (rest layer fills it in).
+    #
+    # `compatible` is None when undeterminable (a local `:local` fuse carries no generation in its
+    # tag) — the UI shows no warning, and the run-create gate still guards via the image label.
+    # `base_major` is the artifact's base-generation MAJOR (the only component that gates
+    # compatibility); `compat_hint` is a short remediation shown when `compatible` is False.
+    #
+    # Named `base_major`, NOT `base_version`: the upcoming remote versioning contract reserves the
+    # public field `mission_base_version` for the full base SemVer (e.g. "2.4.1") and explicitly
+    # discourages `base_version` as a competing public name. This int is just the compat major.
+    base_major: int | None = None
+    compatible: bool | None = None
+    compat_hint: str | None = None
 
 
 class CatalogStatus(_Frozen):

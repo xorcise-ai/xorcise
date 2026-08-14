@@ -7,7 +7,6 @@ the `runner` extra; only constructing the driver requires the SDK + a daemon.
 from __future__ import annotations
 
 import json as _json
-import platform as _platform
 from collections.abc import Callable
 from typing import Any
 
@@ -66,11 +65,6 @@ def _split_ref(image: str) -> tuple[str, str | None]:
         repo, tag = image.rsplit(":", 1)
         return repo, tag
     return image, None
-
-
-def _host_is_macos() -> bool:
-    """Whether the Docker client is running on a macOS host (test seam)."""
-    return _platform.system() == "Darwin"
 
 
 class DockerSdkDriver(DockerDriver):
@@ -138,6 +132,14 @@ class DockerSdkDriver(DockerDriver):
         except docker.errors.ImageNotFound:
             return False
 
+    def image_labels(self, image: str) -> dict[str, str] | None:
+        """The image's config labels (inherited included), or None if it is not present."""
+        try:
+            img = self._client.images.get(image)
+        except Exception:  # noqa: BLE001 — absent/unreadable image ⇒ "no labels", never a crash
+            return None
+        return dict((img.attrs.get("Config") or {}).get("Labels") or {})
+
     def run(self, spec: ContainerSpec) -> ContainerHandle:
         # The fused image is local-only (no registry). containers.run auto-PULLS a missing image,
         # which for a local-only ref fails with a cryptic "pull access denied" — so fail loud
@@ -149,36 +151,36 @@ class DockerSdkDriver(DockerDriver):
         # Fused image runs an inner dockerd → privileged + /dev/net/tun for Tailscale.
         # The managed label lets `xorcise down` reap this container without any
         # in-process bookkeeping — even after a server restart or an abandoned run.
-        kwargs: dict[str, Any] = {}
-        environment = dict(spec.env)
-        if _host_is_macos():
-            # Docker Desktop can run the amd64 fused image through Rosetta, but Rosetta fails for
-            # its nested DinD children. Let the entrypoint compose those children as host-daemon
-            # siblings instead. The socket is deliberately mounted at a non-default path so the
-            # Linux/DinD branch remains capability-detected inside the image.
-            kwargs["volumes"] = {
-                "/var/run/docker.sock": {"bind": "/var/run/docker-host.sock", "mode": "rw"}
-            }
-            # Also makes already-published fused images (whose entrypoint predates the socket
-            # capability check) use the mounted host daemon for load/compose. Their background
-            # inner dockerd remains harmless and `wait` keeps the lifecycle container alive.
-            environment["DOCKER_HOST"] = "unix:///var/run/docker-host.sock"
+        #
+        # The host's Docker socket is deliberately NOT mounted. Doing so used to make the
+        # entrypoint compose the mission stack as SIBLINGS on the operator's own daemon, which
+        # put every run's containers into one shared namespace: parallel runs collided on the
+        # missions' fixed container_names and published host ports, teardown leaked un-labelled
+        # containers, and mission bind mounts resolved against the host filesystem. The stack now
+        # always runs on the inner daemon. The entrypoint still branches on the socket's presence,
+        # so not mounting it is what selects DinD.
         container = self._client.containers.run(
             spec.image,
             name=spec.name,
             detach=True,
             privileged=True,
             devices=["/dev/net/tun:/dev/net/tun"],
-            environment=environment,
+            environment=dict(spec.env),
             labels={MANAGED_LABEL: "true", RUN_ID_LABEL: spec.name},
             platform=self._platform or None,  # run the amd64 image on an arm64 host
-            **kwargs,
         )
         return ContainerHandle(container_id=container.id, image=spec.image)
 
     def _remove_run_resources(self, run_id: str) -> None:
-        """Remove the outer lifecycle container plus macOS host-compose siblings, then the run's
-        network + volumes. Idempotent."""
+        """Remove the run's outer lifecycle container, then any host-daemon leftovers it owns.
+        Idempotent.
+
+        Removing the outer container is now sufficient for a run's OWN stack: the mission
+        containers live on its inner daemon and die with it. The host-daemon sweeps below are
+        kept deliberately — they are the only thing that cleans up runs created BEFORE the
+        sibling topology was removed, and they cost one filtered list call against labels no
+        DinD-era run sets. Deleting them would strand those containers forever, since nothing
+        else knows they exist."""
         import contextlib
 
         from docker.errors import NotFound
@@ -187,12 +189,12 @@ class DockerSdkDriver(DockerDriver):
             all=True, filters={"label": f"{RUN_ID_LABEL}={run_id}"}
         ):
             container.remove(force=True)
-        # Compose networks/volumes carry its standard project label. A network cannot be removed
-        # while any container is still ATTACHED — and on macOS the mission stack is composed
-        # against the HOST daemon as siblings that carry ONLY the compose-project label, not our
-        # run-id label, so the sweep above misses them and a bare network.remove() 403s
-        # ("has active endpoints"). Force-remove whatever the network still holds, by ATTACHMENT
-        # (labels can't be relied on), before removing it — this is the e397d231 teardown leak.
+        # Legacy sibling-era cleanup. Compose networks/volumes carry its standard project label.
+        # A network cannot be removed while any container is still ATTACHED, and sibling mission
+        # containers carried ONLY the compose-project label, not our run-id label — so the sweep
+        # above missed them and a bare network.remove() 403s ("has active endpoints").
+        # Force-remove whatever the network still holds, by ATTACHMENT (labels can't be relied
+        # on), before removing it — this is the e397d231 teardown leak.
         for network in self._client.networks.list(
             filters={"label": f"com.docker.compose.project={run_id}"}
         ):
@@ -282,8 +284,8 @@ class DockerSdkDriver(DockerDriver):
 
     def compose_service_states(self, project: str) -> tuple[ServiceState, ...]:
         # The mission stack runs INSIDE the outer container (named == run id == compose project),
-        # so enumerate it with a nested `compose ps`. DOCKER_HOST is part of the container's config
-        # on macOS (host-daemon mode), so the exec inherits the same daemon the entrypoint used.
+        # so enumerate it with a nested `compose ps`. The exec inherits the container's env, and
+        # therefore the same inner daemon the entrypoint composed against.
         from docker.errors import NotFound
 
         try:

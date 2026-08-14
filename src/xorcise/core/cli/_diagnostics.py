@@ -265,6 +265,41 @@ def control_plane(container: str = "headscale", *, timeout: float = 5.0) -> Chec
     return Check("control plane", False, f"{container!r} is not reachable", _PLANE_FIX)
 
 
+def nested_containers() -> Check:
+    """Can this host run a mission's containers INSIDE the run container?
+
+    A real blocker, not an advisory line: there is no host-daemon fallback any more, so a host
+    that cannot nest cannot run a lab mission at all. Surfacing it here is what turns "my run
+    failed" into "my host needs Rosetta enabled" before the operator ever creates a run.
+
+    Deliberately NOT part of `_environment_checks()`. It starts a privileged container, which is
+    fine for an explicit diagnostic but not for the list `up` runs on every start — and `up`
+    must keep working regardless, since static missions and the UI need nothing nested.
+    """
+    from xorcise.core.config import get_settings
+    from xorcise.core.rest.docker_runtime import nested_support
+    from xorcise.core.runner.docker.rosetta import clip_detail
+
+    def _client() -> object:
+        import docker  # type: ignore[import-untyped]
+
+        return docker.from_env()
+
+    try:
+        # fresh=True: doctor reports CURRENT health, so it re-probes rather than reading the
+        # server's memoised verdict — and a green doctor refreshes that memo (see nested_support).
+        support = nested_support(get_settings(), _client, fresh=True)
+    except Exception as exc:  # noqa: BLE001 — an undetermined probe must not crash `doctor`
+        # Deliberately a WARNING, not a failure: "the probe itself broke" is a different claim
+        # from "this host cannot nest", and only the second should fail the verdict.
+        return Check(
+            "nested containers", True, f"undetermined ({clip_detail(str(exc))})", level="warning"
+        )
+    if support.ok:
+        return Check("nested containers", True, clip_detail(support.detail))
+    return Check("nested containers", False, clip_detail(support.detail), support.remediation)
+
+
 def external_control_plane(url: str, *, timeout: float = 5.0) -> Check:
     """Is a CONFIGURED remote control plane actually answering?
 

@@ -116,7 +116,7 @@ def test_real_docker_driver_threads_the_platform_setting(monkeypatch) -> None:
         "find_spec",
         lambda name, *a, **k: object() if name == "docker" else real_find_spec(name, *a, **k),
     )
-    captured: dict[str, str] = {}
+    captured: dict[str, object] = {}
 
     class _Capture:
         def __init__(self, *, platform: str) -> None:

@@ -7,6 +7,7 @@ import {
   ArrowLeft,
   Boxes,
   Cpu,
+  AlertTriangle,
   Crosshair,
   Download,
   FileText,
@@ -264,6 +265,37 @@ export function MissionDetail({ id }: { id: string | null }) {
           </div>
         </div>
       </header>
+
+      {/* Base-generation incompatibility — surfaced here (and as a card badge) so the mismatch is
+          seen before a run, not discovered as a failed run-create. Mirrors the Preview banner, in
+          the warning treatment. `compat_hint` names the fix (reinstall the mission, or update
+          XORCISE); the run button below still guards it either way. */}
+      {c.compatible === false && (
+        <Card
+          role="alert"
+          className="min-w-0 border-warning/30 bg-warning/[0.06]"
+          data-testid="mission-incompatible-banner"
+        >
+          <CardContent className="flex min-w-0 items-start gap-3">
+            <AlertTriangle className="mt-0.5 size-5 shrink-0 text-warning" />
+            <div className="min-w-0 space-y-1">
+              <p className="text-body font-semibold text-heading">
+                Not runnable on this XORCISE
+              </p>
+              <p className="max-w-full break-words text-body text-text-secondary">
+                {c.compat_hint ??
+                  "This mission was built on a different base generation than this XORCISE runs."}
+                {c.base_major != null && (
+                  <span className="text-text-tertiary">
+                    {" "}
+                    (built for base {c.base_major})
+                  </span>
+                )}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Preview banner — un-installed library entries */}
       {isLibraryPreview && (
