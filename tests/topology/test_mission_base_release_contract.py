@@ -148,17 +148,22 @@ def test_nothing_is_cached_on_the_publish_path() -> None:
     assert "actions/cache" not in WORKFLOW_TEXT
 
 
-def test_promotion_is_an_explicit_stub_not_a_silent_no_op() -> None:
-    """The control-plane endpoint does not exist yet. A promotion step that 'succeeds' against
-    nothing is worse than one that is visibly unimplemented, so the job must say so and must not
-    pretend to send anything."""
-    promote = JOBS["promote"]
-    assert "not yet implemented" in promote["name"].lower()
-    body = "\n".join(s.get("run", "") for s in promote["steps"])
-    assert "mission_base_version" in body and "index_digest" in body, (
-        "the stub must still print the payload shape, so the cloud side has a concrete contract"
-    )
-    assert "curl" not in body, "the stub must not attempt a real call to an endpoint that 404s"
+def test_the_release_workflow_never_calls_out_to_a_deployment() -> None:
+    """Releases PUBLISH; deployments DISCOVER. This workflow's job ends at a verified,
+    multi-platform artifact on GHCR — it never notifies, promotes, or otherwise calls
+    into any consumer. Deployments poll the registry for new releases and adopt them
+    through their own review flow, which means: no deployment URL, no credential, and
+    no secret for this repository to hold, leak, or rotate. A workflow that pushed
+    into consumers would put an automated hand on the highest-privilege lever a
+    deployment has; pull-based discovery keeps every adoption decision human.
+
+    (This test's previous lives pinned first a visible promotion stub, then a real
+    outbound call. Both are gone by design, not by accident — hence a pin.)"""
+    assert "promote" not in JOBS, "the promotion job is back; adoption is pull-based"
+    body = "\n".join(step.get("run", "") for job in JOBS.values() for step in job.get("steps", []))
+    assert "curl" not in body, "no job in this workflow may call out to a deployment"
+    for leak in ("PROMOTE_URL", "PROMOTE_TOKEN", "XORCISE_PROMOTE"):
+        assert leak not in WORKFLOW_TEXT, f"deployment plumbing is back: {leak}"
 
 
 def test_every_action_is_pinned_to_a_sha() -> None:
