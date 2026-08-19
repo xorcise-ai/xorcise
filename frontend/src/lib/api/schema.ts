@@ -2014,12 +2014,14 @@ export interface components {
         };
         /**
          * MissionManifest
-         * @description The `mission.json` v2 object — the shared contract all consumers import.
+         * @description The `mission.json` object (schema 2.0 or 3.0) — the shared contract all consumers import.
          *
          *     Required: schema_version, metadata (incl. metadata.type ∈ {lab, static}; the agent objective
-         *     lives under metadata.objective). `environment` is conditional: required for lab, omitted for
-         *     static (see _check_execution_contract). Everything else defaults empty/None so a minimal bundle
-         *     validates (terrain/intel absent is valid; lab needs environment, static needs attachments).
+         *     lives under metadata.objective) and — on schema 3.0 — the creator-owned SemVer `version`
+         *     (2.0 predates the field and must not carry it; see _check_version_contract). `environment` is
+         *     conditional: required for lab, omitted for static (see _check_execution_contract). Everything
+         *     else defaults empty/None so a minimal bundle validates (terrain/intel absent is valid; lab
+         *     needs environment, static needs attachments).
          */
         MissionManifest: {
             /**
@@ -2053,12 +2055,14 @@ export interface components {
             rubric: components["schemas"]["RubricCriterion"][];
             /**
              * Schema Version
-             * @constant
+             * @enum {string}
              */
-            schema_version: "2.0";
+            schema_version: "2.0" | "3.0";
             /** Source */
             source?: string | null;
             terrain?: components["schemas"]["TerrainSpec"] | null;
+            /** Version */
+            version?: string | null;
         };
         /** MissionMetadata */
         MissionMetadata: {

@@ -61,6 +61,21 @@ class MissionNotInCatalogError(PullError):
     """The id is not installed and not in the catalog — nothing to pull."""
 
 
+class UnsupportedManifestVersionError(PullError):
+    """The catalog served a mission manifest this XORCISE cannot validate.
+
+    Either the manifest declares a schema_version outside SUPPORTED_SCHEMA_VERSIONS (a newer
+    cloud than this client — the remedy is upgrading XORCISE), or a supported-version document
+    failed contract validation (catalog and client disagree about the shape). Typed so the
+    CLI/REST surfaces render the remedy instead of a pydantic traceback; `served`/`supported`
+    carry the versions for programmatic use. A PullError: nothing was installed."""
+
+    def __init__(self, message: str, *, served: str | None, supported: tuple[str, ...]) -> None:
+        super().__init__(message)
+        self.served = served
+        self.supported = supported
+
+
 class PullCancelled(ContractError):
     """The in-flight pull was cancelled by request before install completed. NOT a failure:
     install_pulled is the only writer (atomic), so a cancel before it leaves the mission

@@ -1986,7 +1986,7 @@
       },
       "MissionManifest": {
         "additionalProperties": false,
-        "description": "The `mission.json` v2 object \u2014 the shared contract all consumers import.\n\nRequired: schema_version, metadata (incl. metadata.type \u2208 {lab, static}; the agent objective\nlives under metadata.objective). `environment` is conditional: required for lab, omitted for\nstatic (see _check_execution_contract). Everything else defaults empty/None so a minimal bundle\nvalidates (terrain/intel absent is valid; lab needs environment, static needs attachments).",
+        "description": "The `mission.json` object (schema 2.0 or 3.0) \u2014 the shared contract all consumers import.\n\nRequired: schema_version, metadata (incl. metadata.type \u2208 {lab, static}; the agent objective\nlives under metadata.objective) and \u2014 on schema 3.0 \u2014 the creator-owned SemVer `version`\n(2.0 predates the field and must not carry it; see _check_version_contract). `environment` is\nconditional: required for lab, omitted for static (see _check_execution_contract). Everything\nelse defaults empty/None so a minimal bundle validates (terrain/intel absent is valid; lab\nneeds environment, static needs attachments).",
         "properties": {
           "artifacts": {
             "default": [],
@@ -2053,7 +2053,10 @@
             "type": "array"
           },
           "schema_version": {
-            "const": "2.0",
+            "enum": [
+              "2.0",
+              "3.0"
+            ],
             "title": "Schema Version",
             "type": "string"
           },
@@ -2077,6 +2080,17 @@
                 "type": "null"
               }
             ]
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
           }
         },
         "required": [

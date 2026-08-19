@@ -10,13 +10,18 @@ The live contract is mocked with httpx.MockTransport (no network in CI):
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import cast
 
 import httpx
 import pytest
 
 from xorcise.core.catalog import StubCatalogSource
 from xorcise.core.catalog.http import HttpCatalogSource
-from xorcise.core.contracts.errors import NotFoundError, PullError
+from xorcise.core.contracts.errors import (
+    NotFoundError,
+    PullError,
+    UnsupportedManifestVersionError,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -224,3 +229,50 @@ def test_list_library_carries_skills_when_the_catalog_emits_it() -> None:
 
     assert _source(with_skills).list_library()[0].skills == ("pivoting", "lateral-movement")
     assert _source(without).list_library()[0].skills == ()
+
+
+def test_fetch_manifest_deserializes_schema_3_0() -> None:
+    doc = {
+        "manifest": {**cast("dict[str, object]", _MANIFEST["manifest"]), "version": "1.0.0"}
+        | {"schema_version": "3.0"},
+        "image_ref": _IMAGE,
+    }
+
+    def h(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=doc)
+
+    m = _source(h).fetch_manifest("segmented-pivot")
+    assert m.schema_version == "3.0"
+    assert m.version == "1.0.0"
+
+
+def test_fetch_manifest_unknown_schema_raises_typed_upgrade_error() -> None:
+    # A catalog newer than this client (e.g. a future 4.0) must surface as an actionable
+    # "upgrade XORCISE" error — never a pydantic traceback (UnsupportedManifestVersionError).
+    def h(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"manifest": {"schema_version": "4.0"}})
+
+    with pytest.raises(UnsupportedManifestVersionError) as exc:
+        _source(h).fetch_manifest("segmented-pivot")
+    assert exc.value.served == "4.0"
+    assert exc.value.supported == ("2.0", "3.0")
+    assert "upgrade XORCISE" in str(exc.value)
+    assert isinstance(exc.value, PullError)  # rides the existing REST/CLI PullError mapping
+
+
+def test_fetch_manifest_invalid_supported_schema_is_typed_too() -> None:
+    # A supported-version document that fails validation (client and catalog disagree about
+    # the shape) is the same typed error, not a crash.
+    doc = {
+        "manifest": {**cast("dict[str, object]", _MANIFEST["manifest"]), "version": "01.0.0"}
+        | {"schema_version": "3.0"},
+        "image_ref": _IMAGE,
+    }
+
+    def h(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=doc)
+
+    with pytest.raises(UnsupportedManifestVersionError) as exc:
+        _source(h).fetch_manifest("segmented-pivot")
+    assert exc.value.served == "3.0"
+    assert "cannot validate" in str(exc.value)

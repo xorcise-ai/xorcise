@@ -11,6 +11,7 @@ AWS credentials (published = pullable).
 from __future__ import annotations
 
 import httpx
+from pydantic import ValidationError
 
 from xorcise.core.catalog.source import (
     CatalogSource,
@@ -19,8 +20,12 @@ from xorcise.core.catalog.source import (
     PullToken,
 )
 from xorcise.core.contracts.catalog import CatalogStatus
-from xorcise.core.contracts.errors import NotFoundError, PullError
-from xorcise.core.contracts.mission import MissionManifest
+from xorcise.core.contracts.errors import (
+    NotFoundError,
+    PullError,
+    UnsupportedManifestVersionError,
+)
+from xorcise.core.contracts.mission import SUPPORTED_SCHEMA_VERSIONS, MissionManifest
 
 _TIMEOUT = 10.0
 _DOWNLOAD_TIMEOUT = 60.0  # attachment bundles (pcaps, binaries) can be larger than JSON
@@ -44,7 +49,30 @@ class HttpCatalogSource(CatalogSource):
         if resp.status_code == 404:
             raise NotFoundError(mission_id)
         resp.raise_for_status()
-        return MissionManifest.model_validate(resp.json()["manifest"])
+        payload = resp.json()["manifest"]
+        try:
+            return MissionManifest.model_validate(payload)
+        except ValidationError as exc:
+            # Typed, actionable — never a pydantic traceback. The overwhelmingly likely cause is
+            # a catalog serving a manifest schema newer than this client (the cloud moved first);
+            # the remedy in both arms is the same: upgrade XORCISE.
+            raw = payload.get("schema_version") if isinstance(payload, dict) else None
+            served = raw if isinstance(raw, str) else None
+            if served not in SUPPORTED_SCHEMA_VERSIONS:
+                raise UnsupportedManifestVersionError(
+                    f"mission '{mission_id}' serves manifest schema {served!r}; this XORCISE "
+                    f"reads {', '.join(SUPPORTED_SCHEMA_VERSIONS)} — upgrade XORCISE "
+                    "(e.g. pip install -U xorcise) to pull it",
+                    served=served,
+                    supported=SUPPORTED_SCHEMA_VERSIONS,
+                ) from exc
+            raise UnsupportedManifestVersionError(
+                f"mission '{mission_id}' serves a schema {served} manifest this XORCISE cannot "
+                f"validate ({exc.error_count()} field error(s)) — the catalog and this client "
+                "disagree about the shape; upgrading XORCISE may resolve it",
+                served=served,
+                supported=SUPPORTED_SCHEMA_VERSIONS,
+            ) from exc
 
     def pull_token(self, mission_id: str) -> PullToken | None:
         resp = self._client.post(f"{self._base}/v1/missions/{mission_id}/pull-token")

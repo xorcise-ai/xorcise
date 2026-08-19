@@ -15,10 +15,21 @@ Boundary notes:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+#: Manifest schema versions this client reads. 2.0 is the pre-versioning shape — still served
+#: for history and by a pre-contract catalog (prod today) — and 3.0 adds the required
+#: creator-owned `version` (mission-versioning contract, amendment A3).
+SUPPORTED_SCHEMA_VERSIONS: tuple[str, ...] = ("2.0", "3.0")
+
+#: Creator-owned mission SemVer: exactly MAJOR.MINOR.PATCH — no leading zeros, no
+#: pre-release/build suffix. This is the served pattern verbatim (contract MV1 as amended by
+#: A11); ingest refuses anything looser, so accepting more here would only defer the failure.
+MISSION_VERSION_PATTERN = r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$"
 
 
 class _Frozen(BaseModel):
@@ -148,14 +159,20 @@ class TerrainSpec(_Frozen):
 
 
 class MissionManifest(_Frozen):
-    """The `mission.json` v2 object — the shared contract all consumers import.
+    """The `mission.json` object (schema 2.0 or 3.0) — the shared contract all consumers import.
 
     Required: schema_version, metadata (incl. metadata.type ∈ {lab, static}; the agent objective
-    lives under metadata.objective). `environment` is conditional: required for lab, omitted for
-    static (see _check_execution_contract). Everything else defaults empty/None so a minimal bundle
-    validates (terrain/intel absent is valid; lab needs environment, static needs attachments)."""
+    lives under metadata.objective) and — on schema 3.0 — the creator-owned SemVer `version`
+    (2.0 predates the field and must not carry it; see _check_version_contract). `environment` is
+    conditional: required for lab, omitted for static (see _check_execution_contract). Everything
+    else defaults empty/None so a minimal bundle validates (terrain/intel absent is valid; lab
+    needs environment, static needs attachments)."""
 
-    schema_version: Literal["2.0"]
+    schema_version: Literal["2.0", "3.0"]
+    # The creator-owned mission SemVer (contract MV1): REQUIRED on schema 3.0, absent on 2.0.
+    # Projected by the platform as the public `mission_version`; the runtime's own base SemVer
+    # travels separately as `mission_base_version` and is never authored here.
+    version: str | None = None
     metadata: MissionMetadata
     # Conditionally optional (static-mission-support): a "lab" mission REQUIRES this (the
     # deployable container/network source); a "static" mission omits it entirely. Enforced by
@@ -195,6 +212,24 @@ class MissionManifest(_Frozen):
                 "deployed — remove it from the manifest"
             )
         return None
+
+    @model_validator(mode="after")
+    def _check_version_contract(self) -> MissionManifest:
+        """Enforce the schema/version pairing: 3.0 requires the creator SemVer, 2.0 forbids it.
+
+        2.0 must refuse the field for parity with every other 2.0 consumer (`extra="forbid"`
+        everywhere): a 2.0 document carrying `version` never existed in the wild and accepting
+        one here would mint a shape no other validator reads."""
+        if self.schema_version == "3.0" and self.version is None:
+            raise ValueError("manifest schema 3.0 requires 'version' (the mission's SemVer)")
+        if self.schema_version == "2.0" and self.version is not None:
+            raise ValueError("'version' requires manifest schema 3.0 (2.0 predates the field)")
+        if self.version is not None and not re.fullmatch(MISSION_VERSION_PATTERN, self.version):
+            raise ValueError(
+                "version must be MAJOR.MINOR.PATCH with no leading zeros and no "
+                f"pre-release/build suffix (e.g. 1.4.2), got {self.version!r}"
+            )
+        return self
 
     @model_validator(mode="after")
     def _check_execution_contract(self) -> MissionManifest:
