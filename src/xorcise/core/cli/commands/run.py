@@ -40,10 +40,10 @@ run_app = typer.Typer(
 )
 app.add_typer(run_app, name="run", rich_help_panel="Evaluate")
 
-# `xorcise run events …` — per-run AgentEvent projection tools. Server-local (reads the local
-# projection cache + writes under ~/.xorcise), unlike the thin REST-client commands below.
+# `xorcise run events …` — per-run AgentEvent projection tools (thin REST clients, like the
+# rest of this module).
 run_events_app = typer.Typer(
-    help="Per-run AgentEvent export (reads the local cache under ~/.xorcise).",
+    help="Per-run AgentEvent export (normalized projection, fetched from the server).",
     no_args_is_help=True,
 )
 run_app.add_typer(run_events_app, name="events")
