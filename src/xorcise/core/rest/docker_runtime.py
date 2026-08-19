@@ -149,6 +149,7 @@ def require_base_compatible(
     image_ref: str,
     *,
     label_lookup: Callable[[str], Mapping[str, str] | None] | None = None,
+    origin: str | None = None,
 ) -> None:
     """Raise BaseImageIncompatibleError if a fused image's base MAJOR is not what this XORCISE runs.
 
@@ -165,6 +166,16 @@ def require_base_compatible(
     # frontend renders the shorter compat.hint.
     compat = base_compat(major)
     if compat.compatible is None:
+        # CG4/LEG3: every published artifact carries the base label AND the -baseN tag suffix,
+        # so a LIBRARY install with neither predates the versioned image format — refuse with
+        # the one update action, rather than parsing legacy shapes forever. A your_own local
+        # fuse keeps the allowance: "update from the catalog" is not even the right advice.
+        if origin == "library":
+            raise BaseImageIncompatibleError(
+                f"mission image {image_ref!r} was installed using an older XORCISE image "
+                "format (it carries no base-generation metadata) — update it: "
+                "xorcise mission update <mission>"
+            )
         log.warning("could not determine the base generation of %s — allowing the run", image_ref)
         return
     if compat.compatible:

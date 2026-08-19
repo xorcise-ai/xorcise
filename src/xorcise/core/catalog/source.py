@@ -83,6 +83,21 @@ class MissionDetail:
 
 
 @dataclass(frozen=True)
+class MissionBaseRelease:
+    """GET /v1/mission-base — the currently promoted mission-base release (contract §27).
+
+    Version visibility for settings/diagnostics; per-mission base identity comes from the
+    detail response's mission_base block, NOT from here (the promoted base need not be the
+    base a given mission was fused on)."""
+
+    version: str  # e.g. "2.0.0"
+    required_base_major: int | None = None
+    ref: str | None = None  # ghcr.io/xorcise-ai/mission-base:<version>
+    index_digest: str | None = None
+    platforms: tuple[PlatformImage, ...] = ()
+
+
+@dataclass(frozen=True)
 class PullToken:
     """Short-lived, single-repo ECR docker-login creds minted by the catalog's pull-token broker.
 
@@ -136,6 +151,12 @@ class CatalogSource(ABC):
     def pull_token(self, mission_id: str) -> PullToken | None:
         """Registry creds to pull this mission's image. None ⇒ the image needs no auth
         (the stub's fixture images); the real HttpCatalogSource mints a scoped ECR token."""
+        return None
+
+    def mission_base(self) -> MissionBaseRelease | None:
+        """The currently promoted mission-base release, or None when this source cannot say
+        (the stub, a pre-contract deployment whose /v1/mission-base 404s, or a network
+        failure). None means UNKNOWN — callers render nothing, never a fabricated version."""
         return None
 
     def fetch_delivery(self, mission_id: str) -> DeliveryBundle | None:

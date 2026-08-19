@@ -2031,6 +2031,48 @@
         "title": "KindSupport",
         "type": "string"
       },
+      "MissionBaseView": {
+        "additionalProperties": false,
+        "description": "The mission-base picture for settings/diagnostics (contract \u00a727/\u00a736): what THIS client\nrequires (the compatibility MAJOR it was built for) beside what the catalog currently\npromotes. The promoted side is None when the catalog predates the endpoint (prod today)\nor is unreachable \u2014 unknown, never fabricated.",
+        "properties": {
+          "client_version": {
+            "default": "",
+            "title": "Client Version",
+            "type": "string"
+          },
+          "promoted_index_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promoted Index Digest"
+          },
+          "promoted_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promoted Version"
+          },
+          "required_major": {
+            "title": "Required Major",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "required_major"
+        ],
+        "title": "MissionBaseView",
+        "type": "object"
+      },
       "MissionInfo": {
         "description": "What `GET /runs/{id}/mission` returns: the run's single mission, unlocked.",
         "properties": {
@@ -3535,6 +3577,16 @@
             "default": "",
             "title": "Home",
             "type": "string"
+          },
+          "mission_base": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MissionBaseView"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "planes": {
             "items": {

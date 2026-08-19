@@ -2041,6 +2041,26 @@ export interface components {
          */
         KindSupport: "supported" | "partial" | "unsupported";
         /**
+         * MissionBaseView
+         * @description The mission-base picture for settings/diagnostics (contract §27/§36): what THIS client
+         *     requires (the compatibility MAJOR it was built for) beside what the catalog currently
+         *     promotes. The promoted side is None when the catalog predates the endpoint (prod today)
+         *     or is unreachable — unknown, never fabricated.
+         */
+        MissionBaseView: {
+            /**
+             * Client Version
+             * @default
+             */
+            client_version: string;
+            /** Promoted Index Digest */
+            promoted_index_digest?: string | null;
+            /** Promoted Version */
+            promoted_version?: string | null;
+            /** Required Major */
+            required_major: number;
+        };
+        /**
          * MissionInfo
          * @description What `GET /runs/{id}/mission` returns: the run's single mission, unlocked.
          */
@@ -2709,6 +2729,7 @@ export interface components {
              * @default
              */
             home: string;
+            mission_base?: components["schemas"]["MissionBaseView"] | null;
             /** Planes */
             planes: components["schemas"]["PlaneStatus"][];
             /**

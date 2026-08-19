@@ -364,3 +364,36 @@ def test_list_row_identity_absent_on_pre_contract_catalog() -> None:
     assert item.mission_base_version is None
     assert item.index_digest is None
     assert item.platforms == ()
+
+
+def test_mission_base_parses_the_promoted_release() -> None:
+    body = {
+        "mission_base_version": "2.0.0",
+        "required_base_major": 2,
+        "image": {
+            "ref": "ghcr.io/xorcise-ai/mission-base:2.0.0",
+            "index_digest": "sha256:base",
+            "platforms": [
+                {"os": "linux", "architecture": "amd64", "digest": "sha256:bamd"},
+                {"os": "linux", "architecture": "arm64", "variant": "v8", "digest": "sha256:barm"},
+            ],
+        },
+    }
+
+    def h(req: httpx.Request) -> httpx.Response:
+        assert req.url.path == "/v1/mission-base"
+        return httpx.Response(200, json=body)
+
+    mb = _source(h).mission_base()
+    assert mb is not None
+    assert mb.version == "2.0.0"
+    assert mb.required_base_major == 2
+    assert mb.ref == "ghcr.io/xorcise-ai/mission-base:2.0.0"
+    assert mb.index_digest == "sha256:base"
+    assert [p.platform for p in mb.platforms] == ["linux/amd64", "linux/arm64"]
+
+
+def test_mission_base_404_and_errors_degrade_to_none() -> None:
+    # Prod predates the endpoint (404); an outage must be equally silent — display data only.
+    assert _source(lambda req: httpx.Response(404)).mission_base() is None
+    assert _source(lambda req: httpx.Response(500)).mission_base() is None

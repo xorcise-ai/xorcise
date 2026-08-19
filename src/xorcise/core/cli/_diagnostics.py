@@ -265,6 +265,47 @@ def control_plane(container: str = "headscale", *, timeout: float = 5.0) -> Chec
     return Check("control plane", False, f"{container!r} is not reachable", _PLANE_FIX)
 
 
+def mission_base_release() -> Check:
+    """§36 version visibility: the base MAJOR this client requires, beside the release the
+    catalog currently promotes. Informational — a pre-contract catalog (prod today) simply
+    does not serve the endpoint, which is normal and must not colour the verdict; a promoted
+    MAJOR this client cannot run is worth a warning (new pulls would be refused at run time).
+    """
+    from xorcise.core.config import get_settings
+    from xorcise.core.rest.catalog_view import build_catalog_source
+    from xorcise.core.runner.docker.build import REQUIRED_BASE_MAJOR
+
+    try:
+        promoted = build_catalog_source(get_settings()).mission_base()
+    except Exception:  # noqa: BLE001 — a remote probe must never crash `doctor`
+        promoted = None
+    if promoted is None:
+        return Check(
+            "mission base",
+            True,
+            f"client requires base major {REQUIRED_BASE_MAJOR} "
+            "(catalog reports no promoted release)",
+        )
+    try:
+        promoted_major = int(promoted.version.split(".", 1)[0])
+    except ValueError:
+        promoted_major = None
+    if promoted_major is not None and promoted_major > REQUIRED_BASE_MAJOR:
+        return Check(
+            "mission base",
+            True,
+            f"catalog promotes base {promoted.version}, but this client runs major "
+            f"{REQUIRED_BASE_MAJOR} — newly pulled missions will be refused",
+            "upgrade XORCISE (e.g. pip install -U xorcise)",
+            level="warning",
+        )
+    return Check(
+        "mission base",
+        True,
+        f"client requires major {REQUIRED_BASE_MAJOR}; catalog promotes {promoted.version}",
+    )
+
+
 def nested_containers() -> Check:
     """Can this host run a mission's containers INSIDE the run container?
 

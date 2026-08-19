@@ -149,3 +149,19 @@ def test_base_compat_allows_when_generation_is_undeterminable() -> None:
     # A pre-versioning local fuse: no suffix, no label. Allow rather than block on a signal we
     # cannot read — "re-pull" is not even the right advice for a local ingest.
     dr.require_base_compatible("xorcise/mission-x:local")
+
+
+def test_base_compat_refuses_a_metadata_less_library_install() -> None:
+    # CG4/LEG3: every published artifact carries the base label and the -baseN suffix, so a
+    # LIBRARY install with neither predates the versioned image format — refused with the one
+    # update action, not parsed forever.
+    with pytest.raises(BaseImageIncompatibleError) as exc:
+        dr.require_base_compatible("reg/xorcise/mis-x:oldformat", origin="library")
+    assert "older XORCISE image format" in str(exc.value)
+    assert "mission update" in str(exc.value)
+
+
+def test_base_compat_keeps_the_allowance_for_your_own_fuses() -> None:
+    # A local fuse has no catalog upstream; "update from the catalog" is not even the right
+    # advice, so the undeterminable-base allowance stays.
+    dr.require_base_compatible("xorcise/mission-x:local", origin="your_own")

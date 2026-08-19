@@ -17,6 +17,7 @@ from xorcise.core.catalog.source import (
     CatalogSource,
     DeliveryBundle,
     LibraryItem,
+    MissionBaseRelease,
     MissionDetail,
     PlatformImage,
     PullToken,
@@ -104,6 +105,31 @@ class HttpCatalogSource(CatalogSource):
                 served=served,
                 supported=SUPPORTED_SCHEMA_VERSIONS,
             ) from exc
+
+    def mission_base(self) -> MissionBaseRelease | None:
+        """GET /v1/mission-base — 404 (a pre-contract deployment) and any transport failure
+        both degrade to None: the promoted base is display/diagnostic data, and its absence
+        must never take a settings page or doctor run down."""
+        try:
+            resp = self._client.get(f"{self._base}/v1/mission-base")
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            body = resp.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        version = _opt_str(body.get("mission_base_version"))
+        if version is None:
+            return None
+        image = body.get("image") if isinstance(body.get("image"), dict) else {}
+        raw_major = body.get("required_base_major")
+        return MissionBaseRelease(
+            version=version,
+            required_base_major=int(raw_major) if isinstance(raw_major, int) else None,
+            ref=_opt_str(image.get("ref")),
+            index_digest=_opt_str(image.get("index_digest")),
+            platforms=_platform_images(image.get("platforms")),
+        )
 
     def pull_token(self, mission_id: str) -> PullToken | None:
         resp = self._client.post(f"{self._base}/v1/missions/{mission_id}/pull-token")
