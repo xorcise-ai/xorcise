@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Response
 from fastapi.responses import JSONResponse
@@ -552,6 +553,37 @@ def run_events(
             trace_seq=since if trace_since is None else trace_since,
             log_seq=since if log_since is None else log_since,
         ),
+    )
+
+
+@router.get("/{run_id}/otlp.jsonl")
+def run_otlp_jsonl(run_id: str) -> Response:
+    """The run's RAW OTLP stream as a downloadable JSONL file (OTLP/JSON lines).
+
+    One line per export batch, verbatim as the agent streamed it: trace batches
+    (`resourceSpans`) in seq order, then log batches (`resourceLogs`). Deliberately NO
+    XORCISE framing — no header line, no envelope — every line is a plain OTLP/JSON
+    object, so the file is directly consumable by OTel tooling that reads the
+    Collector's otlpjson file format (and through a Collector, any trace backend).
+    Works mid-run as a partial export of what's been ingested so far. Unknown run → 404
+    (the stores yield silently empty reads). Content-Disposition is `attachment`, so a
+    browser downloads rather than renders it.
+    """
+    run = runs.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"no run '{run_id}'")
+    # Lazy: keep the otel plane off the module-import path (plane-isolation invariant).
+    from xorcise.core.otel.store import SqliteLogStore, SqliteTraceStore
+
+    batches = SqliteTraceStore().read(run_id) + SqliteLogStore().read(run_id)
+    # Re-serialize compactly: exactly one envelope per line, guaranteed newline-free.
+    body = "".join(json.dumps(json.loads(b.payload), separators=(",", ":")) + "\n" for b in batches)
+    slug = re.sub(r"[^a-z0-9]+", "-", run.mission.lower()).strip("-") or "run"
+    filename = f"xorcise-run-{run_id[:8]}-{slug}-otlp.jsonl"
+    return Response(
+        content=body,
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

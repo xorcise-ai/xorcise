@@ -26,6 +26,7 @@ import { GradingDetail } from "./grading-detail";
 import { ArtifactsSection } from "./artifacts-section";
 import { ConditionsCard } from "./conditions-card";
 import { DownloadReport } from "./download-report";
+import { DownloadTraces } from "./download-traces";
 
 export function ResultsView({ runId }: { runId: string | null }) {
   const result = useRunResult(runId ?? "");
@@ -130,6 +131,9 @@ export function ResultsView({ runId }: { runId: string | null }) {
           </Button>
           {/* Shareable, offline copy of everything below (Content-Disposition drives the name). */}
           <DownloadReport runId={r.run_id} />
+          {/* The raw OTLP evidence behind the report, for external OTel tooling — always
+              available, even while grading. */}
+          <DownloadTraces runId={r.run_id} />
         </div>
       </PageHead>
 

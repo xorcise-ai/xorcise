@@ -478,10 +478,56 @@ def run_traces(
     as_json: bool = typer.Option(
         False, "--json", help="Emit the raw trace envelope as JSON (for scripting)."
     ),
+    export: bool = typer.Option(
+        False,
+        "--export",
+        help="Download the raw OTLP stream (spans + logs) as JSONL for OTel tooling.",
+    ),
+    out: str | None = typer.Option(
+        None,
+        "--out",
+        help="Export output path (implies --export; default: ./xorcise-run-<id8>-otlp.jsonl).",
+    ),
 ) -> None:
-    """Fetch the collected OTel trace records for a run (poll with --since for increments)."""
+    """Fetch the collected OTel trace records for a run (poll with --since for increments).
+
+    With --export (or --out), download the run's whole RAW OTLP stream instead — spans \
+then logs, one OTLP/JSON envelope per line, no XORCISE framing — the Collector's \
+otlpjson file format, ready for external OTel viz tooling. A still-active run exports \
+a partial snapshot of what has been ingested so far (and says so); once the run is \
+terminal the record is sealed and the export is final. For the normalized per-event \
+JSONL instead, see `xorcise run events export`.
+    """
+    export = export or out is not None
+    if export and as_json:
+        raise typer.BadParameter("--export writes a file; --json prints an envelope — pick one")
+    if export and since != -1:
+        raise typer.BadParameter(
+            "--since applies to the polling view; --export always takes a whole-run snapshot"
+        )
     client = RestClient()
     run_id = _resolve_id(client, run_id)
+    if export:
+        from pathlib import Path
+
+        # Conservative labeling: checked BEFORE the download, so a run that seals mid-flight
+        # can only be over-labeled partial (harmless) — never under-labeled complete.
+        active = client.get_run_result(run_id).get("status") == "active"
+        body = client.get_text(f"/runs/{run_id}/otlp.jsonl")
+        path = Path(out) if out else Path(f"xorcise-run-{run_id[:8]}-otlp.jsonl")
+        try:
+            path.write_text(body, encoding="utf-8")
+        except OSError as exc:
+            err_console.print(f"[err]error[/err]: cannot write {path} — {exc}")
+            raise typer.Exit(1) from exc
+        batches = sum(1 for ln in body.splitlines() if ln.strip())
+        note = (
+            " — run still active, partial snapshot; re-run after it finishes for the sealed record"
+            if active
+            else ""
+        )
+        console.print(f"wrote {path} ({batches} batch{'' if batches == 1 else 'es'}{note})")
+        return
     data = client.get(f"/runs/{run_id}/traces?since={since}")
     if as_json is True:
         # The full envelope (run_id + records), so a polling script keeps the context.
