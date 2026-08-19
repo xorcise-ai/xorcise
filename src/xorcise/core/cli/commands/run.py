@@ -602,49 +602,27 @@ launch-profile` for the env alone (dotenv, to pipe into a config)."""
 def run_events_export(
     run_id: str = typer.Argument(..., help=_RUN_ID_HELP),
     out: str | None = typer.Option(
-        None, "--out", help="Output path (default: ~/.xorcise/runs/<run_id>/agent-events.jsonl)."
+        None, "--out", help="Output path (default: ./xorcise-run-<id8>-events.jsonl)."
     ),
 ) -> None:
-    """Write a run's normalized AgentEvent stream to JSONL — one event per line \
-with clean bodies (debug/inspection). Local: reads the projection cache and \
-writes under ~/.xorcise.
+    """Download a run's normalized AgentEvent stream as JSONL — a header line, then \
+one event per line with clean bodies (debug/inspection). Works mid-run as a partial \
+snapshot. For the raw OTLP stream instead, see `xorcise run traces --export`.
     """
     from pathlib import Path
 
-    from xorcise.core.contracts.errors import NotFoundError
-    from xorcise.core.rest.events_export import export_run_events
-
-    out_path = Path(out) if out else None
-    if not run_id.strip():
-        resolve_run_id(RestClient(), run_id)  # raises the missing-id usage error
-
-    def _events_written(p: Path) -> int:
-        """Events in the export (the header line carries the count)."""
-        try:
-            with p.open(encoding="utf-8") as fh:
-                return int(json.loads(fh.readline() or "{}").get("event_count", 0))
-        except (OSError, ValueError):
-            return 0
-
+    client = RestClient()
+    run_id = _resolve_id(client, run_id)
+    body = client.get_text(f"/runs/{run_id}/events.jsonl")
+    path = Path(out) if out else Path(f"xorcise-run-{run_id[:8]}-events.jsonl")
     try:
-        try:
-            path = export_run_events(run_id, out_path)
-            written = _events_written(path)
-        except NotFoundError:
-            path, written = None, 0
-        if written == 0 and len(run_id) < 32:
-            # A short id is a PREFIX. Exporting it literally wrote a header-only
-            # file and exited 0 — a silent empty export. Resolve it (service
-            # needed) so the user gets the real run, or a clean not-found.
-            resolved = resolve_run_id(RestClient(), run_id)
-            path = export_run_events(resolved, out_path)
-            written = _events_written(path)
-        if path is None:
-            raise NotFoundError(f"no run '{run_id}'")
-    except NotFoundError as exc:
-        err_console.print(f"[err]error[/err]: no such run '{run_id}'")
-        raise typer.Exit(1) from exc
+        path.write_text(body, encoding="utf-8")
     except OSError as exc:
-        err_console.print(f"[err]error[/err]: cannot write the export — {exc}")
+        err_console.print(f"[err]error[/err]: cannot write {path} — {exc}")
         raise typer.Exit(1) from exc
+    try:
+        # The header line carries the authoritative count.
+        written = int(json.loads(body.split("\n", 1)[0] or "{}").get("event_count", 0))
+    except ValueError:
+        written = 0
     console.print(f"wrote {path} ({written} event{'' if written == 1 else 's'})")

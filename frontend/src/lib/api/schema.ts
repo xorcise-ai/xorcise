@@ -747,6 +747,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/events.jsonl": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Run Events Jsonl
+         * @description The run's NORMALIZED AgentEvent projection as a downloadable JSONL file.
+         *
+         *     A `{"type": "header", ...}` line (run + adapter metadata), then one AgentEvent per
+         *     line — clean bodies, not raw OTLP. The same content the on-seal artifact under
+         *     `~/.xorcise/runs/<id>/` carries; what `xorcise run events export` fetches. For the
+         *     raw OTLP stream, use GET /runs/{run_id}/otlp.jsonl. Works mid-run as a partial
+         *     projection of what's been ingested so far. Unknown run → 404. Content-Disposition
+         *     is `attachment`, so a browser downloads rather than renders it.
+         */
+        get: operations["run_events_jsonl_api_runs__run_id__events_jsonl_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/events/{event_id}/raw": {
         parameters: {
             query?: never;
@@ -3980,6 +4007,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunEventsView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_events_jsonl_api_runs__run_id__events_jsonl_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
