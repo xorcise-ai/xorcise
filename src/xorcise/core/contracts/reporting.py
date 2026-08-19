@@ -23,7 +23,12 @@ class ResultConditions(BaseModel):
     budget_seconds: int = 0
     sandbox_ref: str | None = None  # the mission image the run executed against
     agent_version: int = 1  # monotonic agent version at run creation
-    mission_version: int = 1  # monotonic mission version at run creation
+    install_revision: int = 1  # the mission's monotonic local install counter at run creation
+    # Versioning-contract labels for the artifact the run executed (None ⇒ pre-contract):
+    # the creator SemVer, the base SemVer it was fused on, and the executed platform.
+    mission_version: str | None = None
+    mission_base_version: str | None = None
+    platform: str | None = None
     # Disclosure provenance: how many intel this run was disclosed (kind="intel" submissions). The
     # delivery layer counts the run-control submission store and fills this in (no results-table
     # migration — the rows already exist); grading never reads it.

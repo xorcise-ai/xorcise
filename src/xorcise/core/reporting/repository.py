@@ -28,7 +28,10 @@ def _to_entry(row: ResultRow) -> AgentHistoryEntry:
             budget_seconds=row.budget_seconds,
             sandbox_ref=row.sandbox_ref,
             agent_version=row.agent_version,
+            install_revision=row.install_revision,
             mission_version=row.mission_version,
+            mission_base_version=row.mission_base_version,
+            platform=row.platform,
         ),
         partial=row.partial,
         partial_trigger=row.partial_trigger,
@@ -72,7 +75,10 @@ def record_result(
             budget_seconds=conditions.budget_seconds,
             sandbox_ref=conditions.sandbox_ref,
             agent_version=conditions.agent_version,
+            install_revision=conditions.install_revision,
             mission_version=conditions.mission_version,
+            mission_base_version=conditions.mission_base_version,
+            platform=conditions.platform,
             partial=partial,
             partial_trigger=partial_trigger,
             stats_json=stats.model_dump_json() if stats is not None else "",
@@ -121,7 +127,10 @@ def result_conditions(run_id: str) -> ResultConditions | None:
             budget_seconds=row.budget_seconds,
             sandbox_ref=row.sandbox_ref,
             agent_version=row.agent_version,
+            install_revision=row.install_revision,
             mission_version=row.mission_version,
+            mission_base_version=row.mission_base_version,
+            platform=row.platform,
         )
 
 

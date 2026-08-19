@@ -39,7 +39,13 @@ def _to_entry(row: RunRow) -> RunEntry:
         model=row.model,
         sandbox_ref=row.sandbox_ref,
         agent_version=row.agent_version,
+        install_revision=row.install_revision,
         mission_version=row.mission_version,
+        mission_base_version=row.mission_base_version,
+        content_hash=row.content_hash,
+        platform=row.platform,
+        index_digest=row.index_digest,
+        platform_digest=row.platform_digest,
         source_agent=row.source_agent,
         intel_policy=row.intel_policy,
     )
@@ -60,7 +66,13 @@ def create_run(
     model: str | None = None,
     sandbox_ref: str | None = None,
     agent_version: int = 1,
-    mission_version: int = 1,
+    install_revision: int = 1,
+    mission_version: str | None = None,
+    mission_base_version: str | None = None,
+    content_hash: str | None = None,
+    platform: str | None = None,
+    index_digest: str | None = None,
+    platform_digest: str | None = None,
     source_agent: str = "generic",
     intel_policy: str = "all",
 ) -> RunEntry:
@@ -80,7 +92,13 @@ def create_run(
             model=model,
             sandbox_ref=sandbox_ref,
             agent_version=agent_version,
+            install_revision=install_revision,
             mission_version=mission_version,
+            mission_base_version=mission_base_version,
+            content_hash=content_hash,
+            platform=platform,
+            index_digest=index_digest,
+            platform_digest=platform_digest,
             source_agent=source_agent,
             intel_policy=intel_policy,
         )
@@ -131,7 +149,13 @@ def finalize_run(
     model: str | None = None,
     sandbox_ref: str | None = None,
     agent_version: int = 1,
-    mission_version: int = 1,
+    install_revision: int = 1,
+    mission_version: str | None = None,
+    mission_base_version: str | None = None,
+    content_hash: str | None = None,
+    platform: str | None = None,
+    index_digest: str | None = None,
+    platform_digest: str | None = None,
     source_agent: str = "generic",
     intel_policy: str = "all",
 ) -> RunEntry:
@@ -148,7 +172,13 @@ def finalize_run(
         row.model = model
         row.sandbox_ref = sandbox_ref
         row.agent_version = agent_version
+        row.install_revision = install_revision
         row.mission_version = mission_version
+        row.mission_base_version = mission_base_version
+        row.content_hash = content_hash
+        row.platform = platform
+        row.index_digest = index_digest
+        row.platform_digest = platform_digest
         row.source_agent = source_agent
         row.intel_policy = intel_policy
         s.flush()

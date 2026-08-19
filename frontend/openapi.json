@@ -507,8 +507,8 @@
             "default": {
               "agent_version": 1,
               "budget_seconds": 0,
-              "intel_disclosed": 0,
-              "mission_version": 1
+              "install_revision": 1,
+              "intel_disclosed": 0
             }
           },
           "created_at": {
@@ -2653,6 +2653,11 @@
             "title": "Budget Seconds",
             "type": "integer"
           },
+          "install_revision": {
+            "default": 1,
+            "title": "Install Revision",
+            "type": "integer"
+          },
           "intel_disclosed": {
             "default": 0,
             "title": "Intel Disclosed",
@@ -2669,10 +2674,27 @@
             ],
             "title": "Judge Model"
           },
+          "mission_base_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mission Base Version"
+          },
           "mission_version": {
-            "default": 1,
-            "title": "Mission Version",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mission Version"
           },
           "model": {
             "anyOf": [
@@ -2684,6 +2706,17 @@
               }
             ],
             "title": "Model"
+          },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
           },
           "sandbox_ref": {
             "anyOf": [
@@ -2841,10 +2874,37 @@
             ],
             "title": "Completed At"
           },
+          "content_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Hash"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
             "type": "string"
+          },
+          "index_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Index Digest"
+          },
+          "install_revision": {
+            "default": 1,
+            "title": "Install Revision",
+            "type": "integer"
           },
           "intel_policy": {
             "default": "all",
@@ -2867,10 +2927,27 @@
             "title": "Mission",
             "type": "string"
           },
+          "mission_base_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mission Base Version"
+          },
           "mission_version": {
-            "default": 1,
-            "title": "Mission Version",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mission Version"
           },
           "model": {
             "anyOf": [
@@ -2887,6 +2964,28 @@
             "default": "",
             "title": "Name",
             "type": "string"
+          },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
+          "platform_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Digest"
           },
           "run_control_key": {
             "title": "Run Control Key",
@@ -2968,10 +3067,37 @@
             ],
             "title": "Completed At"
           },
+          "content_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Hash"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
             "type": "string"
+          },
+          "index_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Index Digest"
+          },
+          "install_revision": {
+            "default": 1,
+            "title": "Install Revision",
+            "type": "integer"
           },
           "intel_policy": {
             "default": "all",
@@ -2994,10 +3120,27 @@
             "title": "Mission",
             "type": "string"
           },
+          "mission_base_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mission Base Version"
+          },
           "mission_version": {
-            "default": 1,
-            "title": "Mission Version",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mission Version"
           },
           "model": {
             "anyOf": [
@@ -3014,6 +3157,28 @@
             "default": "",
             "title": "Name",
             "type": "string"
+          },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
+          "platform_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Digest"
           },
           "run_id": {
             "title": "Run Id",

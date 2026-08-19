@@ -251,7 +251,7 @@ function RunMetaBar({ run, agentName }: { run: RunEntry; agentName: string }) {
     ? (new Date(run.completed_at).getTime() - new Date(run.created_at).getTime()) / 1000
     : null;
   const items: { label: string; value: string; mono?: boolean }[] = [
-    { label: "Mission", value: `${run.mission} v${run.mission_version}` },
+    { label: "Mission", value: `${run.mission} v${run.mission_version ?? run.install_revision}` },
     { label: "Agent", value: `${agentName} v${run.agent_version}` },
     { label: "Harness", value: run.source_agent },
     { label: "Started", value: fullTime(run.created_at), mono: true },

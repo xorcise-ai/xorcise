@@ -191,7 +191,10 @@ def _grade_run(run_id: str) -> None:
         budget_seconds=run.budget_seconds,
         sandbox_ref=run.sandbox_ref,
         agent_version=run.agent_version,
+        install_revision=run.install_revision,
         mission_version=run.mission_version,
+        mission_base_version=run.mission_base_version,
+        platform=run.platform,
     )
     # a run that did not end on the agent's own terms is "partial" and must not count
     # as a genuine result against the agent — a budget "timeout" or an operator's manual kill.

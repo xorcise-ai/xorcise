@@ -784,7 +784,14 @@ def _create_run_with_cidr(
         sandbox_ref=installed.mission_ref.image,
         agent_version=agent.version,
         source_agent=source_agent,
-        mission_version=installed.install_revision,
+        install_revision=installed.install_revision,
+        # §31: artifact provenance copied from installed.json, never re-resolved later.
+        mission_version=installed.mission_version,
+        mission_base_version=installed.mission_base_version,
+        content_hash=installed.content_hash,
+        platform=installed.platform,
+        index_digest=installed.index_digest,
+        platform_digest=installed.platform_digest,
         intel_policy=intel_policy,
     )
     # the ACL was applied in create_run_network BEFORE this row persisted, so a truly
@@ -887,7 +894,14 @@ def _create_static_run(
             sandbox_ref=installed.mission_ref.image,  # "" for static (no fused image)
             agent_version=agent.version,
             source_agent=source_agent,
-            mission_version=installed.install_revision,
+            install_revision=installed.install_revision,
+            # §31: artifact provenance copied from installed.json, never re-resolved later.
+            mission_version=installed.mission_version,
+            mission_base_version=installed.mission_base_version,
+            content_hash=installed.content_hash,
+            platform=installed.platform,
+            index_digest=installed.index_digest,
+            platform_digest=installed.platform_digest,
             intel_policy=intel_policy,
         )
         return run, mission

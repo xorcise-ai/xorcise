@@ -1334,8 +1334,8 @@ export interface components {
              * @default {
              *       "agent_version": 1,
              *       "budget_seconds": 0,
-             *       "intel_disclosed": 0,
-             *       "mission_version": 1
+             *       "install_revision": 1,
+             *       "intel_disclosed": 0
              *     }
              */
             conditions: components["schemas"]["ResultConditions"];
@@ -2288,19 +2288,25 @@ export interface components {
              */
             budget_seconds: number;
             /**
+             * Install Revision
+             * @default 1
+             */
+            install_revision: number;
+            /**
              * Intel Disclosed
              * @default 0
              */
             intel_disclosed: number;
             /** Judge Model */
             judge_model?: string | null;
-            /**
-             * Mission Version
-             * @default 1
-             */
-            mission_version: number;
+            /** Mission Base Version */
+            mission_base_version?: string | null;
+            /** Mission Version */
+            mission_version?: string | null;
             /** Model */
             model?: string | null;
+            /** Platform */
+            platform?: string | null;
             /** Sandbox Ref */
             sandbox_ref?: string | null;
         };
@@ -2371,11 +2377,20 @@ export interface components {
             budget_seconds: number;
             /** Completed At */
             completed_at?: string | null;
+            /** Content Hash */
+            content_hash?: string | null;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
+            /** Index Digest */
+            index_digest?: string | null;
+            /**
+             * Install Revision
+             * @default 1
+             */
+            install_revision: number;
             /**
              * Intel Policy
              * @default all
@@ -2385,11 +2400,10 @@ export interface components {
             last_telemetry_at?: string | null;
             /** Mission */
             mission: string;
-            /**
-             * Mission Version
-             * @default 1
-             */
-            mission_version: number;
+            /** Mission Base Version */
+            mission_base_version?: string | null;
+            /** Mission Version */
+            mission_version?: string | null;
             /** Model */
             model?: string | null;
             /**
@@ -2397,6 +2411,10 @@ export interface components {
              * @default
              */
             name: string;
+            /** Platform */
+            platform?: string | null;
+            /** Platform Digest */
+            platform_digest?: string | null;
             /** Run Control Key */
             run_control_key: string;
             /** Run Id */
@@ -2432,11 +2450,20 @@ export interface components {
             budget_seconds: number;
             /** Completed At */
             completed_at?: string | null;
+            /** Content Hash */
+            content_hash?: string | null;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
+            /** Index Digest */
+            index_digest?: string | null;
+            /**
+             * Install Revision
+             * @default 1
+             */
+            install_revision: number;
             /**
              * Intel Policy
              * @default all
@@ -2446,11 +2473,10 @@ export interface components {
             last_telemetry_at?: string | null;
             /** Mission */
             mission: string;
-            /**
-             * Mission Version
-             * @default 1
-             */
-            mission_version: number;
+            /** Mission Base Version */
+            mission_base_version?: string | null;
+            /** Mission Version */
+            mission_version?: string | null;
             /** Model */
             model?: string | null;
             /**
@@ -2458,6 +2484,10 @@ export interface components {
              * @default
              */
             name: string;
+            /** Platform */
+            platform?: string | null;
+            /** Platform Digest */
+            platform_digest?: string | null;
             /** Run Id */
             run_id: string;
             /** Sandbox Ref */

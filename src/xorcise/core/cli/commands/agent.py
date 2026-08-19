@@ -255,7 +255,7 @@ def agent_history(
             fmt_score(r["deterministic"]),
             fmt_score(r["judge"]),
             f"v{c.get('agent_version', 1)}",
-            f"v{c.get('mission_version', 1)}",
+            f"v{c.get('mission_version') or c.get('install_revision', 1)}",
             str(c.get("model") or "not disclosed"),
         )
     print_table(table)

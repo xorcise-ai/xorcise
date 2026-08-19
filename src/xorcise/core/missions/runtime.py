@@ -78,6 +78,18 @@ class InstalledMission:
         return self.identity.image.platform
 
     @property
+    def content_hash(self) -> str | None:
+        """The bundle content hash the catalog served for this artifact, or None."""
+        return self.identity.content_hash if self.identity else None
+
+    @property
+    def platform_digest(self) -> str | None:
+        """The per-platform manifest digest of what executes here, or None."""
+        if self.identity is None or self.identity.image is None:
+            return None
+        return self.identity.image.platform_digest
+
+    @property
     def is_static(self) -> bool:
         return self.manifest.is_static
 

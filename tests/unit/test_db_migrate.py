@@ -62,7 +62,7 @@ def test_head_revision_is_the_latest_migration(tmp_path, monkeypatch):
     monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
     config.get_settings.cache_clear()
     db.get_engine.cache_clear()
-    assert db.head_revision() == "0001_initial"
+    assert db.head_revision() == "0002_run_provenance"
 
 
 def test_boot_state_fresh_on_empty_db(tmp_path, monkeypatch):

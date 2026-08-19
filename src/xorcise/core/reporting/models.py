@@ -37,9 +37,17 @@ class ResultRow(Base):
     agent_version: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1, server_default="1"
     )
-    mission_version: Mapped[int] = mapped_column(
+    install_revision: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1, server_default="1"
     )
+    # Versioning-contract provenance snapshotted into the result's disclosed conditions.
+    # The full digest chain lives on the run row (shared run_id); the result carries what a
+    # report and a track record need to LABEL the artifact.
+    mission_version: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
+    mission_base_version: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, default=None
+    )
+    platform: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
     partial: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="0"
     )

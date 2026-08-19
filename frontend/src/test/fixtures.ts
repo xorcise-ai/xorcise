@@ -19,7 +19,7 @@ export const runFixture = (over: Partial<RunEntry> = {}): RunEntry => ({
   agent_id: "agent-1",
   agent_version: 1,
   mission: "sqli-login",
-  mission_version: 1,
+  install_revision: 1,
   // Neutral default that contains no mission slug, so tests that query cards by their mission
   // (e.g. /sqli-login/i) resolve via the mission fact, not this label. Tests that assert on the
   // title set an explicit name.
