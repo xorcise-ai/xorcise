@@ -587,6 +587,32 @@ def run_otlp_jsonl(run_id: str) -> Response:
     )
 
 
+@router.get("/{run_id}/events.jsonl")
+def run_events_jsonl(run_id: str) -> Response:
+    """The run's NORMALIZED AgentEvent projection as a downloadable JSONL file.
+
+    A `{"type": "header", ...}` line (run + adapter metadata), then one AgentEvent per
+    line — clean bodies, not raw OTLP. The same content the on-seal artifact under
+    `~/.xorcise/runs/<id>/` carries; what `xorcise run events export` fetches. For the
+    raw OTLP stream, use GET /runs/{run_id}/otlp.jsonl. Works mid-run as a partial
+    projection of what's been ingested so far. Unknown run → 404. Content-Disposition
+    is `attachment`, so a browser downloads rather than renders it.
+    """
+    run = runs.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"no run '{run_id}'")
+    # Lazy: keep the otel display plane off the module-import path (plane-isolation invariant).
+    from xorcise.core.rest.events_export import render_run_events
+
+    slug = re.sub(r"[^a-z0-9]+", "-", run.mission.lower()).strip("-") or "run"
+    filename = f"xorcise-run-{run_id[:8]}-{slug}-events.jsonl"
+    return Response(
+        content=render_run_events(run_id),
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/{run_id}/events/{event_id:path}/raw")
 def run_event_raw(run_id: str, event_id: str) -> dict[str, object]:
     """The source RAW OTLP span(s) an event was derived from (drill-down).
