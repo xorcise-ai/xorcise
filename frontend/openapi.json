@@ -5816,6 +5816,47 @@
         ]
       }
     },
+    "/api/runs/{run_id}/otlp.jsonl": {
+      "get": {
+        "description": "The run's RAW OTLP stream as a downloadable JSONL file (OTLP/JSON lines).\n\nOne line per export batch, verbatim as the agent streamed it: trace batches\n(`resourceSpans`) in seq order, then log batches (`resourceLogs`). Deliberately NO\nXORCISE framing \u2014 no header line, no envelope \u2014 every line is a plain OTLP/JSON\nobject, so the file is directly consumable by OTel tooling that reads the\nCollector's otlpjson file format (and through a Collector, any trace backend).\nWorks mid-run as a partial export of what's been ingested so far. Unknown run \u2192 404\n(the stores yield silently empty reads). Content-Disposition is `attachment`, so a\nbrowser downloads rather than renders it.",
+        "operationId": "run_otlp_jsonl_api_runs__run_id__otlp_jsonl_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Otlp Jsonl",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
     "/api/runs/{run_id}/prompt": {
       "get": {
         "description": "The agent-facing mission prompt for a run. *launch_mode* rebases the run-control\nBase URL \u2014 and the container-only --add-host note \u2014 to where the agent actually runs: ``host``\n(the server's loopback bind, a terminal CLI) vs ``container`` (host.docker.internal, resolvable\nonly inside a container). Defaults to ``container`` so a non-GUI caller keeps the baked host;\nthe GUI passes the launch-mode toggle so the whole hand-off \u2014 not just the telemetry env \u2014\nfollows the operator's choice.",

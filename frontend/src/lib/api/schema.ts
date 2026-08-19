@@ -856,6 +856,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/otlp.jsonl": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Run Otlp Jsonl
+         * @description The run's RAW OTLP stream as a downloadable JSONL file (OTLP/JSON lines).
+         *
+         *     One line per export batch, verbatim as the agent streamed it: trace batches
+         *     (`resourceSpans`) in seq order, then log batches (`resourceLogs`). Deliberately NO
+         *     XORCISE framing — no header line, no envelope — every line is a plain OTLP/JSON
+         *     object, so the file is directly consumable by OTel tooling that reads the
+         *     Collector's otlpjson file format (and through a Collector, any trace backend).
+         *     Works mid-run as a partial export of what's been ingested so far. Unknown run → 404
+         *     (the stores yield silently empty reads). Content-Disposition is `attachment`, so a
+         *     browser downloads rather than renders it.
+         */
+        get: operations["run_otlp_jsonl_api_runs__run_id__otlp_jsonl_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/prompt": {
         parameters: {
             query?: never;
@@ -4119,6 +4148,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MissionInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_otlp_jsonl_api_runs__run_id__otlp_jsonl_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

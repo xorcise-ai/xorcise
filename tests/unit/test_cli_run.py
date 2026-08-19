@@ -525,6 +525,78 @@ def test_run_traces_json_dumps_records(monkeypatch):
     assert _json.loads(res.stdout) == {"run_id": RID, "records": records}
 
 
+OTLP_LINES = '{"resourceSpans":[]}\n{"resourceLogs":[]}\n'
+
+
+def _plain(text: str) -> str:
+    """Console output normalized for assertions: ANSI stripped, line-wrap collapsed."""
+    import re as _re
+
+    return " ".join(_re.sub(r"\x1b\[[0-9;]*m", "", text).split())
+
+
+def _patch_export(monkeypatch, *, active: bool = False, body: str = OTLP_LINES) -> dict[str, str]:
+    """Stub the two REST calls `--export` makes; capture the get_text path."""
+    captured: dict[str, str] = {}
+
+    def fake_get_text(self, path: str) -> str:  # noqa: ANN001 — test stub
+        captured["path"] = path
+        return body
+
+    monkeypatch.setattr("xorcise.core.cli.commands.run.RestClient.get_text", fake_get_text)
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.get_run_result",
+        lambda self, rid: {"status": "active"} if active else {"status": "graded"},
+    )
+    return captured
+
+
+def test_run_traces_export_writes_default_file(monkeypatch, tmp_path):
+    """--export downloads /runs/<id>/otlp.jsonl verbatim to ./xorcise-run-<id8>-otlp.jsonl."""
+    monkeypatch.chdir(tmp_path)
+    captured = _patch_export(monkeypatch)
+    res = runner.invoke(app, ["run", "traces", RID, "--export"])
+    assert res.exit_code == 0, res.output
+    assert captured["path"] == f"/runs/{RID}/otlp.jsonl"
+    written = tmp_path / f"xorcise-run-{RID8}-otlp.jsonl"
+    assert written.read_text(encoding="utf-8") == OTLP_LINES
+    assert f"wrote {written.name} (2 batches)" in _plain(res.stdout)
+
+
+def test_run_traces_out_implies_export(monkeypatch, tmp_path):
+    """--out alone switches to export mode and honours the explicit path."""
+    _patch_export(monkeypatch)
+    out = tmp_path / "trace.jsonl"
+    res = runner.invoke(app, ["run", "traces", RID, "--out", str(out)])
+    assert res.exit_code == 0, res.output
+    assert out.read_text(encoding="utf-8") == OTLP_LINES
+
+
+def test_run_traces_export_active_run_says_partial(monkeypatch, tmp_path):
+    """An in-progress run exports fine (exit 0) but the success line says partial."""
+    monkeypatch.chdir(tmp_path)
+    _patch_export(monkeypatch, active=True)
+    res = runner.invoke(app, ["run", "traces", RID, "--export"])
+    assert res.exit_code == 0, res.output
+    assert "partial snapshot" in _plain(res.stdout)
+
+
+def test_run_traces_export_rejects_json(monkeypatch):
+    """--export and --json are different outputs — combining them is a usage error."""
+    _patch_export(monkeypatch)
+    res = runner.invoke(app, ["run", "traces", RID, "--export", "--json"])
+    assert res.exit_code != 0
+    assert "pick one" in _plain(res.output)
+
+
+def test_run_traces_export_rejects_since(monkeypatch):
+    """--since is the polling cursor; --export is snapshot-whole — combining is a usage error."""
+    _patch_export(monkeypatch)
+    res = runner.invoke(app, ["run", "traces", RID, "--export", "--since", "3"])
+    assert res.exit_code != 0
+    assert "whole-run snapshot" in _plain(res.output)
+
+
 def test_run_traces_empty_run(monkeypatch):
     """A run with no collected trace records prints a clear empty message."""
     monkeypatch.setattr(
