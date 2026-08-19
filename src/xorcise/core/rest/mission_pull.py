@@ -56,6 +56,7 @@ __all__ = [
     "PullProgressSink",
     "build_pull_deps",
     "pull_mission",
+    "update_mission",
 ]
 
 # Progress callback for a pull: (phase, bytes_current, bytes_total). Phases:
@@ -176,16 +177,8 @@ def pull_mission(
     mission but BEFORE the multi-GB image download — run-create wires the nesting gate here so a
     host that cannot run the mission is refused without first paying the pull. The explicit
     `xorcise mission pull` passes None: pre-staging a mission on a non-nesting host is allowed."""
-    from xorcise.core.missions import get_installed, install_pulled
+    from xorcise.core.missions import get_installed
     from xorcise.core.missions.errors import MissionCollisionError
-
-    def report(phase: str, current: int = 0, total: int = 0) -> None:
-        if progress is not None:
-            progress(phase, current, total)
-
-    def abort_if_cancelled() -> None:
-        if should_cancel is not None and should_cancel():
-            raise PullCancelled(f"pull of '{mission_id}' was cancelled")
 
     existing = get_installed(mission_id, deps.install_root)
     if existing is not None:
@@ -199,20 +192,113 @@ def pull_mission(
             )
         return existing  # already pulled (docker-pull on a present image is a no-op)
 
-    report("resolving")
-    abort_if_cancelled()
+    return _acquire_and_install(
+        mission_id, deps, progress=progress, should_cancel=should_cancel, precheck=precheck
+    )
+
+
+def update_mission(
+    mission_id: str,
+    deps: PullDeps,
+    *,
+    progress: PullProgressSink | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> tuple[InstalledMission, bool]:
+    """Re-pull an installed library mission onto the catalog's CURRENT artifact, in place.
+
+    The contract's ONE update action (§35): whether the catalog moved because the creator
+    shipped a new mission version or because the fleet was re-fused onto a newer base, the
+    user-facing operation is this same re-pull. Returns (record, updated): updated=False means
+    the install already matches the catalog's current artifact — digest comparison first (§34's
+    strongest signal), immutable release ref as the pre-contract fallback — and nothing was
+    touched. The replaced image's old tag stays in the local docker store; pruning is a separate
+    concern, the same stance mission delete takes.
+
+    Raises NotFoundError when the id is not installed (nothing to update — pull it instead),
+    MissionCollisionError for a your_own install (a local bundle updates by re-ingesting), and
+    MissionNotInCatalogError when the catalog no longer lists the id."""
+    from xorcise.core.missions import get_installed
+    from xorcise.core.missions.errors import MissionCollisionError
+
+    existing = get_installed(mission_id, deps.install_root)
+    if existing is None:
+        raise NotFoundError(mission_id)
+    if existing.origin != "library":
+        raise MissionCollisionError(
+            f"'{mission_id}' is your own mission — update it by re-ingesting its bundle "
+            "(xorcise mission ingest), not from the catalog"
+        )
     try:
         detail = deps.source.fetch_detail(mission_id)
     except NotFoundError as exc:
         raise MissionNotInCatalogError(
-            f"mission '{mission_id}' is not installed and not in the catalog"
+            f"mission '{mission_id}' is installed but no longer in the catalog"
         ) from exc
-    manifest = detail.manifest
-
-    # None ⇒ an attachment-only (static) mission: no image to pull. MissionRef.image is a
-    # plain str, so record "" — the run path branches on the manifest (installed.is_static) and
-    # never reads this ref for a static run, so the empty image is inert.
     image = _image_for(deps.source, mission_id)
+    if _is_current(existing, detail, image):
+        return existing, False
+    record = _acquire_and_install(
+        mission_id,
+        deps,
+        progress=progress,
+        should_cancel=should_cancel,
+        precheck=None,
+        resolved=(detail, image),
+    )
+    return record, True
+
+
+def _is_current(existing: InstalledMission, detail: MissionDetail, image: str | None) -> bool:
+    """Whether the install already IS the catalog's current artifact.
+
+    Digest first (§34: the strongest signal); the immutable release ref second (a pre-digest
+    catalog moves the ref whenever anything changes). Neither comparable ⇒ NOT current, so
+    update re-installs rather than guessing — honest for a static mission with no digests."""
+    if existing.index_digest and detail.index_digest:
+        return existing.index_digest == detail.index_digest
+    return bool(image) and existing.mission_ref.image == image
+
+
+def _acquire_and_install(
+    mission_id: str,
+    deps: PullDeps,
+    *,
+    progress: PullProgressSink | None,
+    should_cancel: Callable[[], bool] | None,
+    precheck: Callable[[], None] | None,
+    resolved: tuple[MissionDetail, str | None] | None = None,
+) -> InstalledMission:
+    """The shared acquire spine: resolve → (precheck) → pull → bundle → atomic install.
+
+    Backs pull_mission (fresh install) and update_mission (in-place re-install; it passes the
+    (detail, image) it already fetched for its no-op check via `resolved`, so the catalog is
+    not asked twice)."""
+    from xorcise.core.missions import install_pulled
+
+    def report(phase: str, current: int = 0, total: int = 0) -> None:
+        if progress is not None:
+            progress(phase, current, total)
+
+    def abort_if_cancelled() -> None:
+        if should_cancel is not None and should_cancel():
+            raise PullCancelled(f"pull of '{mission_id}' was cancelled")
+
+    report("resolving")
+    abort_if_cancelled()
+    if resolved is not None:
+        detail, image = resolved
+    else:
+        try:
+            detail = deps.source.fetch_detail(mission_id)
+        except NotFoundError as exc:
+            raise MissionNotInCatalogError(
+                f"mission '{mission_id}' is not installed and not in the catalog"
+            ) from exc
+        # None ⇒ an attachment-only (static) mission: no image to pull. MissionRef.image is a
+        # plain str, so record "" — the run path branches on the manifest (installed.is_static)
+        # and never reads this ref for a static run, so the empty image is inert.
+        image = _image_for(deps.source, mission_id)
+    manifest = detail.manifest
     ref = MissionRef(mission_id=mission_id, image=image or "")
     if image is not None and not deps.driver.image_exists(image):
         # A lab mission with a download ahead of it — gate now (nesting), before the pull.

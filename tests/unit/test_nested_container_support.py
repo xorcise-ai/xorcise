@@ -136,7 +136,7 @@ def test_base_compat_allows_the_supported_generation_via_label() -> None:
 def test_base_compat_refuses_an_older_artifact_with_repull_advice() -> None:
     with pytest.raises(BaseImageIncompatibleError) as exc:
         dr.require_base_compatible("reg/xorcise/mis-x:abc123-base1")
-    assert "mission pull" in str(exc.value)  # re-pull the newer artifact
+    assert "mission update" in str(exc.value)  # the ONE update action (§35)
 
 
 def test_base_compat_refuses_a_newer_artifact_with_upgrade_advice() -> None:

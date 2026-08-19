@@ -138,7 +138,11 @@ def list_missions(
             str(c.get("mission_id") or DASH),
             str(c.get("name") or DASH),
             difficulty_label(c.get("proficiency")),
-            "Installed" if c.get("installed") else "Available",
+            # §35: ONE primary status. An installed row whose catalog artifact moved says so
+            # here; `xorcise mission update <id>` is the one action that clears it.
+            ("Update available" if c.get("update_available") else "Installed")
+            if c.get("installed")
+            else "Available",
             size_label(c.get("download_size_bytes")),
         )
     print_table(table)
@@ -267,6 +271,35 @@ def pull_mission_cmd(
         "check [value]xorcise mission list[/value]"
     )
     raise typer.Exit(3)
+
+
+@mission_app.command("update")
+def update_mission_cmd(
+    mission_id: str = typer.Argument(..., help=_MISSION_HELP),
+) -> None:
+    """Update an installed library mission to the catalog's current release (re-pull in \
+place). Already-current installs are a no-op."""
+    client = RestClient()
+    entry = resolve_mission(client, mission_id)
+    mission_id = str(entry["mission_id"])
+    name = str(entry.get("name") or mission_id)
+    if not entry.get("installed"):
+        fail(
+            f"'{name}' is not installed — nothing to update",
+            see=(f"xorcise mission pull {mission_id}",),
+        )
+    # One synchronous call: the server re-pulls in place and answers when the swap is done
+    # (or immediately, when the install already matches the catalog). Image layers shared with
+    # the previous release are already local, so an update usually moves far fewer bytes than
+    # the first pull — but a big delta can take a while, hence the generous timeout.
+    view = client.post(f"/missions/{mission_id}/update", json={}, timeout=1800.0)
+    if not view.get("updated"):
+        console.print(f"'{name}' is already up to date", markup=False)
+        return
+    e = view.get("entry") or {}
+    label = str(e.get("name") or name)
+    console.print(f"updated '{label}' ({mission_id})", markup=False)
+    next_step(f"xorcise run create --agent <name> --mission {mission_id}")
 
 
 @mission_app.command("delete")

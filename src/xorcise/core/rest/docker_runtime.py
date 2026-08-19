@@ -171,8 +171,7 @@ def require_base_compatible(
         return
     if compat.base_major is not None and compat.base_major < REQUIRED_BASE_MAJOR:
         fix = (
-            "this mission was built on an older base — update it: "
-            "xorcise mission delete <mission> && xorcise mission pull <mission>"
+            "this mission was built on an older base — update it: xorcise mission update <mission>"
         )
     else:
         fix = "this mission needs a newer XORCISE — upgrade it (e.g. pip install -U xorcise)"

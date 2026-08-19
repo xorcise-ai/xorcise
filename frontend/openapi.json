@@ -773,6 +773,28 @@
             ],
             "title": "Compatible"
           },
+          "current_mission_base_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Mission Base Version"
+          },
+          "current_mission_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Mission Version"
+          },
           "download_size_bytes": {
             "anyOf": [
               {
@@ -921,6 +943,17 @@
               }
             ],
             "title": "Type"
+          },
+          "update_available": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Update Available"
           }
         },
         "required": [
@@ -2215,6 +2248,24 @@
           "type"
         ],
         "title": "MissionMetadata",
+        "type": "object"
+      },
+      "MissionUpdateOut": {
+        "description": "POST /{id}/update result: whether anything moved, and the row as installed now.",
+        "properties": {
+          "entry": {
+            "$ref": "#/components/schemas/CatalogEntry"
+          },
+          "updated": {
+            "title": "Updated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "updated",
+          "entry"
+        ],
+        "title": "MissionUpdateOut",
         "type": "object"
       },
       "ModelConfigUpdate": {
@@ -5174,6 +5225,49 @@
           }
         },
         "summary": "Mission Terrain",
+        "tags": [
+          "missions"
+        ]
+      }
+    },
+    "/api/missions/{mission_id}/update": {
+      "post": {
+        "description": "Update an installed library mission to the catalog's current artifact (\u00a735's ONE\nupdate action) \u2014 an in-place, atomic re-pull. updated=false \u21d2 the install already matches\nthe catalog (digest compared first) and nothing was touched.\n\n404: not installed, or gone from the catalog. 409: a your_own install owns the id (update\nit by re-ingesting), or a pull job is mid-flight. 502: the pull itself failed (nothing\nreplaced \u2014 the previous install stays byte-for-byte intact).",
+        "operationId": "update_api_missions__mission_id__update_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mission_id",
+            "required": true,
+            "schema": {
+              "title": "Mission Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MissionUpdateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update",
         "tags": [
           "missions"
         ]

@@ -65,6 +65,15 @@ class CatalogEntry(_Frozen):
     mission_base_version: str | None = None
     index_digest: str | None = None
     platforms: tuple[str, ...] = ()
+    # Update status for an INSTALLED library row (§34): the recorded install digest vs the
+    # catalog's current one — digest first, release ref as the pre-digest fallback. None =
+    # unknown (nothing to compare: your_own, catalog unreachable, or no identity on either
+    # side); False = up to date; True = the catalog's current artifact differs. The current_*
+    # pair carries the catalog's CURRENT SemVers so the UI can explain WHY ("Mission 1.4.2 →
+    # 1.5.0 / Mission base 2.4.0 → 2.4.1") under the single primary status (§35).
+    update_available: bool | None = None
+    current_mission_version: str | None = None
+    current_mission_base_version: str | None = None
 
 
 class CatalogStatus(_Frozen):

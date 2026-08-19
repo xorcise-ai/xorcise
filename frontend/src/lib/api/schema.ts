@@ -554,6 +554,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/missions/{mission_id}/update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Update
+         * @description Update an installed library mission to the catalog's current artifact (§35's ONE
+         *     update action) — an in-place, atomic re-pull. updated=false ⇒ the install already matches
+         *     the catalog (digest compared first) and nothing was touched.
+         *
+         *     404: not installed, or gone from the catalog. 409: a your_own install owns the id (update
+         *     it by re-ingesting), or a pull job is mid-flight. 502: the pull itself failed (nothing
+         *     replaced — the previous install stays byte-for-byte intact).
+         */
+        post: operations["update_api_missions__mission_id__update_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs": {
         parameters: {
             query?: never;
@@ -1457,6 +1483,10 @@ export interface components {
             compat_hint?: string | null;
             /** Compatible */
             compatible?: boolean | null;
+            /** Current Mission Base Version */
+            current_mission_base_version?: string | null;
+            /** Current Mission Version */
+            current_mission_version?: string | null;
             /** Download Size Bytes */
             download_size_bytes?: number | null;
             /** Image */
@@ -1509,6 +1539,8 @@ export interface components {
             technologies: string[];
             /** Type */
             type?: string | null;
+            /** Update Available */
+            update_available?: boolean | null;
         };
         /**
          * CatalogStatus
@@ -2107,6 +2139,15 @@ export interface components {
              * @enum {string}
              */
             type: "lab" | "static";
+        };
+        /**
+         * MissionUpdateOut
+         * @description POST /{id}/update result: whether anything moved, and the row as installed now.
+         */
+        MissionUpdateOut: {
+            entry: components["schemas"]["CatalogEntry"];
+            /** Updated */
+            updated: boolean;
         };
         /**
          * ModelConfigUpdate
@@ -3732,6 +3773,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ResolvedTerrainV2"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_api_missions__mission_id__update_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MissionUpdateOut"];
                 };
             };
             /** @description Validation Error */
