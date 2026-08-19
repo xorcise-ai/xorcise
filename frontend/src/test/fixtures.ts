@@ -48,5 +48,6 @@ export const missionFixture = (
   type: "ctf",
   skills: [],
   technologies: [],
+  platforms: [],
   ...over,
 });

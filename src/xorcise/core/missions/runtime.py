@@ -16,7 +16,7 @@ from typing import Literal, cast
 
 from pydantic import ValidationError
 
-from xorcise.core.contracts.control import MissionRef
+from xorcise.core.contracts.control import MissionInstallIdentity, MissionRef
 from xorcise.core.contracts.mission import (
     Attachment,
     Check,
@@ -43,8 +43,39 @@ class InstalledMission:
     root: Path
     manifest: MissionManifest
     mission_ref: MissionRef
-    version: int = 1  # monotonic; bumped on re-install of the same slug
+    # Monotonic local install counter, bumped on re-install of the same slug. Renamed from
+    # `version`: the versioning contract reserves `mission_version` for the creator SemVer
+    # string, and an int called `version` beside it invited exactly that confusion.
+    install_revision: int = 1
     origin: Origin = "your_own"  # legacy records (no key) resolve to your_own
+    # The §30 identity slice: what exactly this machine installed (creator SemVer, base
+    # SemVer, content hash, image + base digests, pulled platform). None for a your_own
+    # local fuse and for installs from a pre-contract catalog.
+    identity: MissionInstallIdentity | None = None
+
+    @property
+    def mission_version(self) -> str | None:
+        """The creator-owned mission SemVer this install carries, or None (pre-contract)."""
+        return self.identity.mission_version if self.identity else None
+
+    @property
+    def mission_base_version(self) -> str | None:
+        """The base SemVer this artifact was fused on, or None (pre-contract)."""
+        return self.identity.mission_base_version if self.identity else None
+
+    @property
+    def index_digest(self) -> str | None:
+        """The installed artifact's OCI index digest — the strongest update-check signal."""
+        if self.identity is None or self.identity.image is None:
+            return None
+        return self.identity.image.index_digest
+
+    @property
+    def platform(self) -> str | None:
+        """The platform this install actually pulled (e.g. "linux/amd64"), or None."""
+        if self.identity is None or self.identity.image is None:
+            return None
+        return self.identity.image.platform
 
     @property
     def is_static(self) -> bool:
@@ -80,26 +111,43 @@ class InstalledMission:
         return self.manifest.checks
 
     def to_record(self) -> str:
-        return json.dumps(
-            {
-                "version": self.version,
-                "origin": self.origin,
-                "manifest": self.manifest.model_dump(mode="json"),
-                "mission_ref": self.mission_ref.model_dump(mode="json"),
-            },
-            indent=2,
-        )
+        record: dict[str, object] = {
+            "install_revision": self.install_revision,
+            "origin": self.origin,
+            "manifest": self.manifest.model_dump(mode="json"),
+            "mission_ref": self.mission_ref.model_dump(mode="json"),
+        }
+        if self.identity is not None:
+            # Splatted to the top level so the on-disk shape matches the contract's §30
+            # recommended layout; absent keys (a partial identity) are simply not written.
+            record |= self.identity.model_dump(mode="json", exclude_none=True)
+        return json.dumps(record, indent=2)
+
+    # The §30 keys that live at the record's top level beside the legacy four.
+    _IDENTITY_KEYS = (
+        "mission_version",
+        "mission_base_version",
+        "content_hash",
+        "image",
+        "mission_base",
+        "pulled_at",
+    )
 
     @classmethod
     def from_root(cls, root: Path) -> InstalledMission:
         data = json.loads((root / INSTALLED_FILE).read_text())
+        identity_data = {k: data[k] for k in cls._IDENTITY_KEYS if k in data}
         return cls(
             slug=root.name,
             root=root,
             manifest=MissionManifest.model_validate(data["manifest"]),
             mission_ref=MissionRef.model_validate(data["mission_ref"]),
-            version=int(data.get("version", 1)),  # legacy records without key → 1
+            # Records written before the rename carry the counter as "version" → read either.
+            install_revision=int(data.get("install_revision", data.get("version", 1))),
             origin=cast(Origin, data.get("origin", "your_own")),  # legacy records → your_own
+            identity=(
+                MissionInstallIdentity.model_validate(identity_data) if identity_data else None
+            ),
         )
 
 

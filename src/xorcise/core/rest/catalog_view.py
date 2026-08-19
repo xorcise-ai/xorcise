@@ -94,6 +94,12 @@ def list_catalog(deps: CatalogViewDeps) -> tuple[CatalogEntry, ...]:
                 base_major=compat.base_major,
                 compatible=compat.compatible,
                 compat_hint=compat.hint,
+                # What THIS install recorded at pull time (§30) — None for a your_own fuse or
+                # a pre-contract install; platforms stay () (the install records one platform,
+                # the catalog's offer is the library row's business).
+                mission_version=ic.mission_version,
+                mission_base_version=ic.mission_base_version,
+                index_digest=ic.index_digest,
             )
         )
 
@@ -125,6 +131,12 @@ def list_catalog(deps: CatalogViewDeps) -> tuple[CatalogEntry, ...]:
                 base_major=compat.base_major,
                 compatible=compat.compatible,
                 compat_hint=compat.hint,
+                # The catalog's CURRENT artifact identity (API1) — update detection compares
+                # an installed row's recorded digest against this row's.
+                mission_version=item.mission_version,
+                mission_base_version=item.mission_base_version,
+                index_digest=item.index_digest,
+                platforms=item.platforms,
             )
         )
 

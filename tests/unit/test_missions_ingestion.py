@@ -249,10 +249,10 @@ def test_ingest_first_install_version_is_1(tmp_path: Path) -> None:
     bundle = _write_bundle(tmp_path)
     root = tmp_path / "installed"
     inst = ingest(bundle, builder=StubBundleBuilder(), install_root=root)
-    assert inst.version == 1
+    assert inst.install_revision == 1
     loaded = get_installed("basic-pivot", root)
     assert loaded is not None
-    assert loaded.version == 1
+    assert loaded.install_revision == 1
 
 
 def test_ingest_reinstall_bumps_version(tmp_path: Path) -> None:
@@ -260,10 +260,10 @@ def test_ingest_reinstall_bumps_version(tmp_path: Path) -> None:
     root = tmp_path / "installed"
     ingest(bundle, builder=StubBundleBuilder(), install_root=root)
     inst2 = ingest(bundle, builder=StubBundleBuilder(), install_root=root)
-    assert inst2.version == 2
+    assert inst2.install_revision == 2
     loaded = get_installed("basic-pivot", root)
     assert loaded is not None
-    assert loaded.version == 2
+    assert loaded.install_revision == 2
 
 
 def test_legacy_record_without_version_reads_as_1(tmp_path: Path) -> None:
@@ -285,7 +285,7 @@ def test_legacy_record_without_version_reads_as_1(tmp_path: Path) -> None:
     }
     (root / INSTALLED_FILE).write_text(_json.dumps(legacy_record))
     loaded = InstalledMission.from_root(root)
-    assert loaded.version == 1
+    assert loaded.install_revision == 1
 
 
 def test_record_missing_required_keys_degrades_to_not_installed(tmp_path: Path) -> None:

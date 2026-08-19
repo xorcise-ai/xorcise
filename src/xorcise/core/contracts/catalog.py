@@ -57,6 +57,14 @@ class CatalogEntry(_Frozen):
     base_major: int | None = None
     compatible: bool | None = None
     compat_hint: str | None = None
+    # Artifact identity (mission-versioning contract API1/§25): the creator-owned mission
+    # SemVer, the base SemVer the artifact was fused on, the OCI index digest (the strongest
+    # update-detection signal) and the validated platforms. All optional — a pre-contract
+    # catalog serves none of them, and an installed row carries what its install recorded.
+    mission_version: str | None = None
+    mission_base_version: str | None = None
+    index_digest: str | None = None
+    platforms: tuple[str, ...] = ()
 
 
 class CatalogStatus(_Frozen):

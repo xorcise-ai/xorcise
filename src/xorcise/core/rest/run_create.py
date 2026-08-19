@@ -784,7 +784,7 @@ def _create_run_with_cidr(
         sandbox_ref=installed.mission_ref.image,
         agent_version=agent.version,
         source_agent=source_agent,
-        mission_version=installed.version,
+        mission_version=installed.install_revision,
         intel_policy=intel_policy,
     )
     # the ACL was applied in create_run_network BEFORE this row persisted, so a truly
@@ -887,7 +887,7 @@ def _create_static_run(
             sandbox_ref=installed.mission_ref.image,  # "" for static (no fused image)
             agent_version=agent.version,
             source_agent=source_agent,
-            mission_version=installed.version,
+            mission_version=installed.install_revision,
             intel_policy=intel_policy,
         )
         return run, mission

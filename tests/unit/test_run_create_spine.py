@@ -43,7 +43,7 @@ def _write_installed(install_root: Path, slug: str = "sqli-login", version: int 
     )
     ref = MissionRef(mission_id=slug, image=f"xorcise/mission-{slug}:0")
     (root / INSTALLED_FILE).write_text(
-        InstalledMission(slug, root, manifest, ref, version=version).to_record()
+        InstalledMission(slug, root, manifest, ref, install_revision=version).to_record()
     )
 
 
@@ -134,7 +134,7 @@ def test_create_run_surfaces_static_ip_target_in_prompt(migrated_home, install_r
     )
     ref = MissionRef(mission_id="sqli-login", image="xorcise/mission-sqli-login:0")
     (root / INSTALLED_FILE).write_text(
-        InstalledMission("sqli-login", root, manifest, ref, version=1).to_record()
+        InstalledMission("sqli-login", root, manifest, ref, install_revision=1).to_record()
     )
     _run, prompt = create_run(
         agent_name="alice",
@@ -170,7 +170,7 @@ def test_create_run_surfaces_attachments_in_prompt(migrated_home, install_root):
     )
     ref = MissionRef(mission_id="sqli-login", image="xorcise/mission-sqli-login:0")
     (root / INSTALLED_FILE).write_text(
-        InstalledMission("sqli-login", root, manifest, ref, version=1).to_record()
+        InstalledMission("sqli-login", root, manifest, ref, install_revision=1).to_record()
     )
     _run, prompt = create_run(
         agent_name="alice",
@@ -375,12 +375,12 @@ def test_create_run_captures_agent_version_and_mission_version(migrated_home, in
     from xorcise.core.missions.runtime import get_installed
 
     agent = agents.register("versioned-agent", endpoint="http://a")
-    # Re-install the same slug so InstalledMission.version becomes 2 (monotonic bump).
+    # Re-install the same slug so InstalledMission.install_revision becomes 2 (monotonic bump).
     _write_installed(install_root, slug="sqli-login", version=1)
     _write_installed(install_root, slug="sqli-login", version=2)
     installed = get_installed("sqli-login", install_root)
     assert installed is not None
-    assert installed.version == 2  # pin the 'version M != 1' precondition
+    assert installed.install_revision == 2  # pin the 'revision M != 1' precondition
 
     run, _prompt = create_run(
         agent_name="versioned-agent",
@@ -389,7 +389,7 @@ def test_create_run_captures_agent_version_and_mission_version(migrated_home, in
         deps=_deps(install_root),
     )
     assert run.agent_version == agent.version
-    assert run.mission_version == installed.version
+    assert run.mission_version == installed.install_revision
 
 
 def test_create_run_captures_source_agent_from_kind(migrated_home, install_root):

@@ -276,3 +276,91 @@ def test_fetch_manifest_invalid_supported_schema_is_typed_too() -> None:
         _source(h).fetch_manifest("segmented-pivot")
     assert exc.value.served == "3.0"
     assert "cannot validate" in str(exc.value)
+
+
+_DETAIL = {
+    "manifest": {**cast("dict[str, object]", _MANIFEST["manifest"]), "version": "1.0.0"}
+    | {"schema_version": "3.0"},
+    "image_ref": _IMAGE,
+    "mission_version": "1.0.0",
+    "mission_base_version": "2.0.0",
+    "content_hash": "f401724435f303e76bae78b940f3b6166078878f3c76747b2b9a7738a5212a40",
+    "image": {
+        "release_ref": "reg/xorcise/mis-segmented-pivot:1.0.0-base2.0.0",
+        "pull_ref": "reg/xorcise/mis-segmented-pivot:latest",
+        "index_digest": "sha256:idx",
+        "platforms": [
+            {"os": "linux", "architecture": "amd64", "digest": "sha256:amd"},
+            {"os": "linux", "architecture": "arm64", "digest": "sha256:arm", "variant": "v8"},
+        ],
+    },
+    "mission_base": {
+        "version": "2.0.0",
+        "index_digest": "sha256:base",
+        "platform_digests": {"amd64": "sha256:bamd", "arm64": "sha256:barm"},
+    },
+}
+
+
+def test_fetch_detail_parses_the_contract_shape() -> None:
+    # The live test-environment detail response (handover §1.6 / contract API2 + A11).
+    def h(req: httpx.Request) -> httpx.Response:
+        assert req.url.path == "/v1/missions/segmented-pivot"
+        return httpx.Response(200, json=_DETAIL)
+
+    d = _source(h).fetch_detail("segmented-pivot")
+    assert d.manifest.version == "1.0.0"
+    assert d.mission_version == "1.0.0"
+    assert d.mission_base_version == "2.0.0"
+    assert d.content_hash == _DETAIL["content_hash"]
+    assert d.release_ref == "reg/xorcise/mis-segmented-pivot:1.0.0-base2.0.0"
+    assert d.pull_ref == "reg/xorcise/mis-segmented-pivot:latest"
+    assert d.index_digest == "sha256:idx"
+    assert [p.platform for p in d.platforms] == ["linux/amd64", "linux/arm64"]
+    assert d.platforms[1].variant == "v8"  # arm64/v8 distinguishable from bare arm64
+    assert d.base_index_digest == "sha256:base"
+    assert d.base_platform_digests == {"amd64": "sha256:bamd", "arm64": "sha256:barm"}
+
+
+def test_fetch_detail_degrades_on_a_pre_contract_response() -> None:
+    # Prod today serves only {manifest, image_ref}: every identity field is None/empty and
+    # nothing raises — the client behaves exactly as before the contract.
+    def h(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_MANIFEST)
+
+    d = _source(h).fetch_detail("segmented-pivot")
+    assert d.manifest.metadata.mission_id == "segmented-pivot"
+    assert d.mission_version is None
+    assert d.index_digest is None
+    assert d.platforms == ()
+    assert d.base_platform_digests == {}
+
+
+def test_list_row_carries_identity_fields() -> None:
+    row = {
+        **cast("dict[str, object]", _CATALOG["catalog"][0]),
+        "mission_version": "1.0.0",
+        "mission_base_version": "2.0.0",
+        "index_digest": "sha256:idx",
+        "platforms": ["linux/amd64", "linux/arm64"],
+    }
+
+    def h(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"catalog": [row]})
+
+    item = _source(h).list_library()[0]
+    assert item.mission_version == "1.0.0"
+    assert item.mission_base_version == "2.0.0"
+    assert item.index_digest == "sha256:idx"
+    assert item.platforms == ("linux/amd64", "linux/arm64")
+
+
+def test_list_row_identity_absent_on_pre_contract_catalog() -> None:
+    def h(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_CATALOG)
+
+    item = _source(h).list_library()[0]
+    assert item.mission_version is None
+    assert item.mission_base_version is None
+    assert item.index_digest is None
+    assert item.platforms == ()

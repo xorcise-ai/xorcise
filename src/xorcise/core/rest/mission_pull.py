@@ -15,11 +15,17 @@ import hashlib
 import importlib.util
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from xorcise.core.config import Settings
-from xorcise.core.contracts.control import MissionRef
+from xorcise.core.contracts.control import (
+    InstalledBaseIdentity,
+    InstalledImageIdentity,
+    MissionInstallIdentity,
+    MissionRef,
+)
 from xorcise.core.contracts.errors import (
     MissionNotInCatalogError,
     NotFoundError,
@@ -30,7 +36,7 @@ from xorcise.core.contracts.errors import (
 if TYPE_CHECKING:
     # Type-only: keep the part-islands off the control-plane boot path (role isolation),
     # same trick as run_create.py. Concrete island imports stay lazy, inside the functions.
-    from xorcise.core.catalog.source import CatalogSource
+    from xorcise.core.catalog.source import CatalogSource, MissionDetail
     from xorcise.core.contracts.mission import MissionManifest
     from xorcise.core.missions.runtime import InstalledMission
     from xorcise.core.runner.docker import DockerDriver, PullProgress
@@ -196,11 +202,12 @@ def pull_mission(
     report("resolving")
     abort_if_cancelled()
     try:
-        manifest = deps.source.fetch_manifest(mission_id)
+        detail = deps.source.fetch_detail(mission_id)
     except NotFoundError as exc:
         raise MissionNotInCatalogError(
             f"mission '{mission_id}' is not installed and not in the catalog"
         ) from exc
+    manifest = detail.manifest
 
     # None ⇒ an attachment-only (static) mission: no image to pull. MissionRef.image is a
     # plain str, so record "" — the run path branches on the manifest (installed.is_static) and
@@ -274,6 +281,8 @@ def pull_mission(
         mission_ref=ref,
         install_root=deps.install_root,
         delivery_zip=delivery_zip,
+        # Read AFTER the image pull so the inspect sees the local copy that actually landed.
+        identity=_install_identity(detail, deps.driver, image),
     )
 
 
@@ -295,6 +304,48 @@ def _fetch_verified_delivery(
                 f"(expected {bundle.sha256}, got {actual})"
             )
     return bundle.content
+
+
+def _install_identity(
+    detail: MissionDetail, driver: DockerDriver, image: str | None
+) -> MissionInstallIdentity | None:
+    """The §30 identity slice for this install, or None from a pre-contract catalog.
+
+    Values come from the catalog detail response — the identity of the CURRENT artifact, i.e.
+    the one just pulled — plus a post-pull inspect of the local image for the platform that
+    actually landed on this machine. Recorded once at install; run evidence copies it at create
+    time and never re-resolves it (a floating tag must not be able to rewrite history)."""
+    if (
+        detail.mission_version is None
+        and detail.index_digest is None
+        and detail.content_hash is None
+    ):
+        return None  # pre-contract catalog (prod today): keep the record legacy-shaped
+    platform = driver.image_platform(image) if image else None
+    platform_digest = next((p.digest for p in detail.platforms if p.platform == platform), None)
+    arch = platform.rsplit("/", 1)[-1] if platform else None
+    mission_base = None
+    if detail.mission_base_version is not None or detail.base_index_digest is not None:
+        mission_base = InstalledBaseIdentity(
+            version=detail.mission_base_version,
+            index_digest=detail.base_index_digest,
+            # Keyed by BARE architecture, scoped to the platforms this mission was fused for.
+            platform_digest=detail.base_platform_digests.get(arch) if arch else None,
+        )
+    return MissionInstallIdentity(
+        mission_version=detail.mission_version,
+        mission_base_version=detail.mission_base_version,
+        content_hash=detail.content_hash,
+        image=InstalledImageIdentity(
+            pull_ref=detail.pull_ref,
+            release_ref=detail.release_ref or (image or None),
+            index_digest=detail.index_digest,
+            platform=platform,
+            platform_digest=platform_digest,
+        ),
+        mission_base=mission_base,
+        pulled_at=datetime.now(UTC).isoformat(timespec="seconds"),
+    )
 
 
 def _image_for(source: CatalogSource, mission_id: str) -> str | None:

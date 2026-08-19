@@ -806,18 +806,59 @@
             ],
             "title": "Image Size Bytes"
           },
+          "index_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Index Digest"
+          },
           "installed": {
             "default": false,
             "title": "Installed",
             "type": "boolean"
           },
+          "mission_base_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mission Base Version"
+          },
           "mission_id": {
             "title": "Mission Id",
             "type": "string"
           },
+          "mission_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mission Version"
+          },
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "platforms": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Platforms",
+            "type": "array"
           },
           "proficiency": {
             "anyOf": [

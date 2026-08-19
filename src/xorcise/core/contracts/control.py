@@ -31,6 +31,47 @@ class MissionRef(_Frozen):
     image: str  # OCI image ref, e.g. ghcr.io/xorcise/mission-xyz:1.2.3
 
 
+class InstalledImageIdentity(_Frozen):
+    """The mission-image identity of an install (mission-versioning contract §30).
+
+    `release_ref` (immutable `<mission-version>-base<base-version>` tag) and the digests are
+    identity; `pull_ref` (the moving `:latest` pointer) is delivery convenience and MUST never
+    be treated as identity. `platform`/`platform_digest` record what was ACTUALLY pulled for
+    this machine, not what the catalog offers. All optional: a pre-contract catalog serves
+    none of it."""
+
+    pull_ref: str | None = None
+    release_ref: str | None = None
+    index_digest: str | None = None  # OCI index digest — the strongest update-check signal
+    platform: str | None = None  # e.g. "linux/amd64" — the platform this install pulled
+    platform_digest: str | None = None  # per-platform manifest digest of what executes
+
+
+class InstalledBaseIdentity(_Frozen):
+    """The mission-base THIS artifact was fused onto (§30) — not the currently promoted base;
+    the two diverge the moment a newer base is promoted without a fleet backfill."""
+
+    version: str | None = None  # base SemVer, e.g. "2.0.0"
+    index_digest: str | None = None  # GHCR base index digest
+    platform_digest: str | None = None  # base child digest for the pulled platform
+
+
+class MissionInstallIdentity(_Frozen):
+    """The §30 slice of installed.json: what exactly this machine installed.
+
+    Splatted to the record's top level by InstalledMission.to_record so the on-disk shape
+    matches the contract's recommended layout. Written at pull time from the catalog detail
+    response + a post-pull image inspect; never re-resolved later (evidence copies it at run
+    create and must not depend on the future value of any floating tag)."""
+
+    mission_version: str | None = None  # creator SemVer projected by the catalog
+    mission_base_version: str | None = None
+    content_hash: str | None = None  # bare hex — identical to ai.xorcise.content.hash
+    image: InstalledImageIdentity | None = None
+    mission_base: InstalledBaseIdentity | None = None
+    pulled_at: str | None = None  # ISO-8601 UTC of the pull
+
+
 class NetworkSpec(_Frozen):
     """Per-run network spec the runner needs to fence the run.
 

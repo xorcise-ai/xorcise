@@ -17,6 +17,8 @@ from xorcise.core.catalog.source import (
     CatalogSource,
     DeliveryBundle,
     LibraryItem,
+    MissionDetail,
+    PlatformImage,
     PullToken,
 )
 from xorcise.core.contracts.catalog import CatalogStatus
@@ -45,11 +47,40 @@ class HttpCatalogSource(CatalogSource):
         return tuple(_to_item(row) for row in resp.json().get("catalog", []))
 
     def fetch_manifest(self, mission_id: str) -> MissionManifest:
+        return self.fetch_detail(mission_id).manifest
+
+    def fetch_detail(self, mission_id: str) -> MissionDetail:
+        """One GET serves both the manifest and the artifact-identity siblings.
+
+        A pre-contract deployment (prod today) sends only {manifest, image_ref}; every
+        identity field degrades to None/empty and the caller behaves exactly as before."""
         resp = self._client.get(f"{self._base}/v1/missions/{mission_id}")
         if resp.status_code == 404:
             raise NotFoundError(mission_id)
         resp.raise_for_status()
-        payload = resp.json()["manifest"]
+        body = resp.json()
+        manifest = self._validate_manifest(mission_id, body.get("manifest"))
+        image = body.get("image") if isinstance(body.get("image"), dict) else {}
+        base = body.get("mission_base") if isinstance(body.get("mission_base"), dict) else {}
+        digests = base.get("platform_digests")
+        return MissionDetail(
+            manifest=manifest,
+            mission_version=_opt_str(body.get("mission_version")),
+            mission_base_version=_opt_str(body.get("mission_base_version")),
+            content_hash=_opt_str(body.get("content_hash")),
+            pull_ref=_opt_str(image.get("pull_ref")),
+            release_ref=_opt_str(image.get("release_ref")),
+            index_digest=_opt_str(image.get("index_digest")),
+            platforms=_platform_images(image.get("platforms")),
+            base_index_digest=_opt_str(base.get("index_digest")),
+            base_platform_digests=(
+                {str(k): str(v) for k, v in digests.items() if v is not None}
+                if isinstance(digests, dict)
+                else {}
+            ),
+        )
+
+    def _validate_manifest(self, mission_id: str, payload: object) -> MissionManifest:
         try:
             return MissionManifest.model_validate(payload)
         except ValidationError as exc:
@@ -140,11 +171,38 @@ def _to_item(row: dict[str, object]) -> LibraryItem:
         image_size_bytes=_opt_int(row.get("image_size_bytes")),
         attachments_size_bytes=_opt_int(row.get("attachments_size_bytes")),
         download_size_bytes=_opt_int(row.get("download_size_bytes")),
+        # Artifact identity (API1). Absent on a pre-contract catalog -> None/() and the row
+        # browses exactly as before; the values power update detection and platform selection.
+        mission_version=_opt_str(row.get("mission_version")),
+        mission_base_version=_opt_str(row.get("mission_base_version")),
+        index_digest=_opt_str(row.get("index_digest")),
+        platforms=_str_tuple(row.get("platforms")),
     )
 
 
 def _str_tuple(value: object) -> tuple[str, ...]:
     return tuple(str(v) for v in value) if isinstance(value, list) else ()
+
+
+def _platform_images(value: object) -> tuple[PlatformImage, ...]:
+    """Detail-response platform entries ({os, architecture, digest, variant?}) — entries
+    missing the identifying pair are dropped, never fatal (browse/pull must survive a
+    malformed row)."""
+    if not isinstance(value, list):
+        return ()
+    out: list[PlatformImage] = []
+    for entry in value:
+        if not isinstance(entry, dict) or "os" not in entry or "architecture" not in entry:
+            continue
+        out.append(
+            PlatformImage(
+                os=str(entry["os"]),
+                architecture=str(entry["architecture"]),
+                digest=_opt_str(entry.get("digest")),
+                variant=_opt_str(entry.get("variant")),
+            )
+        )
+    return tuple(out)
 
 
 def _opt_str(value: object) -> str | None:

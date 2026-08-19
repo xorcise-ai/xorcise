@@ -84,10 +84,10 @@ def test_install_pulled_overwrites_existing(tmp_path: Path) -> None:
 def test_install_pulled_first_install_version_is_1(tmp_path: Path) -> None:
     ref = MissionRef(mission_id="c2", image="xorcise/mission-c2:1")
     ic = install_pulled(manifest=_m("c2"), mission_ref=ref, install_root=tmp_path)
-    assert ic.version == 1
+    assert ic.install_revision == 1
     again = get_installed("c2", tmp_path)
     assert again is not None
-    assert again.version == 1
+    assert again.install_revision == 1
 
 
 def test_install_pulled_reinstall_bumps_version(tmp_path: Path) -> None:
@@ -95,10 +95,10 @@ def test_install_pulled_reinstall_bumps_version(tmp_path: Path) -> None:
     install_pulled(manifest=_m("c3"), mission_ref=ref1, install_root=tmp_path)
     ref2 = MissionRef(mission_id="c3", image="xorcise/mission-c3:2")
     ic2 = install_pulled(manifest=_m("c3"), mission_ref=ref2, install_root=tmp_path)
-    assert ic2.version == 2
+    assert ic2.install_revision == 2
     again = get_installed("c3", tmp_path)
     assert again is not None
-    assert again.version == 2
+    assert again.install_revision == 2
 
 
 # delivery-bundle attachment materialization -------------------------

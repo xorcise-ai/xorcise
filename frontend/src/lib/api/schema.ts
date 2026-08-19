@@ -1463,15 +1463,26 @@ export interface components {
             image?: string | null;
             /** Image Size Bytes */
             image_size_bytes?: number | null;
+            /** Index Digest */
+            index_digest?: string | null;
             /**
              * Installed
              * @default false
              */
             installed: boolean;
+            /** Mission Base Version */
+            mission_base_version?: string | null;
             /** Mission Id */
             mission_id: string;
+            /** Mission Version */
+            mission_version?: string | null;
             /** Name */
             name: string;
+            /**
+             * Platforms
+             * @default []
+             */
+            platforms: string[];
             /** Proficiency */
             proficiency?: string | null;
             /**
