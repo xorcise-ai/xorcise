@@ -266,6 +266,19 @@ export function MissionDetail({ id }: { id: string | null }) {
         </div>
       </header>
 
+      {/* Validated platforms (PV5/AS2): what the remote platform actually verified and
+          published — never a creator claim. PS1: support is per mission, so the base offering
+          an architecture never implies this mission does. Absent on a pre-contract catalog. */}
+      {c.platforms.length > 0 && (
+        <p className="text-dense text-text-tertiary">
+          Validated platforms: {c.platforms.join(" · ")}
+          <span className="text-text-tertiary">
+            {" "}
+            — individual missions may support fewer platforms than the mission-base.
+          </span>
+        </p>
+      )}
+
       {/* Base-generation incompatibility — surfaced here (and as a card badge) so the mismatch is
           seen before a run, not discovered as a failed run-create. Mirrors the Preview banner, in
           the warning treatment. `compat_hint` names the fix (reinstall the mission, or update

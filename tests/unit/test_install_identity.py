@@ -164,6 +164,11 @@ class _ContractSource(StubCatalogSource):
 
 
 class _ArmDriver(StubDockerDriver):
+    # An arm64 host whose registry serves what was asked: daemon_platform drives the native
+    # selection, image_platform is the post-pull inspect the record and verification read.
+    def daemon_platform(self) -> str | None:
+        return "linux/arm64"
+
     def image_platform(self, image: str) -> str | None:
         return "linux/arm64"
 

@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from xorcise.core.config import get_settings
 from xorcise.core.contracts.catalog import CatalogEntry
-from xorcise.core.contracts.errors import NotFoundError
+from xorcise.core.contracts.errors import NotFoundError, PlatformUnsupportedError
 from xorcise.core.contracts.mission import MissionManifest, MissionMetadata
 from xorcise.core.contracts.terrain import ResolvedTerrainV2
 from xorcise.core.missions.errors import MissionCollisionError
@@ -182,6 +182,10 @@ def pull(mission_id: str) -> CatalogEntry:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except MissionCollisionError as exc:  # id already owned by a your_own install
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PlatformUnsupportedError as exc:
+        # A host/artifact condition, not a registry fault (like the base-generation refusal):
+        # the mission has no platform this host can execute. 409, message names what it offers.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except PullError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return _installed_entry(ic.manifest.metadata, ic.mission_ref.image, ic.origin)
@@ -211,6 +215,10 @@ def update(mission_id: str) -> MissionUpdateOut:
     except MissionNotInCatalogError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except MissionCollisionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PlatformUnsupportedError as exc:
+        # A host/artifact condition, not a registry fault (like the base-generation refusal):
+        # the mission has no platform this host can execute. 409, message names what it offers.
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except PullError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

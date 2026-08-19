@@ -61,6 +61,7 @@ def test_pull_failure_leaves_not_installed(tmp_path: Path) -> None:
             *,
             auth: tuple[str, str] | None = None,
             progress: Callable[[PullProgress], None] | None = None,
+            platform: str | None = None,
         ) -> None:
             raise RuntimeError("no registry")
 
@@ -418,6 +419,7 @@ def test_a_fully_cached_pull_reports_preparing_not_a_stalled_download(tmp_path: 
             *,
             auth: tuple[str, str] | None = None,
             progress: Callable[[PullProgress], None] | None = None,
+            platform: str | None = None,
         ) -> None:
             self.pulled.append(image)
             if progress is not None:

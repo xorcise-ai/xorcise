@@ -16,6 +16,7 @@ from xorcise.core.contracts.errors import (
     BaseImageIncompatibleError,
     ImageNotInstalledError,
     NestedContainersUnavailableError,
+    PlatformUnsupportedError,
 )
 from xorcise.core.contracts.grading import GradeResult
 from xorcise.core.contracts.reporting import ResultConditions, RunStats
@@ -111,6 +112,10 @@ def create_run(payload: RunCreate) -> RunCreatedEntry:
         # The mission's fused image was built on a base generation this XORCISE cannot run — a
         # client/artifact mismatch, not a server fault. 409 (like the not-installed case), and the
         # message carries the direction-aware remediation (re-pull vs upgrade XORCISE).
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PlatformUnsupportedError as exc:
+        # No platform this host can execute (AS4) — a host/artifact condition like the base
+        # refusal above, and caught BEFORE any download. 409, never a 502.
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except PullError as exc:  # in-catalog but the fetch failed (e.g. registry unreachable)
         raise HTTPException(status_code=502, detail=str(exc)) from exc

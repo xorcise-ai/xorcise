@@ -87,6 +87,7 @@ class DockerSdkDriver(DockerDriver):
         *,
         auth: tuple[str, str] | None = None,
         progress: Callable[[PullProgress], None] | None = None,
+        platform: str | None = None,
     ) -> None:
         repo, tag = _split_ref(image)
         auth_config = {"username": auth[0], "password": auth[1]} if auth else None
@@ -97,7 +98,9 @@ class DockerSdkDriver(DockerDriver):
         for evt in self._client.api.pull(
             repo,
             tag=tag,
-            platform=self._platform or None,
+            # The per-mission selection (native-first, AS3) wins; the construction-time value
+            # remains for callers that made none (an override, or a pre-contract catalog).
+            platform=platform or self._platform or None,
             auth_config=auth_config,
             stream=True,
             decode=True,
@@ -140,6 +143,15 @@ class DockerSdkDriver(DockerDriver):
             return None
         return dict((img.attrs.get("Config") or {}).get("Labels") or {})
 
+    def daemon_platform(self) -> str | None:
+        """What the daemon executes natively, from its own version report (AS1)."""
+        try:
+            v = self._client.version()
+        except Exception:  # noqa: BLE001 — an unreachable daemon ⇒ unknown, never a crash
+            return None
+        os_name, arch = v.get("Os"), v.get("Arch")
+        return f"{os_name}/{arch}" if os_name and arch else None
+
     def image_platform(self, image: str) -> str | None:
         """What the LOCAL copy of the image was actually built for, e.g. "linux/amd64".
 
@@ -180,7 +192,7 @@ class DockerSdkDriver(DockerDriver):
             devices=["/dev/net/tun:/dev/net/tun"],
             environment=dict(spec.env),
             labels={MANAGED_LABEL: "true", RUN_ID_LABEL: spec.name},
-            platform=self._platform or None,  # run the amd64 image on an arm64 host
+            platform=spec.platform or self._platform or None,  # the run's selected platform
         )
         return ContainerHandle(container_id=container.id, image=spec.image)
 

@@ -61,6 +61,15 @@ class MissionNotInCatalogError(PullError):
     """The id is not installed and not in the catalog — nothing to pull."""
 
 
+class PlatformUnsupportedError(PullError):
+    """No execution path exists for this mission on this host (contract AS4).
+
+    Raised BEFORE any image download, when the host's platform is not among the mission's
+    validated platforms and the AMD64 emulation fallback is not available either. A host/artifact
+    condition, not a registry fault: REST surfaces map it 409 (like BaseImageIncompatibleError),
+    and `str(exc)` carries which platforms the mission does support."""
+
+
 class UnsupportedManifestVersionError(PullError):
     """The catalog served a mission manifest this XORCISE cannot validate.
 
