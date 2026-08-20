@@ -47,3 +47,9 @@ describe("ConditionsCard", () => {
     expect(container.querySelector("*")).toBeNull();
   });
 });
+
+it("surfaces the executed platform when the run recorded one (§43-UX8)", () => {
+  renderWithProviders(<ConditionsCard conditions={{ ...base, platform: "linux/amd64" }} />);
+  expect(screen.getByText("Platform")).toBeInTheDocument();
+  expect(screen.getByText("linux/amd64")).toBeInTheDocument();
+});

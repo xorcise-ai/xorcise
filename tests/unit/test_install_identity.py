@@ -295,7 +295,7 @@ def test_installed_row_borrows_the_catalog_platform_offer(tmp_path: Path) -> Non
     from xorcise.core.rest.mission_pull import PullDeps, pull_mission
 
     class _Src(StubCatalogSource):
-        def list_library(self):  # type: ignore[override]
+        def list_library(self) -> tuple[LibraryItem, ...]:
             return (
                 LibraryItem(
                     mission_id="sqli-login",
