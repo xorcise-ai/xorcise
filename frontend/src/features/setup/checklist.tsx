@@ -75,7 +75,7 @@ function reqItem(
  * to state. While setup is incomplete the remaining tasks are shown
  * prominently, blocked items first, each with an inline action. Once every
  * required gate passes it collapses to a single success banner (the next action —
- * Start a Run — emphasised) with the full diagnostic list tucked behind an
+ * Start a run — emphasised) with the full diagnostic list tucked behind an
  * expander. Required items gate the first run; optional ones (judge, remote
  * catalog) only improve the experience. All derived from the shared queries;
  * reconciles with Settings → Modules (this is the getting-started lens).
@@ -212,7 +212,7 @@ export function ReadinessChecklist({
     </div>
   );
 
-  // Ready → one success banner + Start a Run, detail collapsed behind an expander
+  // Ready → one success banner + Start a run, detail collapsed behind an expander
   // (keep the summary, collapse the list, avoid duplicate green states).
   if (allRequiredOk) {
     return (
@@ -221,7 +221,10 @@ export function ReadinessChecklist({
           <CardContent className="space-y-2 py-3">
             <div className="flex flex-wrap items-center gap-3">
               <CheckCircle2 className="size-5 shrink-0 text-ok" />
-              <p className="min-w-0 flex-1 text-body text-foreground">
+              {/* A floor, not min-w-0: with min-w-0 the shrink-0 CTA beside it took the row
+                  down to 84px of sentence on a 375px viewport — narrower than the longest
+                  word in it. The floor makes the row wrap the button instead. */}
+              <p className="min-w-[11rem] flex-1 text-body text-foreground">
                 You’re ready to run. Start your first evaluation.
               </p>
               <Link
@@ -229,7 +232,7 @@ export function ReadinessChecklist({
                 className={buttonVariants({ size: "sm" }) + " shrink-0"}
               >
                 <Play className="size-3.5" />
-                Start a Run
+                Start a run
               </Link>
             </div>
             <p className="pl-8 text-caption text-text-tertiary">{readySummary}</p>
@@ -279,10 +282,13 @@ function ChecklistRow({ item }: { item: Item }) {
   const status = STATUS[item.state];
   return (
     // Completed items read quieter than the ones still needing attention.
-    <li className={"flex items-center gap-3 px-4 py-3" + (done ? " opacity-70" : "")}>
+    // flex-wrap + a min width on the text column: the trailing CTA is shrink-0 and up to
+    // 176px wide, so on a 375px viewport it squeezed the help text to 29px — about three
+    // characters per line. Below that width the CTA now drops to its own line instead.
+    <li className={"flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3" + (done ? " opacity-70" : "")}>
       <Icon className={`size-4 shrink-0 ${color}`} />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
+      <div className="min-w-[11rem] flex-1">
+        <div className="flex flex-wrap items-center gap-2">
           <p className={"text-body " + (done ? "text-text-secondary" : "text-foreground")}>
             {item.label}
           </p>
@@ -295,7 +301,7 @@ function ChecklistRow({ item }: { item: Item }) {
       {item.href && item.state !== "ok" && item.state !== "checking" && (
         <Link
           href={item.href}
-          className="flex shrink-0 items-center gap-1 text-label uppercase text-primary transition-colors hover:text-foreground"
+          className="flex shrink-0 items-center gap-1 -my-1.5 py-1.5 text-label uppercase text-primary transition-colors hover:text-foreground"
         >
           {item.cta}
           <ArrowUpRight className="size-3" />

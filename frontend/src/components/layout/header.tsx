@@ -35,8 +35,11 @@ export function Header() {
         aria-label="XORCISE.AI"
         /* §3.1 sets the letterforms at #f2ead6, and the brand's own tokens.css names
            the wordmark token explicitly "so it never inherits a general text token".
-           This had inherited text-heading (#f0f0f0) — the exact mistake it warns of. */
-        className="text-body font-bold tracking-[0.1em] text-wordmark"
+           This had inherited text-heading (#f0f0f0) — the exact mistake it warns of.
+           The bold weight and the wide tracking are the LOCKUP's, not text-body's: this
+           is a brand asset, not running copy, so it overrides the role deliberately.
+           tracking-widest is the scale's own 0.1em — same value, no arbitrary literal. */
+        className="text-body font-bold tracking-widest text-wordmark"
       >
         XORCISE<span className="text-primary">.</span>AI
       </span>

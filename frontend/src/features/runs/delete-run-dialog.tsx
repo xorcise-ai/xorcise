@@ -40,7 +40,7 @@ export function DeleteRunDialog({
 
   return (
     <Dialog open={open} onClose={onClose} title="Delete this run?">
-      <p className="max-w-[68ch] text-body text-text-secondary">
+      <p className="prose-block text-body text-text-secondary">
         This permanently deletes the run&apos;s <strong>result and record</strong>. It will be
         removed from the runs list, this agent&apos;s history, and the results view. This
         can&apos;t be undone.

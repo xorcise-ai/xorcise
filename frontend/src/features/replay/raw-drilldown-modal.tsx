@@ -69,7 +69,7 @@ export function RawDrillDownModal({
       )}
       {error && <p className="text-body text-err">Couldn’t load the raw telemetry.</p>}
       {data && (
-        <pre className="max-h-[28rem] overflow-auto whitespace-pre-wrap break-words rounded-md bg-[rgba(0,0,0,0.3)] p-3 font-mono text-dense text-foreground">
+        <pre className="max-h-[28rem] overflow-auto whitespace-pre-wrap break-words rounded-md bg-deepest p-3 font-mono text-dense text-foreground">
           {JSON.stringify(data.raw_ref?.signal === "log" ? data.logs : data.spans, null, 2)}
         </pre>
       )}

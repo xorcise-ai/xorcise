@@ -13,7 +13,11 @@ import {
   Map,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Chip } from "@/components/ui/chip";
+import { cn } from "@/components/ui/cn";
 import { ComingSoonPanel } from "@/components/ui/coming-soon";
+import { StatusDot } from "@/components/ui/dot";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
@@ -34,7 +38,7 @@ import {
 } from "./queries";
 import { formatDuration } from "@/lib/api/format";
 import { useUiStore } from "@/stores/ui";
-import { ConnectionStatus, Dot } from "./connection-status";
+import { ConnectionStatus } from "./connection-status";
 import {
   groupByRole,
   moduleLabel,
@@ -48,7 +52,11 @@ import {
 } from "./module-groups";
 import { TokenLimitSlider } from "./token-limit-slider";
 
-function Card({
+/** A settings card. The shape (radius, border, header rule, padding) comes from the design
+ *  system's Card/CardHeader/CardTitle/CardContent — this wrapper only keeps what is specific
+ *  to this page: the amber leading icon, an optional trailing action, and the `highlight`
+ *  border used when the page is deep-linked at one card (?focus=judge). */
+function SettingsCard({
   title,
   icon,
   highlight,
@@ -65,20 +73,21 @@ function Card({
   children: React.ReactNode;
 }) {
   return (
-    <section
-      className={
-        "min-w-0 rounded-xl border bg-card p-4 transition-colors " +
-        (highlight ? "border-primary " : "border-border ") +
-        (className ?? "")
-      }
+    <Card
+      // The DS Card renders a div, so a test can no longer scope a query to one card by
+      // climbing to the nearest <section> — that now lands on the whole group. `data-card`
+      // is the stable hook it climbs to instead.
+      data-card=""
+      className={cn("min-w-0 transition-colors", highlight && "border-primary", className)}
     >
-      <div className="mb-3 flex items-center gap-2 text-primary">
+      {/* CardHeader stacks by default; this page's header is one row: icon · title · action. */}
+      <CardHeader className="flex-row items-center gap-2 text-primary">
         {icon}
-        <h2 className="text-body font-semibold text-heading">{title}</h2>
+        <CardTitle>{title}</CardTitle>
         {action && <span className="ml-auto">{action}</span>}
-      </div>
-      {children}
-    </section>
+      </CardHeader>
+      <CardContent>{children}</CardContent>
+    </Card>
   );
 }
 
@@ -168,7 +177,7 @@ function JudgeModelCard({ highlight }: { highlight: boolean }) {
     (spanTokens != null && spanTokens !== savedSpanTokens);
 
   return (
-    <Card title="Judge model" icon={<Bot className="size-4" />} highlight={highlight}>
+    <SettingsCard title="Judge model" icon={<Bot className="size-4" />} highlight={highlight}>
       {config.isLoading && (
         <div role="status" aria-label="Loading config…">
           <SkeletonRows count={3} />
@@ -277,7 +286,7 @@ function JudgeModelCard({ highlight }: { highlight: boolean }) {
         </>
       )}
       {config.isError && <p className="text-dense text-err">Couldn&apos;t load config.</p>}
-    </Card>
+    </SettingsCard>
   );
 }
 
@@ -328,7 +337,7 @@ function TerrainModelCard() {
   }
 
   return (
-    <Card title="Terrain model" icon={<Map className="size-4" />}>
+    <SettingsCard title="Terrain model" icon={<Map className="size-4" />}>
       {config.isLoading && (
         <div role="status" aria-label="Loading config…">
           <SkeletonRows count={3} />
@@ -438,7 +447,7 @@ function TerrainModelCard() {
         </>
       )}
       {config.isError && <p className="text-dense text-err">Couldn&apos;t load config.</p>}
-    </Card>
+    </SettingsCard>
   );
 }
 
@@ -456,7 +465,7 @@ function EnvironmentCard() {
   const s = system.data;
   const db = s ? (DB_SCHEMA_LABEL[s.db_schema] ?? DB_SCHEMA_LABEL.unknown) : null;
   return (
-    <Card title="Environment" icon={<HardDrive className="size-4" />}>
+    <SettingsCard title="Environment" icon={<HardDrive className="size-4" />}>
       {system.isLoading && (
         <div role="status" aria-label="Loading…">
           <SkeletonRows count={3} />
@@ -509,8 +518,11 @@ function EnvironmentCard() {
                 answers, which is the observed fact rather than a config value that cannot tell
                 our own control plane from someone else's. */}
             <Field label="Database">
+              {/* The DS's dot primitive, not a hand-rolled span. It stays a Field rather than
+                  a Chip: the four rows of this <dl> are one readout, and boxing only this one
+                  would break the column the other three line up on. */}
               <span className="flex items-center gap-2">
-                {db && <Dot ok={db.ok} />}
+                {db && <StatusDot tone={db.ok ? "ok" : "err"} size="lg" />}
                 <span className="text-foreground">{db?.label}</span>
               </span>
             </Field>
@@ -528,7 +540,7 @@ function EnvironmentCard() {
         </div>
       )}
       {system.isError && <p className="text-dense text-err">Couldn&apos;t load environment.</p>}
-    </Card>
+    </SettingsCard>
   );
 }
 
@@ -557,7 +569,7 @@ function ModulesCard() {
   const groups = groupByRole(system.data?.planes ?? []);
   const role = system.data?.role;
   return (
-    <Card title="Modules" icon={<Server className="size-4" />}>
+    <SettingsCard title="Modules" icon={<Server className="size-4" />}>
       {system.isLoading && (
         <div role="status" aria-label="Probing modules…">
           <SkeletonRows count={3} />
@@ -590,7 +602,7 @@ function ModulesCard() {
         </>
       )}
       {system.isError && <p className="text-dense text-err">Couldn&apos;t probe modules.</p>}
-    </Card>
+    </SettingsCard>
   );
 }
 
@@ -615,7 +627,9 @@ function RoleModuleGroup({ group }: { group: RoleGroup }) {
                 beneath it, so the parent read as subordinate to its own children and the
                 grouping was hard to see. It now matches the modules in size and wins on the
                 axes that don't cost vertical space: caps, tracking, weight and heading colour. */}
-            <span className="whitespace-nowrap text-dense font-bold uppercase tracking-[0.16em] text-heading">
+            {/* The caps tracking is the LABEL role's own token, not a re-typed literal — the
+                size stays at `dense` for the reason above. */}
+            <span className="whitespace-nowrap text-dense font-bold uppercase tracking-[var(--text-label--letter-spacing)] text-heading">
               {group.label}
             </span>
           </span>
@@ -641,15 +655,17 @@ function groupStateLabel(group: RoleGroup): string {
   return "Down";
 }
 
-/** Three-state presence dot — absent is dimmed, never red (see module-groups.ts). */
+/** Three-state presence dot — absent is dimmed, never red (see module-groups.ts).
+ *  The DS StatusDot carries the shape; `not_deployed` has no tone of its own, so it keeps
+ *  the dimmed tertiary wash rather than the muted tone's full-strength grey. */
 function StateDot({ state }: { state: ModuleState }) {
-  const cls =
-    state === "ok"
-      ? "bg-ok"
-      : state === "down"
-        ? "bg-err"
-        : "bg-text-tertiary/40";
-  return <span className={`inline-block size-2 rounded-full ${cls}`} aria-hidden />;
+  return (
+    <StatusDot
+      tone={state === "ok" ? "ok" : state === "down" ? "err" : "muted"}
+      size="lg"
+      className={state === "not_deployed" ? "bg-text-tertiary/40" : undefined}
+    />
+  );
 }
 
 function ModuleRow({ plane }: { plane: PlaneStatus }) {
@@ -698,7 +714,7 @@ function ModuleRow({ plane }: { plane: PlaneStatus }) {
  */
 function DistributedCard() {
   return (
-    <Card
+    <SettingsCard
       title="Distributed deployment"
       icon={<Network className="size-4" />}
       className="lg:col-span-2"
@@ -727,7 +743,7 @@ function DistributedCard() {
         <code className="text-text-secondary">xorcise config set-network</code>, which is
         experimental and can leave the server unable to start a run.
       </p>
-    </Card>
+    </SettingsCard>
   );
 }
 
@@ -742,7 +758,7 @@ function CatalogCard() {
     : (catalog?.connected ?? false);
 
   return (
-    <Card title="XORCISE Remote" icon={<BookMarked className="size-4" />}>
+    <SettingsCard title="XORCISE Remote" icon={<BookMarked className="size-4" />}>
       {config.isLoading && (
         <div role="status" aria-label="Loading…">
           <SkeletonRows count={3} />
@@ -751,12 +767,13 @@ function CatalogCard() {
       {catalog && (
         <>
           <div className="mb-3 flex items-center justify-between gap-3">
-            <p className="flex items-center gap-2 text-dense">
-              <Dot ok={connected} />
-              <span className="font-semibold text-heading">
-                {connected ? "Connected" : "Disconnected"}
-              </span>
-            </p>
+            {/* KEY · dot · value is exactly the Chip's job — this readout was the hand-rolled
+                version of it. */}
+            <Chip
+              label="Catalog"
+              value={connected ? "Connected" : "Disconnected"}
+              tone={connected ? "ok" : "err"}
+            />
             <Switch
               checked={connected}
               onChange={(next) => setConnected.mutate(next)}
@@ -779,7 +796,7 @@ function CatalogCard() {
         </>
       )}
       {config.isError && <p className="text-dense text-err">Couldn&apos;t load catalog config.</p>}
-    </Card>
+    </SettingsCard>
   );
 }
 
@@ -798,11 +815,12 @@ function LiveViewCard() {
   const threshold = useUiStore((s) => s.stallThresholdSeconds);
   const setThreshold = useUiStore((s) => s.setStallThresholdSeconds);
   return (
-    <Card title="Live view" icon={<Activity className="size-4" />}>
+    <SettingsCard title="Live view" icon={<Activity className="size-4" />}>
       <div className="text-dense">
         <span className="mb-1.5 block text-text-tertiary">Agent inactivity warning</span>
         <div className="mb-1.5 flex items-baseline justify-between gap-2">
-          <span className="text-body font-medium text-heading">
+          {/* A single-line value, so `row` rather than `body` (which is for running copy). */}
+          <span className="text-row text-heading">
             {formatDuration(threshold)}
           </span>
           <span className="text-caption text-text-tertiary">
@@ -817,14 +835,14 @@ function LiveViewCard() {
           value={Math.min(STALL_MAX_S, Math.max(STALL_MIN_S, threshold))}
           onChange={setThreshold}
         />
-        <span className="mt-1.5 block max-w-full break-words text-caption leading-relaxed text-text-tertiary">
+        <span className="mt-1.5 block max-w-full break-words text-caption text-text-tertiary">
           Warn when a live run stops exporting OTel telemetry for this long — the agent may have
           crashed or disconnected while the run silently burns its budget. Shown on the live run
           page and as a notification from any page. Raise it for agents that sit in long tool
           calls. Stored in this browser.
         </span>
       </div>
-    </Card>
+    </SettingsCard>
   );
 }
 
@@ -844,7 +862,7 @@ function ConnectionCard() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
   return (
-    <Card title="Connection" icon={<Plug className="size-4" />}>
+    <SettingsCard title="Connection" icon={<Plug className="size-4" />}>
       <dl className="space-y-2 text-dense">
         <Field label="API endpoint">
           <span className="flex items-center justify-end gap-1.5">
@@ -887,7 +905,7 @@ function ConnectionCard() {
           <Badge variant="muted">Coming soon</Badge>
         </div>
       </div>
-    </Card>
+    </SettingsCard>
   );
 }
 
@@ -908,16 +926,20 @@ function SettingsGroup({
 }) {
   return (
     <section aria-label={title} className="min-w-0 space-y-3">
-      <div className="flex items-baseline gap-3">
+      {/* flex-wrap: both eyebrows are whitespace-nowrap by design (a section label must
+          not break mid-phrase), and together they exceed a 375px viewport's content pane,
+          which pushed the trailing rule off-screen. Wrapping lets the rule fall to its own
+          line under the labels rather than out of the layout. */}
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1.5">
         <h2 className="whitespace-nowrap text-label uppercase text-heading">
           {title}
         </h2>
         <span className="whitespace-nowrap text-label uppercase text-text-tertiary">
           {caption}
         </span>
-        <div className="h-px flex-1 bg-border" aria-hidden />
+        <div className="h-px min-w-12 flex-1 bg-border" aria-hidden />
       </div>
-      <div className="grid min-w-0 gap-4 lg:grid-cols-2">{children}</div>
+      <div className="grid grid-cols-1 min-w-0 gap-4 lg:grid-cols-2">{children}</div>
     </section>
   );
 }

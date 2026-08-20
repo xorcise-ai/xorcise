@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { Play, Swords, BookOpen, ArrowRight, type LucideIcon } from "lucide-react";
-import { Card } from "@/components/ui/card";
+import { Card, CardTitle } from "@/components/ui/card";
 
 /** Canonical docs site. There is no in-app /docs route, so this is an external
  *  link (opens in a new tab). Kept as a single constant so pointing it at the
@@ -27,20 +27,20 @@ interface QuickCard {
 export function QuickStart({ startHref }: { startHref: string }) {
   const cards: QuickCard[] = [
     {
-      title: "Start a Run",
+      title: "Start a run",
       desc: "Create your first evaluation.",
       icon: Play,
       href: startHref,
       primary: true,
     },
     {
-      title: "Browse Missions",
+      title: "Browse missions",
       desc: "Explore available targets.",
       icon: Swords,
       href: "/missions",
     },
     {
-      title: "Read Documentation",
+      title: "Read documentation",
       desc: "Setup, traces, results.",
       icon: BookOpen,
       href: DOCS_URL,
@@ -53,7 +53,7 @@ export function QuickStart({ startHref }: { startHref: string }) {
       <h2 className="mb-2 text-label uppercase text-text-tertiary">
         Quick start
       </h2>
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         {cards.map((c) => (
           <QuickCardTile key={c.title} card={c} />
         ))}
@@ -67,8 +67,8 @@ function QuickCardTile({ card }: { card: QuickCard }) {
   const body = (
     <Card
       className={
-        "flex h-full flex-col p-4 transition-colors group-hover:border-[rgba(255,255,255,0.14)] " +
-        (card.primary ? "border-primary/40 bg-primary/[0.04]" : "")
+        "flex h-full flex-col p-4 transition-colors group-hover:border-border-hover " +
+        (card.primary ? "border-primary/40 bg-primary/4" : "")
       }
     >
       <div className="flex items-start justify-between gap-2">
@@ -80,7 +80,9 @@ function QuickCardTile({ card }: { card: QuickCard }) {
           aria-hidden
         />
       </div>
-      <div className="mt-3 text-body font-semibold text-heading">{card.title}</div>
+      {/* The DS card head, not a hand-rolled copy of it — same role, and it gives the tile
+          the heading it always read as. */}
+      <CardTitle className="mt-3">{card.title}</CardTitle>
       <p className="mt-2 text-dense text-text-secondary">{card.desc}</p>
     </Card>
   );

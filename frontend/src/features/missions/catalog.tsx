@@ -317,7 +317,7 @@ function Grid({
   // Grid view: capped at four across (the established catalog rhythm) so wide screens don't shrink
   // the cards into a five- or six-up band; steps down responsively on narrower panes.
   return (
-    <ul className="grid auto-rows-fr gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+    <ul className="grid grid-cols-1 auto-rows-fr gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
       {items.map((c, i) => (
         <li key={c.mission_id}>
           <Reveal delay={i * 40} className="h-full">

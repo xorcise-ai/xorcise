@@ -56,7 +56,7 @@ describe("ReadinessChecklist", () => {
     expect(screen.getByText("Docker available")).toBeInTheDocument();
   });
 
-  it("collapses to a banner with Start a Run + a diagnostic expander when ready", async () => {
+  it("collapses to a banner with Start a run + a diagnostic expander when ready", async () => {
     server.use(
       http.get("*/api/system", () => systemReady()),
       http.get("*/api/agents", () => HttpResponse.json([agentFixture({ name: "scout" })])),
@@ -65,7 +65,7 @@ describe("ReadinessChecklist", () => {
       ),
     );
     renderWithProviders(<ReadinessChecklist startHref="/runs/new" />);
-    const cta = await screen.findByText("Start a Run");
+    const cta = await screen.findByText("Start a run");
     // The next action is emphasised as a real link to the state-aware target (§5).
     expect(cta.closest("a")).toHaveAttribute("href", "/runs/new");
     // The full list is retained but tucked behind a diagnostic expander (§5).

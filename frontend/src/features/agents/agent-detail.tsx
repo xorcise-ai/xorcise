@@ -15,7 +15,7 @@ import { Skeleton, SkeletonRows } from "@/components/ui/skeleton";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { cn } from "@/components/ui/cn";
 import { Badge } from "@/components/ui/badge";
-import { StatTile } from "@/features/results/performance-summary";
+import { StatTile } from "@/components/ui/stat-tile";
 import { shortTime } from "@/lib/api/format";
 
 function SectionHeading({ children }: { children: React.ReactNode }) {
@@ -112,7 +112,7 @@ export function AgentDetail({ name }: { name: string | null }) {
             className={cn(buttonVariants())}
           >
             <Play className="size-4" />
-            Start Run
+            Start run
           </Link>
           <Button
             variant="outline"

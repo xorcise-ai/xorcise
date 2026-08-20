@@ -64,7 +64,7 @@ export function RecentRuns() {
         {runs.data && runs.data.length > 0 && (
           <Link
             href="/runs"
-            className="flex items-center gap-1 text-label uppercase text-text-tertiary transition-colors hover:text-foreground"
+            className="flex items-center gap-1 -my-1.5 py-1.5 text-label uppercase text-text-tertiary transition-colors hover:text-foreground"
           >
             View all
             <ArrowUpRight className="size-3" />
@@ -114,7 +114,7 @@ export function RecentRuns() {
                   <li key={run.run_id}>
                     <Link
                       href={href}
-                      className="flex items-center gap-3 px-4 py-2.5 transition-colors hover:bg-[rgba(255,255,255,0.02)]"
+                      className="flex items-center gap-3 px-4 py-2.5 transition-colors hover:bg-muted"
                     >
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-row text-foreground">
@@ -125,7 +125,7 @@ export function RecentRuns() {
                         </span>
                       </span>
                       {score != null && (
-                        <span className="shrink-0 text-dense font-semibold tabular-nums text-heading">
+                        <span className="shrink-0 text-dense tabular-nums text-heading">
                           {pct(score)}
                         </span>
                       )}

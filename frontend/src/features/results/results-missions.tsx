@@ -65,7 +65,7 @@ export function ResultsByMission() {
 
       {summaries.length > 0 && (
         <>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {summaries.map((s, i) => (
               <Reveal key={s.mission} delay={i * 40}>
                 <MissionPerformanceCard summary={s} />
@@ -90,7 +90,9 @@ function MissionPerformanceCard({
     <Card className="h-full p-4">
       <div className="flex items-center gap-2">
         <Target className="size-4 shrink-0 text-primary" aria-hidden />
-        <span className="truncate text-row font-semibold text-heading">
+        {/* Card head — 14px/700, matching CardTitle. See the agent card head in
+            completed-runs.tsx; the two heads must not drift apart. */}
+        <span className="truncate text-row font-bold text-heading">
           {summary.mission}
         </span>
       </div>
@@ -122,14 +124,14 @@ function EmptyMissions() {
     <Card className="flex flex-col items-center gap-3 p-6 text-center">
       <Target className="size-6 text-text-tertiary" aria-hidden />
       <div className="space-y-2">
-        <p className="text-body font-semibold text-heading">No results yet</p>
+        <p className="text-body font-bold text-heading">No results yet</p>
         <p className="mx-auto max-w-sm text-body text-text-secondary">
           No mission has a completed evaluation. Start a run and its scores
           will roll up here per mission.
         </p>
       </div>
       <Link href="/runs/new" className={cn(buttonVariants(), "mt-1")}>
-        Start Run
+        Start run
       </Link>
     </Card>
   );

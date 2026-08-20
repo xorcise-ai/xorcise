@@ -104,7 +104,7 @@ describe("StatTile", () => {
   it("renders a single labelled figure", () => {
     render(
       <dl>
-        <StatTile label="Average" value="75%" tone="accent" />
+        <StatTile label="Average" value="75%" tone="primary" />
       </dl>,
     );
     expect(screen.getByText("Average")).toBeInTheDocument();

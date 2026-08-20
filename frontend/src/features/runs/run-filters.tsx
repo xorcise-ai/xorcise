@@ -184,7 +184,11 @@ export function Facet({
       aria-label={label}
       value={value ?? ""}
       onChange={(e) => onChange(e.target.value || null)}
-      className="h-8 rounded-md border border-input bg-card px-2 text-dense text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      // Fill and focus are Input's, not this control's own: the facets sit in the same
+      // row as the search Input, so a different well (bg-card) and a different focus ring
+      // read as two unrelated controls. bg-deepest + border-input + the amber hairline
+      // ring is the console's one field treatment.
+      className="h-8 rounded-md border border-input bg-deepest px-2 text-dense text-foreground focus-visible:border-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/30"
     >
       <option value="">{placeholder}</option>
       {options.map((o) => (

@@ -2,8 +2,10 @@
 
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/components/ui/cn";
+import { StatusDot } from "@/components/ui/dot";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import type { CatalogEntry } from "@/lib/api/types";
+import { titleCase } from "./labels";
 
 /** De-duped skill + technology tags for the details panel. */
 function tagsFor(c: CatalogEntry): string[] {
@@ -77,13 +79,7 @@ export function MissionPicker({
                   active ? "bg-card text-heading" : "text-text-secondary hover:bg-card",
                 )}
               >
-                <span
-                  className={cn(
-                    "size-1.5 shrink-0 rounded-full",
-                    c.installed ? "bg-ok" : "bg-primary",
-                  )}
-                  aria-hidden
-                />
+                <StatusDot tone={c.installed ? "ok" : "primary"} />
                 <span className="truncate">{c.name}</span>
                 {!c.installed && (
                   <span className="ml-auto shrink-0 text-label uppercase text-text-tertiary">
@@ -102,7 +98,7 @@ export function MissionPicker({
       <div className={cn(stacked ? "" : "max-h-56 overflow-y-auto", "rounded-lg border border-border bg-background p-3")}>
         {selected ? (
           <div className="space-y-2">
-            <p className="text-body font-semibold text-heading">
+            <p className="text-body font-bold text-heading">
               {selected.name}
             </p>
             {selected.summary && (
@@ -113,26 +109,22 @@ export function MissionPicker({
                 {selected.source === "your_own" ? "Your own" : "Library"}
               </Badge>
               {selected.specialty && (
-                <Badge variant="info" className="capitalize">
-                  {selected.specialty}
-                </Badge>
+                <Badge variant="info">{titleCase(selected.specialty)}</Badge>
               )}
               {selected.proficiency && (
-                <Badge variant="muted" className="capitalize">
-                  {selected.proficiency}
-                </Badge>
+                <Badge variant="muted">{titleCase(selected.proficiency)}</Badge>
               )}
               {selected.type && (
-                <Badge variant="muted" className="uppercase">
-                  {selected.type}
-                </Badge>
+                <Badge variant="muted">{selected.type}</Badge>
               )}
               <Badge variant={selected.installed ? "ok" : "default"}>
                 {selected.installed ? "installed" : "pulls on start"}
               </Badge>
             </div>
+            {/* prose-tight is the declared measure for help text sitting under a
+                control (68ch, 1.6) — the arbitrary max-w-[68ch] restated it by hand. */}
             {!selected.installed && (
-              <p className="max-w-[68ch] text-dense text-text-tertiary">
+              <p className="prose-tight text-dense text-text-tertiary">
                 Not installed yet — this mission is pulled automatically when
                 the run starts.
               </p>
@@ -140,12 +132,9 @@ export function MissionPicker({
             {tagsFor(selected).length > 0 && (
               <div className="flex flex-wrap items-center gap-1">
                 {tagsFor(selected).map((t) => (
-                  <span
-                    key={t}
-                    className="rounded border border-border bg-raised px-1.5 py-0.5 text-caption text-text-tertiary"
-                  >
+                  <Badge key={t} variant="muted">
                     {t}
-                  </span>
+                  </Badge>
                 ))}
               </div>
             )}

@@ -174,7 +174,7 @@ export function GradingDetail({ grade: r }: { grade: GradeResult }) {
             return (
               <Card key={c.criterion_id} className="bg-card p-3">
                 <div className="flex items-start justify-between gap-3">
-                  <span className="text-dense font-semibold text-heading">{c.text}</span>
+                  <span className="text-dense text-heading">{c.text}</span>
                   <div className="flex shrink-0 items-center gap-2">
                     {c.weight > 0 && (
                       <span className="text-caption text-text-tertiary">w {c.weight}</span>
@@ -184,7 +184,7 @@ export function GradingDetail({ grade: r }: { grade: GradeResult }) {
                     ) : error ? (
                       <Badge variant="err">Judge error</Badge>
                     ) : (
-                      <span className="text-dense font-semibold text-primary tabular-nums">
+                      <span className="text-dense text-primary tabular-nums">
                         {pct(c.score)}
                       </span>
                     )}
@@ -365,7 +365,7 @@ function HighlightedPrompt({
 
   let current: number | null = null;
   return (
-    <pre className="max-h-[55vh] overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-dense text-text-secondary">
+    <pre className="max-h-[55vh] overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-deepest p-3 font-mono text-dense text-text-secondary">
       {text.split("\n").map((line, i) => {
         const open = line.match(SPAN_OPEN_RE);
         if (open) current = Number(open[1]);
@@ -383,7 +383,7 @@ function HighlightedPrompt({
               ? "bg-primary/15"
               : "";
         const className =
-          [tint, isTarget ? "rounded ring-2 ring-primary" : ""].filter(Boolean).join(" ") ||
+          [tint, isTarget ? "rounded-md ring-2 ring-primary" : ""].filter(Boolean).join(" ") ||
           undefined;
         const node = (
           <span key={i} ref={isTarget ? targetRef : undefined} className={className}>

@@ -195,9 +195,9 @@ describe("RunLive", () => {
     renderWithProviders(<RunLive runId="r3" />);
     await screen.findByText("Running");
     // The run finishes on a timeout → the dedicated timeout message surfaces its
-    // "View Partial Result" action and the "Running" badge is gone.
+    // "View partial result" action and the "Running" badge is gone.
     await waitFor(
-      () => expect(screen.getByText(/View Partial Result/i)).toBeInTheDocument(),
+      () => expect(screen.getByText(/View partial result/i)).toBeInTheDocument(),
       { timeout: 5000 },
     );
     expect(screen.queryByText("Running")).toBeNull();

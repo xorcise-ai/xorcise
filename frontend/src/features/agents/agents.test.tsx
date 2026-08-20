@@ -88,25 +88,25 @@ describe("AgentList", () => {
       expect(screen.getAllByText("50%").length).toBeGreaterThan(0),
     );
 
-    // Card actions: Start Run + View Agent, both links. Start Run deep-links into the one
+    // Card actions: Start run + View agent, both links. Start run deep-links into the one
     // create-run flow with this agent preselected — there is no per-agent modal any more.
-    const start = screen.getByRole("link", { name: /Start Run/i });
+    const start = screen.getByRole("link", { name: /Start run/i });
     expect(start).toHaveAttribute("href", "/runs/new?agent=scout");
     expect(
-      screen.queryByRole("button", { name: /Start Run/i }),
+      screen.queryByRole("button", { name: /Start run/i }),
     ).not.toBeInTheDocument();
-    const view = screen.getByRole("link", { name: /View Agent/i });
+    const view = screen.getByRole("link", { name: /View agent/i });
     expect(view).toHaveAttribute("href", "/agents/detail?name=scout");
   });
 
-  it("url-encodes the agent name in the Start Run link", async () => {
+  it("url-encodes the agent name in the Start run link", async () => {
     server.use(
       http.get("*/api/agents", () =>
         HttpResponse.json([agentFixture({ name: "red team/1" })]),
       ),
     );
     renderWithProviders(<AgentList />);
-    const start = await screen.findByRole("link", { name: /Start Run/i });
+    const start = await screen.findByRole("link", { name: /Start run/i });
     expect(start).toHaveAttribute("href", "/runs/new?agent=red%20team%2F1");
   });
 
@@ -306,10 +306,10 @@ describe("AgentDetail", () => {
       http.get("*/api/agents/scout/history", () => HttpResponse.json([])),
     );
     renderWithProviders(<AgentDetail name="scout" />);
-    const start = await screen.findByRole("link", { name: /Start Run/i });
+    const start = await screen.findByRole("link", { name: /Start run/i });
     expect(start).toHaveAttribute("href", "/runs/new?agent=scout");
     expect(
-      screen.queryByRole("button", { name: /Start Run/i }),
+      screen.queryByRole("button", { name: /Start run/i }),
     ).not.toBeInTheDocument();
   });
 

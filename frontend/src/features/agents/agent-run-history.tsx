@@ -124,23 +124,26 @@ export function AgentRunHistory({
   return (
     <Card>
       <CardContent className="p-0">
-        {/* ≥sm: aligned table */}
-        <table className="hidden w-full text-body sm:table">
+        {/* ≥sm: aligned table. `text-row` (14/1.45) not `text-body` (14/1.6): the scale
+            reserves the row role for single-line dense rows, which is exactly a results table.
+            Row hover steps the surface ladder (card → muted) rather than compositing a white
+            alpha. */}
+        <table className="hidden w-full text-row sm:table">
           <thead>
-            <tr className="border-b border-white/10 text-left text-label uppercase text-text-tertiary">
-              <th className="px-4 py-2 font-medium">Mission</th>
-              <th className="px-4 py-2 font-medium">Status</th>
-              <th className="px-4 py-2 text-right font-medium">Overall</th>
-              <th className="px-4 py-2 text-right font-medium">Deterministic</th>
-              <th className="px-4 py-2 text-right font-medium">Judge</th>
-              <th className="px-4 py-2 font-medium">Date</th>
+            <tr className="border-b border-border text-left text-label uppercase text-text-tertiary">
+              <th className="px-4 py-2">Mission</th>
+              <th className="px-4 py-2">Status</th>
+              <th className="px-4 py-2 text-right">Overall</th>
+              <th className="px-4 py-2 text-right">Deterministic</th>
+              <th className="px-4 py-2 text-right">Judge</th>
+              <th className="px-4 py-2">Date</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((r) => (
               <tr
                 key={r.runId}
-                className="border-b border-white/5 last:border-0 hover:bg-white/[0.03]"
+                className="border-b border-border last:border-0 hover:bg-muted"
               >
                 <td className="px-4 py-2.5">
                   <Link
@@ -178,12 +181,12 @@ export function AgentRunHistory({
         </table>
 
         {/* narrow: stacked rows */}
-        <ul className="divide-y divide-white/5 sm:hidden">
+        <ul className="divide-y divide-border sm:hidden">
           {rows.map((r) => (
             <li key={r.runId}>
               <Link
                 href={resultHref(r.runId)}
-                className="block p-4 hover:bg-white/[0.03]"
+                className="block p-4 hover:bg-muted"
               >
                 <div className="flex items-start justify-between gap-2">
                   <span className="min-w-0 truncate font-medium text-primary">

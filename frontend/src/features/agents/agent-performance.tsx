@@ -4,10 +4,8 @@ import type { AgentHistoryEntry } from "@/lib/api/types";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { pct } from "@/lib/api/format";
-import {
-  PerformanceSummary,
-  StatTile,
-} from "@/features/results/performance-summary";
+import { PerformanceSummary } from "@/features/results/performance-summary";
+import { StatTile } from "@/components/ui/stat-tile";
 import type { AgentPerformanceSummary } from "@/features/results/summarize-runs";
 import type { AgentRunRow } from "./agent-run-history";
 
@@ -96,7 +94,7 @@ export function AgentPerformance({
         <CardContent className="space-y-4">
           <PerformanceSummary summary={summary} />
           {showSplit && (
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-3 border-t border-white/5 pt-4 sm:grid-cols-3 lg:grid-cols-6">
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-3 border-t border-border pt-4 sm:grid-cols-3 lg:grid-cols-6">
               {s.avgDeterministic !== null && (
                 <StatTile
                   label="Avg deterministic"
@@ -154,7 +152,7 @@ export function AgentCoverage({ rows }: { rows: AgentRunRow[] }) {
           <StatTile
             label="Missions completed"
             value={String(completed)}
-            tone="accent"
+            tone="primary"
           />
           {specialties.length > 0 && (
             <StatTile label="Specialties" value={String(specialties.length)} />
@@ -202,7 +200,7 @@ function ChipRow({ label, items }: { label: string; items: string[] }) {
 function TrendChart({ values }: { values: number[] }) {
   if (values.length < 2) {
     return (
-      <div className="rounded-md border border-dashed border-white/10 p-4 text-center">
+      <div className="rounded-md border border-dashed border-border p-4 text-center">
         <p className="text-body font-medium text-heading">
           Not enough data for a trend yet
         </p>

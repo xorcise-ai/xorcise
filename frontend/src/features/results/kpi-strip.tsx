@@ -1,6 +1,6 @@
 import { Card, CardContent } from "@/components/ui/card";
+import { StatTile, StatTileRow, type StatTone } from "@/components/ui/stat-tile";
 import { pct } from "@/lib/api/format";
-import { cn } from "@/components/ui/cn";
 import type { GradeResult, RunStats, RunEntry } from "@/lib/api/types";
 
 const DASH = "—";
@@ -50,8 +50,11 @@ export function KpiStrip({
   const totalTokens = stats?.tokens?.total ?? 0;
   const range = (lower: number, upper: number | null | undefined) =>
     upper != null && upper > lower + 1e-9 ? `${pct(lower)}–${pct(upper)}` : pct(lower);
-  const tiles: { label: string; value: string; tone?: "score" }[] = [
-    { label: "Overall", value: range(grade.overall, grade.overall_upper), tone: "score" },
+  // `primary` on Overall only: the StatTile scale tints the ONE figure the row is about and
+  // leaves the rest at foreground, which is what the old text-heading/text-foreground split
+  // was reaching for.
+  const tiles: { label: string; value: string; tone?: StatTone }[] = [
+    { label: "Overall", value: range(grade.overall, grade.overall_upper), tone: "primary" },
     { label: "Deterministic", value: pct(grade.breakdown.deterministic) },
     { label: "Judge", value: range(grade.breakdown.judge, grade.judge_upper) },
     { label: "Elapsed", value: elapsedFrom(stats, run) },
@@ -67,22 +70,14 @@ export function KpiStrip({
   ];
   return (
     <Card className="bg-raised">
-      <CardContent className="grid grid-cols-2 gap-x-4 gap-y-4 p-4 sm:grid-cols-4 lg:grid-cols-7">
-        {tiles.map((t) => (
-          <div key={t.label} className="flex flex-col gap-1">
-            <span className="text-label uppercase text-text-tertiary">
-              {t.label}
-            </span>
-            <span
-              className={cn(
-                "text-lg font-bold tabular-nums",
-                t.tone === "score" ? "text-heading" : "text-foreground",
-              )}
-            >
-              {t.value}
-            </span>
-          </div>
-        ))}
+      <CardContent>
+        {/* StatTile renders <dt>/<dd>, so the strip has to be a real <dl>; the responsive
+            column count stays on the row. */}
+        <StatTileRow className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7">
+          {tiles.map((t) => (
+            <StatTile key={t.label} label={t.label} value={t.value} tone={t.tone} />
+          ))}
+        </StatTileRow>
       </CardContent>
     </Card>
   );

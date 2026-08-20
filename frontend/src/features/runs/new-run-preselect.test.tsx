@@ -93,7 +93,7 @@ describe("NewRunForm preselection", () => {
       expect(screen.getAllByText("SQLi Login Bypass").length).toBeGreaterThan(1),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Start Run/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Start run/i }));
 
     await waitFor(() => expect(body).not.toBeNull());
     expect(body).toMatchObject({
@@ -132,7 +132,7 @@ describe("NewRunForm preselection", () => {
     fireEvent.change(screen.getByRole("slider", { name: /budget/i }), {
       target: { value: "15" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /Start Run/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Start run/i }));
 
     await waitFor(() => expect(body).not.toBeNull());
     expect(body).toMatchObject({ budget_seconds: 900 });
@@ -143,6 +143,6 @@ describe("NewRunForm preselection", () => {
     renderWithProviders(<NewRunForm />);
     const row = await screen.findByRole("button", { name: "scout" });
     expect(row).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByRole("button", { name: /Start Run/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Start run/i })).toBeDisabled();
   });
 });

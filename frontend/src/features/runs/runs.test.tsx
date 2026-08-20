@@ -51,8 +51,8 @@ describe("RunList", () => {
     // §10 status vocabulary: capitalised labels, state-appropriate actions.
     expect(cards.getByText("Running")).toBeInTheDocument();
     expect(cards.getByText("Completed")).toBeInTheDocument();
-    expect(cards.getByText("Open Live Run")).toBeInTheDocument();
-    expect(cards.getByText("View Result")).toBeInTheDocument();
+    expect(cards.getByText("Open live run")).toBeInTheDocument();
+    expect(cards.getByText("View result")).toBeInTheDocument();
   });
 
   it("filters runs by search text and shows a Clear filters affordance", async () => {
@@ -187,7 +187,7 @@ describe("NewRunForm", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: /SQLi Login Bypass/i }),
     );
-    fireEvent.click(screen.getByRole("button", { name: /Start Run/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Start run/i }));
 
     await waitFor(() =>
       expect(push).toHaveBeenCalledWith("/runs/live?id=run-new"),
@@ -251,7 +251,7 @@ describe("NewRunForm", () => {
     // none, then disclose only the first intel (checkbox rows are labelled by intel id).
     fireEvent.click(await screen.findByRole("button", { name: "None" }));
     fireEvent.click(await screen.findByRole("checkbox", { name: /^i1\b/ }));
-    fireEvent.click(screen.getByRole("button", { name: /Start Run/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Start run/i }));
 
     await waitFor(() => expect(posted).not.toBeNull());
     expect(posted!.intel_policy).toBe("i1");
@@ -313,7 +313,7 @@ describe("NewRunForm", () => {
     // is sent as the stable "all" policy rather than an exhaustive id list.
     fireEvent.click(await screen.findByRole("button", { name: "None" }));
     fireEvent.click(screen.getByRole("button", { name: "All" }));
-    fireEvent.click(screen.getByRole("button", { name: /Start Run/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Start run/i }));
 
     await waitFor(() => expect(posted).not.toBeNull());
     expect(posted!.intel_policy).toBe("all");

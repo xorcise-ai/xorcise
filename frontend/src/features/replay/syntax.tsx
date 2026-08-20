@@ -207,11 +207,14 @@ export function highlightJson(code: string): ReactNode {
 
 // ── ANSI (program output) ──────────────────────────────────────────────────────────────────────
 
+/* SGR code -> palette entry. The values live in globals.css beside --syntax-*, so a
+   terminal block and the JSON block under it are one palette and a future light theme
+   flips both in one place. Emitted into an inline style, which resolves var() fine. */
 const ANSI_FG: Record<number, string> = {
-  30: "#6e7681", 31: "#f14c4c", 32: "#23d18b", 33: "#e5c07b", 34: "#3b8eea",
-  35: "#d670d6", 36: "#29b8db", 37: "#cccccc",
-  90: "#808080", 91: "#ff6d6d", 92: "#4ee88a", 93: "#f5f543", 94: "#59a6ff",
-  95: "#ff77ff", 96: "#4dd0e1", 97: "#ffffff",
+  30: "var(--ansi-30)", 31: "var(--ansi-31)", 32: "var(--ansi-32)", 33: "var(--ansi-33)",
+  34: "var(--ansi-34)", 35: "var(--ansi-35)", 36: "var(--ansi-36)", 37: "var(--ansi-37)",
+  90: "var(--ansi-90)", 91: "var(--ansi-91)", 92: "var(--ansi-92)", 93: "var(--ansi-93)",
+  94: "var(--ansi-94)", 95: "var(--ansi-95)", 96: "var(--ansi-96)", 97: "var(--ansi-97)",
 };
 
 // Matches an SGR colour sequence (…m) OR any other CSI/escape (to strip it).
@@ -236,7 +239,7 @@ export function renderAnsi(text: string): ReactNode {
   const flush = (upto: number) => {
     if (upto <= last) return;
     const chunk = text.slice(last, upto);
-    const c = color ?? (bold ? "#ffffff" : null);
+    const c = color ?? (bold ? "var(--ansi-bold-fg)" : null);
     out.push(
       c ? (
         <span key={key++} style={{ color: c, fontWeight: bold ? 600 : undefined }}>

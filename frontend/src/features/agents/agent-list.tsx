@@ -208,7 +208,7 @@ function AgentGrid({
   summaryByAgentId: Map<string, AgentPerformanceSummary>;
 }) {
   return (
-    <ul className="grid items-stretch gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+    <ul className="grid grid-cols-1 items-stretch gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
       {agents.map((agent, i) => (
         <li key={agent.id}>
           <Reveal delay={i * 40} className="h-full">
@@ -241,7 +241,7 @@ function AgentCard({
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2 text-primary">
           <Logo />
-          <span className="truncate text-row font-semibold text-heading">
+          <span className="truncate text-row font-bold text-heading">
             {agent.name}
           </span>
         </div>
@@ -277,13 +277,13 @@ function AgentCard({
       <div className="mt-auto flex items-center gap-2 pt-4">
         <Link href={runHref} className={cn(buttonVariants({ size: "sm" }))}>
           <Play className="size-3.5" />
-          Start Run
+          Start run
         </Link>
         <Link
           href={detailHref}
           className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
         >
-          View Agent
+          View agent
         </Link>
       </div>
     </Card>
@@ -296,7 +296,7 @@ function EmptyAgents({ onRegister }: { onRegister: () => void }) {
     <Card className="flex flex-col items-center gap-3 p-6 text-center">
       <CustomMark />
       <div className="space-y-2">
-        <p className="text-body font-semibold text-heading">No agents yet</p>
+        <p className="text-body font-bold text-heading">No agents yet</p>
         <p className="mx-auto max-w-sm text-body text-text-secondary">
           Register an agent to describe the AI harness you want to evaluate, then
           start a run to generate performance data.
@@ -317,7 +317,7 @@ function LoadingCards() {
     <ul
       role="status"
       aria-label="Loading agents…"
-      className="grid items-stretch gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+      className="grid grid-cols-1 items-stretch gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
     >
       {[0, 1, 2].map((i) => (
         <li key={i}>

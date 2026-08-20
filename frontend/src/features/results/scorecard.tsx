@@ -5,14 +5,17 @@ import { pct } from "@/lib/api/format";
 import { cn } from "@/components/ui/cn";
 import type { GradeResult } from "@/lib/api/types";
 
-export type Tone = { hex: string; text: string };
+/* `color` is a CSS colour VALUE (a var(), never a hex) because its two consumers — the
+   card's borderLeftColor and the ring's conic-gradient — are inline styles that a utility
+   class cannot reach. `text` is the matching utility for everything else. */
+export type Tone = { color: string; text: string };
 
 // Maps a 0..1 overall onto the semantic pass/marginal/fail palette. Mirrors
 // the old completion-rate rail: ≥80% green, ≥50% amber, else red.
 export function scoreTone(value: number): Tone {
-  if (value >= 0.8) return { hex: "#6ee7a8", text: "text-ok" };
-  if (value >= 0.5) return { hex: "#e8b84b", text: "text-primary" };
-  return { hex: "#ff5f57", text: "text-err" };
+  if (value >= 0.8) return { color: "var(--color-ok)", text: "text-ok" };
+  if (value >= 0.5) return { color: "var(--color-primary)", text: "text-primary" };
+  return { color: "var(--color-err)", text: "text-err" };
 }
 
 // The graded scorecard: overall ring + the two half-score bars + a checks-passed line.
@@ -24,7 +27,7 @@ export function Scorecard({ grade: r, tone }: { grade: GradeResult; tone: Tone }
   return (
     <Card
       className="overflow-hidden bg-raised"
-      style={{ borderLeftWidth: 3, borderLeftColor: tone.hex }}
+      style={{ borderLeftWidth: 3, borderLeftColor: tone.color }}
     >
       {/* 16 inside the card against the page's 24 between sections is a real
           step; 20-vs-24 was not, which is why every slab read at one weight. */}
@@ -99,11 +102,11 @@ export function ScoreRing({
       <div
         className="grid size-28 place-items-center rounded-full"
         style={{
-          background: `conic-gradient(${tone.hex} ${deg}deg, var(--color-muted) 0deg)`,
+          background: `conic-gradient(${tone.color} ${deg}deg, var(--color-muted) 0deg)`,
         }}
       >
         <div className="grid size-[5.5rem] place-items-center rounded-full bg-raised">
-          <span className={cn("text-3xl font-bold tabular-nums", tone.text)}>
+          <span className={cn("text-display tabular-nums", tone.text)}>
             {pct(value)}
           </span>
         </div>
@@ -134,7 +137,7 @@ export function BreakdownBar({
         </span>
         <span
           className={cn(
-            "text-dense font-semibold tabular-nums",
+            "text-dense tabular-nums",
             muted ? "text-text-tertiary" : "text-primary",
           )}
         >

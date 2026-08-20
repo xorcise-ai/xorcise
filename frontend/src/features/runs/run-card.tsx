@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { ArrowRight, Clock, Crosshair, Terminal, Timer, Trash2 } from "lucide-react";
 import { Badge, type BadgeProps } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/components/ui/cn";
 import { useToastStore } from "@/stores/toasts";
@@ -105,14 +106,14 @@ export function RunCard({ run }: { run: RunEntry }) {
         )}
       >
         <Card
-          className="flex h-full min-h-[8.5rem] flex-col p-3 transition-colors hover:border-[rgba(255,255,255,0.14)]"
+          className="flex h-full min-h-[8.5rem] flex-col p-3 transition-colors hover:border-border-hover"
           style={{ borderLeftWidth: 3, borderLeftColor: accent }}
         >
           <div
             className={cn(
               "flex items-start justify-between gap-2",
               // Reserve the corner the hover-revealed delete icon occupies.
-              deletable && "pr-7",
+              deletable && "pr-10",
             )}
           >
             <div className="flex min-w-0 items-center gap-2">
@@ -123,7 +124,7 @@ export function RunCard({ run }: { run: RunEntry }) {
                   aria-hidden
                 />
               )}
-              <span className="truncate text-row font-semibold text-heading">
+              <span className="truncate text-row font-bold text-heading">
                 {run.name}
               </span>
             </div>
@@ -191,8 +192,10 @@ export function RunCard({ run }: { run: RunEntry }) {
 
       {deletable && (
         <>
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="icon"
             aria-label="Delete run"
             title="Delete run"
             onClick={(e) => {
@@ -201,10 +204,12 @@ export function RunCard({ run }: { run: RunEntry }) {
               e.stopPropagation();
               setConfirmDelete(true);
             }}
-            className="absolute right-2 top-2 z-10 rounded-md p-1.5 text-text-tertiary opacity-0 transition-opacity hover:bg-[rgba(255,255,255,0.06)] hover:text-err focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100"
+            // Ghost's hover is amber; this one action is destructive, so the hover ink is
+            // overridden here rather than by a new variant. The reveal stays local too.
+            className="absolute right-2 top-2 z-10 text-text-tertiary opacity-0 transition-opacity hover:text-err focus-visible:opacity-100 group-hover:opacity-100"
           >
             <Trash2 className="size-3.5" />
-          </button>
+          </Button>
           {confirmDelete && (
             <DeleteRunInline
               runId={run.run_id}

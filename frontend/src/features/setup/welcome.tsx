@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { LayoutDashboard, ArrowRight, Check } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
+import { StatusDot } from "@/components/ui/dot";
 import { useRuns } from "@/features/runs/queries";
 import { isTerminal } from "@/features/runs/run-state";
 import { useServerHealth } from "./queries";
@@ -38,7 +39,7 @@ function StepStrip({ done }: { done: boolean[] }) {
   const nextIdx = done.findIndex((d) => !d);
   return (
     <Card>
-      <CardContent className="grid gap-4 p-4 sm:grid-cols-2 lg:grid-cols-4">
+      <CardContent className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 lg:grid-cols-4">
         {STEPS.map((s, i) => {
           const isDone = done[i] ?? false;
           const isNext = i === nextIdx;
@@ -46,14 +47,14 @@ function StepStrip({ done }: { done: boolean[] }) {
             <Link
               key={s.n}
               href={s.href}
-              className="group -m-1.5 grid grid-cols-[24px_1fr] gap-2.5 rounded-lg border border-transparent p-1.5 transition-colors hover:border-[rgba(255,255,255,0.14)] hover:bg-raised"
+              className="group -m-1.5 grid grid-cols-[24px_1fr] gap-2.5 rounded-md border border-transparent p-1.5 transition-colors hover:border-border-hover hover:bg-raised"
             >
               <span
                 className={
                   "flex size-6 items-center justify-center rounded-full border text-caption font-semibold tabular-nums " +
                   (isDone
-                    ? "border-ok/40 bg-ok/[0.1] text-ok"
-                    : "border-primary/30 bg-primary/[0.08] text-primary")
+                    ? "border-ok/40 bg-ok/10 text-ok"
+                    : "border-primary/30 bg-primary/8 text-primary")
                 }
               >
                 {isDone ? <Check className="size-3.5" /> : s.n}
@@ -107,17 +108,18 @@ export function Welcome() {
     <div className="page-measure space-y-8 p-6">
       <header className="space-y-3">
         <span className="inline-flex items-center gap-2 rounded-full border border-border px-2.5 py-1 text-caption text-text-secondary">
-          <span
-            className={
-              "inline-block size-2 rounded-full " +
-              (serverDown ? "bg-err" : "bg-ok motion-safe:animate-pulse")
-            }
-            aria-hidden
+          {/* The DS dot primitive; the pulse stays because it is what says "live", and a dot
+              never stands alone here — the phrase beside it names the state. */}
+          <StatusDot
+            tone={serverDown ? "err" : "ok"}
+            size="lg"
+            className={serverDown ? undefined : "motion-safe:animate-pulse"}
           />
           {serverDown ? "Backend unreachable" : "Backend running"}
         </span>
         <h1 className="text-lead text-heading">Get started with XORCISE.AI</h1>
-        <p className="max-w-[68ch] text-body text-text-secondary">
+        {/* `prose-block` IS the 68ch measure (globals.css) — it was being re-typed here. */}
+        <p className="prose-block text-body text-text-secondary">
           Evaluate how well cyber AI agents perform on real cybersecurity missions — declare
           an agent, pull a mission, and watch it work end to end.
         </p>
@@ -135,20 +137,21 @@ export function Welcome() {
       <QuickStart startHref={readiness.startHref} />
 
       {runCount > 0 && readiness.ready && (
-        <Link
-          href="/"
-          className="flex items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3 text-body text-text-secondary transition-colors hover:border-[rgba(255,255,255,0.14)]"
-        >
-          <span className="inline-flex items-center gap-2">
-            <LayoutDashboard className="size-4 text-text-tertiary" />
-            Already up and running?{" "}
-            <span className="text-heading">
-              {runCount} run{runCount === 1 ? "" : "s"}
+        <Link href="/" className="group block">
+          {/* The card shape comes from the DS Card, same as the quick-start tiles; the link
+              keeps the hover it shipped with. */}
+          <Card className="flex items-center justify-between gap-3 px-4 py-3 text-body text-text-secondary transition-colors group-hover:border-border-hover">
+            <span className="inline-flex items-center gap-2">
+              <LayoutDashboard className="size-4 text-text-tertiary" />
+              Already up and running?{" "}
+              <span className="text-heading">
+                {runCount} run{runCount === 1 ? "" : "s"}
+              </span>
             </span>
-          </span>
-          <span className="inline-flex items-center gap-1 text-primary">
-            Go to dashboard <ArrowRight className="size-3.5" />
-          </span>
+            <span className="inline-flex items-center gap-1 text-primary">
+              Go to dashboard <ArrowRight className="size-3.5" />
+            </span>
+          </Card>
         </Link>
       )}
     </div>
