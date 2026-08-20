@@ -34,6 +34,7 @@ export type JudgeTestResult = S["JudgeTestResult"];
 export type MissionManifest = S["MissionManifest"];
 export type IngestStarted = S["IngestStarted"];
 export type IngestJobView = S["IngestJobView"];
+export type MissionUpdateOut = S["MissionUpdateOut"];
 export type SystemInfo = S["SystemInfo"];
 export type PlaneStatus = S["PlaneStatus"];
 export type FsListing = S["FsListing"];
