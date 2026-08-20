@@ -175,7 +175,19 @@ class DockerSdkDriver(DockerDriver):
         import io
         import tarfile
 
-        container = self._client.containers.create(image, entrypoint=["/bin/true"], command=[])
+        import docker.errors
+
+        from xorcise.core.contracts.errors import ImageNotInstalledError
+
+        # This runs BEFORE `run()`'s own presence guard, so an absent image would otherwise
+        # surface here as a raw docker 404 instead of the domain error the REST layer already
+        # translates into "…(re)build it". Same error, same remediation, whichever hits first.
+        try:
+            container = self._client.containers.create(
+                image, entrypoint=["/bin/true"], command=[]
+            )
+        except docker.errors.ImageNotFound as exc:
+            raise ImageNotInstalledError(f"image {image!r} is not in the local store") from exc
         try:
             stream, _stat = container.get_archive(path)
             blob = b"".join(stream)
