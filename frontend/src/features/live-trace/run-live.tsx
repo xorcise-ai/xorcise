@@ -366,6 +366,7 @@ export function RunLive({ runId }: { runId: string | null }) {
             </div>
             <MetaItem label="Agent" value={`${agentName} v${r.agent_version}`} />
             <MetaItem label="Harness" value={r.source_agent} />
+            {r.platform && <MetaItem label="Platform" value={r.platform} />}
             {r.model && <MetaItem label="Model" value={r.model} />}
             <MetaItem label="Budget" value={formatBudget(r.budget_seconds)} />
             {startedAt && <MetaItem label="Started" value={startedAt} />}
