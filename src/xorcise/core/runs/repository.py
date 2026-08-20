@@ -63,6 +63,7 @@ def create_run(
     join_key: str = "",
     network_cidr: str = "",
     entry_cidrs: str = "",
+    agent_ingress: bool = False,
     model: str | None = None,
     sandbox_ref: str | None = None,
     agent_version: int = 1,
@@ -89,6 +90,7 @@ def create_run(
             join_key=join_key,
             network_cidr=network_cidr,
             entry_cidrs=entry_cidrs,
+            agent_ingress=agent_ingress,
             model=model,
             sandbox_ref=sandbox_ref,
             agent_version=agent_version,
@@ -114,6 +116,7 @@ def reserve_run(
     *,
     network_cidr: str,
     entry_cidrs: str = "",
+    agent_ingress: bool = False,
     name: str | None = None,
     intel_policy: str = "all",
 ) -> RunEntry:
@@ -132,6 +135,7 @@ def reserve_run(
             name=name or None,
             network_cidr=network_cidr,
             entry_cidrs=entry_cidrs,
+            agent_ingress=agent_ingress,
             intel_policy=intel_policy,
         )
         s.add(row)
@@ -229,15 +233,23 @@ def active_cidrs() -> set[str]:
         return {r.network_cidr for r in rows if r.network_cidr}
 
 
-def active_run_networks() -> list[tuple[str, tuple[str, ...]]]:
-    """(run_id, entry_cidrs) for every non-terminal run with non-empty entry_cidrs.
+def active_run_networks() -> list[tuple[str, tuple[str, ...], bool]]:
+    """(run_id, entry_cidrs, agent_ingress) for every non-terminal run with non-empty entry_cidrs.
 
     The authoritative source for rendering the per-run ACL: the rest layer maps these to the
     fence's RunNetwork set so every process renders the same complete policy from the shared DB,
-    instead of each clobbering the others from its own in-process view."""
+    instead of each clobbering the others from its own in-process view.
+
+    agent_ingress rides along because the ACL's inbound rule is part of that complete policy — a
+    reconcile that could not see it would silently re-render the fence WITHOUT the rule and break
+    every callback mission on the next restart."""
     with session_scope() as s:
         rows = s.scalars(select(RunRow).where(RunRow.state != "terminal")).all()
-        return [(r.id, tuple(r.entry_cidrs.split(","))) for r in rows if r.entry_cidrs]
+        return [
+            (r.id, tuple(r.entry_cidrs.split(",")), bool(r.agent_ingress))
+            for r in rows
+            if r.entry_cidrs
+        ]
 
 
 def active_runs_to_reconcile() -> list[tuple[str, bool]]:

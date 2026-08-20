@@ -165,6 +165,31 @@ class DockerSdkDriver(DockerDriver):
         os_name, arch = attrs.get("Os"), attrs.get("Architecture")
         return f"{os_name}/{arch}" if os_name and arch else None
 
+    def read_image_file(self, image: str, path: str) -> str | None:
+        """Read a file out of an image via a created-but-never-started container.
+
+        `create` + `get_archive` rather than `run`: the mission image's entrypoint boots an inner
+        dockerd, and we only want a file. Raises rather than returning None on failure — the
+        caller confines mission networks from this and must not proceed on a silent miss.
+        """
+        import io
+        import tarfile
+
+        container = self._client.containers.create(image, entrypoint=["/bin/true"], command=[])
+        try:
+            stream, _stat = container.get_archive(path)
+            blob = b"".join(stream)
+        finally:
+            container.remove(force=True)
+        with tarfile.open(fileobj=io.BytesIO(blob)) as tar:
+            member = next((m for m in tar.getmembers() if m.isfile()), None)
+            if member is None:
+                raise RuntimeError(f"{image}: {path} is not a regular file")
+            handle = tar.extractfile(member)
+            if handle is None:
+                raise RuntimeError(f"{image}: could not extract {path}")
+            return handle.read().decode("utf-8")
+
     def run(self, spec: ContainerSpec) -> ContainerHandle:
         # The fused image is local-only (no registry). containers.run auto-PULLS a missing image,
         # which for a local-only ref fails with a cryptic "pull access denied" — so fail loud

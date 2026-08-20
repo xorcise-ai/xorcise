@@ -35,7 +35,9 @@ class _BoomControl:
 class _BoomFence:
     """A NetworkFencePort whose every method explodes — Headscale must NOT be touched for static."""
 
-    def create_run_network(self, run_id: str, agent_user: str, entry_cidrs: object) -> object:
+    def create_run_network(
+        self, run_id: str, agent_user: str, entry_cidrs: object, *, agent_ingress: bool = False
+    ) -> object:
         raise AssertionError("fence.create_run_network must not run for a static mission")
 
     def reconcile_acl(self) -> None:

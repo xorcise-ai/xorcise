@@ -110,6 +110,17 @@ class DockerDriver(ABC):
         Keyed on the deterministic container name, not an in-memory handle, so teardown works
         across a server restart or from a second process. Absent ⇒ False."""
 
+    def read_image_file(self, image: str, path: str) -> str | None:
+        """A file's text from inside an image, WITHOUT running it. None ⇒ this driver can't read.
+
+        The mission's compose file is the only authoritative list of the networks a run will
+        create, and it ships inside the fused image rather than the installed bundle — so the
+        confinement pass has to read it from there. A real driver either returns the content or
+        raises; None is the stub's answer (no image store to read), never a real driver's way of
+        reporting failure, because a silent empty answer would leave networks unconfined.
+        """
+        return None
+
     @abstractmethod
     def inspect_by_name(self, name: str) -> ContainerHandle | None:
         """The live container's identity for this (run-id-derived) name, or None if absent.

@@ -68,7 +68,12 @@ class NetworkFencePort(ABC):
 
     @abstractmethod
     def create_run_network(
-        self, run_id: str, agent_user: str, entry_cidrs: Sequence[str]
+        self,
+        run_id: str,
+        agent_user: str,
+        entry_cidrs: Sequence[str],
+        *,
+        agent_ingress: bool = False,
     ) -> RunNetwork: ...
 
     @abstractmethod

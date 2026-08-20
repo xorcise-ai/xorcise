@@ -1,6 +1,14 @@
+from typing import Any
+
+import pytest
+
 from xorcise.core.runner.netoverride import (
+    EGRESS_NET,
+    ROUTER_OCTET,
     build_net_override,
     carve_entry_subnets,
+    compose_network_names,
+    ingress_address,
     target_ips_for,
 )
 
@@ -130,3 +138,107 @@ def test_build_override_without_static_ips_pins_no_service_ip():
     services = build_net_override("run-x", {"default": "10.200.20.0/24"})["services"]
     assert isinstance(services, dict)
     assert set(services) == {"xorcise-router"}  # only the router, as before
+
+
+# --- confinement + agent ingress ---------------------------------------------------------------
+
+ENTRY = {"dmz_net": "10.200.1.0/24"}
+
+
+def _override(**kw: Any) -> dict[str, Any]:
+    return build_net_override("run1", ENTRY, **kw)
+
+
+def test_every_mission_network_is_confined_not_just_the_entry_ones():
+    """The multi-homed case: a service with a foot in an unconfined network keeps its way out."""
+    o = _override(all_networks=["dmz_net", "internal_net"])
+    assert o["networks"]["dmz_net"]["internal"] is True
+    assert o["networks"]["internal_net"]["internal"] is True
+
+
+def test_router_gets_an_egress_network_with_default_route_priority():
+    o = _override(all_networks=["dmz_net"])
+    assert o["networks"][EGRESS_NET] == {}  # the one network that is NOT internal
+    router = o["services"]["xorcise-router"]
+    assert EGRESS_NET in router["networks"]
+    assert router["networks"][EGRESS_NET]["priority"] > 0
+
+
+def test_router_address_is_pinned_not_docker_sequential():
+    o = _override()
+    assert o["services"]["xorcise-router"]["networks"]["dmz_net"]["ipv4_address"] == "10.200.1.2"
+
+
+def test_allow_egress_leaves_networks_routable_and_adds_no_egress_net():
+    o = _override(all_networks=["dmz_net"], allow_egress=True)
+    assert "internal" not in o["networks"]["dmz_net"]
+    assert EGRESS_NET not in o["networks"]
+    assert EGRESS_NET not in o["services"]["xorcise-router"]["networks"]
+
+
+def test_ingress_address_sits_at_the_top_of_a_carved_subnet():
+    """A fixed high octet would fall outside a carved /25; counting down from broadcast cannot."""
+    assert ingress_address("10.200.1.0/24") == "10.200.1.254"
+    assert ingress_address("10.200.1.0/25") == "10.200.1.126"
+    assert ingress_address("10.200.1.128/25") == "10.200.1.254"
+
+
+def test_no_ingress_prologue_unless_the_mission_asks_for_it():
+    router = _override()["services"]["xorcise-router"]
+    assert "entrypoint" not in router
+
+
+def test_ingress_prologue_arms_dnat_and_masquerade():
+    o = _override(agent_ingress=True, agent_user="run-run1-agent")
+    router = o["services"]["xorcise-router"]
+    script = router["entrypoint"][2]
+    assert "MASQUERADE" in script and "-o tailscale0" in script
+    assert "10.200.1.254" in script  # the callback address the target dials
+    assert "run-run1-agent" in script  # discovered by user, never a pinned address
+    assert script.rstrip().endswith("exec /usr/local/bin/containerboot")
+
+
+def test_ingress_requires_an_agent_user_to_discover():
+    with pytest.raises(ValueError, match="agent_user"):
+        _override(agent_ingress=True)
+
+
+def test_ca_and_ingress_prologues_compose():
+    router = _override(
+        agent_ingress=True, agent_user="run-run1-agent", ca_cert_path="/tmp/ca.pem"
+    )["services"]["xorcise-router"]
+    script = router["entrypoint"][2]
+    assert "headscale-ca.pem" in script and "MASQUERADE" in script
+    assert script.count("exec /usr/local/bin/containerboot") == 1
+
+
+@pytest.mark.parametrize("octet", [ROUTER_OCTET, 254])
+def test_reserved_addresses_refuse_to_collide_with_a_mission_pin(octet):
+    with pytest.raises(ValueError, match="reserved"):
+        _override(static_ips={"web": {"dmz_net": octet}})
+
+
+def test_a_normal_static_ip_pin_is_untouched():
+    o = _override(static_ips={"web": {"dmz_net": 10}})
+    assert o["services"]["web"]["networks"]["dmz_net"]["ipv4_address"] == "10.200.1.10"
+
+
+def test_compose_network_names_reads_declarations_and_attachments():
+    text = """
+services:
+  web: {networks: [dmz_net, internal_net]}
+  db: {networks: {internal_net: {}}}
+networks:
+  dmz_net: {}
+  internal_net: {}
+"""
+    assert compose_network_names(text) == ("dmz_net", "internal_net")
+
+
+def test_compose_network_names_falls_back_to_the_implicit_default():
+    assert compose_network_names("services:\n  web:\n    image: x") == ("default",)
+
+
+def test_compose_network_names_rejects_unparseable_input():
+    with pytest.raises(ValueError):
+        compose_network_names("[not, a, mapping]")

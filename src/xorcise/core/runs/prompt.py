@@ -33,6 +33,7 @@ def assemble_mission_prompt(
     artifacts: Sequence[ConnectArtifact] = (),
     attachments: Sequence[ConnectAttachment] = (),
     intel_available: int = 0,
+    agent_ingress_addr: str = "",
 ) -> MissionPrompt:
     return MissionPrompt(
         run_id=run_id,
@@ -48,6 +49,7 @@ def assemble_mission_prompt(
         artifacts=tuple(artifacts),
         attachments=tuple(attachments),
         intel_available=intel_available,
+        agent_ingress_addr=agent_ingress_addr,
     )
 
 
@@ -118,7 +120,7 @@ def _join_lines(mission: MissionPrompt) -> list[str]:
     Phrased relative to the run-control base URL + Bearer (both shown once, in step 2) so the key
     appears exactly once and a prompt-only parser still finds the base path there.
     """
-    return [
+    lines = [
         "1. Join the run's tailnet in ONE command — fetch your join script from run-control and "
         "pipe it to a shell. It installs a userspace tailscale client if missing, joins, waits for "
         "an IP, and prints how to reach the targets. No root required:",
@@ -130,6 +132,22 @@ def _join_lines(mission: MissionPrompt) -> list[str]:
         "`nc -X 5 -x <host:port> <target-ip> <port>`. Configure the same SOCKS5 proxy explicitly "
         "in pwntools/PySocks rather than connecting directly.",
     ]
+    if mission.agent_ingress_addr:
+        # Callback missions. Two things the agent cannot discover: the address to register (its
+        # own tailnet IP is NOT it — mission containers have no route there; the run's router owns
+        # this mission-network address and forwards it across the tailnet), and WHERE the server
+        # has to run. In sidecar mode the tailnet node is the sidecar container, so a port bound
+        # on the host is unreachable no matter how the mission is configured.
+        lines.append(
+            "2. This mission calls BACK to you. Register the address "
+            f"`http://{mission.agent_ingress_addr}:<your-port>/` (any port you like) — NOT your "
+            "own tailnet IP, which the mission's services cannot route to. Your server must "
+            "listen inside your tailnet node's network namespace: if the join script reported "
+            "Docker sidecar mode, start it with "
+            "`docker run -d --network container:<sidecar-name> ...` (the script prints the "
+            "name); a port bound on the host is not reachable from the mission network."
+        )
+    return lines
 
 
 def login_server_by_ip(login_server: str, ip: str) -> str:

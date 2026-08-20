@@ -28,7 +28,7 @@ from xorcise.core.contracts.control import (
 )
 from xorcise.core.contracts.errors import NotFoundError
 from xorcise.core.runner.docker import ContainerHandle, ContainerSpec, DockerDriver
-from xorcise.core.runner.netoverride import build_net_override
+from xorcise.core.runner.netoverride import build_net_override, compose_network_names
 
 # Where the entrypoint writes the delivered Headscale CA (in the OUTER fused container); the
 # net-override bind-mounts this into the router. Kept in sync with the entrypoint.
@@ -37,6 +37,11 @@ _CA_PATH = "/mission/headscale-ca.pem"
 # A run id (uuid4().hex) — the ONLY compose-project shape the orphan reaper may touch. Everything
 # else on this daemon (notably the `xorcise-headscale` control plane) is off limits.
 _RUN_ID_RE = re.compile(r"[0-9a-f]{32}")
+
+
+# Where the fused image keeps the mission's authored compose. Read at deploy to enumerate the
+# networks the run will create so every one of them can be confined.
+MISSION_COMPOSE_PATH = "/mission/docker-compose.yml"
 
 
 @dataclass
@@ -69,7 +74,9 @@ class RunnerControlService:
             ContainerSpec(
                 image=request.mission.image,
                 name=request.run_id,
-                env=self._deploy_env(request.run_id, request.network),
+                env=self._deploy_env(
+                    request.run_id, request.network, image=request.mission.image
+                ),
             )
         )
         endpoints = RunnerEndpoints(
@@ -84,7 +91,9 @@ class RunnerControlService:
         self._torn_down.discard(request.run_id)
         return endpoints
 
-    def _deploy_env(self, run_id: RunId, network: NetworkSpec) -> tuple[tuple[str, str], ...]:
+    def _deploy_env(
+        self, run_id: RunId, network: NetworkSpec, *, image: str = ""
+    ) -> tuple[tuple[str, str], ...]:
         """The env the fused entrypoint needs: the per-run net-override (the mission nets +
         the Tailscale router as an inner container) plus the secrets compose interpolates into
         it. The override is base64'd so multi-line YAML rides a single env var cleanly; the
@@ -102,12 +111,22 @@ class RunnerControlService:
         entry_subnets = dict(zip(network.entry_networks, network.routes, strict=True))
         routes = network.routes
         ca_path = _CA_PATH if network.ca_cert else ""
+        # Every network the mission's compose will create, read from the image itself — the
+        # only authoritative source (the installed bundle carries the manifest, not the compose).
+        # Confining just the carved entry networks would leave a multi-homed service its route off
+        # box, so this is what makes the tailnet the ONLY path to the agent.
+        compose_text = self.driver.read_image_file(image, MISSION_COMPOSE_PATH) if image else None
+        all_networks = compose_network_names(compose_text) if compose_text else ()
         override = build_net_override(
             run_id,
             entry_subnets,
             extra_hosts=network.extra_hosts,
             ca_cert_path=ca_path,
             static_ips=network.static_ips,
+            all_networks=all_networks,
+            agent_ingress=network.agent_ingress,
+            agent_user=network.agent_user,
+            allow_egress=network.allow_egress,
         )
         override_b64 = base64.b64encode(yaml.safe_dump(override).encode()).decode()
         env = [

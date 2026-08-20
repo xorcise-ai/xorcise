@@ -116,7 +116,17 @@ if [ "$TS_MODE" = sidecar ]; then
   set -- "$@" --entrypoint sh "$SIDECAR_IMAGE" -c '
     sock=$1
     shift
-    tailscaled "$@" &
+    # Bind the proxies to this container OWN bridge address, not 0.0.0.0. In userspace-networking
+    # mode netstack delivers inbound tailnet connections to 127.0.0.1 INSIDE this namespace, so a
+    # wildcard bind publishes the agent SOCKS/HTTP proxy ON the tailnet — reachable by the mission
+    # once agent ingress is allowed, which would hand mission code a relay carrying the agent
+    # identity. The docker published-port proxy dials the container address, so binding it keeps
+    # the host side working while removing the tailnet side. (No apostrophes: this whole script is
+    # a single-quoted argument to sh -c.)
+    bip=$(ip -4 -o addr show eth0 2>/dev/null |
+      sed -n "s|.*inet \([0-9.][0-9.]*\)/.*|\1|p" | head -1)
+    [ -n "$bip" ] || bip=0.0.0.0
+    tailscaled --socks5-server="$bip":1055 --outbound-http-proxy-listen="$bip":1056 "$@" &
     tailscaled_pid=$!
 
     stop_sidecar() {
@@ -156,7 +166,6 @@ if [ "$TS_MODE" = sidecar ]; then
     exit "$status"
   ' _ "$SIDECAR_SOCK" \
     --tun=userspace-networking \
-    --socks5-server=0.0.0.0:1055 --outbound-http-proxy-listen=0.0.0.0:1056 \
     --state=/tmp/xorcise-tailscaled.state --socket="$SIDECAR_SOCK"
   if ! "$@" >/dev/null; then
     echo "xorcise: tailnet sidecar failed to start (image $SIDECAR_IMAGE)." >&2
@@ -234,6 +243,11 @@ if [ "$TS_MODE" = sidecar ]; then
   echo "  curl --socks5-hostname 127.0.0.1:$SOCKS http://<target-ip>:<port>/"
   echo "xorcise: raw TCP example (macOS nc):"
   echo "  nc -X 5 -x 127.0.0.1:$SOCKS <target-ip> <port>"
+  echo "xorcise: your tailnet node IS the container $SIDECAR."
+  echo "xorcise: to ACCEPT connections (a callback API, a listener), your server must run INSIDE"
+  echo "  that container network namespace — a port bound on this host is NOT reachable:"
+  echo "    docker run -d --network container:$SIDECAR <image> <your-server-command>"
+  echo "  any port works; the mission tells you which address to register."
   echo "xorcise: proxy details were saved to $ENVF."
   echo "xorcise: do not set a global proxy; Claude API traffic must stay on the normal network."
 
