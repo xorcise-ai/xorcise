@@ -185,9 +185,46 @@ def host_platform(settings: Settings) -> str | None:
 
 
 def reset_host_platform_memo() -> None:
-    """Drop the memo (tests)."""
+    """Drop the platform memos (tests)."""
     global _host_platform_memo
     _host_platform_memo = None
+    _image_platform_memo.clear()
+
+
+_IMAGE_PLATFORM_TTL = 60.0
+_image_platform_memo: dict[str, tuple[float, str | None]] = {}
+
+
+def local_image_platform(settings: Settings, image: str) -> str | None:
+    """The `os/arch` of a LOCAL image (docker image inspect), or None when unknowable.
+
+    The §30 install record normally carries the platform a pull selected — but installs that
+    predate the record (and your_own fuses) have nothing recorded, and their runs still deserve
+    the emulation warning. The local image itself is the honest fallback: it IS what a run of
+    this install executes. Memoised per ref (browse polls; an image's arch only changes when
+    its tag is re-pointed by an update/re-fuse, which the short TTL absorbs); None in stub mode
+    and on any probe failure — unknown, never guessed."""
+    if settings.use_stubs or not image:
+        return None
+    now = time.monotonic()
+    hit = _image_platform_memo.get(image)
+    if hit is not None and now - hit[0] < _IMAGE_PLATFORM_TTL:
+        return hit[1]
+    value: str | None = None
+    try:
+        result = subprocess.run(
+            ["docker", "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", image],
+            capture_output=True,
+            timeout=5,
+            text=True,
+        )
+        raw = result.stdout.strip()
+        if result.returncode == 0 and "/" in raw:
+            value = raw
+    except (OSError, subprocess.SubprocessError):
+        value = None
+    _image_platform_memo[image] = (now, value)
+    return value
 
 
 def require_base_compatible(

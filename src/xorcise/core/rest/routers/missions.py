@@ -93,12 +93,14 @@ def _installed_entry(ic: InstalledMission) -> CatalogEntry:
     landed: versions, digest, and the platform that was actually pulled."""
     from xorcise.core.config import get_settings
     from xorcise.core.rest.catalog_view import base_compat_of
-    from xorcise.core.rest.docker_runtime import host_platform
+    from xorcise.core.rest.docker_runtime import host_platform, local_image_platform
 
     m = ic.manifest.metadata
     image = ic.mission_ref.image or None
     compat = base_compat_of(image)
-    platform = ic.platform
+    # Pre-record installs: the local image itself is the honest platform source (see
+    # catalog_view — the browse row does the same, so the two can never disagree).
+    platform = ic.platform or local_image_platform(get_settings(), image or "")
     host = host_platform(get_settings())
     return CatalogEntry(
         source=ic.origin,

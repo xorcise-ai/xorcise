@@ -316,3 +316,56 @@ def test_installed_row_borrows_the_catalog_platform_offer(tmp_path: Path) -> Non
     )
     assert row.installed is True
     assert row.platforms == ("linux/amd64", "linux/arm64")
+
+
+def test_pre_record_install_falls_back_to_the_local_image_platform(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # An EXISTING installation (made before installed.json recorded a platform) must still get
+    # the emulation verdict: the server inspects the local image — which IS what a run of this
+    # install executes — instead of staying silent.
+    monkeypatch.setattr(
+        "xorcise.core.rest.docker_runtime.host_platform", lambda settings: "linux/arm64"
+    )
+    monkeypatch.setattr(
+        "xorcise.core.rest.docker_runtime.local_image_platform",
+        lambda settings, image: "linux/amd64" if image else None,
+    )
+    slug = "c1"
+    ref = MissionRef(mission_id=slug, image="reg/xorcise/mis-c1:abc123-base2")
+    _write(
+        tmp_path,
+        slug,
+        InstalledMission(slug, tmp_path / slug, _manifest(), ref, origin="library"),
+    )
+    deps = CatalogViewDeps(source=StubCatalogSource(enabled=False), install_root=tmp_path)
+    row = next(e for e in list_catalog(deps) if e.mission_id == slug)
+    assert row.platform == "linux/amd64"  # read off the local image, not the (absent) record
+    assert row.emulated is True  # → the run form's warning fires for this existing install
+
+
+def test_recorded_platform_wins_over_the_image_inspect(tmp_path: Path, monkeypatch) -> None:
+    # A §30 record is authoritative; the inspect is only the fallback for its absence.
+    calls: list[str] = []
+
+    def fake_inspect(settings, image):  # noqa: ANN001 — test stub
+        calls.append(image)
+        return "linux/amd64"
+
+    monkeypatch.setattr(
+        "xorcise.core.rest.docker_runtime.host_platform", lambda settings: "linux/arm64"
+    )
+    monkeypatch.setattr("xorcise.core.rest.docker_runtime.local_image_platform", fake_inspect)
+    slug = "c1"
+    ref = MissionRef(mission_id=slug, image="reg/xorcise/mis-c1:1.0.0-base2.0.0")
+    _write(
+        tmp_path,
+        slug,
+        InstalledMission(
+            slug, tmp_path / slug, _manifest(), ref, origin="library", identity=_identity()
+        ),
+    )
+    deps = CatalogViewDeps(source=StubCatalogSource(enabled=False), install_root=tmp_path)
+    row = next(e for e in list_catalog(deps) if e.mission_id == slug)
+    assert row.platform == "linux/arm64"  # the record, not the inspect
+    assert calls == []  # and the fallback never ran
