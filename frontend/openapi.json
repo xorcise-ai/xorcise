@@ -806,6 +806,17 @@
             ],
             "title": "Download Size Bytes"
           },
+          "emulated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emulated"
+          },
           "image": {
             "anyOf": [
               {
@@ -873,6 +884,17 @@
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
           },
           "platforms": {
             "default": [],
@@ -3577,6 +3599,17 @@
             "default": "",
             "title": "Home",
             "type": "string"
+          },
+          "host_platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Host Platform"
           },
           "mission_base": {
             "anyOf": [

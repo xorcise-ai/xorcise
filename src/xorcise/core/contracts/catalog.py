@@ -74,6 +74,13 @@ class CatalogEntry(_Frozen):
     update_available: bool | None = None
     current_mission_version: str | None = None
     current_mission_base_version: str | None = None
+    # What THIS install actually pulled (§30's image.platform), e.g. "linux/amd64" — None for
+    # a not-installed row, a your_own fuse, or a pre-contract install. `emulated` is the
+    # server's verdict of that platform against the daemon's native one: True = this install
+    # runs under emulation here; False = native; None = unknowable (either side missing).
+    # Server-computed because only the server can see the daemon.
+    platform: str | None = None
+    emulated: bool | None = None
 
 
 class CatalogStatus(_Frozen):

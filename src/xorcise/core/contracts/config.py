@@ -181,3 +181,6 @@ class SystemInfo(_Frozen):
     db_url: str = ""  # the active database url (sqlite path under home by default)
     topology: Literal["local", "distributed"] = "local"
     mission_base: MissionBaseView | None = None  # §36 version visibility (None: very old server)
+    # The daemon's native os/arch (AS1) — what missions execute on natively here. None in stub
+    # mode or when docker is unreachable. The run form warns off it (emulation, no-native).
+    host_platform: str | None = None

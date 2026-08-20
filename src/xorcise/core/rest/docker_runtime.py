@@ -27,7 +27,9 @@ opens a connection, and the memo builds exactly one client per (re)probe.
 from __future__ import annotations
 
 import logging
+import subprocess
 import threading
+import time
 from collections.abc import Callable, Mapping
 
 from xorcise.core.config import Settings
@@ -143,6 +145,49 @@ def require_nested_support(
         "To bypass this check on a host you know is fine, set "
         "XORCISE_NESTED_CONTAINER_CHECK=skip"
     )
+
+
+# Memoised daemon platform: the arch of a running daemon cannot change, but "docker was down,
+# try again" can — so a short TTL rather than a process-lifetime latch. Shared by the catalog
+# view (per-row `emulated`) and the system view (`host_platform`), both of which poll.
+_HOST_PLATFORM_TTL = 60.0
+_host_platform_memo: tuple[float, str | None] | None = None
+
+
+def host_platform(settings: Settings) -> str | None:
+    """The `os/arch` the local daemon executes natively (AS1), or None when unknowable.
+
+    None in stub mode (no daemon by design), when docker is absent/unreachable, and on any
+    probe failure — unknown, never guessed. A subprocess probe (not the SDK) so a browse call
+    never pays a docker client construction; memoised because every page polls the views that
+    read this."""
+    global _host_platform_memo
+    if settings.use_stubs:
+        return None
+    now = time.monotonic()
+    if _host_platform_memo is not None and now - _host_platform_memo[0] < _HOST_PLATFORM_TTL:
+        return _host_platform_memo[1]
+    value: str | None = None
+    try:
+        result = subprocess.run(
+            ["docker", "version", "--format", "{{.Server.Os}}/{{.Server.Arch}}"],
+            capture_output=True,
+            timeout=5,
+            text=True,
+        )
+        raw = result.stdout.strip()
+        if result.returncode == 0 and "/" in raw:
+            value = raw
+    except (OSError, subprocess.SubprocessError):
+        value = None
+    _host_platform_memo = (now, value)
+    return value
+
+
+def reset_host_platform_memo() -> None:
+    """Drop the memo (tests)."""
+    global _host_platform_memo
+    _host_platform_memo = None
 
 
 def require_base_compatible(

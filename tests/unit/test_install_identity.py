@@ -251,3 +251,68 @@ def test_installed_row_carries_recorded_identity(tmp_path: Path) -> None:
     assert row.mission_base_version == "2.0.0"
     assert row.index_digest == "sha256:idx"
     assert row.platforms == ()  # an install records ONE platform; the offer is the library's
+
+
+# ── platform surfacing for the UI (browse row `platform`/`emulated`, host exposure) ──────────
+
+
+def test_installed_row_carries_platform_and_emulated_verdict(tmp_path: Path, monkeypatch) -> None:
+    # The install pulled arm64; the daemon is amd64 ⇒ the row says which platform landed AND
+    # that it executes under emulation here (server-computed — only the server sees the daemon).
+    monkeypatch.setattr(
+        "xorcise.core.rest.docker_runtime.host_platform", lambda settings: "linux/amd64"
+    )
+    slug = "c1"
+    ref = MissionRef(mission_id=slug, image="reg/xorcise/mis-c1:1.0.0-base2.0.0")
+    _write(
+        tmp_path,
+        slug,
+        InstalledMission(
+            slug, tmp_path / slug, _manifest(), ref, origin="library", identity=_identity()
+        ),
+    )
+    deps = CatalogViewDeps(source=StubCatalogSource(enabled=False), install_root=tmp_path)
+    row = next(e for e in list_catalog(deps) if e.mission_id == slug)
+    assert row.platform == "linux/arm64"
+    assert row.emulated is True
+
+
+def test_installed_row_platform_unknowns_stay_none(tmp_path: Path, monkeypatch) -> None:
+    # No recorded platform (pre-contract install) and/or no daemon ⇒ None, never a guess.
+    monkeypatch.setattr("xorcise.core.rest.docker_runtime.host_platform", lambda settings: None)
+    slug = "c1"
+    ref = MissionRef(mission_id=slug, image="img")
+    _write(tmp_path, slug, InstalledMission(slug, tmp_path / slug, _manifest(), ref))
+    deps = CatalogViewDeps(source=StubCatalogSource(enabled=False), install_root=tmp_path)
+    row = next(e for e in list_catalog(deps) if e.mission_id == slug)
+    assert row.platform is None
+    assert row.emulated is None
+
+
+def test_installed_row_borrows_the_catalog_platform_offer(tmp_path: Path) -> None:
+    # An install records ONE platform; the browse tags still need the catalog's current offer,
+    # so an installed library row borrows `platforms` from its current catalog row.
+    from xorcise.core.rest.mission_pull import PullDeps, pull_mission
+
+    class _Src(StubCatalogSource):
+        def list_library(self):  # type: ignore[override]
+            return (
+                LibraryItem(
+                    mission_id="sqli-login",
+                    name="SQLi Login",
+                    image="xorcise/mission-sqli-login:1",
+                    platforms=("linux/amd64", "linux/arm64"),
+                ),
+            )
+
+    src = _Src(enabled=True)
+    pull_mission(
+        "sqli-login", PullDeps(source=src, driver=StubDockerDriver(), install_root=tmp_path)
+    )
+    row = next(
+        e
+        for e in list_catalog(CatalogViewDeps(source=src, install_root=tmp_path))
+        if e.mission_id == "sqli-login"
+    )
+    assert row.installed is True
+    assert row.platforms == ("linux/amd64", "linux/arm64")
