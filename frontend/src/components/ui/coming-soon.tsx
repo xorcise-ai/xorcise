@@ -58,7 +58,7 @@ export function ComingSoonPanel({
           the panel reads as a preview rather than as another card. */}
       <div
         aria-hidden
-        className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(232,184,75,0.16),transparent_52%)]"
+        className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,color-mix(in_srgb,var(--color-primary)_16%,transparent),transparent_52%)]"
       />
       <div className={cn("relative p-5", centered && "text-center")}>
         {centered && (
@@ -74,13 +74,13 @@ export function ComingSoonPanel({
           )}
         >
           <span className="inline-flex items-center gap-2 rounded-full border border-primary/25 bg-primary/5 px-2.5 py-1 text-label uppercase text-primary">
-            <span className="size-1.5 rounded-full bg-primary shadow-[0_0_8px_rgba(232,184,75,0.7)]" />
+            <span className="size-1.5 rounded-full bg-primary shadow-[0_0_8px_color-mix(in_srgb,var(--color-primary)_70%,transparent)]" />
             Coming soon
           </span>
           {!centered && <Sparkles className="size-4 text-primary/70" aria-hidden />}
         </div>
 
-        <div className="grid gap-5 @3xl:grid-cols-[1.35fr_1fr] @3xl:items-center @3xl:gap-8">
+        <div className="grid grid-cols-1 gap-5 @3xl:grid-cols-[1.35fr_1fr] @3xl:items-center @3xl:gap-8">
           <div>
             {/* Measure caps, not layout limits. Narrow: the dialog is the cap. Wide: the
                 column is, and prose stops at the 68ch readable band the type rules set.
@@ -106,7 +106,7 @@ export function ComingSoonPanel({
 
           {/* Three across while the panel is narrow; a vertical flow once it is wide, where a
               row of two-word chips would each be 400px of mostly nothing. */}
-          <div className="grid gap-2 @sm:grid-cols-3 @3xl:grid-cols-1">
+          <div className="grid grid-cols-1 gap-2 @sm:grid-cols-3 @3xl:grid-cols-1">
             {steps.map((step) => (
               <PreviewStep
                 key={step.label}

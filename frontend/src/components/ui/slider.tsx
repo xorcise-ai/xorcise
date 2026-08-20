@@ -32,10 +32,10 @@ export function Slider({
       value={value}
       disabled={disabled}
       onChange={(e) => onChange(Number(e.target.value))}
-      className={cn(
-        "h-1.5 w-full cursor-pointer appearance-none rounded-full bg-border accent-primary disabled:cursor-not-allowed disabled:opacity-50",
-        className,
-      )}
+      // .range-control (globals.css) keeps the 6px track but makes the CONTROL 24px tall,
+      // which is WCAG 2.5.8's pointer-target floor. The track is a pseudo-element, so the
+      // extra height is hit area only — nothing moves.
+      className={cn("range-control", className)}
     />
   );
 }

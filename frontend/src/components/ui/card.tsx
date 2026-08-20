@@ -31,7 +31,11 @@ export function CardTitle({
 }: HTMLAttributes<HTMLHeadingElement>) {
   return (
     <h3
-      className={cn("text-body font-semibold text-heading", className)}
+      // font-bold, not semibold: the Figma card head is JetBrains Mono Bold at 14px.
+      // A card head is the only heading inside a card, so it has nothing above it to
+      // step down from — at 600 on this ground it read as an emphasised row rather
+      // than as a title.
+      className={cn("text-body font-bold text-heading", className)}
       {...props}
     />
   );
