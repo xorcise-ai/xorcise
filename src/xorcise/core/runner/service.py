@@ -74,9 +74,7 @@ class RunnerControlService:
             ContainerSpec(
                 image=request.mission.image,
                 name=request.run_id,
-                env=self._deploy_env(
-                    request.run_id, request.network, image=request.mission.image
-                ),
+                env=self._deploy_env(request.run_id, request.network, image=request.mission.image),
             )
         )
         endpoints = RunnerEndpoints(

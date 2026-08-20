@@ -171,9 +171,7 @@ def test_assert_policy_safe_raises_when_agent_rule_missing_from_acls():
 
 
 def _ingress(user: str, *cidrs: str) -> RunNetwork:
-    return RunNetwork(
-        agent_user=user, auth_key="k", entry_cidrs=tuple(cidrs), agent_ingress=True
-    )
+    return RunNetwork(agent_user=user, auth_key="k", entry_cidrs=tuple(cidrs), agent_ingress=True)
 
 
 def test_ingress_emits_one_router_sourced_rule():
@@ -206,9 +204,7 @@ def test_safe_refuses_ingress_without_router_tag():
 
 def test_safe_rejects_missing_ingress_rule():
     nets = [_ingress("agent-1", "10.200.1.0/24")]
-    text = render_policy(
-        [_net("agent-1", "10.200.1.0/24")], router_tag=TAG, orchestrator_user=ORCH
-    )
+    text = render_policy([_net("agent-1", "10.200.1.0/24")], router_tag=TAG, orchestrator_user=ORCH)
     with pytest.raises(ValueError, match="exactly one inbound rule"):
         assert_policy_safe(text, nets, router_tag=TAG)
 

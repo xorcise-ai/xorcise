@@ -204,9 +204,9 @@ def test_ingress_requires_an_agent_user_to_discover():
 
 
 def test_ca_and_ingress_prologues_compose():
-    router = _override(
-        agent_ingress=True, agent_user="run-run1-agent", ca_cert_path="/tmp/ca.pem"
-    )["services"]["xorcise-router"]
+    router = _override(agent_ingress=True, agent_user="run-run1-agent", ca_cert_path="/tmp/ca.pem")[
+        "services"
+    ]["xorcise-router"]
     script = router["entrypoint"][2]
     assert "headscale-ca.pem" in script and "MASQUERADE" in script
     assert script.count("exec /usr/local/bin/containerboot") == 1
