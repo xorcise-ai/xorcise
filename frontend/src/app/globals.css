@@ -561,10 +561,18 @@ body {
   background: transparent;
   cursor: pointer;
 }
+/* The filled portion. `accent-color` used to paint this for free, but it stops applying
+   the moment the track carries its own background — so the progress the operator reads
+   position from would have vanished with the target fix. --range-pct is set inline from
+   the value, which is the only part a stylesheet cannot know. */
 .range-control::-webkit-slider-runnable-track {
   height: 6px;
   border-radius: 9999px;
-  background: var(--color-border);
+  background: linear-gradient(
+    to right,
+    var(--color-primary) var(--range-pct, 0%),
+    var(--color-border) var(--range-pct, 0%)
+  );
 }
 .range-control::-webkit-slider-thumb {
   -webkit-appearance: none;
@@ -578,7 +586,11 @@ body {
 .range-control::-moz-range-track {
   height: 6px;
   border-radius: 9999px;
-  background: var(--color-border);
+  background: linear-gradient(
+    to right,
+    var(--color-primary) var(--range-pct, 0%),
+    var(--color-border) var(--range-pct, 0%)
+  );
 }
 .range-control::-moz-range-thumb {
   width: 14px;
