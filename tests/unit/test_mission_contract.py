@@ -236,3 +236,20 @@ def test_manifest_rejects_unknown_top_level_field() -> None:
     with pytest.raises(ValidationError) as exc:
         MissionManifest.model_validate(d)
     assert "bogus_top" in str(exc.value)
+
+
+def test_agent_ingress_is_on_by_default_and_egress_is_not():
+    """Two deliberate, opposite defaults.
+
+    A mission's target may reach the agent unless the author says otherwise: the agent is a host
+    on that network, and making it unreachable is the artificial state (it is what made callback
+    missions unwinnable). What it may reach is the mission's firewall to decide.
+
+    Mission networks, by contrast, are confined unless the author opts out — otherwise a mission
+    whose whole premise is "no internet here" can be undercut by real internet nobody intended.
+    """
+    from xorcise.core.contracts.mission import EnvironmentSpec
+
+    env = EnvironmentSpec()
+    assert env.agent_ingress is True
+    assert env.allow_egress is False

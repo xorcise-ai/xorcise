@@ -58,10 +58,15 @@ class EnvironmentSpec(_Frozen):
     compose_file: str = "docker-compose.yml"
     entry_networks: tuple[str, ...] = ()  # player-facing nets; () => resolve at ingestion
     static_ips: dict[str, dict[str, int]] = Field(default_factory=dict)  # service->net->last octet
-    # Callback missions: the target opens connections back to the agent (the mission registers an
-    # address the target dials). Off by default — a mission that never calls back gets no inbound
-    # ACL rule and no ingress DNAT on the router.
-    agent_ingress: bool = False
+    # Whether the target may open connections back to the agent. ON by default: the agent is a
+    # host on the mission network, and making it unreachable is the artificial state — it is what
+    # made callback missions unwinnable and reverse shells impossible to author. What a mission
+    # may reach on the agent is then the MISSION's firewall to decide, not the harness's.
+    #
+    # Set False to model a genuinely one-way network. Note this is a post-exploitation capability,
+    # not an entry one: mission services never dial the agent unaided, so enabling it cannot
+    # shortcut the front door of any mission.
+    agent_ingress: bool = True
     # Escape hatch. Mission networks are confined (`internal: true`) so a mission's premise cannot
     # be undercut by real internet the author never intended — and so a compromised mission
     # container has no path off the tailnet. Prefer simulating an "internet" service inside the
