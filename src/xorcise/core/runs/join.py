@@ -55,16 +55,35 @@ if [ -s "$CA" ]; then SSLENV="env SSL_CERT_FILE=$CA"; else SSLENV=""; fi
 # shares the sidecar's Docker-managed lifetime.
 if command -v setsid >/dev/null 2>&1; then DETACH="setsid"; else DETACH="nohup"; fi
 
-# 1) macOS: keep the already-authenticated agent on the host, but run Tailscale in a pinned Linux
-# sidecar. Go's Darwin verifier does not honor SSL_CERT_FILE, so the embedded private Headscale CA
-# cannot authenticate the local control plane from a native macOS tailscaled. Linux does honor it.
+# 1) Pick how tailscaled runs. Preference order: kernel (a real TUN — faithful host semantics)
+# -> Docker sidecar (userspace, contained) -> userspace on the host (last resort).
+#
+# macOS always takes the sidecar: Go's Darwin verifier does not honor SSL_CERT_FILE, so the
+# embedded private Headscale CA cannot authenticate the local control plane from a native macOS
+# tailscaled. Linux does honor it, so Linux gets the real choice.
+#
 # The proxy publishes on host LOOPBACK only; the auth key goes to `docker exec` over stdin, never
 # into container args/env/image metadata. `XORCISE_TAILSCALE_MODE=sidecar|native` is an explicit
-# diagnostic override; auto selects sidecar only on Darwin.
+# diagnostic override that skips the capability detection entirely.
 TS_MODE="${XORCISE_TAILSCALE_MODE:-auto}"
 case "$TS_MODE" in
   auto)
-    if [ "$(uname -s)" = "Darwin" ]; then TS_MODE=sidecar; else TS_MODE=native; fi
+    if [ "$(uname -s)" = "Darwin" ]; then
+      TS_MODE=sidecar
+    elif [ "$(id -u)" = "0" ] && [ -w /dev/net/tun ]; then
+      # Kernel mode: a real TUN, so the host stack applies. Loopback stays private, targets are
+      # reachable directly by IP, and no proxy exists to expose. The faithful option; preferred.
+      TS_MODE=native
+    elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+      # No TUN, but Docker: run userspace-networking in a CONTAINER rather than on the host.
+      # In userspace mode netstack delivers inbound tailnet connections to 127.0.0.1 — whichever
+      # 127.0.0.1 tailscaled happens to own. On the host that publishes EVERY host loopback
+      # service to the mission network; inside a container it is a near-empty namespace.
+      TS_MODE=sidecar
+    else
+      # Last resort: userspace on the host. Works anywhere, but see the warning it prints.
+      TS_MODE=native
+    fi
     ;;
   sidecar | native) ;;
   *)
@@ -75,8 +94,8 @@ esac
 
 if [ "$TS_MODE" = sidecar ]; then
   if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
-    echo "xorcise: Docker is required for the macOS tailnet sidecar." >&2
-    echo "  Start Docker Desktop, then re-run the join command." >&2
+    echo "xorcise: Docker is required for the tailnet sidecar." >&2
+    echo "  Start Docker (Desktop, or the daemon), then re-run the join command." >&2
     exit 1
   fi
 
@@ -105,6 +124,13 @@ if [ "$TS_MODE" = sidecar ]; then
     --label "xorcise.run_id=${RC_BASE##*/}" --label "xorcise.managed=true" \
     --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=128 --memory=256m \
     -p 127.0.0.1::1055/tcp -p 127.0.0.1::1056/tcp
+  # Docker Desktop resolves host.docker.internal for free; a Linux daemon does not, and the
+  # in-container run watcher polls run-control through exactly that name. Map it to the host
+  # gateway there (Docker 20.10+) or the watcher never sees the run go terminal and the sidecar
+  # leaks until its hard cap.
+  if [ "$(uname -s)" != "Darwin" ]; then
+    set -- "$@" --add-host=host.docker.internal:host-gateway
+  fi
   if [ -s "$CA" ]; then
     set -- "$@" -v "$CA:/xorcise/ca.pem:ro" -e SSL_CERT_FILE=/xorcise/ca.pem
   fi
@@ -303,6 +329,14 @@ else
   # safety is spawn-and-verify — a port taken between check and bind makes the daemon exit and the
   # control socket never appear, so we reap that half-started attempt (by its unique socket) and try
   # new ports.
+  # Which loopback address the proxies bind to. In userspace mode netstack delivers INBOUND
+  # tailnet connections to 127.0.0.1, so a proxy bound there is reachable from the mission network
+  # once agent ingress is allowed — an open relay carrying the agent's tailnet identity. 127.0.0.2
+  # is equally loopback-only to this host but is NOT netstack's forward target, so it disappears
+  # from the tailnet while staying usable locally.
+  # Darwin has no 127.0.0.2 without an explicit lo0 alias, and this path is a diagnostic override
+  # there (auto picks the sidecar), so keep 127.0.0.1 rather than fail to bind.
+  if [ "$(uname -s)" = "Darwin" ]; then PROXY_ADDR=127.0.0.1; else PROXY_ADDR=127.0.0.2; fi
   port_busy() { ss -ltnH "sport = :$1" 2>/dev/null | grep -q .; }
   rand_port() {
     r=$(od -An -N2 -tu2 /dev/urandom 2>/dev/null | tr -d ' ')
@@ -318,7 +352,7 @@ else
     hp=$((sp + 1))
     if port_busy "$sp" || port_busy "$hp"; then continue; fi
     $DETACH $SSLENV "$TSD" --tun=userspace-networking \
-      --socks5-server=127.0.0.1:"$sp" --outbound-http-proxy-listen=127.0.0.1:"$hp" \
+      --socks5-server="$PROXY_ADDR":"$sp" --outbound-http-proxy-listen="$PROXY_ADDR":"$hp" \
       --state="$STATE" --socket="$SOCK" >"$LOG" 2>&1 &
     i=0
     while [ ! -S "$SOCK" ] && [ "$i" -lt 8 ]; do sleep 1; i=$((i + 1)); done
@@ -368,16 +402,22 @@ fi
 if [ "$MODE" = userspace ]; then
   ENVF="$WORK/ts-env.sh"
   {
-    echo "export ALL_PROXY=socks5://127.0.0.1:$SOCKS"
-    echo "export HTTPS_PROXY=http://127.0.0.1:$HTTP"
-    echo "export HTTP_PROXY=http://127.0.0.1:$HTTP"
+    echo "export ALL_PROXY=socks5://$PROXY_ADDR:$SOCKS"
+    echo "export HTTPS_PROXY=http://$PROXY_ADDR:$HTTP"
+    echo "export HTTP_PROXY=http://$PROXY_ADDR:$HTTP"
   } >"$ENVF"
-  echo "xorcise: joined tailnet as $IP (userspace mode)."
-  echo "xorcise: reach targets THROUGH the SOCKS5 proxy at 127.0.0.1:$SOCKS, e.g.:"
-  echo "  curl --socks5-hostname 127.0.0.1:$SOCKS http://<target-ip>:<port>/"
+  echo "xorcise: joined tailnet as $IP (userspace mode, on this host)."
+  echo "xorcise: reach targets THROUGH the SOCKS5 proxy at $PROXY_ADDR:$SOCKS, e.g.:"
+  echo "  curl --socks5-hostname $PROXY_ADDR:$SOCKS http://<target-ip>:<port>/"
   echo "  or export the proxy for all tools:  set -a; . \"$ENVF\"; set +a"
+  echo "xorcise: to ACCEPT connections, bind a port on this host — it IS reachable at $IP."
+  echo "xorcise: NOTE this mode runs tailscaled in the HOST namespace, so every service already"
+  echo "  listening on 127.0.0.1 is reachable from the mission network too. Prefer a root sandbox"
+  echo "  (kernel mode) or Docker (sidecar mode) on a host with services you care about."
 else
   echo "xorcise: joined tailnet as $IP (kernel mode) — reach targets directly by IP."
+  echo "xorcise: to ACCEPT connections, bind a port on this host — it IS reachable at $IP."
+  echo "xorcise: loopback stays private here; bind 0.0.0.0 for the mission to reach you."
 fi
 
 # 7) Self-reaper. A detached watcher tears THIS run's daemon down when the run ends, so a

@@ -42,10 +42,10 @@ def test_non_root_userspace_path_with_socks_proxy():
     # The common sandbox is non-root: userspace-networking + a SOCKS5 proxy, no root/TUN needed.
     s = _script()
     assert "userspace-networking" in s
-    assert "socks5-server=127.0.0.1:" in s  # a SOCKS5 proxy is opened (port is now dynamic)
+    assert 'socks5-server="$PROXY_ADDR"' in s  # a SOCKS5 proxy is opened (port is now dynamic)
     assert "id -u" in s  # capability detection branch
     # It must tell the caller how to reach targets through the proxy.
-    assert "--socks5-hostname 127.0.0.1:" in s
+    assert "--socks5-hostname $PROXY_ADDR:" in s
 
 
 def test_userspace_ports_are_dynamic_not_the_fixed_1055_1056():
@@ -56,7 +56,7 @@ def test_userspace_ports_are_dynamic_not_the_fixed_1055_1056():
     native = s[s.index("port_busy()") : s.index("# 4) Join.")]
     assert "1055" not in native
     assert "1056" not in native
-    assert "socks5-server=127.0.0.1:" in native  # opens a proxy on a chosen native port
+    assert 'socks5-server="$PROXY_ADDR"' in native  # opens a proxy on a chosen native port
 
 
 def test_userspace_retries_to_find_a_free_port():
@@ -85,9 +85,9 @@ def test_prints_the_chosen_proxy_port():
     # The agent can't assume 1055 any more, so the script must surface the port it actually chose,
     # both in the human hint and in the sourceable env file.
     s = _script()
-    assert "--socks5-hostname 127.0.0.1:$SOCKS" in s
-    assert "socks5://127.0.0.1:$SOCKS" in s  # ts-env.sh ALL_PROXY uses the chosen port
-    assert "http://127.0.0.1:$HTTP" in s  # ts-env.sh HTTP(S)_PROXY uses the chosen port
+    assert "--socks5-hostname $PROXY_ADDR:$SOCKS" in s
+    assert "socks5://$PROXY_ADDR:$SOCKS" in s  # ts-env.sh ALL_PROXY uses the chosen port
+    assert "http://$PROXY_ADDR:$HTTP" in s  # ts-env.sh HTTP(S)_PROXY uses the chosen port
 
 
 def test_self_reaper_tears_down_this_runs_daemon_on_termination():
@@ -165,7 +165,8 @@ def test_auto_mode_selects_the_sidecar_on_darwin_before_native_client_discovery(
     # The normal macOS path must never reach the Darwin-native client/CA verifier: auto chooses the
     # Linux sidecar before the native command lookup and Linux tarball fallback.
     s = _script()
-    assert 'if [ "$(uname -s)" = "Darwin" ]; then TS_MODE=sidecar' in s
+    darwin = s.index('if [ "$(uname -s)" = "Darwin" ]; then')
+    assert s.index("TS_MODE=sidecar", darwin) - darwin < 80  # the Darwin arm, not a later branch
     assert s.index("TS_MODE=sidecar") < s.index('TS="$(command -v tailscale || true)"')
     assert s.index("TS_MODE=sidecar") < s.index("pkgs.tailscale.com")
 
@@ -281,3 +282,45 @@ def test_no_ca_public_control_plane_uses_system_trust():
     assert "BEGIN CERTIFICATE" not in s
     assert "system trust" in s
     assert "SSLENV" in s  # the conditional still renders (resolves empty at runtime)
+
+
+# --- Phase 2: Linux mode selection + host-namespace exposure ------------------------------------
+
+
+def test_auto_prefers_kernel_then_sidecar_over_userspace_on_the_host():
+    """Userspace-on-the-host is the LAST resort: netstack forwards inbound to 127.0.0.1, so it
+    publishes every host loopback service to the mission network. Kernel mode keeps host
+    semantics; the sidecar contains the same quirk inside a near-empty namespace."""
+    s = _script()
+    auto = s[s.index("  auto)") : s.index("  sidecar | native) ;;")]
+    kernel = auto.index('[ "$(id -u)" = "0" ] && [ -w /dev/net/tun ]')
+    assert kernel < auto.index("command -v docker")
+    assert auto.count("TS_MODE=native") == 2  # kernel first, host-userspace last
+    assert "TS_MODE=sidecar" in auto
+
+
+def test_native_userspace_binds_the_proxy_off_netstacks_forward_target():
+    """netstack delivers inbound tailnet connections to 127.0.0.1. Binding the proxy there would
+    hand mission code a relay carrying the agent's tailnet identity; 127.0.0.2 is still
+    loopback-only to the host but is not what netstack forwards to."""
+    s = _script()
+    assert "PROXY_ADDR=127.0.0.2" in s
+    assert "PROXY_ADDR=127.0.0.1" in s  # Darwin fallback (no lo0 alias); diagnostic path only
+    assert "socks5-server=127.0.0.1:" not in s
+
+
+def test_host_userspace_warns_that_loopback_is_exposed():
+    s = _script()
+    assert "listening on 127.0.0.1 is reachable from the mission network" in s
+
+
+def test_linux_sidecar_maps_host_docker_internal_to_the_gateway():
+    """The in-container reaper polls run-control through that name; a Linux daemon does not
+    resolve it for free, and without it the sidecar leaks until its hard cap."""
+    s = _script()
+    assert "--add-host=host.docker.internal:host-gateway" in s
+
+
+def test_both_native_modes_say_how_to_accept_connections():
+    s = _script()
+    assert s.count("to ACCEPT connections, bind a port on this host") == 2

@@ -141,11 +141,13 @@ def _join_lines(mission: MissionPrompt) -> list[str]:
         lines.append(
             "2. This mission calls BACK to you. Register the address "
             f"`http://{mission.agent_ingress_addr}:<your-port>/` (any port you like) — NOT your "
-            "own tailnet IP, which the mission's services cannot route to. Your server must "
-            "listen inside your tailnet node's network namespace: if the join script reported "
-            "Docker sidecar mode, start it with "
-            "`docker run -d --network container:<sidecar-name> ...` (the script prints the "
-            "name); a port bound on the host is not reachable from the mission network."
+            "own tailnet IP, which the mission's services cannot route to. Your server has to "
+            "listen where your tailnet node actually is, and the join script says which mode it "
+            "chose: in DOCKER SIDECAR mode the node is that container, so start your server with "
+            "`docker run -d --network container:<sidecar-name> ...` (the script prints the name) "
+            "— a port bound on the host is NOT reachable; in KERNEL or USERSPACE mode the node is "
+            "this host, so just bind the port normally (in kernel mode bind 0.0.0.0, not "
+            "loopback). Verify with a request to your own address before registering."
         )
     return lines
 
