@@ -36,6 +36,7 @@ import {
   PullProgressBlock,
   UpdateMissionButton,
   platformLabel,
+  platformTags,
   updateReason,
 } from "./mission-card";
 import { MissionTerrain } from "./mission-terrain";
@@ -265,24 +266,38 @@ export function MissionDetail({ id }: { id: string | null }) {
                 v{c.mission_version}
               </Badge>
             )}
-            {c.platforms.map((p) => (
+            {/* One tag per validated architecture; the INSTALLED image's tag is lit and
+                suffixed (native / emulated), so the page answers "which arch do I have?"
+                directly rather than listing two indistinguishable tags. A validated-but-not
+                -installed arch stays muted. The emulation state rides the installed tag itself
+                — no separate floating badge to guess the referent of. */}
+            {platformTags(c).map(({ platform, installed, emulated }) => (
               <Badge
-                key={p}
-                variant="muted"
+                key={platform}
+                variant={
+                  installed ? (emulated === true ? "warn" : emulated === false ? "ok" : "default") : "muted"
+                }
                 className="font-mono"
-                title="Validated platforms — verified by the remote build, never a creator claim. Individual missions may support fewer platforms than the mission-base."
+                title={
+                  installed
+                    ? emulated === true
+                      ? "Installed image — runs through Docker's emulation layer (not native to this host): functional, but slower and not validated natively."
+                      : emulated === false
+                        ? "Installed image — native to this host's architecture."
+                        : "Installed image."
+                    : "Validated by the remote build (not the installed image). Individual missions may support fewer platforms than the mission-base."
+                }
               >
-                {platformLabel(p)}
+                {platformLabel(platform)}
+                {installed
+                  ? emulated === true
+                    ? " · emulated"
+                    : emulated === false
+                      ? " · native"
+                      : " · installed"
+                  : ""}
               </Badge>
             ))}
-            {c.emulated === true && (
-              <Badge
-                variant="warn"
-                title="This install is not native to this host's architecture; it runs through Docker's emulation layer. Functional, but slower and not validated natively."
-              >
-                emulated
-              </Badge>
-            )}
             {c.installed ? (
               <Badge variant="ok">installed</Badge>
             ) : (

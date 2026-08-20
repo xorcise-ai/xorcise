@@ -28,6 +28,35 @@ export function platformLabel(p: string): string {
   return p.replace(/^linux\//, "");
 }
 
+export type PlatformTag = {
+  platform: string;
+  installed: boolean;
+  /** Emulation verdict for the INSTALLED tag only (null elsewhere, or when unknown). */
+  emulated: boolean | null;
+};
+
+/**
+ * The platform tags to render for a mission, marking which one is the installed image.
+ *
+ * The installed platform is unioned into the validated list (and de-duplicated) so an install
+ * still names its architecture even against a pre-contract catalog that offers no list — the
+ * one thing a lone "installed" badge could never tell you: WHICH arch you actually have.
+ */
+export function platformTags(c: CatalogEntry): PlatformTag[] {
+  const all =
+    c.platform && !c.platforms.includes(c.platform)
+      ? [...c.platforms, c.platform]
+      : c.platforms;
+  return all.map((platform) => {
+    const isInstalled = c.installed === true && c.platform === platform;
+    return {
+      platform,
+      installed: isInstalled,
+      emulated: isInstalled ? (c.emulated ?? null) : null,
+    };
+  });
+}
+
 const PLATFORMS_TOOLTIP =
   "Validated platforms — verified by the remote build, never a creator claim. " +
   "Individual missions may support fewer platforms than the mission-base.";

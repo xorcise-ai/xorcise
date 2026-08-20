@@ -109,6 +109,39 @@ describe("update action", () => {
   });
 });
 
+describe("installed architecture on the detail page", () => {
+  const wireDetail = (mission: CatalogEntry) =>
+    server.use(
+      http.get("*/api/missions", () => HttpResponse.json([mission])),
+      http.get("*/api/missions/sqli-login/manifest", () => HttpResponse.json(null)),
+      http.get("*/api/missions/sqli-login/terrain", () => HttpResponse.json(null)),
+    );
+
+  it("marks the installed arch native and leaves the other validated arch muted", async () => {
+    wireDetail({ ...BASE, platform: "linux/arm64", emulated: false });
+    renderWithProviders(<MissionDetail id="sqli-login" />);
+    // The installed image reads "arm64 · native"; the other stays a plain validated tag.
+    expect(await screen.findByText(/arm64 · native/i)).toBeInTheDocument();
+    expect(screen.getByText("amd64")).toBeInTheDocument();
+    expect(screen.queryByText(/amd64 ·/i)).not.toBeInTheDocument();
+  });
+
+  it("marks the installed arch emulated when it is non-native here", async () => {
+    wireDetail({ ...BASE, platform: "linux/amd64", emulated: true });
+    renderWithProviders(<MissionDetail id="sqli-login" />);
+    expect(await screen.findByText(/amd64 · emulated/i)).toBeInTheDocument();
+    // No separate floating "emulated" badge — the state lives on the tag it describes.
+    expect(screen.queryByText(/^emulated$/i)).not.toBeInTheDocument();
+  });
+
+  it("names the installed arch even when the catalog offers no platform list", async () => {
+    // A pre-record install inspected from the local image: platforms empty, platform known.
+    wireDetail({ ...BASE, platforms: [], platform: "linux/amd64", emulated: false });
+    renderWithProviders(<MissionDetail id="sqli-login" />);
+    expect(await screen.findByText(/amd64 · native/i)).toBeInTheDocument();
+  });
+});
+
 describe("platform surfacing", () => {
   it("card: validated platforms render as tags", () => {
     renderWithProviders(<MissionCard mission={{ ...BASE, update_available: false }} />);
