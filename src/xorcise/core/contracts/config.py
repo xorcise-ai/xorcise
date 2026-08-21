@@ -157,6 +157,18 @@ class CatalogStatusView(_Frozen):
     last_sync: str | None = None
 
 
+class MissionBaseView(_Frozen):
+    """The mission-base picture for settings/diagnostics (contract §27/§36): what THIS client
+    requires (the compatibility MAJOR it was built for) beside what the catalog currently
+    promotes. The promoted side is None when the catalog predates the endpoint (prod today)
+    or is unreachable — unknown, never fabricated."""
+
+    required_major: int
+    client_version: str = ""  # this XORCISE client's own package version
+    promoted_version: str | None = None  # e.g. "2.0.0" — the promoted base SemVer
+    promoted_index_digest: str | None = None
+
+
 class SystemInfo(_Frozen):
     """Read-only Reflect view powering the GUI System / Modules / Catalog cards."""
 
@@ -168,3 +180,7 @@ class SystemInfo(_Frozen):
     home: str = ""  # resolved XORCISE_HOME (the install path)
     db_url: str = ""  # the active database url (sqlite path under home by default)
     topology: Literal["local", "distributed"] = "local"
+    mission_base: MissionBaseView | None = None  # §36 version visibility (None: very old server)
+    # The daemon's native os/arch (AS1) — what missions execute on natively here. None in stub
+    # mode or when docker is unreachable. The run form warns off it (emulation, no-native).
+    host_platform: str | None = None

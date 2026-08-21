@@ -22,12 +22,14 @@ from xorcise import __version__
 from xorcise.core.cli._diagnostics import (
     Check,
     control_plane,
+    daemon_platform,
     disk_space,
     docker_compose_v2,
     docker_daemon,
     docker_present,
     external_control_plane,
     home_present,
+    mission_base_release,
     nested_containers,
     openssl_present,
     probe_channel,
@@ -686,6 +688,10 @@ def doctor(
         )
         raise typer.Exit(1) from exc
     env_checks = _environment_checks()
+    # §36 version visibility: what base this client runs vs what the catalog promotes,
+    # and the platform missions execute on (per-mission support may be narrower — PS1).
+    env_checks.append(mission_base_release())
+    env_checks.append(daemon_platform())
     # Only under `doctor` — it starts a privileged container, so it must not join the check list
     # `up` runs (and `up` must work on a host that cannot nest: static missions and the UI need
     # nothing nested). Gated on the docker daemon being up, so a Docker-less host gets one

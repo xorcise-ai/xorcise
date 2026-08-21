@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { useRouter } from "next/navigation";
-import { Cpu, Download, Loader2 } from "lucide-react";
+import { AlertTriangle, Check, Cpu, Download, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
@@ -19,13 +19,14 @@ import { cn } from "@/components/ui/cn";
 import { Input } from "@/components/ui/input";
 import { Skeleton, SkeletonRows } from "@/components/ui/skeleton";
 import { useAgents } from "@/features/agents/queries";
+import { useSystem } from "@/features/settings/queries";
 import { HARNESSES } from "@/features/agents/harnesses";
 import {
   useMissions,
   useMissionManifest,
   usePullMission,
 } from "@/features/missions/queries";
-import { PullProgressBlock } from "@/features/missions/mission-card";
+import { PullProgressBlock, platformLabel } from "@/features/missions/mission-card";
 import { titleCase } from "@/features/missions/labels";
 import { errorDetail } from "@/lib/api/client";
 import type { CatalogEntry, Intel } from "@/lib/api/types";
@@ -154,7 +155,42 @@ export function NewRunForm({
 
   const pulled = pull.isSuccess; // the selected mission's pull job reports installed
   const needsPull = !!selectedMission && !selectedMission.installed && !pulled;
-  const canSubmit = !!agent && !!mission && budget > 0 && !starting;
+
+  // Platform honesty at the point of commitment (AS4/PS1). The daemon's native platform comes
+  // from the system probe; every verdict degrades to silence when a side is unknown — a
+  // pre-contract catalog or an unreachable daemon must not spray false warnings.
+  const host = useSystem().data?.host_platform ?? null;
+  const noNativePath = // nothing this host could execute at all — the server would refuse (409)
+    !!selectedMission &&
+    !selectedMission.installed &&
+    !!host &&
+    selectedMission.platforms.length > 0 &&
+    !selectedMission.platforms.includes(host) &&
+    !selectedMission.platforms.includes("linux/amd64");
+  const platformWarning = (() => {
+    const c = selectedMission;
+    if (!c || noNativePath) return null;
+    if (c.installed) {
+      // The server already compared the INSTALLED platform against the daemon (`emulated`).
+      if (c.emulated !== true) return null;
+      return (
+        `This install is ${platformLabel(c.platform ?? "non-native")}` +
+        `${host ? `, not native ${platformLabel(host)}` : ""} — the run executes through ` +
+        "Docker's emulation layer: functional, but slower and not validated natively."
+      );
+    }
+    // Not installed yet: warn BEFORE the download, from the catalog's validated platforms.
+    if (!host || c.platforms.length === 0 || c.platforms.includes(host)) return null;
+    return (
+      `No native ${platformLabel(host)} image exists for this mission (validated: ` +
+      `${c.platforms.map(platformLabel).join(", ")}) — starting will pull the amd64 image ` +
+      "and run it under emulation: functional, but slower and not validated natively here."
+    );
+  })();
+  // A base-generation mismatch is refused server-side (409) — an enabled Start would only
+  // bounce, so it is disabled WITH the reason (never silently).
+  const incompatible = selectedMission?.compatible === false;
+  const canSubmit = !!agent && !!mission && budget > 0 && !starting && !incompatible && !noNativePath;
   // Show the download panel whenever the selected mission is actually pulling (recoverable
   // across navigation), errored, or the operator has just committed to a not-yet-installed one.
   // `isCancelled` keeps the panel up after a cancel so the outcome is stated, rather than the whole
@@ -548,6 +584,46 @@ export function NewRunForm({
             />
 
             <div className="space-y-2 border-t border-border pt-3">
+            {/* Non-blocking honesty (AS4): the operator may proceed, but knowingly. */}
+            {platformWarning && !starting && (
+              <p
+                role="alert"
+                data-testid="platform-warning"
+                className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/[0.06] p-2.5 text-dense text-text-secondary"
+              >
+                <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden />
+                <span>{platformWarning}</span>
+              </p>
+            )}
+            {/* Blocking states carry their reason — a disabled button must never be a riddle. */}
+            {incompatible && (
+              <p
+                role="alert"
+                data-testid="incompatible-blocked"
+                className="flex items-start gap-2 rounded-md border border-err/30 bg-err/[0.06] p-2.5 text-dense text-text-secondary"
+              >
+                <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-err" aria-hidden />
+                <span>
+                  This mission is not runnable on this XORCISE —{" "}
+                  {selectedMission?.compat_hint ??
+                    "it was built for a different base generation."}
+                </span>
+              </p>
+            )}
+            {noNativePath && (
+              <p
+                role="alert"
+                data-testid="no-platform-blocked"
+                className="flex items-start gap-2 rounded-md border border-err/30 bg-err/[0.06] p-2.5 text-dense text-text-secondary"
+              >
+                <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-err" aria-hidden />
+                <span>
+                  This mission has no image this host can execute (validated:{" "}
+                  {selectedMission?.platforms.map(platformLabel).join(", ")}) — the server
+                  would refuse the run.
+                </span>
+              </p>
+            )}
             {showPull && (
               <div className="space-y-1.5 rounded-md border border-border bg-background p-3">
                 <div className="flex items-center gap-1.5 text-label uppercase text-text-tertiary">

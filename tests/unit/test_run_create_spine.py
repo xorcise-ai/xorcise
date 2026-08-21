@@ -43,7 +43,7 @@ def _write_installed(install_root: Path, slug: str = "sqli-login", version: int 
     )
     ref = MissionRef(mission_id=slug, image=f"xorcise/mission-{slug}:0")
     (root / INSTALLED_FILE).write_text(
-        InstalledMission(slug, root, manifest, ref, version=version).to_record()
+        InstalledMission(slug, root, manifest, ref, install_revision=version).to_record()
     )
 
 
@@ -134,7 +134,7 @@ def test_create_run_surfaces_static_ip_target_in_prompt(migrated_home, install_r
     )
     ref = MissionRef(mission_id="sqli-login", image="xorcise/mission-sqli-login:0")
     (root / INSTALLED_FILE).write_text(
-        InstalledMission("sqli-login", root, manifest, ref, version=1).to_record()
+        InstalledMission("sqli-login", root, manifest, ref, install_revision=1).to_record()
     )
     _run, prompt = create_run(
         agent_name="alice",
@@ -170,7 +170,7 @@ def test_create_run_surfaces_attachments_in_prompt(migrated_home, install_root):
     )
     ref = MissionRef(mission_id="sqli-login", image="xorcise/mission-sqli-login:0")
     (root / INSTALLED_FILE).write_text(
-        InstalledMission("sqli-login", root, manifest, ref, version=1).to_record()
+        InstalledMission("sqli-login", root, manifest, ref, install_revision=1).to_record()
     )
     _run, prompt = create_run(
         agent_name="alice",
@@ -375,12 +375,12 @@ def test_create_run_captures_agent_version_and_mission_version(migrated_home, in
     from xorcise.core.missions.runtime import get_installed
 
     agent = agents.register("versioned-agent", endpoint="http://a")
-    # Re-install the same slug so InstalledMission.version becomes 2 (monotonic bump).
+    # Re-install the same slug so InstalledMission.install_revision becomes 2 (monotonic bump).
     _write_installed(install_root, slug="sqli-login", version=1)
     _write_installed(install_root, slug="sqli-login", version=2)
     installed = get_installed("sqli-login", install_root)
     assert installed is not None
-    assert installed.version == 2  # pin the 'version M != 1' precondition
+    assert installed.install_revision == 2  # pin the 'revision M != 1' precondition
 
     run, _prompt = create_run(
         agent_name="versioned-agent",
@@ -389,7 +389,75 @@ def test_create_run_captures_agent_version_and_mission_version(migrated_home, in
         deps=_deps(install_root),
     )
     assert run.agent_version == agent.version
-    assert run.mission_version == installed.version
+    assert run.install_revision == installed.install_revision
+
+
+def test_create_run_copies_artifact_provenance_from_installed_json(migrated_home, install_root):
+    """§31: the run row copies the installed artifact's identity at create time — the creator
+    SemVer, base SemVer, content hash, and exactly what this machine pulled (platform +
+    digests) — read from installed.json, never re-resolved from any registry."""
+    from xorcise.core.contracts.control import (
+        InstalledBaseIdentity,
+        InstalledImageIdentity,
+        MissionInstallIdentity,
+    )
+
+    slug = "sqli-login"
+    root = install_root / slug
+    root.mkdir(parents=True, exist_ok=True)
+    manifest = MissionManifest(
+        schema_version="3.0",
+        version="1.4.2",
+        metadata=MissionMetadata(mission_id=slug, name=slug, objective="obj", type="lab"),
+        environment=EnvironmentSpec(),
+    )
+    ref = MissionRef(mission_id=slug, image=f"xorcise/mission-{slug}:0")
+    identity = MissionInstallIdentity(
+        mission_version="1.4.2",
+        mission_base_version="2.4.1",
+        content_hash="ab" * 32,
+        image=InstalledImageIdentity(
+            release_ref="reg/xorcise/mis-sqli-login:1.4.2-base2.4.1",
+            index_digest="sha256:idx",
+            platform="linux/arm64",
+            platform_digest="sha256:arm",
+        ),
+        mission_base=InstalledBaseIdentity(version="2.4.1", index_digest="sha256:base"),
+        pulled_at="2026-08-19T00:00:00+00:00",
+    )
+    (root / INSTALLED_FILE).write_text(
+        InstalledMission(slug, root, manifest, ref, identity=identity).to_record()
+    )
+    agents.register("prov-agent", endpoint="http://a")
+
+    run, _prompt = create_run(
+        agent_name="prov-agent",
+        mission_slug=slug,
+        budget_seconds=300,
+        deps=_deps(install_root),
+    )
+    assert run.mission_version == "1.4.2"
+    assert run.mission_base_version == "2.4.1"
+    assert run.content_hash == "ab" * 32
+    assert run.platform == "linux/arm64"
+    assert run.index_digest == "sha256:idx"
+    assert run.platform_digest == "sha256:arm"
+
+
+def test_create_run_provenance_none_for_pre_contract_install(migrated_home, install_root):
+    """A your_own fuse / pre-contract install has no artifact identity: the run records None,
+    not fabricated values — absence is a fact about the artifact."""
+    agents.register("legacy-agent", endpoint="http://a")
+    _write_installed(install_root, slug="sqli-login", version=1)
+    run, _prompt = create_run(
+        agent_name="legacy-agent",
+        mission_slug="sqli-login",
+        budget_seconds=300,
+        deps=_deps(install_root),
+    )
+    assert run.mission_version is None
+    assert run.index_digest is None
+    assert run.platform is None
 
 
 def test_create_run_captures_source_agent_from_kind(migrated_home, install_root):

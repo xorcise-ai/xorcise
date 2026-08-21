@@ -2,7 +2,12 @@ import json
 
 import pytest
 
-from xorcise.core.headscale.policy import RunNetwork, assert_policy_safe, render_policy
+from xorcise.core.headscale.policy import (
+    RunNetwork,
+    assert_policy_safe,
+    render_policy,
+    router_tag_for,
+)
 
 ORCH = "orchestrator"
 TAG = "tag:router"
@@ -16,11 +21,16 @@ def test_render_is_valid_json_with_expected_structure():
     nets = [_net("agent-1", "10.200.1.0/24")]
     text = render_policy(nets, router_tag=TAG, orchestrator_user=ORCH)
     doc = json.loads(text)
-    assert doc["tagOwners"] == {TAG: [f"{ORCH}@"]}
-    assert doc["autoApprovers"]["routes"] == {"10.200.1.0/24": [TAG]}
+    rtag = router_tag_for("agent-1", TAG)
+    # both the base tag (owns the shared collector route) and this run's per-run tag are declared
+    assert doc["tagOwners"] == {TAG: [f"{ORCH}@"], rtag: [f"{ORCH}@"]}
+    # the run's own subnet is auto-approved for its per-run tag, NOT the shared base tag
+    assert doc["autoApprovers"]["routes"] == {"10.200.1.0/24": [rtag]}
     assert {"action": "accept", "src": [f"{ORCH}@"], "dst": [f"{ORCH}@:*"]} in doc["acls"]
     assert {"action": "accept", "src": ["agent-1@"], "dst": ["10.200.1.0/24:*"]} in doc["acls"]
-    assert len(doc["acls"]) == 2
+    # ...and the inbound rule back to the agent, sourced from THIS run's per-run router tag
+    assert {"action": "accept", "src": [rtag], "dst": ["agent-1@:*"]} in doc["acls"]
+    assert len(doc["acls"]) == 3
 
 
 def test_render_is_deterministic_and_sorted():
@@ -40,7 +50,7 @@ def test_render_no_runs_has_baseline_only():
 def test_safe_passes_for_good_policy():
     nets = [_net("agent-1", "10.200.1.0/24")]
     text = render_policy(nets, router_tag=TAG, orchestrator_user=ORCH)
-    assert_policy_safe(text, nets)
+    assert_policy_safe(text, nets, router_tag=TAG)
 
 
 @pytest.mark.parametrize(
@@ -48,21 +58,21 @@ def test_safe_passes_for_good_policy():
 )
 def test_safe_rejects_allow_all_tokens(evil):
     with pytest.raises(ValueError):
-        assert_policy_safe(evil, [])
+        assert_policy_safe(evil, [], router_tag=TAG)
 
 
 def test_safe_rejects_missing_run_rule():
     nets = [_net("agent-1", "10.200.1.0/24")]
     text = render_policy([], router_tag=TAG, orchestrator_user=ORCH)
     with pytest.raises(ValueError):
-        assert_policy_safe(text, nets)
+        assert_policy_safe(text, nets, router_tag=TAG)
 
 
 def test_safe_rejects_missing_cidr():
     nets = [_net("agent-1", "10.200.1.0/24")]
     text = render_policy([_net("agent-1", "10.200.9.0/24")], router_tag=TAG, orchestrator_user=ORCH)
     with pytest.raises(ValueError):
-        assert_policy_safe(text, nets)
+        assert_policy_safe(text, nets, router_tag=TAG)
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +118,7 @@ def test_assert_policy_safe_accepts_collector_dst():
         orchestrator_user="orchestrator",
         collector_addr="172.17.0.1",
     )
-    assert_policy_safe(text, [net], collector_addr="172.17.0.1")
+    assert_policy_safe(text, [net], router_tag="tag:router", collector_addr="172.17.0.1")
     pol = json.loads(text)
     agent_rule = next(r for r in pol["acls"] if r["src"] == ["run-a-agent@"])
     assert "10.9.0.0/24:*" in agent_rule["dst"]
@@ -133,7 +143,9 @@ def test_assert_policy_safe_rejects_a_foreign_dst():
         }
     )
     with pytest.raises(ValueError):
-        assert_policy_safe(bad, [_net("run-a-agent", "10.9.0.0/24")], collector_addr="172.17.0.1")
+        assert_policy_safe(
+            bad, [_net("run-a-agent", "10.9.0.0/24")], router_tag=TAG, collector_addr="172.17.0.1"
+        )
 
 
 @pytest.mark.unit
@@ -164,4 +176,89 @@ def test_assert_policy_safe_raises_when_agent_rule_missing_from_acls():
         }
     )
     with pytest.raises(ValueError):
-        assert_policy_safe(crafted, [_net("run-a-agent", "10.9.0.0/24")])
+        assert_policy_safe(crafted, [_net("run-a-agent", "10.9.0.0/24")], router_tag=TAG)
+
+
+# --- agent ingress -----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("nets", [[_net("agent-1", "10.200.1.0/24")], []])
+def test_safe_refuses_to_certify_without_a_router_tag(nets):
+    """Fail closed. The inbound rule's safety rests entirely on its source being pinned to THIS
+    run's router, so a policy that cannot be checked against that tag must not be certified.
+
+    The empty-`networks` case is the one that mattered: the gate used to sit INSIDE
+    `for net in networks:`, so a zero-iteration loop skipped it — and skipped the foreign-dst sweep
+    below with it — certifying a policy without having checked one router-sourced rule."""
+    text = render_policy(nets, router_tag=TAG, orchestrator_user=ORCH)
+    with pytest.raises(ValueError, match="router_tag"):
+        assert_policy_safe(text, nets, router_tag="")
+
+
+def test_safe_rejects_a_missing_inbound_rule():
+    nets = [_net("agent-1", "10.200.1.0/24")]
+    doc = json.loads(render_policy(nets, router_tag=TAG, orchestrator_user=ORCH))
+    rtag = router_tag_for("agent-1", TAG)
+    doc["acls"] = [r for r in doc["acls"] if r.get("src") != [rtag]]
+    with pytest.raises(ValueError, match="exactly one inbound rule"):
+        assert_policy_safe(json.dumps(doc), nets, router_tag=TAG)
+
+
+def test_safe_rejects_a_router_sourced_dst_for_a_foreign_agent():
+    """A run's router must never be handed a path to another run's agent.
+
+    Two shapes, both cross-run reachability: this run's per-run tag reaching a foreign agent, and
+    the bare shared base tag reaching any agent (the pre-per-run-tag shape, where every router
+    shared one identity)."""
+    nets = [_net("agent-1", "10.200.1.0/24")]
+    rtag = router_tag_for("agent-1", TAG)
+    for foreign in ({"src": [rtag], "dst": ["agent-2@:*"]}, {"src": [TAG], "dst": ["agent-1@:*"]}):
+        doc = json.loads(render_policy(nets, router_tag=TAG, orchestrator_user=ORCH))
+        doc["acls"].append({"action": "accept", **foreign})
+        with pytest.raises(ValueError, match="unexpected router-sourced dst"):
+            assert_policy_safe(json.dumps(doc), nets, router_tag=TAG)
+
+
+def test_safe_rejects_cross_run_reachability_in_a_two_run_policy():
+    """The blocker: with a shared base tag, run A's inbound rule (src base tag) was matched by
+    run B's router, because every router carried that one tag. Per-run tags make each inbound rule
+    name exactly one router. This asserts a genuinely two-run rendered policy certifies, and that
+    grafting A's tag onto B's agent is caught."""
+    a = _net("run-aaaa1111-agent", "10.200.1.0/24")
+    b = _net("run-bbbb2222-agent", "10.200.2.0/24")
+    text = render_policy(
+        [a, b], router_tag=TAG, orchestrator_user=ORCH, collector_addr="172.17.0.1"
+    )
+    assert_policy_safe(text, [a, b], router_tag=TAG, collector_addr="172.17.0.1")
+    # every router-sourced rule names a per-run tag, never the bare base tag
+    doc = json.loads(text)
+    router_srcs = [r["src"][0] for r in doc["acls"] if r["src"][0].startswith(TAG)]
+    assert TAG not in router_srcs
+    assert set(router_srcs) == {
+        router_tag_for(a.agent_user, TAG),
+        router_tag_for(b.agent_user, TAG),
+    }
+    # A's router must not be allowed to reach B's agent
+    cross = json.loads(text)
+    cross["acls"].append(
+        {
+            "action": "accept",
+            "src": [router_tag_for(a.agent_user, TAG)],
+            "dst": [f"{b.agent_user}@:*"],
+        }
+    )
+    with pytest.raises(ValueError, match="unexpected router-sourced dst"):
+        assert_policy_safe(json.dumps(cross), [a, b], router_tag=TAG, collector_addr="172.17.0.1")
+
+
+def test_inbound_dst_does_not_break_the_one_rule_per_agent_invariant():
+    """Regression: assert_policy_safe counts occurrences of '"<user>@"' (quotes included).
+
+    The inbound rule's dst is '"<user>@:*"', which must NOT match that needle — otherwise every
+    rendered policy would trip the "exactly one rule per agent" check.
+    """
+    nets = [_net("agent-1", "10.200.1.0/24")]
+    text = render_policy(nets, router_tag=TAG, orchestrator_user=ORCH)
+    assert text.count('"agent-1@"') == 1
+    assert '"agent-1@:*"' in text
+    assert_policy_safe(text, nets, router_tag=TAG)

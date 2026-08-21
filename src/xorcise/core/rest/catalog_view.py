@@ -23,7 +23,8 @@ from xorcise.core.contracts.mission import MissionManifest
 if TYPE_CHECKING:
     # Type-only: keep the catalog island off the control-plane boot path (role isolation),
     # same trick as run_create.py's ports import. The concrete import is lazy, below.
-    from xorcise.core.catalog.source import CatalogSource
+    from xorcise.core.catalog.source import CatalogSource, LibraryItem
+    from xorcise.core.missions.runtime import InstalledMission
     from xorcise.core.runner.docker.build import BaseCompat
 
 
@@ -63,9 +64,40 @@ def build_catalog_view_deps(settings: Settings) -> CatalogViewDeps:
     )
 
 
+def _update_available(ic: InstalledMission, current: LibraryItem | None) -> bool | None:
+    """§34 update detection for one installed library row, against the catalog's current row.
+
+    Digest comparison is the strongest signal; a pre-digest catalog still MOVES the immutable
+    release ref whenever anything changes, so ref inequality is the honest fallback. Nothing
+    comparable ⇒ None (unknown), never a guessed False."""
+    if current is None:
+        return None
+    if ic.index_digest and current.index_digest:
+        return ic.index_digest != current.index_digest
+    if ic.mission_ref.image and current.image:
+        return ic.mission_ref.image != current.image
+    return None
+
+
+def _emulated(installed_platform: str | None, host: str | None) -> bool | None:
+    """Whether this install executes under emulation HERE. None when either side is unknown —
+    never a guess; the UI renders nothing rather than a wrong "native"."""
+    if installed_platform is None or host is None:
+        return None
+    return installed_platform != host
+
+
 def list_catalog(deps: CatalogViewDeps) -> tuple[CatalogEntry, ...]:
     """Your Own (installed local store) + the free library, deduped by id (Your Own wins)."""
+    from xorcise.core.config import get_settings
     from xorcise.core.missions import get_installed, list_installed
+    from xorcise.core.rest.docker_runtime import host_platform, local_image_platform
+
+    # One list call serves both halves: the library loop below AND the update check on
+    # installed library rows (comparing a recorded install against the catalog's CURRENT row).
+    library_items = deps.source.list_library()
+    library_by_id = {item.mission_id: item for item in library_items}
+    host = host_platform(get_settings())
 
     installed_entries: list[CatalogEntry] = []
     installed_ids: set[str] = set()
@@ -76,6 +108,12 @@ def list_catalog(deps: CatalogViewDeps) -> tuple[CatalogEntry, ...]:
         meta = ic.manifest.metadata
         installed_ids.add(meta.mission_id)
         compat = base_compat_of(ic.mission_ref.image)
+        # Update status only makes sense for a LIBRARY install (your_own has no upstream).
+        current = library_by_id.get(meta.mission_id) if ic.origin == "library" else None
+        # Installs that predate the §30 record carry no platform — inspect the LOCAL image
+        # instead (it IS what a run executes), so the emulation warning reaches every
+        # existing installation, not only post-contract pulls.
+        platform = ic.platform or local_image_platform(get_settings(), ic.mission_ref.image)
         installed_entries.append(
             CatalogEntry(
                 # origin decides the tab: a pulled library mission stays under XORCISE Remote,
@@ -94,11 +132,25 @@ def list_catalog(deps: CatalogViewDeps) -> tuple[CatalogEntry, ...]:
                 base_major=compat.base_major,
                 compatible=compat.compatible,
                 compat_hint=compat.hint,
+                # What THIS install recorded at pull time (§30) — None for a your_own fuse or
+                # a pre-contract install; platforms stay () (the install records one platform,
+                # the catalog's offer is the library row's business).
+                mission_version=ic.mission_version,
+                mission_base_version=ic.mission_base_version,
+                index_digest=ic.index_digest,
+                update_available=_update_available(ic, current),
+                current_mission_version=current.mission_version if current else None,
+                current_mission_base_version=(current.mission_base_version if current else None),
+                # The catalog's CURRENT platform offer, so an installed row can still render
+                # the tags (the install itself records only the one platform it pulled).
+                platforms=current.platforms if current else (),
+                platform=platform,
+                emulated=_emulated(platform, host),
             )
         )
 
     library: list[CatalogEntry] = []
-    for item in deps.source.list_library():
+    for item in library_items:
         if item.mission_id in installed_ids:
             continue  # already an installed row (flagged there with its true origin)
         compat = base_compat_of(item.image)
@@ -125,6 +177,12 @@ def list_catalog(deps: CatalogViewDeps) -> tuple[CatalogEntry, ...]:
                 base_major=compat.base_major,
                 compatible=compat.compatible,
                 compat_hint=compat.hint,
+                # The catalog's CURRENT artifact identity (API1) — update detection compares
+                # an installed row's recorded digest against this row's.
+                mission_version=item.mission_version,
+                mission_base_version=item.mission_base_version,
+                index_digest=item.index_digest,
+                platforms=item.platforms,
             )
         )
 

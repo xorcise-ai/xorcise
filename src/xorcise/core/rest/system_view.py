@@ -16,7 +16,12 @@ from typing import Literal
 import httpx
 
 from xorcise.core.config import Settings
-from xorcise.core.contracts.config import CatalogStatusView, PlaneStatus, SystemInfo
+from xorcise.core.contracts.config import (
+    CatalogStatusView,
+    MissionBaseView,
+    PlaneStatus,
+    SystemInfo,
+)
 from xorcise.core.rest.catalog_view import build_catalog_view_deps
 
 _DB_SCHEMA = {"ready": "head", "stale": "behind", "fresh": "fresh"}
@@ -82,7 +87,13 @@ def _not_deployed(name: str) -> PlaneStatus:
 # nothing but complexity.
 # Catalog gets much longer: it is by far the priciest probe and the least volatile (a library
 # connection does not flap), and `xorcise catalog status` / the Catalog card remain the live check.
-_TTL_SECONDS: dict[str, float] = {"docker": 20.0, "headscale": 20.0, "catalog": 120.0}
+_TTL_SECONDS: dict[str, float] = {
+    "docker": 20.0,
+    "headscale": 20.0,
+    "catalog": 120.0,
+    # Same reasoning as catalog: a remote round-trip, and a promoted base changes rarely.
+    "mission_base": 120.0,
+}
 _DEFAULT_TTL = 20.0
 _probe_cache: dict[str, tuple[float, object]] = {}
 
@@ -244,7 +255,8 @@ def build_system_info(settings: Settings) -> SystemInfo:
     )
     # The single most expensive thing here (a remote round-trip) — memoised like the subprocess
     # probes. `xorcise catalog status` / the catalog card remain the live, uncached check.
-    status = _cached("catalog", lambda: build_catalog_view_deps(settings).source.status())
+    source = build_catalog_view_deps(settings).source
+    status = _cached("catalog", lambda: source.status())
     return SystemInfo(
         role=settings.role,
         planes=planes,
@@ -256,4 +268,42 @@ def build_system_info(settings: Settings) -> SystemInfo:
         home=str(xorcise_home()),
         db_url=settings.database_url,
         topology=settings.deployment_topology,
+        mission_base=_cached("mission_base", lambda: _mission_base_view(source)),
+        host_platform=_host_platform(settings),
+    )
+
+
+def _host_platform(settings: Settings) -> str | None:
+    """The daemon native platform via docker_runtime's memoised probe (lazy import: the docker
+    plane stays off this module's import path for roles that don't run it)."""
+    from xorcise.core.rest.docker_runtime import host_platform
+
+    return host_platform(settings)
+
+
+def _mission_base_view(source: object) -> MissionBaseView:
+    """§36 version visibility: what this client requires vs what the catalog promotes.
+
+    The required MAJOR and the client's own version are local facts and always present; the
+    promoted side degrades to None on a pre-contract catalog (its /v1/mission-base 404s), the
+    stub, or any failure — unknown, never fabricated."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    # Lazy: the runner island stays off this module's import path until actually needed.
+    from xorcise.core.runner.docker.build import REQUIRED_BASE_MAJOR
+
+    try:
+        client_version = version("xorcise")
+    except PackageNotFoundError:  # editable/dev installs without metadata
+        client_version = ""
+    promoted = None
+    try:
+        promoted = source.mission_base()  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 — a probe failure must never take the system view down
+        promoted = None
+    return MissionBaseView(
+        required_major=REQUIRED_BASE_MAJOR,
+        client_version=client_version,
+        promoted_version=promoted.version if promoted else None,
+        promoted_index_digest=promoted.index_digest if promoted else None,
     )

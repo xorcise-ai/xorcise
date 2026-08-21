@@ -19,6 +19,7 @@ import {
   Package,
   Paperclip,
   Plus,
+  RefreshCw,
   Server,
   ShieldCheck,
   Trash2,
@@ -31,7 +32,13 @@ import { Skeleton, SkeletonRows } from "@/components/ui/skeleton";
 import { Reveal } from "@/components/ui/reveal";
 import { NotFoundState } from "@/components/layout/not-found-state";
 import type { CatalogEntry, MissionManifest } from "@/lib/api/types";
-import { PullProgressBlock } from "./mission-card";
+import {
+  PullProgressBlock,
+  UpdateMissionButton,
+  platformLabel,
+  platformTags,
+  updateReason,
+} from "./mission-card";
 import { MissionTerrain } from "./mission-terrain";
 import {
   formatBytes,
@@ -254,6 +261,46 @@ export function MissionDetail({ id }: { id: string | null }) {
             )}
             {c.proficiency && <DifficultyBadge proficiency={c.proficiency} />}
             {c.specialty && <Badge variant="info">{titleCase(c.specialty)}</Badge>}
+            {/* Artifact identity (§25/§36): the creator SemVer and the validated platforms
+                (PV5 — what the remote build verified, never a creator claim). Absent on a
+                pre-contract catalog; emulated flags an install that is non-native HERE. */}
+            {c.mission_version && (
+              <Badge variant="muted" className="font-mono">
+                v{c.mission_version}
+              </Badge>
+            )}
+            {/* One tag per validated architecture; the INSTALLED image's tag is lit and
+                suffixed (native / emulated), so the page answers "which arch do I have?"
+                directly rather than listing two indistinguishable tags. A validated-but-not
+                -installed arch stays muted. The emulation state rides the installed tag itself
+                — no separate floating badge to guess the referent of. */}
+            {platformTags(c).map(({ platform, installed, emulated }) => (
+              <Badge
+                key={platform}
+                variant={
+                  installed ? (emulated === true ? "warn" : emulated === false ? "ok" : "default") : "muted"
+                }
+                className="font-mono"
+                title={
+                  installed
+                    ? emulated === true
+                      ? "Installed image — runs through Docker's emulation layer (not native to this host): functional, but slower and not validated natively."
+                      : emulated === false
+                        ? "Installed image — native to this host's architecture."
+                        : "Installed image."
+                    : "Validated by the remote build (not the installed image). Individual missions may support fewer platforms than the mission-base."
+                }
+              >
+                {platformLabel(platform)}
+                {installed
+                  ? emulated === true
+                    ? " · emulated"
+                    : emulated === false
+                      ? " · native"
+                      : " · installed"
+                  : ""}
+              </Badge>
+            ))}
             {c.installed ? (
               <Badge variant="ok">installed</Badge>
             ) : (
@@ -268,6 +315,28 @@ export function MissionDetail({ id }: { id: string | null }) {
           </div>
         </div>
       </header>
+
+      {/* Update available (§34/§35) — the info sibling of the warning banner below: same
+          placement, same shape, one action. Suppressed while incompatible ("Not runnable"
+          already demands the same action, with a stronger claim). */}
+      {c.installed && c.compatible !== false && c.update_available === true && (
+        <Card className="min-w-0 border-info/30 bg-info/[0.06]" data-testid="mission-update-banner">
+          <CardContent className="flex min-w-0 flex-wrap items-center justify-between gap-3">
+            <div className="flex min-w-0 items-start gap-3">
+              <RefreshCw className="mt-0.5 size-5 shrink-0 text-info" />
+              <div className="min-w-0 space-y-1">
+                <p className="text-body font-semibold text-heading">Update available</p>
+                <p className="max-w-full break-words text-body text-text-secondary">
+                  {updateReason(c) ??
+                    "The catalog serves a newer artifact for this mission."}{" "}
+                  One action updates it in place; runs already recorded keep their evidence.
+                </p>
+              </div>
+            </div>
+            <UpdateMissionButton mission={c} />
+          </CardContent>
+        </Card>
+      )}
 
       {/* Base-generation incompatibility — surfaced here (and as a card badge) so the mismatch is
           seen before a run, not discovered as a failed run-create. Mirrors the Preview banner, in

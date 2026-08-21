@@ -118,7 +118,7 @@ def _seed_run_with_conditions(home: Path) -> tuple[str, str]:
         model=model_name,
         sandbox_ref="xorcise/mission-c2:0",
         agent_version=4,
-        mission_version=6,
+        install_revision=6,
     )
     rid = run.run_id
 
@@ -148,9 +148,9 @@ def test_terminate_records_conditions_on_result(migrated_home) -> None:
     assert rc.sandbox_ref == "xorcise/mission-c2:0"
     # No BYOM key configured in throwaway home → judge_model is None
     assert rc.judge_model is None
-    # agent_version + mission_version denormalized onto result
+    # agent_version + install_revision denormalized onto result
     assert rc.agent_version == 4
-    assert rc.mission_version == 6
+    assert rc.install_revision == 6
 
 
 def test_timeout_terminate_marks_result_partial(migrated_home) -> None:

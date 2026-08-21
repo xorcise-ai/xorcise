@@ -42,10 +42,10 @@ def test_non_root_userspace_path_with_socks_proxy():
     # The common sandbox is non-root: userspace-networking + a SOCKS5 proxy, no root/TUN needed.
     s = _script()
     assert "userspace-networking" in s
-    assert "socks5-server=127.0.0.1:" in s  # a SOCKS5 proxy is opened (port is now dynamic)
+    assert 'socks5-server="$PROXY_ADDR"' in s  # a SOCKS5 proxy is opened (port is now dynamic)
     assert "id -u" in s  # capability detection branch
     # It must tell the caller how to reach targets through the proxy.
-    assert "--socks5-hostname 127.0.0.1:" in s
+    assert "--socks5-hostname $PROXY_ADDR:" in s
 
 
 def test_userspace_ports_are_dynamic_not_the_fixed_1055_1056():
@@ -56,7 +56,7 @@ def test_userspace_ports_are_dynamic_not_the_fixed_1055_1056():
     native = s[s.index("port_busy()") : s.index("# 4) Join.")]
     assert "1055" not in native
     assert "1056" not in native
-    assert "socks5-server=127.0.0.1:" in native  # opens a proxy on a chosen native port
+    assert 'socks5-server="$PROXY_ADDR"' in native  # opens a proxy on a chosen native port
 
 
 def test_userspace_retries_to_find_a_free_port():
@@ -85,9 +85,9 @@ def test_prints_the_chosen_proxy_port():
     # The agent can't assume 1055 any more, so the script must surface the port it actually chose,
     # both in the human hint and in the sourceable env file.
     s = _script()
-    assert "--socks5-hostname 127.0.0.1:$SOCKS" in s
-    assert "socks5://127.0.0.1:$SOCKS" in s  # ts-env.sh ALL_PROXY uses the chosen port
-    assert "http://127.0.0.1:$HTTP" in s  # ts-env.sh HTTP(S)_PROXY uses the chosen port
+    assert "--socks5-hostname $PROXY_ADDR:$SOCKS" in s
+    assert "socks5://$PROXY_ADDR:$SOCKS" in s  # ts-env.sh ALL_PROXY uses the chosen port
+    assert "http://$PROXY_ADDR:$HTTP" in s  # ts-env.sh HTTP(S)_PROXY uses the chosen port
 
 
 def test_self_reaper_tears_down_this_runs_daemon_on_termination():
@@ -165,7 +165,8 @@ def test_auto_mode_selects_the_sidecar_on_darwin_before_native_client_discovery(
     # The normal macOS path must never reach the Darwin-native client/CA verifier: auto chooses the
     # Linux sidecar before the native command lookup and Linux tarball fallback.
     s = _script()
-    assert 'if [ "$(uname -s)" = "Darwin" ]; then TS_MODE=sidecar' in s
+    darwin = s.index('if [ "$(uname -s)" = "Darwin" ]; then')
+    assert s.index("TS_MODE=sidecar", darwin) - darwin < 80  # the Darwin arm, not a later branch
     assert s.index("TS_MODE=sidecar") < s.index('TS="$(command -v tailscale || true)"')
     assert s.index("TS_MODE=sidecar") < s.index("pkgs.tailscale.com")
 
@@ -281,3 +282,97 @@ def test_no_ca_public_control_plane_uses_system_trust():
     assert "BEGIN CERTIFICATE" not in s
     assert "system trust" in s
     assert "SSLENV" in s  # the conditional still renders (resolves empty at runtime)
+
+
+# --- Phase 2: Linux mode selection + host-namespace exposure ------------------------------------
+
+
+def test_auto_prefers_kernel_then_sidecar_over_userspace_on_the_host():
+    """Userspace-on-the-host is the LAST resort: netstack forwards inbound to 127.0.0.1, so it
+    publishes every host loopback service to the mission network. Kernel mode keeps host
+    semantics; the sidecar contains the same quirk inside a near-empty namespace."""
+    s = _script()
+    auto = s[s.index("  auto)") : s.index("  sidecar | native) ;;")]
+    kernel = auto.index('[ "$(id -u)" = "0" ] && [ -w /dev/net/tun ]')
+    assert kernel < auto.index('[ "$HAVE_DOCKER" = yes ]')
+    assert auto.count("TS_MODE=native") == 2  # kernel first, host-userspace last
+    assert "TS_MODE=sidecar" in auto
+
+
+def test_native_userspace_binds_the_proxy_off_netstacks_forward_target():
+    """netstack delivers inbound tailnet connections to 127.0.0.1. Binding the proxy there would
+    hand mission code a relay carrying the agent's tailnet identity; 127.0.0.2 is still
+    loopback-only to the host but is not what netstack forwards to."""
+    s = _script()
+    assert "PROXY_ADDR=127.0.0.2" in s
+    assert "PROXY_ADDR=127.0.0.1" in s  # Darwin fallback (no lo0 alias); diagnostic path only
+    assert "socks5-server=127.0.0.1:" not in s
+
+
+def test_host_userspace_warns_that_loopback_is_exposed():
+    s = _script()
+    assert "listening on 127.0.0.1 is reachable from the mission network" in s
+
+
+def test_linux_sidecar_maps_host_docker_internal_to_the_gateway():
+    """The in-container reaper polls run-control through that name; a Linux daemon does not
+    resolve it for free, and without it the sidecar leaks until its hard cap."""
+    s = _script()
+    assert "--add-host=host.docker.internal:host-gateway" in s
+
+
+def test_both_native_modes_say_how_to_accept_connections():
+    s = _script()
+    assert s.count("to ACCEPT connections, bind a port on this host") == 2
+
+
+def test_the_sidecar_proxy_bind_fails_closed_rather_than_going_wildcard():
+    """`[ -n "$bip" ] || bip=0.0.0.0` undid the whole point of the contained bind. In
+    userspace-networking mode netstack delivers inbound tailnet connections to 127.0.0.1 INSIDE
+    the sidecar, so a wildcard bind publishes the SOCKS5/HTTP proxy ON the tailnet — and with
+    agent ingress now open, that hands mission code a working relay carrying the agent's identity.
+    The join printed success either way, so nobody would have found out."""
+    s = _script()
+    assert "bip=0.0.0.0" not in s
+    body = s[s.index("bip=$(ip -4 -o addr show") :]
+    assert "exit 1" in body[: body.index("tailscaled --socks5-server")]
+
+
+def test_auto_falls_back_to_native_when_the_sidecar_cannot_start():
+    """The sidecar image comes from Docker Hub; the native client comes from run-control, which
+    caches it precisely for the air-gapped host. So the offline host is exactly where the sidecar
+    cannot start — and `auto` preferring the sidecar with no fall-through made the join impossible
+    there, on a path the script itself advertises."""
+    s = _script()
+    fail = s[s.index('if ! "$@" >/dev/null; then') :]
+    fail = fail[: fail.index('if [ "$TS_MODE" = sidecar ]; then')]
+    assert 'TS_FALLBACK" = yes' in fail
+    assert "TS_MODE=native" in fail
+
+
+def test_an_explicitly_requested_sidecar_never_falls_back():
+    """An operator naming the mode is diagnosing something and wants the failure, not a quiet
+    downgrade to the less contained path."""
+    s = _script()
+    auto = s[s.index("  auto)") : s.index("  sidecar | native) ;;")]
+    assert auto.count("TS_FALLBACK=yes") == 1  # set only where `auto` chose the sidecar
+    assert "TS_FALLBACK=no" in s[: s.index("  auto)")]
+
+
+def test_the_docker_daemon_is_probed_once_per_join():
+    """`docker info` on an unreachable daemon blocks for its full timeout, and this was asked
+    twice on every join — once to detect the mode, once to guard the sidecar branch."""
+    assert _script().count("docker info >/dev/null 2>&1") == 1
+
+
+def test_the_portable_socks_handle_is_written_in_every_proxy_mode():
+    """XORCISE_SOCKS5 is the mode-independent handle: the sidecar path always wrote it, and the
+    userspace path now does too, so an agent keying off it is portable across modes. This PR made
+    `auto` pick the sidecar on non-root Linux where it used to pick userspace, so the two paths'
+    env files must expose the same handle or an agent's config silently stops resolving."""
+    s = _script()
+    # sidecar block
+    assert "export XORCISE_SOCKS5=127.0.0.1:$SOCKS" in s
+    # userspace block — additive; the standard ALL_PROXY convenience stays
+    assert "export XORCISE_SOCKS5=$PROXY_ADDR:$SOCKS" in s
+    assert "export ALL_PROXY=socks5://$PROXY_ADDR:$SOCKS" in s

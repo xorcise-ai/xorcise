@@ -10,13 +10,18 @@ The live contract is mocked with httpx.MockTransport (no network in CI):
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import cast
 
 import httpx
 import pytest
 
 from xorcise.core.catalog import StubCatalogSource
 from xorcise.core.catalog.http import HttpCatalogSource
-from xorcise.core.contracts.errors import NotFoundError, PullError
+from xorcise.core.contracts.errors import (
+    NotFoundError,
+    PullError,
+    UnsupportedManifestVersionError,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -224,3 +229,171 @@ def test_list_library_carries_skills_when_the_catalog_emits_it() -> None:
 
     assert _source(with_skills).list_library()[0].skills == ("pivoting", "lateral-movement")
     assert _source(without).list_library()[0].skills == ()
+
+
+def test_fetch_manifest_deserializes_schema_3_0() -> None:
+    doc = {
+        "manifest": {**cast("dict[str, object]", _MANIFEST["manifest"]), "version": "1.0.0"}
+        | {"schema_version": "3.0"},
+        "image_ref": _IMAGE,
+    }
+
+    def h(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=doc)
+
+    m = _source(h).fetch_manifest("segmented-pivot")
+    assert m.schema_version == "3.0"
+    assert m.version == "1.0.0"
+
+
+def test_fetch_manifest_unknown_schema_raises_typed_upgrade_error() -> None:
+    # A catalog newer than this client (e.g. a future 4.0) must surface as an actionable
+    # "upgrade XORCISE" error — never a pydantic traceback (UnsupportedManifestVersionError).
+    def h(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"manifest": {"schema_version": "4.0"}})
+
+    with pytest.raises(UnsupportedManifestVersionError) as exc:
+        _source(h).fetch_manifest("segmented-pivot")
+    assert exc.value.served == "4.0"
+    assert exc.value.supported == ("2.0", "3.0")
+    assert "upgrade XORCISE" in str(exc.value)
+    assert isinstance(exc.value, PullError)  # rides the existing REST/CLI PullError mapping
+
+
+def test_fetch_manifest_invalid_supported_schema_is_typed_too() -> None:
+    # A supported-version document that fails validation (client and catalog disagree about
+    # the shape) is the same typed error, not a crash.
+    doc = {
+        "manifest": {**cast("dict[str, object]", _MANIFEST["manifest"]), "version": "01.0.0"}
+        | {"schema_version": "3.0"},
+        "image_ref": _IMAGE,
+    }
+
+    def h(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=doc)
+
+    with pytest.raises(UnsupportedManifestVersionError) as exc:
+        _source(h).fetch_manifest("segmented-pivot")
+    assert exc.value.served == "3.0"
+    assert "cannot validate" in str(exc.value)
+
+
+_DETAIL = {
+    "manifest": {**cast("dict[str, object]", _MANIFEST["manifest"]), "version": "1.0.0"}
+    | {"schema_version": "3.0"},
+    "image_ref": _IMAGE,
+    "mission_version": "1.0.0",
+    "mission_base_version": "2.0.0",
+    "content_hash": "f401724435f303e76bae78b940f3b6166078878f3c76747b2b9a7738a5212a40",
+    "image": {
+        "release_ref": "reg/xorcise/mis-segmented-pivot:1.0.0-base2.0.0",
+        "pull_ref": "reg/xorcise/mis-segmented-pivot:latest",
+        "index_digest": "sha256:idx",
+        "platforms": [
+            {"os": "linux", "architecture": "amd64", "digest": "sha256:amd"},
+            {"os": "linux", "architecture": "arm64", "digest": "sha256:arm", "variant": "v8"},
+        ],
+    },
+    "mission_base": {
+        "version": "2.0.0",
+        "index_digest": "sha256:base",
+        "platform_digests": {"amd64": "sha256:bamd", "arm64": "sha256:barm"},
+    },
+}
+
+
+def test_fetch_detail_parses_the_contract_shape() -> None:
+    # The live test-environment detail response (handover §1.6 / contract API2 + A11).
+    def h(req: httpx.Request) -> httpx.Response:
+        assert req.url.path == "/v1/missions/segmented-pivot"
+        return httpx.Response(200, json=_DETAIL)
+
+    d = _source(h).fetch_detail("segmented-pivot")
+    assert d.manifest.version == "1.0.0"
+    assert d.mission_version == "1.0.0"
+    assert d.mission_base_version == "2.0.0"
+    assert d.content_hash == _DETAIL["content_hash"]
+    assert d.release_ref == "reg/xorcise/mis-segmented-pivot:1.0.0-base2.0.0"
+    assert d.pull_ref == "reg/xorcise/mis-segmented-pivot:latest"
+    assert d.index_digest == "sha256:idx"
+    assert [p.platform for p in d.platforms] == ["linux/amd64", "linux/arm64"]
+    assert d.platforms[1].variant == "v8"  # arm64/v8 distinguishable from bare arm64
+    assert d.base_index_digest == "sha256:base"
+    assert d.base_platform_digests == {"amd64": "sha256:bamd", "arm64": "sha256:barm"}
+
+
+def test_fetch_detail_degrades_on_a_pre_contract_response() -> None:
+    # Prod today serves only {manifest, image_ref}: every identity field is None/empty and
+    # nothing raises — the client behaves exactly as before the contract.
+    def h(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_MANIFEST)
+
+    d = _source(h).fetch_detail("segmented-pivot")
+    assert d.manifest.metadata.mission_id == "segmented-pivot"
+    assert d.mission_version is None
+    assert d.index_digest is None
+    assert d.platforms == ()
+    assert d.base_platform_digests == {}
+
+
+def test_list_row_carries_identity_fields() -> None:
+    row = {
+        **cast("dict[str, object]", _CATALOG["catalog"][0]),
+        "mission_version": "1.0.0",
+        "mission_base_version": "2.0.0",
+        "index_digest": "sha256:idx",
+        "platforms": ["linux/amd64", "linux/arm64"],
+    }
+
+    def h(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"catalog": [row]})
+
+    item = _source(h).list_library()[0]
+    assert item.mission_version == "1.0.0"
+    assert item.mission_base_version == "2.0.0"
+    assert item.index_digest == "sha256:idx"
+    assert item.platforms == ("linux/amd64", "linux/arm64")
+
+
+def test_list_row_identity_absent_on_pre_contract_catalog() -> None:
+    def h(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_CATALOG)
+
+    item = _source(h).list_library()[0]
+    assert item.mission_version is None
+    assert item.mission_base_version is None
+    assert item.index_digest is None
+    assert item.platforms == ()
+
+
+def test_mission_base_parses_the_promoted_release() -> None:
+    body = {
+        "mission_base_version": "2.0.0",
+        "required_base_major": 2,
+        "image": {
+            "ref": "ghcr.io/xorcise-ai/mission-base:2.0.0",
+            "index_digest": "sha256:base",
+            "platforms": [
+                {"os": "linux", "architecture": "amd64", "digest": "sha256:bamd"},
+                {"os": "linux", "architecture": "arm64", "variant": "v8", "digest": "sha256:barm"},
+            ],
+        },
+    }
+
+    def h(req: httpx.Request) -> httpx.Response:
+        assert req.url.path == "/v1/mission-base"
+        return httpx.Response(200, json=body)
+
+    mb = _source(h).mission_base()
+    assert mb is not None
+    assert mb.version == "2.0.0"
+    assert mb.required_base_major == 2
+    assert mb.ref == "ghcr.io/xorcise-ai/mission-base:2.0.0"
+    assert mb.index_digest == "sha256:base"
+    assert [p.platform for p in mb.platforms] == ["linux/amd64", "linux/arm64"]
+
+
+def test_mission_base_404_and_errors_degrade_to_none() -> None:
+    # Prod predates the endpoint (404); an outage must be equally silent — display data only.
+    assert _source(lambda req: httpx.Response(404)).mission_base() is None
+    assert _source(lambda req: httpx.Response(500)).mission_base() is None

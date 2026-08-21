@@ -9,6 +9,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import ClassVar
 
 # Every per-run container the driver creates is stamped with this label so it can be reaped
 # without any in-process bookkeeping — survives a server restart, an abandoned run,
@@ -24,6 +25,10 @@ class ContainerSpec:
     image: str  # OCI image ref the runner pulls
     name: str
     env: tuple[tuple[str, str], ...] = ()
+    # Explicit execution platform (AS5), e.g. "linux/arm64". None ⇒ the driver's default; with
+    # an auto ("") driver default docker then runs the LOCAL image as-is — which is the selected
+    # one by construction, because the pull was explicit.
+    platform: str | None = None
 
 
 @dataclass(frozen=True)
@@ -83,11 +88,15 @@ class DockerDriver(ABC):
         *,
         auth: tuple[str, str] | None = None,
         progress: Callable[[PullProgress], None] | None = None,
+        platform: str | None = None,
     ) -> None:
         """Pull an image into the local store. `auth` is (username, password) for a private
         registry (e.g. a broker-minted ECR token); None ⇒ anonymous pull.
         `progress` (keyword-only, default None ⇒ backward-compatible for existing call sites)
-        receives per-layer byte progress while the pull streams."""
+        receives per-layer byte progress while the pull streams.
+        `platform` (keyword-only, default None) is the explicit per-mission selection (AS5);
+        None falls back to the driver's construction-time platform. The pull spine forwards it
+        only when a selection was actually made, so pre-existing fakes keep working."""
 
     @abstractmethod
     def run(self, spec: ContainerSpec) -> ContainerHandle: ...
@@ -101,6 +110,27 @@ class DockerDriver(ABC):
 
         Keyed on the deterministic container name, not an in-memory handle, so teardown works
         across a server restart or from a second process. Absent ⇒ False."""
+
+    # Whether this driver has an image store to read from at all. The stub does not; a real driver
+    # does. The confinement pass keys off this to tell "nothing to read here" apart from "the read
+    # failed", so a driver can only decline to confine by saying so explicitly.
+    reads_image_files: ClassVar[bool] = False
+
+    @abstractmethod
+    def read_image_file(self, image: str, path: str) -> str | None:
+        """A file's text from inside an image, WITHOUT running it. None ⇒ this driver can't read.
+
+        The mission's compose file is the only authoritative list of the networks a run will
+        create, and it ships inside the fused image rather than the installed bundle — so the
+        confinement pass has to read it from there. A real driver either returns the content or
+        raises; None is the stub's answer (no image store to read), never a real driver's way of
+        reporting failure, because a silent empty answer would leave networks unconfined.
+
+        Abstract, with no base implementation, precisely because of that last sentence: as a
+        non-abstract `return None` default, a future real driver that simply never overrode it
+        would silently disable confinement for every run it deployed, and nothing — not a log line,
+        not a test — would say so. Declining is now something a driver has to write down.
+        """
 
     @abstractmethod
     def inspect_by_name(self, name: str) -> ContainerHandle | None:
@@ -119,6 +149,20 @@ class DockerDriver(ABC):
 
         Non-abstract None default: only the real Docker driver inspects; other drivers degrade to
         None, which the base-compat gate reads as 'label unknown' and falls back to the tag."""
+        return None
+
+    def image_platform(self, image: str) -> str | None:
+        """The `os/architecture` the local copy of the image was built for, or None.
+
+        Non-abstract None default (same reasoning as image_labels): only the real driver
+        inspects, and a None simply leaves the install record's platform unknown."""
+        return None
+
+    def daemon_platform(self) -> str | None:
+        """The `os/architecture` the DAEMON executes natively (AS1), or None when unknown.
+
+        This is deliberately the daemon's platform, not this Python process's: the daemon may
+        live in a VM (Docker Desktop) or on another host, and it is where missions execute."""
         return None
 
     @abstractmethod
@@ -185,6 +229,7 @@ class StubDockerDriver(DockerDriver):
         self.compose_projects: set[str] = set()  # test-settable projects holding a network
         self.removed_projects: list[str] = []  # projects released by remove_run_resources
         self.specs: list[ContainerSpec] = []  # every run()'s spec, for assertions
+        self.pulled_platform: str | None = None  # the last pull's explicit platform selection
         self._by_name: dict[str, str] = {}  # container name → container_id (by-name stop)
         self._counter = 0
 
@@ -194,9 +239,11 @@ class StubDockerDriver(DockerDriver):
         *,
         auth: tuple[str, str] | None = None,
         progress: Callable[[PullProgress], None] | None = None,
+        platform: str | None = None,
     ) -> None:
         self.pulled.append(image)
         self.pulled_auth = auth
+        self.pulled_platform = platform
         if progress is not None:
             # Two synthetic layer events (half, done) so stub-mode UI still animates.
             progress(PullProgress(layer_id="stub", status="Downloading", current=512, total=1024))
@@ -205,6 +252,11 @@ class StubDockerDriver(DockerDriver):
 
     def image_exists(self, image: str) -> bool:
         return image in self.present
+
+    def read_image_file(self, image: str, path: str) -> str | None:
+        """No image store to read from — see `reads_image_files`. The stub creates no networks
+        either, so there is nothing here left unconfined."""
+        return None
 
     def run(self, spec: ContainerSpec) -> ContainerHandle:
         self._counter += 1

@@ -84,7 +84,7 @@ def _no_nested_check() -> None:
     """Default `require_nested`: the stub/unit path deploys nothing, so there is nothing to nest."""
 
 
-def _no_base_check(image_ref: str) -> None:
+def _no_base_check(image_ref: str, origin: str) -> None:
     """Default `check_base_compat`: the stub/unit path deploys no real image to gate."""
 
 
@@ -123,7 +123,7 @@ class RunCreateDeps:
     require_nested: Callable[[], None] = _no_nested_check
     # Raises BaseImageIncompatibleError if the mission's fused image was built on a base
     # generation this XORCISE cannot run. Takes the image ref; boot wires label+tag inspection.
-    check_base_compat: Callable[[str], None] = _no_base_check
+    check_base_compat: Callable[[str, str], None] = _no_base_check
 
 
 def _use_real_headscale(settings: Settings) -> bool:
@@ -211,7 +211,7 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
     live_subnets: Callable[[], set[str]] = _no_live_subnets
     # Default: the stub path deploys nothing, so nesting/base compat are not preconditions for it.
     require_nested: Callable[[], None] = _no_nested_check
-    check_base_compat: Callable[[str], None] = _no_base_check
+    check_base_compat: Callable[[str, str], None] = _no_base_check
     if control_real:
         # Real runner: _real_docker_driver fails loud if Docker/the runner extra is absent.
         from xorcise.core.headscale import overlapping_subnets
@@ -252,8 +252,8 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
         def require_nested() -> None:
             require_nested_support(settings, _client)
 
-        def check_base_compat(image_ref: str) -> None:
-            require_base_compatible(image_ref, label_lookup=driver.image_labels)
+        def check_base_compat(image_ref: str, origin: str) -> None:
+            require_base_compatible(image_ref, label_lookup=driver.image_labels, origin=origin)
     else:
         control = InProcessControlStub(api_key="local")
     ca_cert = Path(settings.headscale_ca_cert).read_text() if settings.headscale_ca_cert else ""
@@ -530,6 +530,32 @@ def _resolve_run_name(name: str | None, agent_id: str, agent_name: str, mission_
     return f"{mission_slug} · {agent_name} #{n}"
 
 
+def _ingress_addr_for(entry_subnets: dict[str, str]) -> str:
+    """The mission-network address the router forwards to the agent, for the prompt.
+
+    The router arms an ingress address on EVERY entry subnet (they are separate segments with no
+    route between them, so one address cannot serve all of them). The prompt can only name one, so
+    it names the FIRST network the manifest declares — `entry_subnets` preserves manifest order —
+    rather than the alphabetically first. Collation order is not a property the author controls:
+    for `entry_networks: [zulu_net, alpha_net]` it silently advertised alpha_net's address, so an
+    agent registering it was unreachable from the segment the author meant to be agent-facing.
+
+    LIMITATION for a MULTI-ENTRY mission (none ship today — every catalog mission has exactly one
+    entry network): a mission service that calls back from a NON-first entry segment cannot reach
+    this advertised address, because confinement leaves each internal segment with no route to a
+    sibling's addresses. The mechanism is already in place for it — every entry segment's ingress
+    IP DNATs to the same agent — so lifting this is a prompt-advertisement change (name all entry
+    addresses, one per segment), not a data-plane one. Deferred until a mission needs it rather
+    than expanding the connect contract to a list speculatively.
+
+    Lazy import, like every other part-island reach from this module: pulling the runner plane in
+    at module scope would break role isolation (tests/topology::test_role_boots_only_its_plane).
+    """
+    from xorcise.core.runner.netoverride import ingress_address
+
+    return ingress_address(next(iter(entry_subnets.values())))
+
+
 def _acl_active_provider() -> list[RunNetwork]:
     """The DB-authoritative non-terminal run set for rendering the per-run ACL.
 
@@ -539,7 +565,12 @@ def _acl_active_provider() -> list[RunNetwork]:
     from xorcise.core.headscale import RunNetwork  # lazy: keep headscale off the boot path
 
     return [
-        RunNetwork(agent_user=_agent_user_for(rid), auth_key="", router_key="", entry_cidrs=ec)
+        RunNetwork(
+            agent_user=_agent_user_for(rid),
+            auth_key="",
+            router_key="",
+            entry_cidrs=ec,
+        )
         for rid, ec in runs.active_run_networks()
     ]
 
@@ -606,7 +637,7 @@ def create_run(
     deps.require_nested()
     # And refuse an artifact fused on a base generation this XORCISE cannot run (e.g. a stale
     # engine-27 fuse after an upgrade) — it would die at deploy with no host-daemon fallback.
-    deps.check_base_compat(installed.mission_ref.image)
+    deps.check_base_compat(installed.mission_ref.image, installed.origin)
     agent_user = _agent_user_for(run_id)
     assert installed.environment is not None  # is_lab ⇒ environment present (contract-enforced)
     entry_networks = tuple(installed.environment.entry_networks) or ("default",)
@@ -614,7 +645,12 @@ def create_run(
     # process the instant it's taken (retires the in-memory _RESERVED_CIDRS). On any failure before
     # finalize, delete the reservation to free the subnet.
     cidr, entry_subnets = _reserve_run_subnet(
-        deps, run_id, agent.id, mission_slug, entry_networks, name=run_name
+        deps,
+        run_id,
+        agent.id,
+        mission_slug,
+        entry_networks,
+        name=run_name,
     )
     try:
         return _create_run_with_cidr(
@@ -676,6 +712,9 @@ def _create_run_with_cidr(
             mission=MissionRef(
                 mission_id=installed.mission_ref.mission_id,
                 image=installed.mission_ref.image,
+                # The authored compose name, so the runner reads the right file out of the image
+                # to enumerate (and therefore confine) the networks this run will create.
+                compose_file=installed.environment.compose_file,
             ),
             network=NetworkSpec(
                 tailnet=cidr,
@@ -686,6 +725,8 @@ def _create_run_with_cidr(
                 ca_cert=deps.ca_cert or None,  # air-gapped: router trusts the self-signed CA
                 extra_hosts=deps.extra_hosts,
                 static_ips=installed.environment.static_ips,  # pin to authored IPs
+                allow_egress=installed.environment.allow_egress,
+                agent_user=_agent_user_for(run_id),
             ),
         ),
         credential=deps.api_key,
@@ -756,6 +797,10 @@ def _create_run_with_cidr(
         # Size the prompt's disclosed-intel count off the SAME policy filter the run-control gate
         # applies, so the advert never promises intel this run may not disclose.
         intel_available=len(allowed_intel(intel_policy, installed.manifest.intel)),
+        # Callback missions: the mission-network address the router forwards to the agent.
+        # Derived from the SAME carved subnet the override pins the router on, so the
+        # prompt and the deployed DNAT can never name different addresses.
+        agent_ingress_addr=_ingress_addr_for(entry_subnets) if entry_subnets else "",
     )
     budget = budget_seconds if budget_seconds is not None else deps.default_budget
     # A known harness contributes a bounded preamble to the agent-facing mission, baked into the
@@ -784,7 +829,14 @@ def _create_run_with_cidr(
         sandbox_ref=installed.mission_ref.image,
         agent_version=agent.version,
         source_agent=source_agent,
-        mission_version=installed.version,
+        install_revision=installed.install_revision,
+        # §31: artifact provenance copied from installed.json, never re-resolved later.
+        mission_version=installed.mission_version,
+        mission_base_version=installed.mission_base_version,
+        content_hash=installed.content_hash,
+        platform=installed.platform,
+        index_digest=installed.index_digest,
+        platform_digest=installed.platform_digest,
         intel_policy=intel_policy,
     )
     # the ACL was applied in create_run_network BEFORE this row persisted, so a truly
@@ -887,7 +939,14 @@ def _create_static_run(
             sandbox_ref=installed.mission_ref.image,  # "" for static (no fused image)
             agent_version=agent.version,
             source_agent=source_agent,
-            mission_version=installed.version,
+            install_revision=installed.install_revision,
+            # §31: artifact provenance copied from installed.json, never re-resolved later.
+            mission_version=installed.mission_version,
+            mission_base_version=installed.mission_base_version,
+            content_hash=installed.content_hash,
+            platform=installed.platform,
+            index_digest=installed.index_digest,
+            platform_digest=installed.platform_digest,
             intel_policy=intel_policy,
         )
         return run, mission

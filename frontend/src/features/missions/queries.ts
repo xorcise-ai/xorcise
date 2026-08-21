@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, errorDetail } from "@/lib/api/client";
 import type {
+  MissionUpdateOut,
   CatalogEntry,
   CatalogStatus,
   MissionManifest,
@@ -221,6 +222,21 @@ export function pullPhaseLabel(phase: string | null): string {
 
 // Uninstall an installed mission — local or pulled. Refreshes the catalog so it drops
 // out of Your Own / falls back to not-installed in the library.
+/**
+ * §35's ONE update action: an in-place, atomic server-side re-pull of an installed library
+ * mission onto the catalog's current artifact. Synchronous by design — layers shared with the
+ * previous release are already local, so an update usually moves far fewer bytes than the
+ * first pull; `updated: false` means the install already matched and nothing was touched.
+ */
+export function useUpdateMission() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.post<MissionUpdateOut>(`/missions/${encodeURIComponent(id)}/update`, {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["missions"] }),
+  });
+}
+
 export function useDeleteMission() {
   const qc = useQueryClient();
   return useMutation({

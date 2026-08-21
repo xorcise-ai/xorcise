@@ -512,3 +512,53 @@ def test_rebase_noop_when_from_host_absent() -> None:
         rebase_run_control_host(host_prompt, from_host="host.docker.internal", to_host="10.0.0.5")
         == host_prompt
     )
+
+
+# --- step numbering ---------------------------------------------------------------------------
+
+
+def _steps(text: str) -> list[str]:
+    return [ln.split(".", 1)[0] for ln in text.splitlines() if ln[:1].isdigit() and ln[1:2] == "."]
+
+
+@pytest.mark.parametrize(
+    ("ingress", "join", "want"),
+    [
+        ("10.200.1.254", "tskey-abc", ["1", "2", "3"]),  # join + callback + run-control
+        ("", "tskey-abc", ["1", "2"]),  # join + run-control
+        ("", "", ["1"]),  # static: run-control only
+    ],
+)
+def test_steps_are_numbered_from_a_counter_not_written_as_literals(ingress, join, want):
+    """The callback paragraph was a literal "2." while the run-control step was ALSO "2." whenever
+    a join key was set — so a lab prompt emitted two step 2s, and step 1's "shown in step 2"
+    cross-reference pointed at the callback paragraph, which carries neither the base URL nor the
+    bearer. Nothing asserted numbering, so the lane stayed green."""
+    text = render_prompt_text(
+        assemble_mission_prompt(
+            run_id="run-1",
+            mission="m",
+            objective="o",
+            login_server="https://headscale.local",
+            join_key=join,
+            run_control_url="https://control.local/runs/run-1",
+            run_control_key="rk-xyz",
+            targets=[],
+            agent_ingress_addr=ingress,
+        )
+    )
+    assert _steps(text) == want
+    if join:
+        # step 1 must point at wherever run-control actually landed
+        assert f"shown in step {want[-1]}." in text
+
+
+def test_the_callback_address_is_offered_as_a_capability_not_asserted_as_an_event():
+    """Agent reachability is a property of every lab run, so this address exists whether or not a
+    given mission ever dials it. Asserting "this mission calls BACK to you" on a plain
+    web-exploitation run is a false premise that costs the agent budget standing up a server
+    nothing will ever connect to."""
+    text = render_prompt_text(_mission().model_copy(update={"agent_ingress_addr": "10.200.1.254"}))
+    assert "10.200.1.254" in text
+    assert "This mission calls BACK to you" not in text
+    assert "If you need the mission to reach YOU" in text

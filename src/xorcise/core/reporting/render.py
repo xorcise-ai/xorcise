@@ -172,9 +172,18 @@ def _metadata_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
     agent = ctx.agent_name or ctx.run.agent_id
     return [
         ("Name", ctx.run.name or ctx.run.mission),
-        ("Mission", f"{ctx.run.mission} v{ctx.conditions.mission_version}"),
+        # Prefer the creator SemVer ("v1.4.2"); a pre-contract run keeps its local
+        # install-revision label ("v2"), exactly what it displayed before.
+        (
+            "Mission",
+            f"{ctx.run.mission} "
+            f"v{ctx.conditions.mission_version or ctx.conditions.install_revision}",
+        ),
         ("Agent", f"{agent} v{ctx.conditions.agent_version}"),
         ("Harness", ctx.run.source_agent or "generic"),
+        # The architecture the run executed on (§31/§43-UX8) — present only for a run that
+        # recorded provenance, so a pre-contract run's table is unchanged.
+        *([("Platform", ctx.conditions.platform)] if ctx.conditions.platform else []),
         ("Started", _ts(ctx.run.created_at)),
         ("Duration", _duration(_elapsed_seconds(ctx))),
         ("Run ID", ctx.run.run_id),

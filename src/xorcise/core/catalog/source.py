@@ -12,7 +12,7 @@ go through the ingest/builder path (that is reserved for Your Own custom mission
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from xorcise.core.contracts.catalog import CatalogStatus
 from xorcise.core.contracts.errors import NotFoundError
@@ -35,6 +35,66 @@ class LibraryItem:
     image_size_bytes: int | None = None
     attachments_size_bytes: int | None = None
     download_size_bytes: int | None = None
+    # Artifact identity summary (mission-versioning contract API1). All optional — a
+    # pre-contract catalog (prod today) serves none of them and the row must still browse.
+    mission_version: str | None = None  # creator SemVer, e.g. "1.4.2"
+    mission_base_version: str | None = None  # base SemVer the artifact was fused on
+    index_digest: str | None = None  # current OCI index digest (update detection)
+    platforms: tuple[str, ...] = ()  # validated platforms, e.g. ("linux/amd64", "linux/arm64")
+
+
+@dataclass(frozen=True)
+class PlatformImage:
+    """One validated platform child of a mission's OCI index (detail response entry).
+
+    `variant` is present when the child manifest declares one (buildx stamps arm64 children
+    "v8") — without it linux/arm64 and linux/arm64/v8 would be indistinguishable."""
+
+    os: str
+    architecture: str
+    digest: str | None = None
+    variant: str | None = None
+
+    @property
+    def platform(self) -> str:
+        """The `os/architecture` form Docker speaks (variant deliberately excluded)."""
+        return f"{self.os}/{self.architecture}"
+
+
+@dataclass(frozen=True)
+class MissionDetail:
+    """GET /v1/missions/{id} — the manifest plus the current-delivery identity siblings.
+
+    Everything beside `manifest` is optional: a pre-contract catalog (prod today) serves only
+    the manifest and an image ref, and the client must degrade to exactly the old behaviour.
+    `platform_digests` on the base is keyed by BARE architecture ("amd64") and scoped to the
+    platforms this mission was actually fused for — deliberately different shapes upstream."""
+
+    manifest: MissionManifest
+    mission_version: str | None = None
+    mission_base_version: str | None = None
+    content_hash: str | None = None  # bare lowercase hex, never sha256:-prefixed
+    pull_ref: str | None = None  # the moving :latest pointer — convenience, never identity
+    release_ref: str | None = None  # immutable <mission-version>-base<base-version> ref
+    index_digest: str | None = None
+    platforms: tuple[PlatformImage, ...] = ()
+    base_index_digest: str | None = None
+    base_platform_digests: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class MissionBaseRelease:
+    """GET /v1/mission-base — the currently promoted mission-base release (contract §27).
+
+    Version visibility for settings/diagnostics; per-mission base identity comes from the
+    detail response's mission_base block, NOT from here (the promoted base need not be the
+    base a given mission was fused on)."""
+
+    version: str  # e.g. "2.0.0"
+    required_base_major: int | None = None
+    ref: str | None = None  # ghcr.io/xorcise-ai/mission-base:<version>
+    index_digest: str | None = None
+    platforms: tuple[PlatformImage, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -80,9 +140,23 @@ class CatalogSource(ABC):
 
         Raises NotFoundError if the id is not in the catalog."""
 
+    def fetch_detail(self, mission_id: str) -> MissionDetail:
+        """The full current-delivery contract for one mission: manifest + artifact identity.
+
+        Default wraps fetch_manifest with no identity siblings — the honest answer for a
+        source that predates the versioning contract (the stub, or any 2.0-era deployment).
+        Raises NotFoundError if the id is not in the catalog."""
+        return MissionDetail(manifest=self.fetch_manifest(mission_id))
+
     def pull_token(self, mission_id: str) -> PullToken | None:
         """Registry creds to pull this mission's image. None ⇒ the image needs no auth
         (the stub's fixture images); the real HttpCatalogSource mints a scoped ECR token."""
+        return None
+
+    def mission_base(self) -> MissionBaseRelease | None:
+        """The currently promoted mission-base release, or None when this source cannot say
+        (the stub, a pre-contract deployment whose /v1/mission-base 404s, or a network
+        failure). None means UNKNOWN — callers render nothing, never a fabricated version."""
         return None
 
     def fetch_delivery(self, mission_id: str) -> DeliveryBundle | None:

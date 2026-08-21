@@ -385,8 +385,10 @@ export function RunLive({ runId }: { runId: string | null }) {
               every cell is a term and its definition (StatTileRow supplies it). */}
           <StatTileRow className="gap-x-6 gap-y-2">
             {/* Identity metadata — the same canonical set the results page and the HTML/MD exports
-                use: Mission (name + version, links to its brief), Agent (name + version), when it
-                Started and how long it ran (Duration). */}
+                use: Mission (name + version, links to its brief), Agent (name + version), the
+                Platform it executed on, when it Started and how long it ran (Duration).
+                Harness is NOT here — it sits in the chip row above, with the run's other
+                identity facts. */}
             <MetaItem
               label="Mission"
               title={`Mission: ${r.mission}`}
@@ -395,11 +397,12 @@ export function RunLive({ runId }: { runId: string | null }) {
                   href={`/missions/detail?id=${encodeURIComponent(r.mission)}`}
                   className="hover:underline"
                 >
-                  {r.mission} v{r.mission_version}
+                  {r.mission} v{r.mission_version ?? r.install_revision}
                 </Link>
               }
             />
             <MetaItem label="Agent" value={`${agentName} v${r.agent_version}`} />
+            {r.platform && <MetaItem label="Platform" value={r.platform} />}
             {r.model && <MetaItem label="Model" value={r.model} />}
             <MetaItem label="Budget" value={formatBudget(r.budget_seconds)} />
             {startedAt && <MetaItem label="Started" value={startedAt} />}

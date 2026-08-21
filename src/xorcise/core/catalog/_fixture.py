@@ -57,7 +57,8 @@ _FREE_LIBRARY_OBJECTIVES: dict[str, str] = {
 # (rubric/checks empty — browse/pull never grades). fetch_manifest returns this on pull.
 FREE_LIBRARY_MANIFESTS: dict[str, MissionManifest] = {
     item.mission_id: MissionManifest(
-        schema_version="2.0",
+        schema_version="3.0",
+        version="1.0.0",
         metadata=MissionMetadata(
             mission_id=item.mission_id,
             name=item.name,

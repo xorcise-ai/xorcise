@@ -253,9 +253,12 @@ function RunMetaBar({ run, agentName }: { run: RunEntry; agentName: string }) {
     ? (new Date(run.completed_at).getTime() - new Date(run.created_at).getTime()) / 1000
     : null;
   const items: { label: string; value: string; mono?: boolean }[] = [
-    { label: "Mission", value: `${run.mission} v${run.mission_version}` },
+    { label: "Mission", value: `${run.mission} v${run.mission_version ?? run.install_revision}` },
     { label: "Agent", value: `${agentName} v${run.agent_version}` },
     { label: "Harness", value: run.source_agent },
+    // The architecture the run executed on (§43-UX8) — omitted for a pre-contract run so its
+    // bar is unchanged, mono because it is a machine token (linux/arm64).
+    ...(run.platform ? [{ label: "Platform", value: run.platform, mono: true }] : []),
     { label: "Started", value: fullTime(run.created_at), mono: true },
     { label: "Duration", value: formatDuration(elapsed), mono: true },
   ];

@@ -28,6 +28,19 @@ class ImageNotInstalledError(ContractError):
     runner must fail loud (the caller re-ingests) rather than attempt a doomed registry pull."""
 
 
+class EnvironmentConfigError(ContractError, ValueError):
+    """A lab mission cannot be safely turned into a per-run environment as configured.
+
+    Covers the deploy-time refusals that are the MISSION's fault, not the host's: a service pinned
+    on the router's or the callback's reserved address, a network named like the reserved
+    confinement egress net, or a compose file the confinement pass could not read (so the run's
+    networks could not be confined and deploying anyway would silently leave a hole). A confinement
+    control that fails must fail loud and CLASSIFIED — surfaced as a clean 409 with the collision
+    named, never a bare 500 that drops the diagnosis. Subclasses ValueError so the pure builders
+    that raise it stay `pytest.raises(ValueError)`-compatible and any generic ValueError handler
+    still catches it."""
+
+
 class NestedContainersUnavailableError(ContractError):
     """This host cannot run a container inside a container, so a lab mission cannot be deployed.
 
@@ -59,6 +72,30 @@ class PullError(ContractError):
 
 class MissionNotInCatalogError(PullError):
     """The id is not installed and not in the catalog — nothing to pull."""
+
+
+class PlatformUnsupportedError(PullError):
+    """No execution path exists for this mission on this host (contract AS4).
+
+    Raised BEFORE any image download, when the host's platform is not among the mission's
+    validated platforms and the AMD64 emulation fallback is not available either. A host/artifact
+    condition, not a registry fault: REST surfaces map it 409 (like BaseImageIncompatibleError),
+    and `str(exc)` carries which platforms the mission does support."""
+
+
+class UnsupportedManifestVersionError(PullError):
+    """The catalog served a mission manifest this XORCISE cannot validate.
+
+    Either the manifest declares a schema_version outside SUPPORTED_SCHEMA_VERSIONS (a newer
+    cloud than this client — the remedy is upgrading XORCISE), or a supported-version document
+    failed contract validation (catalog and client disagree about the shape). Typed so the
+    CLI/REST surfaces render the remedy instead of a pydantic traceback; `served`/`supported`
+    carry the versions for programmatic use. A PullError: nothing was installed."""
+
+    def __init__(self, message: str, *, served: str | None, supported: tuple[str, ...]) -> None:
+        super().__init__(message)
+        self.served = served
+        self.supported = supported
 
 
 class PullCancelled(ContractError):

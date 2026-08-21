@@ -11,6 +11,9 @@ from xorcise.core.catalog.http import HttpCatalogSource
 from xorcise.core.catalog.source import (
     CatalogSource,
     LibraryItem,
+    MissionBaseRelease,
+    MissionDetail,
+    PlatformImage,
     PullToken,
     StubCatalogSource,
 )
@@ -20,6 +23,9 @@ __all__ = [
     "CatalogSource",
     "HttpCatalogSource",
     "LibraryItem",
+    "MissionBaseRelease",
+    "MissionDetail",
+    "PlatformImage",
     "PullToken",
     "StubCatalogSource",
 ]

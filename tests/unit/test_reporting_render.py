@@ -196,6 +196,25 @@ def test_markdown_metadata_covers_run_agent_harness_and_timing():
 
 
 @pytest.mark.unit
+def test_markdown_metadata_shows_the_executed_platform_when_recorded():
+    # §31/§43-UX8: a run that recorded its provenance surfaces the architecture it ran on.
+    md = render_markdown(
+        _ctx(
+            conditions=ResultConditions(
+                model="claude-opus-4", mission_version="1.0.0", platform="linux/arm64"
+            )
+        )
+    )
+    assert "| Platform | linux/arm64 |" in md
+
+
+@pytest.mark.unit
+def test_markdown_metadata_omits_platform_for_a_pre_contract_run():
+    md = render_markdown(_ctx())  # conditions carry no platform
+    assert "| Platform |" not in md
+
+
+@pytest.mark.unit
 def test_partial_judge_ranges_and_criterion_states_render_in_both_formats():
     grade = _grade(
         overall=0.55,

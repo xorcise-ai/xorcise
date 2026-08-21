@@ -155,7 +155,6 @@ def build_rest_app() -> FastAPI:
             await _readiness.stop()
 
     _prewarmed = False
-    _prewarm_task: object | None = None
 
     @app.on_event("startup")
     async def _prewarm_nested_support() -> None:
@@ -164,23 +163,27 @@ def build_rest_app() -> FastAPI:
         # made the first run appear to hang and get retried into a duplicate). Best-effort and
         # memoised: a warm-up failure just leaves it cold for the first run to recompute.
         #
-        # Fire-and-forget in a BACKGROUND task — NOT awaited. uvicorn runs the startup event
-        # before it accepts connections, so awaiting the multi-second probe here would delay
-        # readiness past `xorcise up`'s health window and fail boot. The probe warms the memo
-        # off to the side while the server serves.
-        nonlocal _prewarmed, _prewarm_task
+        # Fire-and-forget on a DAEMON THREAD — not awaited, and deliberately NOT
+        # `asyncio.to_thread`. to_thread runs on the loop's DEFAULT executor, which
+        # `asyncio.run()` joins before the process may exit, so a probe nobody awaits held
+        # `serve` open for the whole 20-40 s after every listener had already closed. Cancelling
+        # could never have helped: cancellation abandons the `await`, never the thread sitting
+        # inside the blocking call. Nothing joins a daemon thread at exit, so teardown simply
+        # walks away from the warm-up — which is precisely what its own contract says a failed
+        # warm-up costs: a cold memo the first run recomputes.
+        nonlocal _prewarmed
         if _prewarmed:
             return  # one uvicorn.Server per bind address shares this app — warm once
         _prewarmed = True
-        import asyncio
         import logging
+        import threading
 
         settings = get_settings()
         if settings.use_stubs or settings.nested_container_check == "skip":
             return  # nothing real to probe
 
-        async def _warm() -> None:
-            def _blocking() -> None:
+        def _warm() -> None:
+            try:
                 from xorcise.core.rest.docker_runtime import prewarm_nested_support
 
                 def _client() -> object:
@@ -189,24 +192,10 @@ def build_rest_app() -> FastAPI:
                     return docker.from_env()
 
                 prewarm_nested_support(settings, _client)
-
-            try:
-                await asyncio.to_thread(_blocking)
             except Exception as exc:  # noqa: BLE001 — a warm-up must never break anything
                 logging.getLogger(__name__).debug("nested-support pre-warm skipped: %s", exc)
 
-        _prewarm_task = asyncio.create_task(_warm())
-
-    @app.on_event("shutdown")
-    async def _cancel_prewarm() -> None:
-        import asyncio
-        import contextlib
-
-        task = _prewarm_task
-        if isinstance(task, asyncio.Task) and not task.done():
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        threading.Thread(target=_warm, name="nested-support-prewarm", daemon=True).start()
 
     return app
 

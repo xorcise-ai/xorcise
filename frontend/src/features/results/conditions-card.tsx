@@ -13,6 +13,9 @@ export function ConditionsCard({ conditions }: { conditions: ResultConditions })
     rows.push({ label: "Judge model", value: conditions.judge_model });
   if (conditions.budget_seconds > 0)
     rows.push({ label: "Budget", value: `${conditions.budget_seconds}s` });
+  // §31/§43-UX8: the platform the artifact executed on is result context — an amd64 score
+  // produced under emulation on an arm host reads differently from a native one.
+  if (conditions.platform) rows.push({ label: "Platform", value: conditions.platform });
   // Assistance: surface intel disclosure per run so an assisted result reads differently from an
   // unassisted one. Shown only when intel was actually disclosed (omitted like the other fields
   // when zero, so unassisted runs stay clean).

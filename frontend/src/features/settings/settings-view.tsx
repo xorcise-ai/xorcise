@@ -526,6 +526,26 @@ function EnvironmentCard() {
                 <span className="text-foreground">{db?.label}</span>
               </span>
             </Field>
+            {/* §36 version visibility: the base MAJOR this client executes, and — when the
+                catalog serves it — the currently promoted base release. A pre-contract
+                catalog reports nothing, and the row says only what is locally true. */}
+            {s.mission_base && (
+              <Field label="Mission base">
+                <span className="text-foreground">
+                  requires major {s.mission_base.required_major}
+                  {s.mission_base.promoted_version
+                    ? ` · catalog promotes ${s.mission_base.promoted_version}`
+                    : ""}
+                </span>
+              </Field>
+            )}
+            {s.mission_base?.client_version && (
+              <Field label="Client version">
+                <span className="font-mono text-foreground">
+                  {s.mission_base.client_version}
+                </span>
+              </Field>
+            )}
           </dl>
           {s.db_url && (
             <p className="break-all font-mono text-dense text-text-tertiary">

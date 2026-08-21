@@ -25,6 +25,7 @@ const INSTALLED: CatalogEntry = {
   installed: true,
   skills: [],
   technologies: [],
+  platforms: [],
 };
 
 describe("MissionDetail delete", () => {

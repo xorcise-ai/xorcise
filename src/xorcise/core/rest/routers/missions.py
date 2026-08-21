@@ -5,17 +5,21 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Response
 from pydantic import BaseModel
 
 from xorcise.core.config import get_settings
 from xorcise.core.contracts.catalog import CatalogEntry
-from xorcise.core.contracts.errors import NotFoundError
-from xorcise.core.contracts.mission import MissionManifest, MissionMetadata
+from xorcise.core.contracts.errors import NotFoundError, PlatformUnsupportedError
+from xorcise.core.contracts.mission import MissionManifest
 from xorcise.core.contracts.terrain import ResolvedTerrainV2
 from xorcise.core.missions.errors import MissionCollisionError
+
+if TYPE_CHECKING:
+    # Type-only: keep the missions island off the module import path (role isolation).
+    from xorcise.core.missions.runtime import InstalledMission
 from xorcise.core.rest.catalog_view import build_catalog_view_deps, fetch_manifest, list_catalog
 from xorcise.core.rest.ingest import ingest_bundle
 from xorcise.core.rest.ingest_jobs import job_store
@@ -26,6 +30,7 @@ from xorcise.core.rest.mission_pull import (
     PullProgressSink,
     build_pull_deps,
     pull_mission,
+    update_mission,
 )
 from xorcise.core.rest.pull_jobs import PullJob, pull_job_store
 
@@ -51,6 +56,13 @@ class IngestJobView(BaseModel):
     detail: str | None = None
 
 
+class MissionUpdateOut(BaseModel):
+    """POST /{id}/update result: whether anything moved, and the row as installed now."""
+
+    updated: bool
+    entry: CatalogEntry
+
+
 class PullJobStarted(BaseModel):
     job_id: str
 
@@ -73,16 +85,25 @@ class PullJobView(BaseModel):
     entry: CatalogEntry | None = None  # the installed entry, once status == installed
 
 
-def _installed_entry(
-    m: MissionMetadata, image: str | None, source: Literal["your_own", "library"]
-) -> CatalogEntry:
-    """A CatalogEntry from an installed manifest's metadata. `source` reflects the install
-    origin — "library" for a remote pull, "your_own" for a local ingest."""
-    from xorcise.core.rest.catalog_view import base_compat_of
+def _installed_entry(ic: InstalledMission) -> CatalogEntry:
+    """A CatalogEntry for one just-installed mission (pull/update responses).
 
+    Carries the §30 identity the install recorded — the browse view serves richer rows (update
+    state needs the whole catalog), but a pull/update answer must at least tell the UI what
+    landed: versions, digest, and the platform that was actually pulled."""
+    from xorcise.core.config import get_settings
+    from xorcise.core.rest.catalog_view import base_compat_of
+    from xorcise.core.rest.docker_runtime import host_platform, local_image_platform
+
+    m = ic.manifest.metadata
+    image = ic.mission_ref.image or None
     compat = base_compat_of(image)
+    # Pre-record installs: the local image itself is the honest platform source (see
+    # catalog_view — the browse row does the same, so the two can never disagree).
+    platform = ic.platform or local_image_platform(get_settings(), image or "")
+    host = host_platform(get_settings())
     return CatalogEntry(
-        source=source,
+        source=ic.origin,
         mission_id=m.mission_id,
         name=m.name,
         summary=m.summary,
@@ -96,6 +117,11 @@ def _installed_entry(
         base_major=compat.base_major,
         compatible=compat.compatible,
         compat_hint=compat.hint,
+        mission_version=ic.mission_version,
+        mission_base_version=ic.mission_base_version,
+        index_digest=ic.index_digest,
+        platform=platform,
+        emulated=(None if platform is None or host is None else platform != host),
     )
 
 
@@ -174,9 +200,50 @@ def pull(mission_id: str) -> CatalogEntry:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except MissionCollisionError as exc:  # id already owned by a your_own install
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PlatformUnsupportedError as exc:
+        # A host/artifact condition, not a registry fault (like the base-generation refusal):
+        # the mission has no platform this host can execute. 409, message names what it offers.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except PullError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return _installed_entry(ic.manifest.metadata, ic.mission_ref.image, ic.origin)
+    return _installed_entry(ic)
+
+
+@router.post("/{mission_id}/update")
+def update(mission_id: str) -> MissionUpdateOut:
+    """Update an installed library mission to the catalog's current artifact (§35's ONE
+    update action) — an in-place, atomic re-pull. updated=false ⇒ the install already matches
+    the catalog (digest compared first) and nothing was touched.
+
+    404: not installed, or gone from the catalog. 409: a your_own install owns the id (update
+    it by re-ingesting), or a pull job is mid-flight. 502: the pull itself failed (nothing
+    replaced — the previous install stays byte-for-byte intact)."""
+    if pull_job_store().active_for(mission_id) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"a pull for '{mission_id}' is already in progress — wait for it to finish",
+        )
+    try:
+        ic, updated = update_mission(mission_id, build_pull_deps(get_settings()))
+    except NotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"mission '{mission_id}' is not installed — pull it instead",
+        ) from exc
+    except MissionNotInCatalogError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except MissionCollisionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PlatformUnsupportedError as exc:
+        # A host/artifact condition, not a registry fault (like the base-generation refusal):
+        # the mission has no platform this host can execute. 409, message names what it offers.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PullError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return MissionUpdateOut(
+        updated=updated,
+        entry=_installed_entry(ic),
+    )
 
 
 def _job_progress_sink(job_id: str) -> PullProgressSink:
@@ -267,7 +334,7 @@ def _pull_job_view(job: PullJob) -> PullJobView:
 
         ic = get_installed(job.mission_id, Path(get_settings().missions_root))
         if ic is not None:
-            entry = _installed_entry(ic.manifest.metadata, ic.mission_ref.image, ic.origin)
+            entry = _installed_entry(ic)
     return PullJobView(
         job_id=job.job_id,
         mission_id=job.mission_id,

@@ -76,7 +76,7 @@ def base_compat(major: int | None) -> BaseCompat:
     if major == REQUIRED_BASE_MAJOR:
         return BaseCompat(major, True, None)
     if major < REQUIRED_BASE_MAJOR:
-        return BaseCompat(major, False, "Reinstall this mission to get the current base.")
+        return BaseCompat(major, False, "Update this mission to get the current base.")
     return BaseCompat(major, False, "Update XORCISE to run this mission.")
 
 

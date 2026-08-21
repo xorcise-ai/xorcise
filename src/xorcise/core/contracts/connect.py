@@ -74,6 +74,11 @@ class MissionPrompt(_Frozen):
     # renderer advertises GET /intel only when >0, and states "no intel" otherwise. 0 by default so
     # a stub/minimal prompt discloses nothing until the create spine computes the policy-filtered N.
     intel_available: int = 0
+    # Callback missions only: the address ON the mission network that the target dials to reach
+    # the agent. The run's tailnet router owns it and forwards across the tailnet, so it is what
+    # the agent registers with the mission — not its own tailnet IP, which mission containers have
+    # no route to. Empty when the mission never calls back.
+    agent_ingress_addr: str = ""
 
 
 class LaunchProfile(_Frozen):
