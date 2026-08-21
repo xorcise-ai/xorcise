@@ -14,8 +14,10 @@ from xorcise.core.config import get_settings
 from xorcise.core.contracts.agent_event import EventCursor, RunEventsView
 from xorcise.core.contracts.errors import (
     BaseImageIncompatibleError,
+    EnvironmentConfigError,
     ImageNotInstalledError,
     NestedContainersUnavailableError,
+    NotFoundError,
     PlatformUnsupportedError,
 )
 from xorcise.core.contracts.grading import GradeResult
@@ -112,6 +114,14 @@ def create_run(payload: RunCreate) -> RunCreatedEntry:
         # The mission's fused image was built on a base generation this XORCISE cannot run — a
         # client/artifact mismatch, not a server fault. 409 (like the not-installed case), and the
         # message carries the direction-aware remediation (re-pull vs upgrade XORCISE).
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (EnvironmentConfigError, NotFoundError) as exc:
+        # The mission cannot be safely turned into a per-run environment as configured: a service
+        # pinned on a reserved address, a network named like the reserved egress net, or a compose
+        # file the confinement pass could not read out of the image. A mission-config fault, not a
+        # server fault — 409 with the collision named, never the bare 500 these would otherwise
+        # become (EnvironmentConfigError/NotFoundError are ContractErrors, not RuntimeErrors, so
+        # without this they fall through FastAPI's default handler and drop the diagnosis).
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except PlatformUnsupportedError as exc:
         # No platform this host can execute (AS4) — a host/artifact condition like the base

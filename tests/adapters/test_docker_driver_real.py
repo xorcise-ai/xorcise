@@ -65,18 +65,28 @@ def test_reap_managed_removes_managed_containers_only() -> None:
             pytest.skip(f"cannot obtain {img} (offline)")
 
     managed = {"xor191t-managed-a", "xor191t-managed-b"}
+    # A managed container with NO run id — the read_image_file throwaway's shape. It is not
+    # reachable by _remove_run_resources (project == run id), so it used to be REPORTED reaped yet
+    # left behind; reap_managed now force-removes it directly.
+    unscoped = "xor191t-managed-norun"
     bystander = "xor191t-bystander"
-    for n in managed | {bystander}:  # idempotent: clear any leftovers from a prior failed run
+    everything = managed | {unscoped, bystander}
+    for n in everything:  # idempotent: clear any leftovers from a prior failed run
         with contextlib.suppress(Exception):
             cli.containers.get(n).remove(force=True)
     for n in managed:
         cli.containers.create(img, name=n, labels={MANAGED_LABEL: "true", RUN_ID_LABEL: n})
+    cli.containers.create(img, name=unscoped, labels={MANAGED_LABEL: "true"})  # no RUN_ID_LABEL
     cli.containers.create(img, name=bystander)  # unmanaged — must survive
     try:
         reaped = set(DockerSdkDriver().reap_managed())
         assert managed <= reaped
+        assert unscoped in reaped
         remaining = {c.name for c in cli.containers.list(all=True)}
-        assert not (managed & remaining)  # both managed gone
+        assert not (managed & remaining)  # both run-scoped managed gone
+        assert (
+            unscoped not in remaining
+        )  # the label-less managed container gone too, not just claimed
         assert bystander in remaining  # unmanaged untouched
     finally:
         with contextlib.suppress(Exception):

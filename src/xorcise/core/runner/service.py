@@ -26,9 +26,13 @@ from xorcise.core.contracts.control import (
     StatusResult,
     TeardownResult,
 )
-from xorcise.core.contracts.errors import NotFoundError
+from xorcise.core.contracts.errors import EnvironmentConfigError, NotFoundError
 from xorcise.core.runner.docker import ContainerHandle, ContainerSpec, DockerDriver
-from xorcise.core.runner.netoverride import build_net_override
+from xorcise.core.runner.netoverride import (
+    build_net_override,
+    compose_network_names,
+    external_network_names,
+)
 
 # Where the entrypoint writes the delivered Headscale CA (in the OUTER fused container); the
 # net-override bind-mounts this into the router. Kept in sync with the entrypoint.
@@ -37,6 +41,13 @@ _CA_PATH = "/mission/headscale-ca.pem"
 # A run id (uuid4().hex) — the ONLY compose-project shape the orphan reaper may touch. Everything
 # else on this daemon (notably the `xorcise-headscale` control plane) is off limits.
 _RUN_ID_RE = re.compile(r"[0-9a-f]{32}")
+
+
+# Where the fused image copies the mission bundle. The compose file's NAME within it comes from
+# the manifest (`environment.compose_file`, default docker-compose.yml) and rides on MissionRef —
+# build.py and preflight.py both honour it, so hardcoding a third copy of the default here would
+# make any mission that authored `compose.yaml` unreadable, and therefore unconfined.
+MISSION_BUNDLE_DIR = "/mission"
 
 
 @dataclass
@@ -69,7 +80,12 @@ class RunnerControlService:
             ContainerSpec(
                 image=request.mission.image,
                 name=request.run_id,
-                env=self._deploy_env(request.run_id, request.network),
+                env=self._deploy_env(
+                    request.run_id,
+                    request.network,
+                    image=request.mission.image,
+                    compose_file=request.mission.compose_file,
+                ),
             )
         )
         endpoints = RunnerEndpoints(
@@ -84,7 +100,14 @@ class RunnerControlService:
         self._torn_down.discard(request.run_id)
         return endpoints
 
-    def _deploy_env(self, run_id: RunId, network: NetworkSpec) -> tuple[tuple[str, str], ...]:
+    def _deploy_env(
+        self,
+        run_id: RunId,
+        network: NetworkSpec,
+        *,
+        image: str = "",
+        compose_file: str = "docker-compose.yml",
+    ) -> tuple[tuple[str, str], ...]:
         """The env the fused entrypoint needs: the per-run net-override (the mission nets +
         the Tailscale router as an inner container) plus the secrets compose interpolates into
         it. The override is base64'd so multi-line YAML rides a single env var cleanly; the
@@ -102,12 +125,50 @@ class RunnerControlService:
         entry_subnets = dict(zip(network.entry_networks, network.routes, strict=True))
         routes = network.routes
         ca_path = _CA_PATH if network.ca_cert else ""
+        # Every network the mission's compose will create, read from the image itself — the
+        # only authoritative source (the installed bundle carries the manifest, not the compose).
+        # Confining just the carved entry networks would leave a multi-homed service its route off
+        # box, so this is what makes the tailnet the ONLY path to the agent.
+        compose_text = (
+            self.driver.read_image_file(image, f"{MISSION_BUNDLE_DIR}/{compose_file}")
+            if image
+            else None
+        )
+        if not compose_text and self.driver.reads_image_files and not network.allow_egress:
+            # Fail CLOSED. A driver that has an image store and still yields nothing has failed to
+            # read, and the only thing an empty answer can do downstream is silently narrow
+            # confinement to the carved entry networks — leaving a multi-homed service its route
+            # off box, which is the whole hole this exists to close. A run that cannot be confined
+            # must not deploy pretending it was. Drivers with no image store (the stub) create no
+            # networks, and an `allow_egress` mission is not being confined in the first place.
+            raise EnvironmentConfigError(
+                f"deploy({run_id}): could not read {compose_file!r} from image {image!r} — "
+                "refusing to deploy, because the mission's networks cannot be confined without it"
+            )
+        all_networks = compose_network_names(compose_text) if compose_text else ()
+        if compose_text and not network.allow_egress:
+            external = external_network_names(compose_text)
+            if external:
+                # An external network is created outside this run's compose project, so the
+                # override's `internal: true` on it is a no-op — confinement would silently not
+                # hold there. Refuse rather than deploy a run that reports itself confined while a
+                # network it declares is not. (None ship today, and the fresh inner dockerd makes
+                # external networks non-functional anyway, but a silent false-confine is the exact
+                # fail-open this pass exists to close.)
+                raise EnvironmentConfigError(
+                    f"deploy({run_id}): mission declares external network(s) "
+                    f"{', '.join(external)!r}, which cannot be confined — a confined run may not "
+                    "use a network it does not create; set allow_egress or drop the external net"
+                )
         override = build_net_override(
             run_id,
             entry_subnets,
             extra_hosts=network.extra_hosts,
             ca_cert_path=ca_path,
             static_ips=network.static_ips,
+            all_networks=all_networks,
+            agent_user=network.agent_user,
+            allow_egress=network.allow_egress,
         )
         override_b64 = base64.b64encode(yaml.safe_dump(override).encode()).decode()
         env = [
@@ -116,6 +177,10 @@ class RunnerControlService:
             ("XORCISE_AUTHKEY", network.auth_key),
             ("XORCISE_ROUTES", ",".join(routes)),
             ("XORCISE_NET_OVERRIDE_B64", override_b64),
+            # The entrypoint composes `-f /mission/$XORCISE_COMPOSE_FILE`, the SAME file the
+            # confinement pass above read the network list from. One filename source for both, so
+            # the deployed stack and the confined network set can never name different files.
+            ("XORCISE_COMPOSE_FILE", compose_file),
         ]
         if network.ca_cert:
             env.append(

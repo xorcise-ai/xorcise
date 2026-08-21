@@ -29,6 +29,11 @@ class MissionRef(_Frozen):
 
     mission_id: str
     image: str  # OCI image ref, e.g. ghcr.io/xorcise/mission-xyz:1.2.3
+    # The manifest's `environment.compose_file`, relative to the bundle root the fused image copies
+    # to /mission. The runner reads that file OUT of the image to enumerate the networks the run
+    # will create, so it has to be the authored name — the default is only a default, and a mission
+    # that sets `compose_file: compose.yaml` would otherwise have its networks left unconfined.
+    compose_file: str = "docker-compose.yml"
 
 
 class InstalledImageIdentity(_Frozen):
@@ -92,6 +97,14 @@ class NetworkSpec(_Frozen):
     # static_ips; the runner turns these into per-service ipv4_address entries in the net-override
     # so a service comes up at its authored address instead of a docker-sequential one.
     static_ips: dict[str, dict[str, int]] = Field(default_factory=dict)
+    # From the mission manifest's environment: `allow_egress` leaves the mission networks
+    # routable off-box instead of confining them.
+    allow_egress: bool = False
+    # The run's headscale user for the AGENT node. The router discovers the agent's tailnet
+    # address by this name at runtime (the agent joins after the stack is up, and may rejoin with
+    # a different address), so it travels on the contract rather than being re-derived in the
+    # runner — which cannot import the rest layer that owns the derivation.
+    agent_user: str = ""
 
 
 class DeployRequest(_Frozen):

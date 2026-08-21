@@ -58,6 +58,18 @@ class EnvironmentSpec(_Frozen):
     compose_file: str = "docker-compose.yml"
     entry_networks: tuple[str, ...] = ()  # player-facing nets; () => resolve at ingestion
     static_ips: dict[str, dict[str, int]] = Field(default_factory=dict)  # service->net->last octet
+    # Escape hatch. Mission networks are confined (`internal: true`) so a mission's premise cannot
+    # be undercut by real internet the author never intended — and so a compromised mission
+    # container has no path off the tailnet. Prefer simulating an "internet" service inside the
+    # mission over setting this; it is visible in the manifest precisely so it can be reviewed.
+    allow_egress: bool = False
+    # ACCEPTED AND IGNORED. Agent reachability is a property of the product now, not a per-mission
+    # switch, so nothing reads this. It stays declared because this model is `extra="forbid"` and
+    # the published catalog is versioned independently of this code: manifests carrying
+    # `agent_ingress: true` are already out there, and simply deleting the field turned every one
+    # of them into a hard install failure ("Extra inputs are not permitted") on a client that had
+    # done nothing but upgrade. Removing it needs the catalog to stop emitting it first.
+    agent_ingress: bool = True
 
 
 class ArtifactSpec(_Frozen):

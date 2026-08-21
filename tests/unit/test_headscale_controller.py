@@ -101,14 +101,17 @@ def test_create_mints_user_key_and_applies_safe_policy_with_rule():
 
 
 def test_router_key_is_tagged_for_route_approval():
-    # The router joins with a DISTINCT key tagged router_tag so autoApprovers approves its
-    # advertised routes; the agent key stays untagged.
+    # The router joins with a DISTINCT key carrying BOTH the shared base tag (auto-approves the
+    # collector route) and its PER-RUN tag (the only thing the inbound ACL rule pins as source, so
+    # one run's router can't match another run's inbound rule); the agent key stays untagged.
+    from xorcise.core.headscale.policy import router_tag_for
+
     cli = StubHeadscaleCli()
     net = _controller(cli).create_run_network("run-1", "agent-1", ["10.200.1.0/24"])
     assert net.router_key and net.router_key != net.auth_key
     by_user = dict((u, tags) for u, tags in cli.preauth_calls)
     assert by_user["agent-1"] == ()  # agent key untagged
-    assert by_user["orchestrator"] == ("tag:router",)  # router key tagged
+    assert by_user["orchestrator"] == ("tag:router", router_tag_for("agent-1", "tag:router"))
     assert "orchestrator" in cli.users_created
 
 

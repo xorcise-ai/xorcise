@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json as _json
 from collections.abc import Callable
-from typing import Any
+from typing import Any, ClassVar
 
 from xorcise.core.runner.docker import (
     MANAGED_LABEL,
@@ -164,6 +164,63 @@ class DockerSdkDriver(DockerDriver):
             return None
         os_name, arch = attrs.get("Os"), attrs.get("Architecture")
         return f"{os_name}/{arch}" if os_name and arch else None
+
+    reads_image_files: ClassVar[bool] = True
+
+    def read_image_file(self, image: str, path: str) -> str | None:
+        """Read a file out of an image via a created-but-never-started container.
+
+        `create` + `get_archive` rather than `run`: the mission image's entrypoint boots an inner
+        dockerd, and we only want a file. Raises rather than returning None on failure — the
+        caller confines mission networks from this and must not proceed on a silent miss.
+        """
+        import io
+        import tarfile
+
+        import docker.errors
+
+        from xorcise.core.contracts.errors import ImageNotInstalledError, NotFoundError
+
+        # This runs BEFORE `run()`'s own presence guard, so an absent image would otherwise
+        # surface here as a raw docker 404 instead of the domain error the REST layer already
+        # translates into "…(re)build it". Same error, same remediation, whichever hits first.
+        try:
+            container = self._client.containers.create(
+                image,
+                entrypoint=["/bin/true"],
+                command=[],
+                # Same platform pin as run()/pull(): an amd64-only mission image on an arm64 host
+                # resolves via emulation instead of a manifest-mismatch surprise. The file we
+                # extract is arch-independent, but staying consistent with how the same image is
+                # run keeps one selection rule, not two.
+                platform=self._platform or None,
+                # Every fused image descends from docker:dind, whose config declares a
+                # /var/lib/docker VOLUME — so `create` allocates an anonymous volume that
+                # `remove(force=True)` alone would orphan on EVERY deploy, unlabelled and
+                # therefore invisible to the project-scoped volume sweep in _remove_run_resources.
+                # The managed label is the safety net for the create↔remove window: if the server
+                # dies between them, reap_managed force-removes any MANAGED_LABEL container that has
+                # no run id directly (this call knows an image, not a run — so deliberately no
+                # RUN_ID_LABEL, which the project-keyed _remove_run_resources could not reach).
+                labels={MANAGED_LABEL: "true"},
+            )
+        except docker.errors.ImageNotFound as exc:
+            raise ImageNotInstalledError(f"image {image!r} is not in the local store") from exc
+        try:
+            stream, _stat = container.get_archive(path)
+            blob = b"".join(stream)
+        except docker.errors.NotFound as exc:
+            raise NotFoundError(f"{image}: no {path} in the image") from exc
+        finally:
+            container.remove(force=True, v=True)
+        with tarfile.open(fileobj=io.BytesIO(blob)) as tar:
+            member = next((m for m in tar.getmembers() if m.isfile()), None)
+            if member is None:
+                raise RuntimeError(f"{image}: {path} is not a regular file")
+            handle = tar.extractfile(member)
+            if handle is None:
+                raise RuntimeError(f"{image}: could not extract {path}")
+            return handle.read().decode("utf-8")
 
     def run(self, spec: ContainerSpec) -> ContainerHandle:
         # The fused image is local-only (no registry). containers.run auto-PULLS a missing image,
@@ -343,11 +400,28 @@ class DockerSdkDriver(DockerDriver):
         # the running ones — the leak the bug report saw included a 3-day-old exited container.
         managed = self._client.containers.list(all=True, filters={"label": f"{MANAGED_LABEL}=true"})
         run_ids: set[str] = set()
+        run_scoped = []
+        unscoped = []
         for container in managed:
             run_id = (container.labels or {}).get(RUN_ID_LABEL)
-            if isinstance(run_id, str):
+            if isinstance(run_id, str) and run_id:
                 run_ids.add(run_id)
+                run_scoped.append(container)
+            else:
+                unscoped.append(container)
         reaped = [c.name for c in managed]
+        # Run-scoped containers are reclaimed by PROJECT (their networks + anon volumes go too).
         for run_id in run_ids:
             self._remove_run_resources(run_id)
+        # A managed container with NO run id is not reachable by _remove_run_resources (which keys
+        # on the project == run id), so it would be REPORTED reaped here yet never removed. The
+        # read_image_file throwaway is exactly that shape — MANAGED_LABEL, deliberately no
+        # RUN_ID_LABEL — and it only survives its own `finally` remove if the process died between
+        # create and remove. Force-remove it directly (with its anon dind volume) so "reaped" is
+        # true for it too, not just claimed.
+        import contextlib
+
+        for container in unscoped:
+            with contextlib.suppress(Exception):  # best-effort reap; a racing removal is fine
+                container.remove(force=True, v=True)
         return reaped
