@@ -19,7 +19,25 @@ const twMerge = extendTailwindMerge({
       //     COLOUR — so a real colour utility was being claimed as a rung.
       // It fails invisibly: the class is not overridden, it is DROPPED, so the element
       // renders at the inherited size and stops matching `.text-<rung>` entirely.
-      "font-size": [{ text: ["label", "caption", "dense", "body", "row", "lead"] }],
+      //   · `stat` and `display` were MISSING, and both are composed WITH a colour by
+      //     construction: StatTile's cva pairs its `size` rung against a `tone` colour in
+      //     one class string, and scorecard's hero figure is `cn("text-display …",
+      //     tone.text)`. Every toned StatTile and the scorecard percentage therefore
+      //     rendered at the INHERITED size, not 18px/30px.
+      "font-size": [
+        {
+          text: [
+            "label",
+            "caption",
+            "dense",
+            "body",
+            "row",
+            "lead",
+            "stat",
+            "display",
+          ],
+        },
+      ],
     },
   },
 });

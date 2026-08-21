@@ -41,8 +41,15 @@ describe("Welcome", () => {
     renderWithProviders(<Welcome />);
     expect(await screen.findByText(/Get started with XORCISE/i)).toBeInTheDocument();
     expect(await screen.findByText(/Backend running/i)).toBeInTheDocument();
-    expect(screen.getByText("Start a Run")).toBeInTheDocument();
-    expect(screen.getByText("Read Documentation")).toBeInTheDocument();
+    // "Start a run" appears TWICE on this page — once as a how-it-works step and once as
+    // the QuickStart tile below it. They used to differ only by casing ("Start a Run" vs
+    // "Start a run"), so an unscoped getByText happened to resolve; the design system's
+    // sentence-case button convention removed that accidental disambiguation. The tile is
+    // the heading, so ask for it by role.
+    expect(
+      screen.getByRole("heading", { name: "Start a run" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Read documentation")).toBeInTheDocument();
   });
 
   it("describes the product harness-agnostically — no single-vendor wording", async () => {
@@ -66,8 +73,13 @@ describe("Welcome", () => {
     // The Dashboard's separate "Start here" panel is gone — its navigation value
     // lives here, inside the strip that already knows what's done and what's next.
     renderWithProviders(<Welcome />);
-    const hrefFor = async (label: string) =>
-      (await screen.findByText(label)).closest("a")?.getAttribute("href");
+    // The QuickStart tile repeats "Start a run" as an <h3>; this assertion is about the
+    // how-it-works STEP, which is a plain span, so skip the heading when both match.
+    const hrefFor = async (label: string) => {
+      const nodes = await screen.findAllByText(label);
+      const step = nodes.find((n) => n.tagName !== "H3") ?? nodes[0];
+      return step.closest("a")?.getAttribute("href");
+    };
 
     expect(await hrefFor("Register an agent")).toBe("/agents");
     expect(await hrefFor("Install a mission")).toBe("/missions");

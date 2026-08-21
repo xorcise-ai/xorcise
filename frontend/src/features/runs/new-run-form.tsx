@@ -14,6 +14,7 @@ import { AlertTriangle, Check, Cpu, Download, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/components/ui/cn";
 import { Input } from "@/components/ui/input";
 import { Skeleton, SkeletonRows } from "@/components/ui/skeleton";
@@ -278,8 +279,8 @@ export function NewRunForm({
     : starting
       ? "Starting…"
       : needsPull
-        ? "Download & Start Run"
-        : "Start Run";
+        ? "Download & start run"
+        : "Start run";
 
   return (
     <form
@@ -288,7 +289,7 @@ export function NewRunForm({
     >
       <header className="shrink-0">
         <h1 className="text-lead text-heading">New run</h1>
-        <p className="max-w-[68ch] text-dense leading-relaxed text-text-secondary">
+        <p className="prose-tight text-dense text-text-secondary">
           Pair an agent with a mission, set a time budget, then start the
           evaluation.
         </p>
@@ -296,7 +297,7 @@ export function NewRunForm({
 
       {/* Three equal columns, read left → right like the flow itself: SELECT (agent →
           mission), UNDERSTAND (brief → intel), COMMIT (configure → review → Start). */}
-      <div className="grid min-h-0 flex-1 auto-rows-min gap-4 overflow-y-auto lg:auto-rows-auto lg:grid-cols-3 lg:overflow-hidden">
+      <div className="grid grid-cols-1 min-h-0 flex-1 auto-rows-min gap-4 overflow-y-auto lg:auto-rows-auto lg:grid-cols-3 lg:overflow-hidden">
         {/* Column 1 — the selections: agent (1) on top, the mission roster (2) beneath. */}
         <div className="flex min-h-0 flex-col gap-3">
           <Step step={1} title="Select agent" className="shrink-0">
@@ -341,10 +342,10 @@ export function NewRunForm({
                           className="size-3 shrink-0 text-text-tertiary"
                           aria-hidden
                         />
-                        <span className="truncate font-medium">{a.name}</span>
+                        <span className="truncate">{a.name}</span>
                         <span className="ml-auto flex shrink-0 items-center gap-2 text-caption text-text-tertiary">
                           {harness && (
-                            <span className="uppercase tracking-wide">
+                            <span className="text-label uppercase">
                               {harness}
                             </span>
                           )}
@@ -424,7 +425,7 @@ export function NewRunForm({
                           aria-hidden
                         />
                         <span className="truncate">{c.name}</span>
-                        <span className="ml-auto flex shrink-0 items-center gap-2 text-caption uppercase tracking-wide text-text-tertiary">
+                        <span className="ml-auto flex shrink-0 items-center gap-2 text-label uppercase text-text-tertiary">
                           {c.specialty && <span>{c.specialty}</span>}
                           {c.proficiency && <span>{c.proficiency}</span>}
                           {!c.installed && <span>library</span>}
@@ -472,24 +473,26 @@ export function NewRunForm({
                     {disclosedCount} of {intel.length}
                   </span>
                   <span className="sr-only">intel disclosed to the agent</span>
-                  <button
+                  <Button
                     type="button"
+                    variant="ghost"
+                    size="sm"
                     onClick={() =>
                       setPickedIntel(new Set(intel.map((h) => h.id)))
                     }
                     disabled={starting || disclosedCount === intel.length}
-                    className="rounded px-1.5 py-0.5 text-label uppercase text-text-secondary transition-colors hover:bg-raised hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     All
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     type="button"
+                    variant="ghost"
+                    size="sm"
                     onClick={() => setPickedIntel(new Set())}
                     disabled={starting || disclosedCount === 0}
-                    className="rounded px-1.5 py-0.5 text-label uppercase text-text-secondary transition-colors hover:bg-raised hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     None
-                  </button>
+                  </Button>
                 </>
               ) : undefined
             }
@@ -534,7 +537,7 @@ export function NewRunForm({
                 className="mb-1.5 block text-label uppercase text-text-tertiary"
               >
                 Run name{" "}
-                <span className="normal-case tracking-normal text-text-tertiary/70">
+                <span className="normal-case tracking-normal text-text-tertiary">
                   (optional)
                 </span>
               </label>
@@ -720,10 +723,10 @@ function Step({
   return (
     <Card className={cn("flex min-h-0 flex-col p-3", className)}>
       <div className="mb-2 flex shrink-0 items-center gap-2">
-        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/15 text-caption font-semibold text-primary">
+        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/15 text-caption text-primary">
           {step}
         </span>
-        <h2 className="text-body font-semibold text-heading">{title}</h2>
+        <h2 className="text-body text-heading">{title}</h2>
         {aside && (
           <div className="ml-auto flex shrink-0 items-center gap-2">{aside}</div>
         )}
@@ -756,7 +759,7 @@ function MissionDetails({ mission: c }: { mission: CatalogEntry | null }) {
     >
       <div className="space-y-1.5">
         <div className="flex items-start justify-between gap-2">
-          <p className="text-body font-semibold leading-tight text-heading">
+          <p className="text-body text-heading">
             {c.name}
           </p>
           <Badge variant={c.installed ? "ok" : "default"} className="shrink-0">
@@ -788,7 +791,7 @@ function MissionDetails({ mission: c }: { mission: CatalogEntry | null }) {
         <div className="space-y-1">
           <p
             className={cn(
-              "text-dense leading-relaxed text-text-secondary",
+              "text-dense text-text-secondary",
               longSummary && !expanded && "line-clamp-7",
             )}
           >
@@ -817,12 +820,7 @@ function MissionDetails({ mission: c }: { mission: CatalogEntry | null }) {
           </p>
           <div className="flex flex-wrap gap-1">
             {c.skills.map((s) => (
-              <span
-                key={s}
-                className="rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 text-caption font-medium text-primary"
-              >
-                {titleCase(s)}
-              </span>
+              <Badge key={s}>{titleCase(s)}</Badge>
             ))}
           </div>
         </div>
@@ -834,12 +832,9 @@ function MissionDetails({ mission: c }: { mission: CatalogEntry | null }) {
           </p>
           <div className="flex flex-wrap gap-1">
             {c.technologies.map((t) => (
-              <span
-                key={t}
-                className="rounded border border-border bg-raised px-1.5 py-0.5 font-mono text-caption text-text-secondary"
-              >
+              <Badge key={t} variant="muted">
                 {t}
-              </span>
+              </Badge>
             ))}
           </div>
         </div>
@@ -925,8 +920,9 @@ function IntelDisclosure({
           {/* The disclosure IS the checklist — pick exactly which intel run-control may hand out
               (the All/None shortcuts + count live in the step header above). Fixed-height
               internal scroller so a intel-heavy mission never grows the card past its neighbours.
-              Rows reuse the app's checkbox affordance (facet-select) — a boxed Check, never a
-              native input. Intel text is untrusted mission content: a plain single-line label
+              Rows use the design system's Checkbox — 16px, amber fill, on-primary tick —
+              so the set state is carried by the box, not by recolouring the row's label.
+              Intel text is untrusted mission content: a plain single-line label
               (full text in the title), never interpreted. */}
           <div className="rounded-md border border-border bg-background">
             <ul className="max-h-40 min-h-24 space-y-0.5 overflow-y-auto p-1">
@@ -934,36 +930,24 @@ function IntelDisclosure({
                 const on = picked.has(h.id);
                 return (
                   <li key={h.id}>
-                    <button
-                      type="button"
-                      role="checkbox"
-                      aria-checked={on}
+                    <Checkbox
+                      checked={on}
+                      onChange={() => onToggle(h.id)}
                       disabled={disabled}
-                      onClick={() => onToggle(h.id)}
-                      title={h.text || h.id}
-                      className={cn(
-                        "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-dense transition-colors",
-                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                        "hover:bg-raised disabled:cursor-not-allowed disabled:opacity-60",
-                        on
-                          ? "text-primary"
-                          : "text-text-secondary hover:text-foreground",
-                      )}
+                      // The label IS the row, so its content span has to be allowed to
+                      // shrink — otherwise the truncated intel text sets the row's
+                      // min-content width and the list scrolls sideways.
+                      className="flex w-full gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-raised [&>span:last-child]:min-w-0 [&>span:last-child]:flex-1"
                     >
-                      <span
-                        aria-hidden
-                        className={cn(
-                          "flex size-3.5 shrink-0 items-center justify-center rounded-sm border",
-                          on ? "border-primary bg-primary/20" : "border-border",
-                        )}
-                      >
-                        {on && <Check className="size-2.5" />}
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span className="shrink-0 font-mono text-text-tertiary">
+                          {h.id}
+                        </span>{" "}
+                        <span className="truncate" title={h.text || h.id}>
+                          {h.text}
+                        </span>
                       </span>
-                      <span className="shrink-0 font-mono text-text-tertiary">
-                        {h.id}
-                      </span>
-                      <span className="truncate">{h.text}</span>
-                    </button>
+                    </Checkbox>
                   </li>
                 );
               })}
@@ -990,7 +974,7 @@ function ReviewRow({
       <dd
         className={
           value
-            ? "min-w-0 truncate text-right font-medium text-heading"
+            ? "min-w-0 truncate text-right text-heading"
             : "text-right text-text-tertiary"
         }
         title={value ?? undefined}

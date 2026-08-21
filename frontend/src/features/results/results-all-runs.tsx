@@ -105,7 +105,7 @@ export function ResultsAllRuns() {
               {/* ≥sm: aligned ledger */}
               <table className="hidden w-full font-mono text-dense sm:table">
                 <thead>
-                  <tr className="border-b border-white/10 text-left text-label uppercase text-text-tertiary">
+                  <tr className="border-b border-border text-left text-label uppercase text-text-tertiary">
                     <th className="px-4 py-2">Agent</th>
                     <th className="px-4 py-2">Mission</th>
                     <th className="px-4 py-2">Status</th>
@@ -121,12 +121,12 @@ export function ResultsAllRuns() {
                   {rows.map((r) => (
                     <tr
                       key={r.runId}
-                      className="border-b border-white/5 transition-colors last:border-0 hover:bg-[rgba(232,184,75,0.05)]"
+                      className="border-b border-border transition-colors last:border-0 hover:bg-primary/5"
                     >
                       <td className="px-4 py-2.5">
                         <Link
                           href={r.href}
-                          className="font-medium text-primary hover:underline"
+                          className="text-primary hover:underline"
                         >
                           {r.agentName}
                         </Link>
@@ -165,12 +165,12 @@ export function ResultsAllRuns() {
               </table>
 
               {/* narrow: stacked rows */}
-              <ul className="divide-y divide-white/5 sm:hidden">
+              <ul className="divide-y divide-border sm:hidden">
                 {rows.map((r) => (
                   <li key={r.runId}>
                     <Link
                       href={r.href}
-                      className="block p-4 transition-colors hover:bg-[rgba(232,184,75,0.05)]"
+                      className="block p-4 transition-colors hover:bg-primary/5"
                     >
                       <div className="flex items-start justify-between gap-2">
                         <span className="min-w-0 truncate font-medium text-primary">
@@ -232,13 +232,13 @@ function EmptyAllRuns() {
     <Card className="flex flex-col items-center gap-3 p-6 text-center">
       <ListChecks className="size-6 text-text-tertiary" aria-hidden />
       <div className="space-y-2">
-        <p className="text-body font-semibold text-heading">No runs yet</p>
+        <p className="text-body font-bold text-heading">No runs yet</p>
         <p className="mx-auto max-w-sm text-body text-text-secondary">
           Nothing has been evaluated. Start a run to see it appear here.
         </p>
       </div>
       <Link href="/runs/new" className={cn(buttonVariants(), "mt-1")}>
-        Start Run
+        Start run
       </Link>
     </Card>
   );

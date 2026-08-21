@@ -9,6 +9,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/components/ui/cn";
 import {
@@ -114,7 +115,7 @@ export function HarnessProfile({
           <div className="flex min-w-0 items-center gap-2">
             <HarnessGlyph kind={isGeneric ? null : descriptor.kind} />
             <div className="min-w-0">
-              <h3 className="text-body font-semibold text-heading">Export span support</h3>
+              <h3 className="text-body font-bold text-heading">Export span support</h3>
               <p className="truncate text-dense text-text-tertiary">
                 {isGeneric ? "Unknown until the custom harness is verified" : descriptor.display_name}
               </p>
@@ -129,7 +130,7 @@ export function HarnessProfile({
           </span>
         </div>
 
-        <ul className="mt-3 grid gap-x-4 gap-y-2 sm:grid-cols-2">
+        <ul className="mt-3 grid grid-cols-1 gap-x-4 gap-y-2 sm:grid-cols-2">
           {REGISTRATION_GROUPS.map((group) => {
             const level = registrationLevel(descriptor.capabilities, group);
             const supported = level !== "unsupported";
@@ -179,7 +180,7 @@ export function HarnessProfile({
         <div className="flex items-start gap-2">
           <Terminal className="mt-0.5 size-4 shrink-0 text-text-secondary" aria-hidden />
           <div className="min-w-0">
-            <h3 className="text-body font-semibold text-heading">How it launches</h3>
+            <h3 className="text-body font-bold text-heading">How it launches</h3>
             <p className="text-dense text-text-tertiary">
               {effectiveLaunch.command_template
                 ? "Command generated per run"
@@ -187,9 +188,9 @@ export function HarnessProfile({
             </p>
           </div>
           {launchCustomized && (
-            <span className="ml-auto shrink-0 rounded border border-primary/40 px-1.5 py-0.5 text-caption text-primary">
-              Agent override
-            </span>
+            /* A bordered state label beside a heading IS a Badge — hand-rolling it put the
+               pill on a bare `rounded` that is off the shape scale (badges are rounded-full). */
+            <Badge className="ml-auto shrink-0">Agent override</Badge>
           )}
         </div>
 
@@ -230,7 +231,7 @@ export function HarnessProfile({
   if (section === "launch") return launch;
 
   return (
-    <div className="grid items-start gap-3 xl:grid-cols-2">
+    <div className="grid grid-cols-1 items-start gap-3 xl:grid-cols-2">
       {visibility}
       {launch}
     </div>
@@ -299,7 +300,9 @@ function CommandPreview({ template }: { template: string }) {
             // `wrap-anywhere` (not `break-words`): an unbroken token — a `-c key='{"…"}'` blob,
             // a URL — must also shrink the pre's MIN-CONTENT width, or it widens the grid
             // column past the viewport on phones instead of wrapping.
-            "whitespace-pre-wrap wrap-anywhere rounded-md border border-border bg-background px-3 py-2 font-mono text-dense text-foreground",
+            // bg-deepest: a <pre> is a recessed well, which the surface ladder puts on the
+            // darkest rung (the same ground the launch-override textareas sit on).
+            "whitespace-pre-wrap wrap-anywhere rounded-md border border-border bg-deepest px-3 py-2 font-mono text-dense text-foreground",
             // Reserve three wrapped command lines plus the block's vertical padding. `lh`
             // tracks the pre's own line-height if the typography scale changes.
             !expanded && "max-h-[calc(3lh+1rem)] overflow-hidden",
@@ -309,7 +312,7 @@ function CommandPreview({ template }: { template: string }) {
         </pre>
         {clipped && !expanded && (
           <div
-            className="pointer-events-none absolute inset-x-px bottom-px h-6 rounded-b-md bg-gradient-to-t from-background to-transparent"
+            className="pointer-events-none absolute inset-x-px bottom-px h-6 rounded-b-md bg-gradient-to-t from-deepest to-transparent"
             aria-hidden
           />
         )}

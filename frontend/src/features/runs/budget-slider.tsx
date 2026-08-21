@@ -1,6 +1,6 @@
 "use client";
 
-import { cn } from "@/components/ui/cn";
+import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 
 const MIN_MIN = 5;
@@ -25,7 +25,7 @@ export function BudgetSlider({
   return (
     <div className="space-y-2">
       <div className="flex items-baseline justify-between">
-        <span className="text-body font-medium text-heading">{minutes} min</span>
+        <span className="text-body text-heading">{minutes} min</span>
         <span className="text-caption text-text-tertiary">
           {seconds}s · range {MIN_MIN}–{MAX_MIN} min
         </span>
@@ -41,25 +41,21 @@ export function BudgetSlider({
       />
       <div className="flex items-center gap-1.5 pt-0.5">
         {PRESET_MIN.map((m) => (
-          <button
+          <Button
             key={m}
             type="button"
+            // The picked preset is the outline variant (amber edge + amber label); the rest
+            // are ghost. aria-pressed still carries the state for anyone not reading colour.
+            variant={minutes === m ? "outline" : "ghost"}
+            size="sm"
             aria-pressed={minutes === m}
             // Starts with the visible "5m" (SC 2.5.3 label-in-name), then spells the unit out.
             aria-label={`${m}m — set a ${m} minute budget`}
             disabled={disabled}
             onClick={() => onChange(m * 60)}
-            className={cn(
-              "rounded-md border px-2 py-1 text-caption font-medium transition-colors",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              "disabled:cursor-not-allowed disabled:opacity-60",
-              minutes === m
-                ? "border-primary/40 bg-primary/10 text-primary"
-                : "border-border text-text-secondary hover:bg-raised hover:text-foreground",
-            )}
           >
             {m}m
-          </button>
+          </Button>
         ))}
       </div>
     </div>

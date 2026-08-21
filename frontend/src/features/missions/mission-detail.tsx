@@ -138,10 +138,13 @@ export function MissionDetail({ id }: { id: string | null }) {
     <div className="min-w-0 space-y-6 p-6">
       {/* ── Header ── */}
       <header className="flex items-start gap-4">
+        {/* An icon-only control, so it takes the ghost/icon button recipe rather than a
+            hand-rolled 4px-radius box: same 30px hit area, hover wash and focus ring as
+            every other icon control. It stays a <Link> because it navigates. */}
         <Link
           href="/missions"
           aria-label="Back to catalog"
-          className="mt-1 rounded p-1 text-text-tertiary transition-colors hover:bg-raised hover:text-foreground"
+          className={cn(buttonVariants({ variant: "ghost", size: "icon" }), "mt-1")}
         >
           <ArrowLeft className="size-4" />
         </Link>
@@ -348,7 +351,7 @@ export function MissionDetail({ id }: { id: string | null }) {
           <CardContent className="flex min-w-0 items-start gap-3">
             <AlertTriangle className="mt-0.5 size-5 shrink-0 text-warning" />
             <div className="min-w-0 space-y-1">
-              <p className="text-body font-semibold text-heading">
+              <p className="text-body font-bold text-heading">
                 Not runnable on this XORCISE
               </p>
               <p className="max-w-full break-words text-body text-text-secondary">
@@ -372,7 +375,7 @@ export function MissionDetail({ id }: { id: string | null }) {
           <CardContent className="flex min-w-0 items-start gap-3">
             <Package className="mt-0.5 size-5 shrink-0 text-primary" />
             <div className="min-w-0 space-y-2">
-              <p className="text-body font-semibold text-heading">
+              <p className="text-body font-bold text-heading">
                 Preview — not yet installed
               </p>
               <p className="max-w-full break-words text-body text-text-secondary">
@@ -422,7 +425,7 @@ export function MissionDetail({ id }: { id: string | null }) {
           title="Objective"
           helpText="Provided to the agent during the mission run."
         >
-          <p className="max-w-full break-words text-body leading-[1.7] text-foreground">
+          <p className="prose-block break-words text-body text-foreground">
             {m.metadata.objective}
           </p>
         </Section>
@@ -435,7 +438,7 @@ export function MissionDetail({ id }: { id: string | null }) {
           title="Description"
           helpText="Human-readable context only. This is not provided to the agent during the mission run."
         >
-          <p className="max-w-full break-words text-body leading-[1.7] text-foreground">{c.summary}</p>
+          <p className="prose-block break-words text-body text-foreground">{c.summary}</p>
         </Section>
       )}
 
@@ -449,7 +452,10 @@ export function MissionDetail({ id }: { id: string | null }) {
             <div className="space-y-2">
               <SubLabel>Specialty</SubLabel>
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-base font-semibold leading-snug text-heading">
+                {/* A labelled VALUE, not a head — it sits under a SubLabel beside the
+                    difficulty badge. `row` is the single-line role, and it carries its
+                    own weight, so the head treatment above would over-state it. */}
+                <span className="text-row text-heading">
                   {titleCase(c.specialty)}
                 </span>
                 {c.proficiency && <DifficultyBadge proficiency={c.proficiency} />}
@@ -473,12 +479,9 @@ export function MissionDetail({ id }: { id: string | null }) {
             {skills.length > 0 ? (
               <div className="flex flex-wrap gap-1.5">
                 {skills.map((s) => (
-                  <span
-                    key={s}
-                    className="rounded-full border border-primary/25 bg-primary/10 px-2.5 py-0.5 text-caption text-primary"
-                  >
+                  <Badge key={s} variant="default">
                     {titleCase(s)}
-                  </span>
+                  </Badge>
                 ))}
               </div>
             ) : (
@@ -492,12 +495,9 @@ export function MissionDetail({ id }: { id: string | null }) {
             {c.technologies.length > 0 ? (
               <div className="flex flex-wrap gap-1.5">
                 {c.technologies.map((t) => (
-                  <span
-                    key={t}
-                    className="rounded border border-border bg-raised px-1.5 py-0.5 font-mono text-caption text-text-secondary"
-                  >
+                  <Badge key={t} variant="muted" className="font-mono">
                     {t}
-                  </span>
+                  </Badge>
                 ))}
               </div>
             ) : (
@@ -677,13 +677,14 @@ function ManifestSections({
                         <dt className="text-text-tertiary">Requires</dt>
                         <dd className="flex min-w-0 flex-wrap gap-1.5">
                           {requirements.map((requirement) => (
-                            <span
+                            <Badge
                               key={requirement.id}
-                              className="inline-flex items-center gap-1 rounded border border-primary/25 bg-primary/[0.06] px-1.5 py-0.5 font-mono text-caption text-heading"
+                              variant="default"
+                              className="font-mono"
                             >
-                              <ShieldCheck className="size-3 shrink-0 text-primary" />
+                              <ShieldCheck className="size-3 shrink-0" />
                               {requirement.title}
-                            </span>
+                            </Badge>
                           ))}
                         </dd>
                       </>
@@ -780,7 +781,7 @@ function Section({
         <div>
           <div className="flex items-center gap-2">
             <Icon className="size-4 text-primary" />
-            <h2 className="text-body font-semibold text-heading">{title}</h2>
+            <h2 className="text-body font-bold text-heading">{title}</h2>
           </div>
           {helpText && (
             <p className="mt-2 max-w-full break-words text-body text-text-tertiary">

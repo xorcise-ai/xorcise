@@ -106,7 +106,7 @@ export function RunList() {
           // card (name, mission, agent, harness, time, elapsed/budget) and at four columns
           // they wrapped into a cramped block. The extra width also gives the in-card delete
           // confirmation room to read as a prompt rather than a squeeze.
-          <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {filtered.map((run, i) => (
               <li key={run.run_id}>
                 <Reveal delay={i * 40} className="h-full">

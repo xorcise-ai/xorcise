@@ -116,7 +116,7 @@ describe("NewRunForm pull-before-start", () => {
 
     // The action names the extra work up front.
     const start = await screen.findByRole("button", {
-      name: /Download & Start Run/i,
+      name: /Download & start run/i,
     });
     fireEvent.click(start);
 
@@ -149,7 +149,7 @@ describe("NewRunForm pull-before-start", () => {
   }, 10_000);
 
   it("cancels the download and abandons the run it was the first half of", async () => {
-    // A multi-GB image takes minutes; the form committed the operator to "Download & Start Run"
+    // A multi-GB image takes minutes; the form committed the operator to "Download & start run"
     // with no way out short of reloading. Cancelling must stop the pull AND clear the committed
     // state — otherwise a worker that finished installing before it saw the cancel would go on to
     // start the very run that was just called off.
@@ -181,7 +181,7 @@ describe("NewRunForm pull-before-start", () => {
       <NewRunForm initialAgent="scout" initialMission="lib-1" />,
     );
     fireEvent.click(
-      await screen.findByRole("button", { name: /Download & Start Run/i }),
+      await screen.findByRole("button", { name: /Download & start run/i }),
     );
 
     const cancel = await screen.findByRole("button", { name: /Cancel download/i });
@@ -200,7 +200,7 @@ describe("NewRunForm pull-before-start", () => {
     await waitFor(
       () =>
         expect(
-          screen.getByRole("button", { name: /Download & Start Run/i }),
+          screen.getByRole("button", { name: /Download & start run/i }),
         ).toBeEnabled(),
       { timeout: 4000 },
     );
@@ -274,14 +274,14 @@ describe("NewRunForm pull-before-start", () => {
       ),
     );
     fireEvent.click(
-      await screen.findByRole("button", { name: /Start Run/i }),
+      await screen.findByRole("button", { name: /Start run/i }),
     );
 
     await waitFor(() =>
       expect(screen.getByText(/registry unreachable/)).toBeInTheDocument(),
     );
     // No run was created, and the action is live again for a retry.
-    const start = screen.getByRole("button", { name: /Start Run/i });
+    const start = screen.getByRole("button", { name: /Start run/i });
     expect(start).toBeEnabled();
     fireEvent.click(start);
     await waitFor(() => expect(attempts).toBe(2));
@@ -312,7 +312,7 @@ describe("NewRunForm pull-before-start", () => {
         "true",
       ),
     );
-    fireEvent.click(await screen.findByRole("button", { name: /Start Run/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Start run/i }));
 
     // The server's own reason must reach the operator: a 503 from a missing dependency
     // cannot be fixed by retrying, so "please try again" is actively misleading.
@@ -324,7 +324,7 @@ describe("NewRunForm pull-before-start", () => {
     // A failed create must not re-fire the post-pull auto-start.
     await new Promise((r) => setTimeout(r, 400));
     expect(runAttempts).toBe(1);
-    expect(screen.getByRole("button", { name: /Start Run/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Start run/i })).toBeEnabled();
   }, 10_000);
 
   it("starts an installed mission immediately — no pull job", async () => {
@@ -359,10 +359,10 @@ describe("NewRunForm pull-before-start", () => {
     );
     // Nothing to download, so the action stays the plain one.
     expect(
-      screen.queryByRole("button", { name: /Download & Start Run/i }),
+      screen.queryByRole("button", { name: /Download & start run/i }),
     ).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: /Start Run/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Start run/i }));
     await waitFor(() => expect(runBody).not.toBeNull());
     expect(screen.queryByRole("progressbar")).toBeNull();
     await waitFor(() =>

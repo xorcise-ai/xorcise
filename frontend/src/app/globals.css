@@ -95,6 +95,30 @@
   --text-lead--letter-spacing: -0.01em;
   --text-lead--font-weight: 700;
 
+  /* The numeral rung. NOT a seventh reading role — a StatTile's value is a single
+     glanceable figure, never a passage, and the Figma component board sets it at 18px
+     bold rather than borrowing `lead` (20px, which is the PAGE-HEAD size and would make
+     five tiles in a row out-shout the heading above them). It is declared here so the
+     component can never reach for a bare text-[18px]; the type board's "six roles" count
+     is about roles you READ IN, and nothing is ever set in this one. */
+  --text-stat: 18px;
+  --text-stat--line-height: 1.4;
+  --text-stat--letter-spacing: -0.01em;
+  --text-stat--font-weight: 700;
+
+  /* The hero figure — ONE per page, and only where a number is the whole point of the
+     surface: the scorecard's overall percentage inside its donut, the library's mission
+     count. Both were raw Tailwind (text-3xl and text-4xl, 30px and 36px), which is how a
+     scale with a 20px ceiling ends up with two undeclared sizes above it that no rule
+     relates to each other. 30px keeps the scorecard exactly where it renders today and
+     brings the library count down to meet it, so there is one hero size rather than two.
+     Tighter tracking than `stat` because the defect of large monospace is gapped, airy
+     digits, and the bigger it gets the more it needs pulling in. */
+  --text-display: 30px;
+  --text-display--line-height: 1.2;
+  --text-display--letter-spacing: -0.02em;
+  --text-display--font-weight: 700;
+
   /* surfaces & core */
   --color-deepest: #0a0805; /* shell / nav / inputs — the darkest surface */
   --color-background: #111111;
@@ -104,7 +128,14 @@
   --color-popover: #1a1a1a;
   --color-popover-foreground: #d4d4d4;
   --color-primary: #e8b84b;
-  --color-primary-foreground: #111111;
+  /* Figma names this text/on-primary and gives it #160c00 — a near-black carrying a
+     trace of the amber's own hue, so the knockout on a #e8b84b fill reads as ink rather
+     than as a hole punched to the page colour. We shipped --color-primary-foreground as
+     #111111 (the page background) while button.tsx and switch.tsx BOTH hardcoded the
+     correct #160c00 inline: the token said one thing, every real amber surface did
+     another, and the only consumer of the token (the skip link) was the odd one out. */
+  --color-primary-foreground: #160c00;
+  --color-on-primary: #160c00; /* alias under the Figma name, for call sites that read better */
   --color-secondary: #222222;
   --color-secondary-foreground: #d4d4d4;
   --color-muted: #1e1e1e;
@@ -130,16 +161,40 @@
      than the surround and the weakest pair is not the obvious one. */
   --color-input: rgba(255, 255, 255, 0.4);
   --color-ring: #e8b84b;
+  /* brand/primary-hover. The ONE lift for an amber fill; it was living as a hardcoded
+     hover:bg-[#f0c860] inside button.tsx, which meant nothing else could hover-match the
+     primary button without copying the hex. */
+  --color-primary-hover: #f0c860;
 
   /* explicit surface scale */
   --color-chrome: #141414;
   --color-raised: #232323;
+  /* The travelling part of a control — today only the Switch thumb on an OFF track.
+     Deliberately brighter than --color-heading (#f0f0f0 is the brightest TYPE; this is
+     brighter still) because a knob has to read as a physical object sitting on the
+     track, not as a letterform. Figma exports it as a flat #EEEEEE circle; it was
+     inlined as bg-[#eee] in switch.tsx. On an ON track the knob flips to
+     --color-on-primary, which is the same ink the Button uses on the same amber. */
+  --color-knob: #eeeeee;
 
   /* sidebar */
   --color-sidebar: #0d0d0d;
   --color-sidebar-foreground: #d4d4d4;
   --color-sidebar-accent: #1a1a1a;
   --color-sidebar-border: rgba(255, 255, 255, 0.07);
+  /* The hover edge. Figma's border group stops at border/border, border/input and
+     border/sidebar, but the app had a fourth, unnamed member: seven separate call sites
+     (run cards, mission cards, dashboard tiles, quick-start, welcome, results, the
+     not-found action) all wrote hover:border-[rgba(255,255,255,0.14)] by hand. It is the
+     single most-copied literal in the frontend, so it is a token. .14 is roughly 1.5x
+     --color-border, which is what makes a card edge visibly firm up under the cursor
+     without the border ever becoming a drawn line at rest. */
+  --color-border-hover: rgba(255, 255, 255, 0.14);
+  /* The modal scrim. Black rather than a tinted wash because the surface ladder below it
+     is already near-black and any colour in the scrim would shift the whole page's hue
+     rather than dim it. Named so the dialog, and anything that later needs to occlude the
+     workspace, cannot drift apart. */
+  --color-scrim: rgba(0, 0, 0, 0.6);
 
   /* semantic trace/event colors */
   --color-terminal: #00c9a0; /* exec_shell  */
@@ -213,6 +268,32 @@
   --syntax-operator: #569cd6;
   --syntax-key: #9cdcfe;
   --syntax-boolean: #569cd6;
+
+  /* ANSI (program output). The Trace renders real terminal bytes, so the 8 standard and 8
+     bright SGR foreground colours are part of the palette exactly as the syntax colours
+     are — they were living as a 16-entry hex map inside features/replay/syntax.tsx, the
+     single largest cluster of undeclared colour in the frontend. Values are VSCode Dark+,
+     matching the --syntax-* block above so a terminal block and a JSON block beside it
+     read as one surface. Consumed from JS as `var(--ansi-31)`, which is why they are
+     :root custom properties rather than @theme entries — nothing here needs a utility. */
+  --ansi-30: #6e7681;
+  --ansi-31: #f14c4c;
+  --ansi-32: #23d18b;
+  --ansi-33: #e5c07b;
+  --ansi-34: #3b8eea;
+  --ansi-35: #d670d6;
+  --ansi-36: #29b8db;
+  --ansi-37: #cccccc;
+  --ansi-90: #808080;
+  --ansi-91: #ff6d6d;
+  --ansi-92: #4ee88a;
+  --ansi-93: #f5f543;
+  --ansi-94: #59a6ff;
+  --ansi-95: #ff77ff;
+  --ansi-96: #4dd0e1;
+  --ansi-97: #ffffff;
+  /* Bold with no colour set — terminals brighten rather than recolour. */
+  --ansi-bold-fg: #ffffff;
 }
 
 /* Forward-looking: when a light theme is introduced (data-theme="light"), the palette switches to
@@ -228,6 +309,25 @@
   --syntax-operator: #0000ff;
   --syntax-key: #0451a5;
   --syntax-boolean: #0000ff;
+
+  /* VSCode Light+ terminal ANSI, so a Trace stays readable if a light theme arrives. */
+  --ansi-30: #666666;
+  --ansi-31: #cd3131;
+  --ansi-32: #14ce14;
+  --ansi-33: #b5ba00;
+  --ansi-34: #0451a5;
+  --ansi-35: #bc05bc;
+  --ansi-36: #0598bc;
+  --ansi-37: #555555;
+  --ansi-90: #666666;
+  --ansi-91: #cd3131;
+  --ansi-92: #14ce14;
+  --ansi-93: #b5ba00;
+  --ansi-94: #0451a5;
+  --ansi-95: #bc05bc;
+  --ansi-96: #0598bc;
+  --ansi-97: #a5a5a5;
+  --ansi-bold-fg: #000000;
 }
 
 /* themed scrollbar so the system scrollbar never bleeds through the dark UI */
@@ -248,6 +348,22 @@
 *::-webkit-scrollbar-thumb:hover {
   background: #3a3a3a;
   background-clip: padding-box;
+}
+
+/* Browser surfaces the design system never drew but still ships. A selection highlight
+   and a text caret arrive with the platform's own blue, which belongs to no palette here
+   and is the loudest non-brand colour on the page the moment anyone drags across a
+   command or a run id. Both come from the brand amber instead: the selection as a 30%
+   wash (dark enough underneath that the text stays legible without restating its colour),
+   the caret at full strength because a 1px bar has no area to carry a tint. */
+::selection {
+  background: color-mix(in srgb, var(--color-primary) 30%, transparent);
+  color: var(--color-heading);
+}
+input,
+textarea,
+[contenteditable] {
+  caret-color: var(--color-primary);
 }
 
 /* Global focus-visible fallback (guide §12) — every interactive gets a visible
@@ -427,6 +543,71 @@ body {
   .tm-glow,
   .tm-flow,
   .tm-pulse-yellow { animation: none; }
+}
+
+/* Range control. WCAG 2.5.8 puts a 24x24 floor on a pointer target, and a bare
+   `<input type="range">` styled to the 6px track height is 6px TALL — the whole control is
+   four times under the floor, on a page where it sets a judge's token budget. An input is a
+   replaced element, so it cannot carry a ::before hit-area expander the way the Switch can:
+   the only way to grow the target without growing the track is to make the INPUT 24px and
+   draw the 6px track as a pseudo-element inside it. Thumb and track are painted explicitly
+   rather than left to `accent-color`, because the native thumb's size is platform-dependent
+   and was the other half of the same problem. */
+.range-control {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 24px;
+  width: 100%;
+  background: transparent;
+  cursor: pointer;
+}
+/* The filled portion. `accent-color` used to paint this for free, but it stops applying
+   the moment the track carries its own background — so the progress the operator reads
+   position from would have vanished with the target fix. --range-pct is set inline from
+   the value, which is the only part a stylesheet cannot know. */
+.range-control::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 9999px;
+  background: linear-gradient(
+    to right,
+    var(--color-primary) var(--range-pct, 0%),
+    var(--color-border) var(--range-pct, 0%)
+  );
+}
+.range-control::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -4px; /* centre the 14px thumb on the 6px track */
+  border-radius: 9999px;
+  background: var(--color-primary);
+}
+.range-control::-moz-range-track {
+  height: 6px;
+  border-radius: 9999px;
+  background: linear-gradient(
+    to right,
+    var(--color-primary) var(--range-pct, 0%),
+    var(--color-border) var(--range-pct, 0%)
+  );
+}
+.range-control::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 0;
+  border-radius: 9999px;
+  background: var(--color-primary);
+}
+.range-control:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.range-control:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 2px var(--color-background), 0 0 0 4px var(--color-ring);
+}
+.range-control:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 2px var(--color-background), 0 0 0 4px var(--color-ring);
 }
 
 /* Indeterminate progress — a bar sliding across the track for work with no measurable

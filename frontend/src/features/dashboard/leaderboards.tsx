@@ -39,7 +39,7 @@ function Leaderboard({
         </h2>
         <Link
           href="/results"
-          className="flex items-center gap-1 text-label uppercase text-text-tertiary transition-colors hover:text-foreground"
+          className="flex items-center gap-1 -my-1.5 py-1.5 text-label uppercase text-text-tertiary transition-colors hover:text-foreground"
         >
           View all
           <ArrowUpRight className="size-3" />
@@ -105,7 +105,7 @@ function LeaderRow({
       <span className="shrink-0 text-caption tabular-nums text-text-tertiary">
         {runs} {runs === 1 ? "run" : "runs"}
       </span>
-      <span className="shrink-0 text-row font-semibold tabular-nums text-primary">
+      <span className="shrink-0 text-row tabular-nums text-primary">
         {pct(avg)}
       </span>
     </div>
@@ -115,7 +115,7 @@ function LeaderRow({
       {href ? (
         <Link
           href={href}
-          className="block transition-colors hover:bg-[rgba(255,255,255,0.02)]"
+          className="block transition-colors hover:bg-muted"
         >
           {body}
         </Link>

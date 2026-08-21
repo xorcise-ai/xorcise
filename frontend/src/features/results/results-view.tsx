@@ -3,13 +3,14 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Loader2, RotateCw } from "lucide-react";
+import { AlertTriangle, Loader2, RotateCw } from "lucide-react";
 import { Skeleton, SkeletonRows } from "@/components/ui/skeleton";
 import { NotFoundState } from "@/components/layout/not-found-state";
 import { Page, PageBody, PageHead, PageTitle } from "@/components/layout/page";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/components/ui/cn";
 import { Card, CardContent } from "@/components/ui/card";
+import { StatTile, StatTileRow } from "@/components/ui/stat-tile";
 import { ApiError } from "@/lib/api/client";
 import { fullTime, formatDuration } from "@/lib/api/format";
 import type { GradeResult, RunEntry } from "@/lib/api/types";
@@ -160,9 +161,10 @@ export function ResultsView({ runId }: { runId: string | null }) {
               }}
             >
               <CardContent className="flex items-start gap-3 p-4">
-                <span aria-hidden className="mt-0.5 shrink-0 text-primary">
-                  ⚠
-                </span>
+                <AlertTriangle
+                  aria-hidden
+                  className="mt-0.5 size-4 shrink-0 text-primary"
+                />
                 <div>
                   <p className="text-body font-medium text-foreground">
                     {view.partial_trigger === "operator"
@@ -262,23 +264,25 @@ function RunMetaBar({ run, agentName }: { run: RunEntry; agentName: string }) {
   ];
   return (
     <Card className="bg-raised">
-      <CardContent className="grid grid-cols-2 gap-x-4 gap-y-3 p-4 sm:grid-cols-3 lg:grid-cols-5">
-        {items.map((it) => (
-          <div key={it.label} className="flex min-w-0 flex-col gap-1">
-            <span className="text-label uppercase text-text-tertiary">
-              {it.label}
-            </span>
-            <span
-              className={cn(
-                "min-w-0 truncate text-foreground",
-                it.mono ? "font-mono text-dense" : "text-body",
-              )}
+      <CardContent>
+        {/* StatTile renders <dt>/<dd>, so the meta bar is a real <dl>; the responsive column
+            count stays on the row. `small` because every value here is a long one — a mission
+            name, a full timestamp — which is the case that rung exists for. */}
+        <StatTileRow className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
+          {items.map((it) => (
+            <StatTile
+              key={it.label}
+              label={it.label}
+              value={
+                <span className={cn("block truncate", it.mono && "font-mono")}>
+                  {it.value}
+                </span>
+              }
+              small
               title={it.value}
-            >
-              {it.value}
-            </span>
-          </div>
-        ))}
+            />
+          ))}
+        </StatTileRow>
       </CardContent>
     </Card>
   );
@@ -312,7 +316,7 @@ function GradingState({
       className="flex h-full min-h-[24rem] flex-col items-center justify-center gap-3 p-4 text-center"
     >
       <Loader2 className="size-8 motion-safe:animate-spin text-primary" />
-      <p className="text-body font-semibold text-heading">
+      <p className="text-body font-bold text-heading">
         {reevaluating ? "Re-evaluating" : "Grading in progress"}
       </p>
       <p className="max-w-sm text-body text-text-secondary">
@@ -335,7 +339,7 @@ function GradingState({
       <p className="font-mono text-dense text-text-tertiary">{runId}</p>
       <Link
         href="/runs"
-        className="mt-2 rounded-md border border-border px-3 py-1.5 text-dense text-foreground transition-colors hover:border-[rgba(255,255,255,0.14)] hover:text-primary"
+        className="mt-2 rounded-md border border-border px-3 py-1.5 text-dense text-foreground transition-colors hover:border-border-hover hover:text-primary"
       >
         Back to runs
       </Link>

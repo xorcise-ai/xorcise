@@ -63,7 +63,7 @@ function DataChips({ data }: { data: Record<string, string> }) {
       {entries.map(([key, value]) => (
         <span
           key={key}
-          className="max-w-full break-words rounded bg-[rgba(255,255,255,0.05)] px-1.5 py-0.5 font-mono text-caption text-text-secondary"
+          className="max-w-full break-words rounded-lg bg-raised px-1.5 py-0.5 font-mono text-caption text-text-secondary"
         >
           {key}: {value}
         </span>
@@ -145,12 +145,12 @@ function DataView({ data }: { data: Record<string, string> }) {
                 <div className="font-mono text-label uppercase text-text-tertiary">
                   {key}
                 </div>
-                <pre className="mt-1 max-h-[24rem] overflow-auto whitespace-pre-wrap break-words rounded bg-[rgba(0,0,0,0.3)] p-2 font-mono text-dense text-foreground">
+                <pre className="mt-1 max-h-[24rem] overflow-auto whitespace-pre-wrap break-words rounded-md bg-deepest p-2 font-mono text-dense text-foreground">
                   {looksJson ? highlightJson(pretty) : pretty}
                 </pre>
               </>
             ) : (
-              <span className="inline-block max-w-full break-words rounded bg-[rgba(255,255,255,0.05)] px-1.5 py-0.5 font-mono text-caption text-text-secondary">
+              <span className="inline-block max-w-full break-words rounded-lg bg-raised px-1.5 py-0.5 font-mono text-caption text-text-secondary">
                 {key}: {value}
               </span>
             )}
@@ -229,7 +229,7 @@ function EventBody({ event }: { event: AgentEvent }) {
     // "unknown" and any future/unrecognized kind: render defensively, never throw.
     default:
       return (
-        <pre className="mt-2 max-h-[28rem] overflow-auto whitespace-pre-wrap break-words font-mono text-dense text-text-secondary">
+        <pre className="mt-2 max-h-[28rem] overflow-auto whitespace-pre-wrap break-words rounded-md bg-deepest p-2 font-mono text-dense text-text-secondary">
           {event.body || JSON.stringify(event.data ?? {})}
         </pre>
       );
@@ -316,9 +316,9 @@ export function EventCard({
             </span>
           )}
           <EventTime event={event} />
-          <span className="shrink-0 rounded px-1 text-label uppercase text-text-tertiary">
+          <Badge variant="muted" className="shrink-0">
             {label.badge}
-          </span>
+          </Badge>
           <Button
             variant="ghost"
             size="sm"
@@ -353,7 +353,7 @@ function TerminalPre({
       : renderAnsi(body)
     : "—";
   return (
-    <pre className="mt-2 max-h-[28rem] overflow-auto whitespace-pre-wrap break-words rounded-md bg-[rgba(0,0,0,0.3)] p-2 font-mono text-dense text-foreground">
+    <pre className="mt-2 max-h-[28rem] overflow-auto whitespace-pre-wrap break-words rounded-md bg-deepest p-2 font-mono text-dense text-foreground">
       {content}
     </pre>
   );
@@ -436,9 +436,9 @@ export function TerminalCard({
             {label.title}
           </span>
           <EventTime event={command} />
-          <span className="shrink-0 rounded px-1 text-label uppercase text-text-tertiary">
+          <Badge variant="muted" className="shrink-0">
             {label.badge}
-          </span>
+          </Badge>
           <Button
             variant="ghost"
             size="sm"

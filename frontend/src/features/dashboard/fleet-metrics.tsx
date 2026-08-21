@@ -2,7 +2,8 @@
 
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { StatTile } from "@/features/results/performance-summary";
+import { StatusDot, type DotTone } from "@/components/ui/dot";
+import { StatTile } from "@/components/ui/stat-tile";
 import { pct } from "@/lib/api/format";
 import { useFleetPerformance, type ToneMix } from "./use-fleet-performance";
 
@@ -38,7 +39,7 @@ export function FleetMetrics() {
             <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3 lg:grid-cols-5">
               <StatTile label="Evaluated" value={String(f.evaluated)} />
               <StatTile label="Scored" value={String(f.fleet.n)} />
-              <StatTile label="Average" value={pct(f.fleet.avgOverall)} tone="accent" />
+              <StatTile label="Average" value={pct(f.fleet.avgOverall)} tone="primary" />
               <StatTile label="Best" value={pct(f.fleet.bestOverall)} />
               <StatTile label="Pass rate" value={pct(passRate)} />
             </dl>
@@ -64,28 +65,31 @@ function StatusMix({ mix, total }: { mix: ToneMix; total: number }) {
     ) : null;
   return (
     <div className="space-y-2">
-      <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-[rgba(255,255,255,0.06)]">
+      <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-raised">
         {seg(mix.green, "bg-ok", "Completed")}
         {seg(mix.amber, "bg-primary", "Partial")}
         {seg(mix.red, "bg-err", "Failed / timed out")}
-        {seg(mix.muted, "bg-[rgba(255,255,255,0.2)]", "Other")}
+        {/* "Other" has no status tone, so it takes the neutral --color-muted-foreground.
+            Held at /50 in the BAR so a wide neutral slice never out-shouts the functional
+            colours beside it; the 8px legend swatch is solid, where it needs the weight. */}
+        {seg(mix.muted, "bg-muted-foreground/50", "Other")}
       </div>
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-caption text-text-tertiary">
-        <Legend dot="bg-ok" label="Completed" n={mix.green} />
-        <Legend dot="bg-primary" label="Partial" n={mix.amber} />
-        <Legend dot="bg-err" label="Failed" n={mix.red} />
-        {mix.muted > 0 && (
-          <Legend dot="bg-[rgba(255,255,255,0.35)]" label="Other" n={mix.muted} />
-        )}
+        <Legend tone="ok" label="Completed" n={mix.green} />
+        <Legend tone="primary" label="Partial" n={mix.amber} />
+        <Legend tone="err" label="Failed" n={mix.red} />
+        {mix.muted > 0 && <Legend tone="muted" label="Other" n={mix.muted} />}
       </div>
     </div>
   );
 }
 
-function Legend({ dot, label, n }: { dot: string; label: string; n: number }) {
+function Legend({ tone, label, n }: { tone: DotTone; label: string; n: number }) {
   return (
     <span className="flex items-center gap-1.5">
-      <span className={`inline-block size-1.5 rounded-full ${dot}`} aria-hidden />
+      {/* `lg` (8px) is the declared legend swatch — the dot sits beside 11px caption text
+          and the extra pixel is what keeps it readable there. */}
+      <StatusDot tone={tone} size="lg" />
       <span>{label}</span>
       <span className="tabular-nums text-text-secondary">{n}</span>
     </span>

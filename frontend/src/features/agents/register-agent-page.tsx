@@ -107,14 +107,14 @@ export function RegisterAgentPage({ editName }: { editName: string | null }) {
       <div className="flex h-full min-h-0 flex-col gap-3 p-4">
         <div className="shrink-0">
           <h1 className="text-lead text-heading">Edit agent</h1>
-          <p className="max-w-[68ch] text-dense leading-relaxed text-text-secondary">
+          <p className="max-w-[68ch] text-dense text-text-secondary">
             Loading “{editName}”…
           </p>
         </div>
         <div
           role="status"
           aria-label="Loading agent…"
-          className="grid min-h-0 flex-1 gap-3 xl:grid-cols-3"
+          className="grid grid-cols-1 min-h-0 flex-1 gap-3 xl:grid-cols-3"
         >
           <Skeleton className="h-full min-h-48" />
           <Skeleton className="h-full min-h-48" />
@@ -130,7 +130,7 @@ export function RegisterAgentPage({ editName }: { editName: string | null }) {
         <h1 className="text-lead text-heading">
           {editing ? `Edit “${agent?.name}”` : "Register agent"}
         </h1>
-        <p className="max-w-[68ch] text-dense leading-relaxed text-text-secondary">
+        <p className="max-w-[68ch] text-dense text-text-secondary">
           {editing
             ? "Update this agent's declaration. A changed name renames it — its history stays attached."
             : "Name the agent, choose how it is observed and launched, then review the declaration."}
@@ -319,7 +319,7 @@ function AgentForm({
     <>
       <form
         onSubmit={submit}
-        className="grid min-h-0 flex-1 auto-rows-min gap-3 overflow-y-auto xl:auto-rows-auto xl:grid-cols-3 xl:items-stretch xl:overflow-hidden"
+        className="grid grid-cols-1 min-h-0 flex-1 auto-rows-min gap-3 overflow-y-auto xl:auto-rows-auto xl:grid-cols-3 xl:items-stretch xl:overflow-hidden"
       >
         <section aria-label="Agent identity and harness" className="flex min-h-0 flex-col gap-3 xl:h-full">
           <Step
@@ -401,7 +401,7 @@ function AgentForm({
                         key={suggestion}
                         type="button"
                         onClick={() => setModel(suggestion)}
-                        className="rounded border border-border px-2 py-1 text-caption text-text-secondary transition-colors hover:border-text-tertiary hover:text-foreground"
+                        className="rounded-md border border-border px-2 py-1 text-dense text-text-secondary transition-colors hover:border-border-hover hover:text-foreground"
                       >
                         {suggestion}
                       </button>
@@ -632,7 +632,7 @@ function LaunchModeEditor({
       <div
         role="radiogroup"
         aria-label="Agent execution context"
-        className="mt-2 grid gap-2 sm:grid-cols-3"
+        className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3"
       >
         {options.map((option) => {
           const selected = option.value === value;
@@ -655,7 +655,7 @@ function LaunchModeEditor({
           );
         })}
       </div>
-      <p className="mt-2 text-caption leading-relaxed text-text-tertiary">
+      <p className="mt-2 text-caption text-text-tertiary">
         {effectiveMode === "host"
           ? "Local host uses loopback addresses for an agent command running on the same machine as Xorcise."
           : "Container uses container-reachable addresses for an agent command launched inside a container."}
@@ -673,7 +673,7 @@ function StepHeader({ step, title }: { step: number; title: string }) {
       <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/15 text-caption font-semibold text-primary">
         {step}
       </span>
-      <h2 className="text-body font-semibold text-heading">{title}</h2>
+      <h2 className="text-body font-bold text-heading">{title}</h2>
     </div>
   );
 }
@@ -723,7 +723,7 @@ function Field({
           {label}
           {required && <span className="text-err"> *</span>}
           {optional && (
-            <span className="ml-1 normal-case tracking-normal text-text-tertiary/70">
+            <span className="ml-1 normal-case tracking-normal text-text-tertiary">
               (optional)
             </span>
           )}

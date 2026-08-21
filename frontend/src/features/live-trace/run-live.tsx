@@ -4,6 +4,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Activity, Bot, Clock, Map as MapIcon, ListTree, ExternalLink } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Chip, ChipRow } from "@/components/ui/chip";
+import { StatusDot } from "@/components/ui/dot";
+import { StatTile, StatTileRow } from "@/components/ui/stat-tile";
 import { cn } from "@/components/ui/cn";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { CopyButton } from "@/components/ui/copy-button";
@@ -26,8 +29,8 @@ import { TerrainMap } from "./terrain-map";
 import { useRunTerrain } from "./use-run-terrain";
 import { deriveInfraRows } from "./terrain-fold";
 import { RunPromptCard, LaunchCommandCopy } from "./run-prompt-card";
-import { BackendStatusBulb, connectionChips } from "./run-status";
-import { runPhase, toneColor } from "./run-phase";
+import { BackendStatusBulb, connectionChips, CHIP_DOT_TONE } from "./run-status";
+import { runPhase } from "./run-phase";
 
 function elapsedSeconds(createdAt: string, completedAt?: string | null): number | null {
   const start = new Date(createdAt).getTime();
@@ -59,20 +62,33 @@ const toneBadge: Record<RunTone, "default" | "ok" | "err" | "muted"> = {
  *  A FLEX item, not a grid cell: the strip's length varies with run state (5–8 facts), and a
  *  fixed column count always orphaned the last one alone on a wide, empty second row. Flex items
  *  on a short final row grow to consume the width instead, so there is never a dead band.
- *  min-w-0 + truncate so a long mono value can't overflow into its neighbour. */
-const META_CELL = "flex min-w-0 flex-1 basis-32 flex-col gap-1";
+ *  min-w-0 + truncate so a long mono value can't overflow into its neighbour — min-w-0 now comes
+ *  from StatTile's own base, and the truncate is aimed at the tile's <dd> (StatTile truncates its
+ *  label, but a fact strip's VALUE is the part that runs long: a model id, a full timestamp). */
+const META_CELL = "flex-1 basis-32 [&_dd]:truncate";
 
-/** One metadata chip in the header strip. Omitted by the caller when empty. */
-function MetaItem({ label, value }: { label: string; value: string }) {
+/** One metadata fact in the header strip — the design system's StatTile at its `small` rung
+ *  (this strip carries ids, timestamps and durations, not headline figures), plus the growth and
+ *  truncation the strip needs. Omitted by the caller when empty. */
+function MetaItem({
+  label,
+  value,
+  title,
+}: {
+  label: string;
+  /** ReactNode so the Mission cell can hand over a Link instead of rebuilding the tile. */
+  value: React.ReactNode;
+  /** Hover tooltip for a truncated value; defaults to the value when it is plain text. */
+  title?: string;
+}) {
   return (
-    <div className={META_CELL}>
-      <span className="text-label uppercase text-text-tertiary">
-        {label}
-      </span>
-      <span className="truncate font-mono text-dense text-foreground" title={value}>
-        {value}
-      </span>
-    </div>
+    <StatTile
+      className={META_CELL}
+      label={label}
+      value={value}
+      title={title ?? (typeof value === "string" ? value : undefined)}
+      small
+    />
   );
 }
 
@@ -254,7 +270,7 @@ export function RunLive({ runId }: { runId: string | null }) {
   const r = run.data;
   const agentName =
     agents.data?.find((a) => a.id === r.agent_id)?.name ?? r.agent_id.slice(0, 8);
-  // Shared §10/§17 status vocabulary + the state-appropriate action (View Result / View Partial
+  // Shared §10/§17 status vocabulary + the state-appropriate action (View result / View Partial
   // Result), reused from the Run History cards so the two surfaces read identically.
   const view = runPresentation(r.state, r.terminal_trigger);
   const resultHref = `/runs/result?id=${encodeURIComponent(r.run_id)}`;
@@ -262,7 +278,7 @@ export function RunLive({ runId }: { runId: string | null }) {
   // ran `setActiveTab("trace")` below 1280px and did nothing at all above it, so it was either a
   // no-op or a re-select of the tab already showing — it never scrolled, despite the name. The
   // Trace is a tab away on the same page, and the banner still offers the two actions that leave
-  // it (View Partial Result / Run Again), so the control was removed rather than given new
+  // it (View partial result / Run again), so the control was removed rather than given new
   // behaviour nobody asked for.
   const phase = runPhase(
     r,
@@ -338,7 +354,7 @@ export function RunLive({ runId }: { runId: string | null }) {
                   href={resultHref}
                   className={buttonVariants({ variant: "outline", size: "sm" })}
                 >
-                  View Result
+                  View result
                   <ExternalLink className="size-3" />
                 </Link>
               )}
@@ -347,25 +363,45 @@ export function RunLive({ runId }: { runId: string | null }) {
 
           <Separator />
 
+          {/* Connection facts as the design system's Chip — KEY · dot · value, the boxed readout
+              the Figma run header draws. Harness sits with them rather than in the fact strip
+              below: it names what this run is CONNECTED to (the chip's job), not a figure the
+              operator scans. Harness carries no dot — it has no state to report. */}
+          <ChipRow>
+            <Chip label="Harness" value={r.source_agent} tone={null} />
+            {connectionChips(r, runEvents.events.length, environment.data).map((c) => (
+              <Chip
+                key={c.label}
+                label={c.label}
+                value={c.value}
+                tone={CHIP_DOT_TONE[c.tone]}
+                title={c.title}
+              />
+            ))}
+          </ChipRow>
+
           {/* One wrapping strip of facts — content-sized, so a 5-fact CREATED run and an
-              8-fact terminal run both fill their rows with no orphaned cell. */}
-          <div className="flex flex-wrap gap-x-6 gap-y-2">
+              8-fact terminal run both fill their rows with no orphaned cell. A real <dl>, because
+              every cell is a term and its definition (StatTileRow supplies it). */}
+          <StatTileRow className="gap-x-6 gap-y-2">
             {/* Identity metadata — the same canonical set the results page and the HTML/MD exports
                 use: Mission (name + version, links to its brief), Agent (name + version), the
-                Harness that ran it, when it Started and how long it ran (Duration). */}
-            <div className={META_CELL} title={`Mission: ${r.mission}`}>
-              <span className="text-label uppercase text-text-tertiary">
-                Mission
-              </span>
-              <Link
-                href={`/missions/detail?id=${encodeURIComponent(r.mission)}`}
-                className="truncate font-mono text-dense text-foreground hover:underline"
-              >
-                {r.mission} v{r.mission_version ?? r.install_revision}
-              </Link>
-            </div>
+                Platform it executed on, when it Started and how long it ran (Duration).
+                Harness is NOT here — it sits in the chip row above, with the run's other
+                identity facts. */}
+            <MetaItem
+              label="Mission"
+              title={`Mission: ${r.mission}`}
+              value={
+                <Link
+                  href={`/missions/detail?id=${encodeURIComponent(r.mission)}`}
+                  className="hover:underline"
+                >
+                  {r.mission} v{r.mission_version ?? r.install_revision}
+                </Link>
+              }
+            />
             <MetaItem label="Agent" value={`${agentName} v${r.agent_version}`} />
-            <MetaItem label="Harness" value={r.source_agent} />
             {r.platform && <MetaItem label="Platform" value={r.platform} />}
             {r.model && <MetaItem label="Model" value={r.model} />}
             <MetaItem label="Budget" value={formatBudget(r.budget_seconds)} />
@@ -373,32 +409,13 @@ export function RunLive({ runId }: { runId: string | null }) {
             {elapsed != null && (
               <MetaItem label="Duration" value={formatDuration(elapsed)} />
             )}
-            {/* Connection chips (Environment / Objective) folded into the same strip —
-                replaces the standalone backend-status card. */}
-            {connectionChips(r, runEvents.events.length, environment.data).map((c) => (
-              <div key={c.label} className={META_CELL} title={c.title}>
-                <span className="text-label uppercase text-text-tertiary">
-                  {c.label}
-                </span>
-                <span className="flex min-w-0 items-center gap-1.5">
-                  <span
-                    className="inline-block size-1.5 shrink-0 rounded-full"
-                    style={{ backgroundColor: toneColor(c.tone) }}
-                    aria-hidden
-                  />
-                  <span className="truncate text-dense text-foreground">
-                    {c.value}
-                  </span>
-                </span>
-              </div>
-            ))}
-          </div>
+          </StatTileRow>
         </CardContent>
       </Card>
 
       {/* ─── Timeout message (§12) — shown when the run hit its configured time limit ─── */}
       {r.terminal_trigger === "timeout" && (
-        <div className="shrink-0 rounded-md border border-err/30 bg-err/5 p-4">
+        <Card className="shrink-0 border-err/30 bg-err/5 p-4">
           <p className="text-body font-semibold text-err">Run timed out</p>
           <p className="mt-2 max-w-[68ch] text-body text-text-secondary">
             The agent reached the configured time limit before completing the
@@ -409,17 +426,17 @@ export function RunLive({ runId }: { runId: string | null }) {
               href={resultHref}
               className={buttonVariants({ variant: "outline", size: "sm" })}
             >
-              View Partial Result
+              View partial result
               <ExternalLink className="size-3" />
             </Link>
             <Link
               href="/runs/new"
               className={buttonVariants({ variant: "ghost", size: "sm" })}
             >
-              Run Again
+              Run again
             </Link>
           </div>
-        </div>
+        </Card>
       )}
 
       {/* ─── Agent-inactivity warning — the agent went quiet mid-run (crash / disconnect /
@@ -427,12 +444,12 @@ export function RunLive({ runId }: { runId: string | null }) {
            not lifecycle management: the operator decides between Terminate and waiting out a
            legitimately slow tool call (Dismiss re-arms itself when telemetry resumes). ─── */}
       {stallBannerVisible && (
-        <div
+        <Card
           // role="status" (polite live region): the banner appears without focus, so SC 4.1.3
           // needs it announced — polite, not alert, since it stays on screen and isn't urgent
           // enough to interrupt mid-task speech.
           role="status"
-          className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 rounded-md border border-err/30 bg-err/5 px-3 py-1.5"
+          className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-err/30 bg-err/5 px-3 py-1.5"
           title={`No OTel export for ${formatDuration(staleSeconds ?? 0)} — the agent may have crashed or disconnected; the run keeps counting against its budget until it times out. Warn threshold ${formatDuration(stallThreshold)} — change it in Settings.`}
         >
           <p className="min-w-0 flex-1 text-dense">
@@ -459,7 +476,7 @@ export function RunLive({ runId }: { runId: string | null }) {
               Dismiss
             </Button>
           </span>
-        </div>
+        </Card>
       )}
 
       {/* ─── Timeline — a fixed strip, and only once there are events to plot. An empty
@@ -516,7 +533,7 @@ export function RunLive({ runId }: { runId: string | null }) {
                     title="BYOM terrain attribution progress (attributed / attributable spans)"
                   >
                     {attribution.running && (
-                      <span className="size-1.5 motion-safe:animate-pulse rounded-full bg-primary" />
+                      <StatusDot tone="primary" className="motion-safe:animate-pulse" />
                     )}
                     {attribution.running ? "attributing actions to terrain map…" : "attributed actions"} {attribution.attributed}/
                     {attribution.attributable}
@@ -528,7 +545,7 @@ export function RunLive({ runId }: { runId: string | null }) {
                 </span>
                 {!terminal && (
                   <span className="inline-flex items-center gap-1 text-label uppercase text-ok">
-                    <span className="size-1.5 motion-safe:animate-pulse rounded-full bg-ok" />
+                    <StatusDot tone="ok" className="motion-safe:animate-pulse" />
                     live
                   </span>
                 )}
@@ -573,9 +590,9 @@ export function RunLive({ runId }: { runId: string | null }) {
                 <TabsTrigger value="trace">
                   Trace
                   {awaitingAgent && (
-                    <span
-                      className="ml-1.5 inline-block size-1.5 motion-safe:animate-pulse rounded-full bg-primary"
-                      aria-hidden
+                    <StatusDot
+                      tone="primary"
+                      className="ml-1.5 inline-block motion-safe:animate-pulse"
                     />
                   )}
                 </TabsTrigger>
@@ -598,7 +615,7 @@ export function RunLive({ runId }: { runId: string | null }) {
               aria-label="resize terrain and trace"
               aria-orientation="vertical"
               onPointerDown={startResize}
-              className="mx-1 w-1.5 shrink-0 cursor-col-resize rounded bg-border transition-colors hover:bg-primary/50"
+              className="mx-1 w-1.5 shrink-0 cursor-col-resize rounded-full bg-border transition-colors hover:bg-primary/50"
             />
             <div style={{ width: `${100 - terrainPct}%` }} className="min-w-0 flex-1">
               {workSection}

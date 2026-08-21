@@ -71,7 +71,7 @@ export function DeleteRunInline({
       }}
       className="animate-scale-in absolute inset-0 z-30 flex flex-col justify-center gap-2 rounded-xl border border-err/40 bg-card/75 p-3 backdrop-blur-sm"
     >
-      <p className="flex items-center gap-1.5 text-body font-semibold text-heading">
+      <p className="flex items-center gap-1.5 text-body text-heading">
         <AlertTriangle className="size-3.5 shrink-0 text-err" aria-hidden />
         Delete this run?
       </p>

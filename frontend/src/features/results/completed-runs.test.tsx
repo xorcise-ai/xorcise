@@ -103,7 +103,7 @@ describe("CompletedRuns (agent-centric §14)", () => {
     expect(within(card).getByText("Runs")).toBeInTheDocument();
   });
 
-  it("shows a what/why/next empty state with Start Run when nothing is terminal", async () => {
+  it("shows a what/why/next empty state with Start run when nothing is terminal", async () => {
     server.use(
       http.get("*/api/runs", () =>
         HttpResponse.json([runFixture({ state: "active" })]),
@@ -113,7 +113,7 @@ describe("CompletedRuns (agent-centric §14)", () => {
     await waitFor(() =>
       expect(screen.getByText(/No results yet/i)).toBeInTheDocument(),
     );
-    const start = screen.getByRole("link", { name: /Start Run/i });
+    const start = screen.getByRole("link", { name: /Start run/i });
     expect(start).toHaveAttribute("href", "/runs/new");
   });
 });

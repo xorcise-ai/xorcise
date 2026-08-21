@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { X } from "lucide-react";
 import { useToastStore, type ToastTone } from "@/stores/toasts";
+import { Button } from "./button";
 import { cn } from "./cn";
 
 /** Toast tone → accent colour (same palette as the run-card status accents). */
@@ -39,14 +40,15 @@ export function ToastHost() {
             <p className="min-w-0 text-dense text-heading">
               {t.title}
             </p>
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="icon"
               aria-label="Dismiss"
               onClick={() => dismiss(t.id)}
-              className="shrink-0 text-text-tertiary transition-colors hover:text-foreground"
+              className="-mr-1.5 -mt-1.5 shrink-0 text-text-tertiary hover:bg-transparent hover:text-foreground"
             >
               <X className="size-4" />
-            </button>
+            </Button>
           </div>
           {t.body && (
             <p className="mt-2 text-caption text-text-secondary">{t.body}</p>

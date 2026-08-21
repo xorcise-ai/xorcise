@@ -3,9 +3,15 @@
 import { pct, shortTime } from "@/lib/api/format";
 import { cn } from "@/components/ui/cn";
 import { Skeleton } from "@/components/ui/skeleton";
+import { StatTile, type StatTone } from "@/components/ui/stat-tile";
 import type { AgentPerformanceSummary } from "./summarize-runs";
 
-type Tone = "accent" | "muted" | "default";
+/* StatTile moved to components/ui — it is a design-system atom (the Figma component board
+   draws it beside Button and Badge), and four unrelated features were importing it from
+   here. Re-exported so the existing import path keeps working for one more pass. */
+export { StatTile } from "@/components/ui/stat-tile";
+
+type Tone = StatTone;
 
 /** How many tiles sit on a row. `6` (default) suits wide surfaces (Results agent cards, the
  *  Agent-detail header); `3` suits a narrow container such as a 3-up Agents-list card, where a
@@ -19,47 +25,6 @@ const GRID_BY_COLUMNS: Record<SummaryColumns, string> = {
   3: "grid grid-cols-3 gap-x-3 gap-y-3",
   6: "grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3 lg:grid-cols-6",
 };
-
-function toneClass(tone: Tone): string {
-  if (tone === "accent") return "text-primary";
-  if (tone === "muted") return "text-text-secondary";
-  return "text-heading";
-}
-
-/**
- * One labelled figure (label + value). The atomic building block of {@link PerformanceSummary};
- * exported so other performance surfaces (Agent detail §9, Agent cards §7) can reuse the same
- * tile treatment outside the six-up grid.
- */
-export function StatTile({
-  label,
-  value,
-  tone = "default",
-  /** Longer values (timestamps) render a size down so they don't wrap. */
-  small = false,
-}: {
-  label: string;
-  value: string;
-  tone?: Tone;
-  small?: boolean;
-}) {
-  return (
-    <div className="flex flex-col gap-1">
-      <dt className="text-label uppercase text-text-tertiary">
-        {label}
-      </dt>
-      <dd
-        className={cn(
-          "font-semibold tabular-nums",
-          small ? "text-body" : "text-lg",
-          toneClass(tone),
-        )}
-      >
-        {value}
-      </dd>
-    </div>
-  );
-}
 
 /** A placeholder tile at the data tile's dimensions — keeps the grid from reflowing on load. */
 function StatTileSkeleton() {
@@ -126,7 +91,7 @@ export function PerformanceSummary(props: PerformanceSummaryProps) {
   const { summary } = props;
   const headline: { label: string; value: string; tone?: Tone }[] = [
     { label: "Runs", value: String(summary.runs) },
-    { label: "Average", value: pct(summary.avgOverall), tone: "accent" },
+    { label: "Average", value: pct(summary.avgOverall), tone: "primary" },
     { label: "Best", value: pct(summary.bestOverall) },
   ];
 

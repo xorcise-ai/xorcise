@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, Bot, Bug, ChevronDown, ChevronRight, Network, Radio, Server } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/components/ui/cn";
 import type { AgentEvent, AgentEventKind } from "@/lib/api/types";
@@ -43,7 +44,7 @@ function InfraRow({
       data-selected={selected || undefined}
       onClick={() => onSelect?.(row.id)}
       className={cn(
-        "flex w-full items-center gap-1.5 rounded-md border border-dashed border-border/60 px-2 py-1 text-left hover:bg-[rgba(255,255,255,0.04)]",
+        "flex w-full items-center gap-1.5 rounded-md border border-dashed border-border/60 px-2 py-1 text-left hover:bg-muted",
         selected && "bg-primary/5 ring-1 ring-primary",
       )}
     >
@@ -175,7 +176,7 @@ function FoldableRow({
         }}
         aria-expanded={expanded}
         className={cn(
-          "flex w-full items-center gap-1.5 rounded-md px-1 py-1 text-left hover:bg-[rgba(255,255,255,0.04)]",
+          "flex w-full items-center gap-1.5 rounded-md px-1 py-1 text-left hover:bg-muted",
           selected && "ring-1 ring-primary bg-primary/5",
           showPeerHover && "bg-primary/5",
         )}
@@ -554,26 +555,32 @@ export function ReplayTimeline({
             exits the terrain time-travel (clears the selection) — otherwise it's the plain
             "Jump to latest" scroll re-pin. Both routes call `returnToLive` (clearing a null
             selection is a no-op), so one control always rejoins the live tail without a refresh. */}
-        {!atBottom &&
-          (selectedEventId ? (
-            <button
-              type="button"
-              onClick={returnToLive}
-              className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-primary/40 bg-card px-3 py-1.5 text-caption text-primary shadow-lg hover:border-primary"
-            >
-              <Radio className="size-3" />
-              Return to live
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={returnToLive}
-              className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-caption text-foreground shadow-lg hover:border-[rgba(255,255,255,0.14)]"
-            >
-              <ArrowDown className="size-3" />
-              Jump to latest
-            </button>
-          ))}
+        {/* Both routes render the design system's Button (outline), overridden only where a
+            FLOATING pill differs from an in-flow button: rounded-full, an opaque card ground so
+            the trace can't read through it, and the lift shadow. The same three overrides carry
+            the terrain map's return-to-live pill, so the idiom is one treatment everywhere
+            instead of the three hand-rolled copies it used to be. */}
+        {!atBottom && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={returnToLive}
+            className="absolute bottom-3 left-1/2 -translate-x-1/2 gap-1.5 rounded-full bg-card px-3 shadow-lg"
+          >
+            {selectedEventId ? (
+              <>
+                <Radio className="size-3" />
+                Return to live
+              </>
+            ) : (
+              <>
+                <ArrowDown className="size-3" />
+                Jump to latest
+              </>
+            )}
+          </Button>
+        )}
       </div>
 
       <RawDrillDownModal

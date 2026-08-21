@@ -1,6 +1,7 @@
 "use client";
 
 import { cn } from "@/components/ui/cn";
+import { StatusDot, type DotTone } from "@/components/ui/dot";
 import { useSystem } from "@/features/settings/queries";
 import {
   groupByRole,
@@ -9,11 +10,12 @@ import {
   type RoleGroup,
 } from "@/features/settings/module-groups";
 
-const STATE_DOT: Record<ModuleState, string> = {
-  ok: "bg-ok",
-  down: "bg-err",
+const STATE_TONE: Record<ModuleState, DotTone> = {
+  ok: "ok",
+  down: "err",
   // Absent is NOT a failure: a module this host was never meant to run is dimmed, not red.
-  not_deployed: "bg-text-tertiary/40",
+  // `muted` (#888) is the tertiary grey; the dimming rides on top as opacity.
+  not_deployed: "muted",
 };
 
 /**
@@ -45,7 +47,7 @@ export function StatusBar({ healthy }: { healthy: boolean }) {
         </ul>
       ) : (
         <span className="flex items-center gap-2 text-err">
-          <span className="size-2 rounded-full bg-err" aria-hidden />
+          <StatusDot tone="err" size="lg" />
           <span>xorcise.core unreachable</span>
         </span>
       )}
@@ -63,7 +65,13 @@ function RoleDot({ group }: { group: RoleGroup }) {
       aria-label={tooltip}
       className="flex cursor-default items-center gap-1.5"
     >
-      <span className={cn("size-2 rounded-full", STATE_DOT[group.state])} aria-hidden />
+      {/* size="lg" (8px): the dot rule reserves it for a swatch sitting beside type
+          smaller than caption, which the bar's 10px labels are. */}
+      <StatusDot
+        tone={STATE_TONE[group.state]}
+        size="lg"
+        className={cn(group.state === "not_deployed" && "opacity-40")}
+      />
       <span className={cn(group.state === "not_deployed" && "opacity-60")}>{group.label}</span>
     </li>
   );

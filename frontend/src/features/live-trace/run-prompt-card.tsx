@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Terminal, Radio, ChevronDown, ChevronRight } from "lucide-react";
+import { Terminal, Radio, Check, ChevronDown, ChevronRight } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { CopyButton } from "@/components/ui/copy-button";
 import { SkeletonRows } from "@/components/ui/skeleton";
@@ -22,7 +23,7 @@ function toDotenv(env: Record<string, string>): string {
  *  (one line can run 800+ chars), so a horizontal axis buys nothing and steals the wheel from
  *  the column's single scroller. No max-height either: the card body owns the one scroller. */
 const PRE_CLASS =
-  "whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-dense text-foreground";
+  "whitespace-pre-wrap break-words rounded-md border border-border bg-deepest p-3 font-mono text-dense text-foreground";
 
 /** The launch-mode toggle — only meaningful when a harness supports more than one mode. */
 function ModeToggle({
@@ -39,19 +40,15 @@ function ModeToggle({
     <div className="flex flex-wrap items-center gap-2 text-caption">
       <span className="text-text-secondary">Running the agent on:</span>
       {modes.map((m) => (
-        <button
+        <Button
           key={m}
           type="button"
+          variant={active === m ? "outline" : "ghost"}
+          size="sm"
           onClick={() => onSelect(m)}
-          className={
-            "rounded border px-2 py-0.5 font-mono " +
-            (active === m
-              ? "border-primary text-primary"
-              : "border-border text-text-secondary hover:text-foreground")
-          }
         >
           {m === "host" ? "this host (localhost)" : "a container (host.docker.internal)"}
-        </button>
+        </Button>
       ))}
     </div>
   );
@@ -61,10 +58,13 @@ function ModeToggle({
 function CorrelationNote({ correlation }: { correlation?: string }) {
   if (correlation === "resource-attr") {
     return (
-      <p className="max-w-[68ch] text-body text-primary">
-        ✓ This harness&rsquo;s traces will correlate to <em>this</em> run —{" "}
-        <code>OTEL_RESOURCE_ATTRIBUTES</code> is set for you, so the whole trace attaches
-        (not just the first batch).
+      <p className="flex max-w-[68ch] items-start gap-1.5 text-body text-primary">
+        <Check className="mt-1 size-3.5 shrink-0" aria-hidden />
+        <span>
+          This harness&rsquo;s traces will correlate to <em>this</em> run —{" "}
+          <code>OTEL_RESOURCE_ATTRIBUTES</code> is set for you, so the whole trace attaches
+          (not just the first batch).
+        </span>
       </p>
     );
   }
@@ -176,8 +176,9 @@ export function RunPromptCard({
 
   return (
     <Card
-      className={`bg-primary/5${fill ? " flex h-full min-h-0 flex-col overflow-hidden" : ""}`}
-      style={{ borderLeftWidth: 3, borderLeftColor: "var(--color-primary)" }}
+      // Left tone accent — the same 2px bar Toast uses, as border utilities rather than the
+      // ad hoc 3px inline style it was.
+      className={`border-l-2 border-l-primary bg-primary/5${fill ? " flex h-full min-h-0 flex-col overflow-hidden" : ""}`}
     >
       <CardContent
         className={`flex flex-col gap-3 p-4${fill ? " min-h-0 flex-1" : ""}`}
@@ -238,7 +239,7 @@ export function RunPromptCard({
                 </pre>
                 {longBlock && !showFullCommand && (
                   <span
-                    className="pointer-events-none absolute inset-x-px bottom-px h-10 rounded-b-md bg-gradient-to-t from-background to-transparent"
+                    className="pointer-events-none absolute inset-x-px bottom-px h-10 rounded-b-md bg-gradient-to-t from-deepest to-transparent"
                     aria-hidden
                   />
                 )}

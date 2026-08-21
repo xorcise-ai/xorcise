@@ -119,7 +119,7 @@ function ProviderField() {
   return (
     <div className="pointer-events-none absolute inset-0" aria-hidden>
       {/* The catalog's own glow, behind the card it sits under. */}
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(232,184,75,0.13),transparent_58%)]" />
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,color-mix(in_srgb,var(--color-primary)_13%,transparent),transparent_58%)]" />
 
       <svg
         // Two things at once. The mask fades the field into the pane edges, held out to

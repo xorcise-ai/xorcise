@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
-import { Check, ChevronDown } from "lucide-react";
+import { ChevronDown } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/components/ui/cn";
 import { toggleFacetValue } from "./filter-missions";
 
@@ -94,7 +95,7 @@ export function FacetSelect({
             <button
               type="button"
               onClick={() => onChange([])}
-              className="mb-1 w-full rounded px-2 py-1 text-left text-label uppercase text-text-secondary transition-colors hover:bg-raised hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="mb-1 w-full rounded-md px-2 py-1 text-left text-label uppercase text-text-secondary transition-colors hover:bg-raised hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               Clear {label.toLowerCase()}
             </button>
@@ -102,38 +103,33 @@ export function FacetSelect({
           {options.map((o) => {
             const on = selected.includes(o);
             return (
-              <button
+              // An option is a real <input type="checkbox"> now — the design system's
+              // Checkbox primitive — rather than a button wearing role="checkbox" over a
+              // hand-drawn 14px box. Selection is unchanged: the toggle still runs
+              // through toggleFacetValue, so the primitive's `next` is redundant here.
+              // Selected state is carried by the amber-filled box, which is why the row
+              // no longer recolours its own label.
+              <Checkbox
                 key={o}
-                type="button"
-                role="checkbox"
-                aria-checked={on}
-                onClick={() => onChange(toggleFacetValue(selected, o))}
-                className={cn(
-                  "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-dense transition-colors",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  on ? "text-primary" : "text-text-secondary hover:text-foreground",
-                  "hover:bg-raised",
-                )}
+                checked={on}
+                onChange={() => onChange(toggleFacetValue(selected, o))}
+                // The label IS the row, so its content span has to be allowed to shrink —
+                // otherwise a long option ("Vulnerability Assessment") sets the row's
+                // min-content width and this 224px panel scrolls sideways.
+                className="flex w-full gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-raised [&>span:last-child]:min-w-0 [&>span:last-child]:flex-1"
               >
-                <span
-                  aria-hidden
-                  className={cn(
-                    "flex size-3.5 shrink-0 items-center justify-center rounded-sm border",
-                    on ? "border-primary bg-primary/20" : "border-border",
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate">{format(o)}</span>
+                  {counts?.[o] != null && (
+                    <span
+                      aria-hidden
+                      className="shrink-0 text-caption tabular-nums text-text-tertiary"
+                    >
+                      ({counts[o]})
+                    </span>
                   )}
-                >
-                  {on && <Check className="size-2.5" />}
                 </span>
-                <span className="min-w-0 flex-1 truncate">{format(o)}</span>
-                {counts?.[o] != null && (
-                  <span
-                    aria-hidden
-                    className="shrink-0 pl-2 text-caption tabular-nums text-text-tertiary"
-                  >
-                    ({counts[o]})
-                  </span>
-                )}
-              </button>
+              </Checkbox>
             );
           })}
         </div>

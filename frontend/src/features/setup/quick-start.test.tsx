@@ -14,15 +14,15 @@ vi.mock("next/link", () => ({
 describe("QuickStart", () => {
   it("renders the three quick-start cards", () => {
     renderWithProviders(<QuickStart startHref="/runs/new" />);
-    expect(screen.getByText("Start a Run")).toBeInTheDocument();
-    expect(screen.getByText("Browse Missions")).toBeInTheDocument();
-    expect(screen.getByText("Read Documentation")).toBeInTheDocument();
+    expect(screen.getByText("Start a run")).toBeInTheDocument();
+    expect(screen.getByText("Browse missions")).toBeInTheDocument();
+    expect(screen.getByText("Read documentation")).toBeInTheDocument();
   });
 
-  it("points 'Start a Run' at the state-aware startHref", () => {
+  it("points 'Start a run' at the state-aware startHref", () => {
     renderWithProviders(<QuickStart startHref="/agents" />);
-    expect(screen.getByText("Start a Run").closest("a")).toHaveAttribute("href", "/agents");
-    expect(screen.getByText("Browse Missions").closest("a")).toHaveAttribute(
+    expect(screen.getByText("Start a run").closest("a")).toHaveAttribute("href", "/agents");
+    expect(screen.getByText("Browse missions").closest("a")).toHaveAttribute(
       "href",
       "/missions",
     );
@@ -30,7 +30,7 @@ describe("QuickStart", () => {
 
   it("opens the docs in a new tab as an external link", () => {
     renderWithProviders(<QuickStart startHref="/runs/new" />);
-    const docs = screen.getByText("Read Documentation").closest("a")!;
+    const docs = screen.getByText("Read documentation").closest("a")!;
     expect(docs).toHaveAttribute("href", DOCS_URL);
     expect(docs).toHaveAttribute("target", "_blank");
     expect(docs.getAttribute("rel") ?? "").toContain("noopener");

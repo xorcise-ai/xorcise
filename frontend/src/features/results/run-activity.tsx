@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Map as MapIcon, ExternalLink } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { cn } from "@/components/ui/cn";
+import { StatTile, StatTileRow } from "@/components/ui/stat-tile";
 import type { RunStats } from "@/lib/api/types";
 import { useConfig } from "@/features/settings/queries";
 import { TerrainMap } from "@/features/live-trace/terrain-map";
@@ -72,22 +72,19 @@ export function TranscriptSummary({ stats }: { stats: RunStats | undefined }) {
   ];
   return (
     <Card className="bg-card">
-      <CardContent className="flex flex-wrap gap-x-8 gap-y-3 p-4">
-        {items.map((it) => (
-          <div key={it.label} className="flex flex-col gap-1">
-            <span className="text-label uppercase text-text-tertiary">
-              {it.label}
-            </span>
-            <span
-              className={cn(
-                "text-base font-semibold tabular-nums",
-                it.tone === "err" && it.value > 0 ? "text-err" : "text-foreground",
-              )}
-            >
-              {it.value}
-            </span>
-          </div>
-        ))}
+      <CardContent>
+        {/* StatTile renders <dt>/<dd>, so the summary is a real <dl>; the row owns the gutter. */}
+        <StatTileRow>
+          {items.map((it) => (
+            <StatTile
+              key={it.label}
+              label={it.label}
+              value={it.value}
+              // Only a NON-ZERO error count earns the err tone — a quiet 0 is not a verdict.
+              tone={it.tone === "err" && it.value > 0 ? "err" : undefined}
+            />
+          ))}
+        </StatTileRow>
       </CardContent>
     </Card>
   );

@@ -55,7 +55,7 @@ describe("runPresentation deploy_failed", () => {
   it("sends the operator to the run rather than a result that never existed", () => {
     // The environment never came up, so there is nothing graded to open.
     expect(runPresentation("terminal", "deploy_failed").action).toEqual({
-      label: "Inspect Run",
+      label: "Inspect run",
       target: "live",
     });
   });

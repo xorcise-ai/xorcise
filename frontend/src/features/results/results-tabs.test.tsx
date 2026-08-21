@@ -124,7 +124,7 @@ describe("ResultsTabs (secondary views §14)", () => {
     expect(within(panel).getAllByText("xss-stored").length).toBeGreaterThan(0);
   });
 
-  it("shows a what/why/next empty state with Start Run when there are no runs", async () => {
+  it("shows a what/why/next empty state with Start run when there are no runs", async () => {
     server.use(http.get("*/api/runs", () => HttpResponse.json([])));
     renderWithProviders(<ResultsTabs />);
 
@@ -133,7 +133,7 @@ describe("ResultsTabs (secondary views §14)", () => {
       expect(screen.getByText(/No results yet/i)).toBeInTheDocument(),
     );
     expect(
-      screen.getByRole("link", { name: /Start Run/i }),
+      screen.getByRole("link", { name: /Start run/i }),
     ).toHaveAttribute("href", "/runs/new");
 
     // All Runs empty state also answers what/why/next.

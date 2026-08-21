@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { ArrowUp, File, Folder } from "lucide-react";
 import { Dialog } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/components/ui/cn";
+import { Input } from "@/components/ui/input";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { useFsList } from "./queries";
 
@@ -97,7 +99,7 @@ export function FileBrowser({
           >
             <ArrowUp className="size-4" />
           </Button>
-          <input
+          <Input
             type="text"
             aria-label="Path"
             value={path}
@@ -117,7 +119,7 @@ export function FileBrowser({
                 ? "Type or paste a directory path…"
                 : "Type or paste a file path…"
             }
-            className="flex-1 rounded-md border border-border bg-background px-2 py-1.5 font-mono text-dense text-foreground placeholder:text-text-tertiary"
+            className="min-w-0 flex-1"
           />
           <Button
             type="button"
@@ -131,7 +133,9 @@ export function FileBrowser({
         </div>
 
         {/* Entries */}
-        <div className="h-72 overflow-y-auto rounded-lg border border-border bg-background">
+        {/* rounded-md, not rounded-lg: rounded-lg is the chip radius. This is a control-sized
+            panel, so it takes the same radius as the address bar and the buttons above it. */}
+        <div className="h-72 overflow-y-auto rounded-md border border-border bg-background">
           {listing.isLoading && (
             <div role="status" aria-label="Listing…" className="p-4">
               <SkeletonRows count={6} />
@@ -170,11 +174,16 @@ export function FileBrowser({
                           onClose();
                         }
                       }}
-                      className={`flex w-full items-center gap-2 px-3 py-2 text-left text-dense transition-colors ${
-                        inert
-                          ? "cursor-default text-text-tertiary/60"
-                          : "hover:bg-card"
-                      } ${isSelected ? "bg-card text-heading" : !inert ? "text-text-secondary" : ""}`}
+                      // The well is bg-background, so the row states climb the surface
+                      // ladder from there: hover one rung (muted), picked one rung further
+                      // (raised). Both were bg-card before, which made a hovered row
+                      // indistinguishable from the picked one.
+                      className={cn(
+                        "flex w-full items-center gap-2 px-3 py-2 text-left text-dense transition-colors",
+                        inert && "cursor-default text-text-tertiary/60",
+                        !inert && !isSelected && "text-text-secondary hover:bg-muted",
+                        isSelected && "bg-raised text-heading",
+                      )}
                     >
                       {e.is_dir ? (
                         <Folder className="size-4 shrink-0 text-primary" />

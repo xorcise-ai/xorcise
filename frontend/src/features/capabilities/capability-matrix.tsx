@@ -1,5 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { cn } from "@/components/ui/cn";
 import { CUSTOM_LABEL, HARNESSES, HarnessGlyph } from "@/features/agents/harnesses";
 import type { HarnessCapabilityProfile } from "@/lib/api/types";
@@ -89,19 +90,20 @@ export function CapabilityMatrix({ selectedKind }: { selectedKind: string }) {
         <CardTitle>Harness capabilities</CardTitle>
       </CardHeader>
       <CardContent className="overflow-x-auto p-0">
+        {/* The cell primitives (THead/TBody/TR/TH/TD) carry the shared table styling, but
+            the <table> element stays raw: the Table primitive renders its own bordered,
+            rounded-xl card wrapper, which cannot nest inside the Card this matrix already
+            lives in without doubling the border. */}
         <table className="w-full text-left text-dense">
-          <thead className="text-text-tertiary">
-            <tr>
-              <th scope="col" className="px-4 py-2 text-label uppercase">
-                Capability
-              </th>
+          <THead>
+            <TR>
+              <TH scope="col">Capability</TH>
               {columns.map((col) => (
-                <th
+                <TH
                   key={col.kind}
                   scope="col"
                   data-selected={isSelected(col) || undefined}
                   className={cn(
-                    "px-4 py-2 text-label uppercase",
                     isSelected(col) && "border-b-2 border-primary bg-primary/10 text-heading",
                   )}
                 >
@@ -114,26 +116,23 @@ export function CapabilityMatrix({ selectedKind }: { selectedKind: string }) {
                       </span>
                     )}
                   </span>
-                </th>
+                </TH>
               ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border">
+            </TR>
+          </THead>
+          <TBody>
             {DISPLAY_GROUPS.map((group) => (
-              <tr key={group.id}>
-                <th
-                  scope="row"
-                  className="px-4 py-2 text-body font-normal text-foreground"
-                >
+              <TR key={group.id}>
+                {/* A ROW header is content, not an uppercase eyebrow, so it overrides TH's
+                    label role with body — it keeps TH's padding, which is the part that
+                    must stay in step with the cells beside it. */}
+                <TH scope="row" className="text-body normal-case text-foreground">
                   {group.label}
-                </th>
+                </TH>
                 {columns.map((col) => (
-                  <td
+                  <TD
                     key={col.kind}
-                    className={cn(
-                      "px-4 py-2",
-                      isSelected(col) && "bg-primary/10",
-                    )}
+                    className={cn(isSelected(col) && "bg-primary/10")}
                   >
                     {col.profile ? (
                       <CapabilityDot
@@ -142,11 +141,11 @@ export function CapabilityMatrix({ selectedKind }: { selectedKind: string }) {
                         note={groupNote(col.profile, group)}
                       />
                     ) : null}
-                  </td>
+                  </TD>
                 ))}
-              </tr>
+              </TR>
             ))}
-          </tbody>
+          </TBody>
         </table>
       </CardContent>
     </Card>

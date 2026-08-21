@@ -1,6 +1,7 @@
 "use client";
 
 import { FileDown } from "lucide-react";
+import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/components/ui/cn";
 import { apiBaseUrl } from "@/lib/api/runtime-config";
 
@@ -24,8 +25,10 @@ export function DownloadTraces({
     <a
       href={href}
       download
+      // Same idiom as DownloadReport: the design system's small outline button applied by
+      // class, because the element MUST stay a plain <a download> (see the note above).
       className={cn(
-        "inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2 text-caption text-foreground transition-colors hover:border-[rgba(255,255,255,0.14)] hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        buttonVariants({ variant: "outline", size: "sm" }),
         className,
       )}
     >

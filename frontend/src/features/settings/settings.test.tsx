@@ -64,7 +64,7 @@ describe("SettingsView", () => {
     );
     renderWithProviders(<SettingsView />);
     // Judge and Terrain both carry an "API key" / "Model name" / "Save" now, so scope to the card.
-    const judge = (await screen.findByText("Judge model")).closest("section")!;
+    const judge = (await screen.findByText("Judge model")).closest<HTMLElement>("[data-card]")!;
     // findBy for the first field: the card renders its h2 before config loads, so wait for the form.
     fireEvent.change(await within(judge).findByLabelText(/api key/i), {
       target: { value: "sk-secret-1234" },
@@ -116,7 +116,7 @@ describe("SettingsView", () => {
     renderWithProviders(<SettingsView />);
     // the current limit is surfaced (formatted) — scope to the judge card (the terrain override
     // shows its own token limit, defaulting to the same 256,000).
-    const judge = (await screen.findByText("Judge model")).closest("section")!;
+    const judge = (await screen.findByText("Judge model")).closest<HTMLElement>("[data-card]")!;
     expect(await within(judge).findByText("256,000")).toBeInTheDocument();
     fireEvent.change(within(judge).getByLabelText(/transcript token limit/i), {
       target: { value: "128000" },
@@ -156,7 +156,7 @@ describe("SettingsView", () => {
       ),
     );
     renderWithProviders(<SettingsView />);
-    const judge = (await screen.findByText("Judge model")).closest("section")!;
+    const judge = (await screen.findByText("Judge model")).closest<HTMLElement>("[data-card]")!;
     // off by default: the switch is unchecked and the slider isn't shown
     const sw = await within(judge).findByRole("switch", {
       name: /enable a pre-flight transcript/i,
@@ -213,7 +213,7 @@ describe("SettingsView", () => {
     // 0 is a valid value (disable the cap) — it must still be sent even though it's falsy.
     fireEvent.change(input, { target: { value: "0" } });
     // scope the Save click to the judge card (other cards render their own Save button).
-    const judge = input.closest("section")!;
+    const judge = input.closest<HTMLElement>("[data-card]")!;
     fireEvent.click(within(judge).getByRole("button", { name: /save/i }));
     await waitFor(() => expect(putBody).toMatchObject({ span_max_tokens: 0 }));
   });
@@ -246,7 +246,7 @@ describe("SettingsView", () => {
       }),
     );
     renderWithProviders(<SettingsView />);
-    const card = (await screen.findByText("Judge model")).closest("section")!;
+    const card = (await screen.findByText("Judge model")).closest<HTMLElement>("[data-card]")!;
     fireEvent.change(await within(card).findByLabelText(/api key/i), {
       target: { value: "sk-secret-1234" },
     });
@@ -285,7 +285,7 @@ describe("SettingsView", () => {
       ),
     );
     renderWithProviders(<SettingsView />);
-    const card = (await screen.findByText("Judge model")).closest("section")!;
+    const card = (await screen.findByText("Judge model")).closest<HTMLElement>("[data-card]")!;
     fireEvent.click(await within(card).findByRole("button", { name: /^test$/i }));
     await waitFor(() =>
       expect(within(card).getByRole("status")).toHaveTextContent("Connected"),
@@ -308,7 +308,7 @@ describe("SettingsView", () => {
       ),
     );
     renderWithProviders(<SettingsView />);
-    const judge = (await screen.findByText("Judge model")).closest("section")!;
+    const judge = (await screen.findByText("Judge model")).closest<HTMLElement>("[data-card]")!;
     fireEvent.click(await within(judge).findByRole("button", { name: /^test$/i }));
     expect(await screen.findByText(/401 Unauthorized/i)).toBeInTheDocument();
   });
@@ -403,7 +403,7 @@ describe("SettingsView", () => {
     renderWithProviders(<SettingsView />);
     const terrainModelName = await screen.findByLabelText(/terrain model name/i);
     fireEvent.change(terrainModelName, { target: { value: "claude-terrain" } });
-    const card = terrainModelName.closest("section")!;
+    const card = terrainModelName.closest<HTMLElement>("[data-card]")!;
     fireEvent.click(within(card).getByRole("button", { name: /^save$/i }));
     await waitFor(() =>
       expect(putBody).toMatchObject({ model_name: "claude-terrain" }),
@@ -435,7 +435,7 @@ describe("SettingsView", () => {
     );
     renderWithProviders(<SettingsView />);
     // scope to the terrain card (the judge card also has a "transcript token limit" field)
-    const terrainCard = (await screen.findByLabelText(/terrain model name/i)).closest("section")!;
+    const terrainCard = (await screen.findByLabelText(/terrain model name/i)).closest<HTMLElement>("[data-card]")!;
     const tokenInput = within(terrainCard).getByLabelText(/transcript token limit/i);
     fireEvent.change(tokenInput, { target: { value: "50000" } });
     fireEvent.click(within(terrainCard).getByRole("button", { name: /^save$/i }));
@@ -479,7 +479,7 @@ describe("SettingsView", () => {
     renderWithProviders(<SettingsView />);
     // The Test button lives in the terrain card's override section (shown directly now).
     const terrainModelName = await screen.findByLabelText(/terrain model name/i);
-    const card = terrainModelName.closest("section")!;
+    const card = terrainModelName.closest<HTMLElement>("[data-card]")!;
     fireEvent.click(within(card).getByRole("button", { name: /^test$/i }));
     // Same success vocabulary as the judge and catalog cards — scoped to the
     // terrain card so the catalog's "Connected" can't satisfy the assertion.
@@ -519,7 +519,7 @@ describe("SettingsView", () => {
     renderWithProviders(<SettingsView />);
     const terrainModelName = await screen.findByLabelText(/terrain model name/i);
     fireEvent.change(terrainModelName, { target: { value: "claude-terrain" } });
-    const card = terrainModelName.closest("section")!;
+    const card = terrainModelName.closest<HTMLElement>("[data-card]")!;
     fireEvent.click(within(card).getByRole("button", { name: /^save$/i }));
     // The verification fires automatically — no Test click.
     await waitFor(() =>
@@ -556,7 +556,7 @@ describe("SettingsView", () => {
       }),
     );
     renderWithProviders(<SettingsView />);
-    const card = (await screen.findByText("Judge model")).closest("section")!;
+    const card = (await screen.findByText("Judge model")).closest<HTMLElement>("[data-card]")!;
     fireEvent.change(await within(card).findByLabelText(/api key/i), {
       target: { value: "sk-secret-1234" },
     });
@@ -574,7 +574,7 @@ describe("SettingsView", () => {
     server.use(http.get("*/api/config", () => HttpResponse.json(CONFIGURED)));
     renderWithProviders(<SettingsView />);
     // With nothing edited, the judge Save is disabled and there's no unsaved-changes note.
-    const judge = (await screen.findByText("Judge model")).closest("section")!;
+    const judge = (await screen.findByText("Judge model")).closest<HTMLElement>("[data-card]")!;
     const save = await within(judge).findByRole("button", { name: /^save$/i });
     expect(save).toBeDisabled();
     expect(within(judge).queryByText(/unsaved changes/i)).not.toBeInTheDocument();
@@ -598,7 +598,7 @@ describe("SettingsView", () => {
     server.use(http.get("*/api/config", () => HttpResponse.json(UNCONFIGURED)));
     renderWithProviders(<SettingsView />);
     const terrainHeading = await screen.findByText(/terrain attribution model/i);
-    const card = terrainHeading.closest("section")!;
+    const card = terrainHeading.closest<HTMLElement>("[data-card]")!;
     expect(within(card).getByText(/current model/i)).toBeInTheDocument();
     expect(within(card).getByText(/judge model configuration/i)).toBeInTheDocument();
   });

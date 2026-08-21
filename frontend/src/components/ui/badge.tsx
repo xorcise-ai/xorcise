@@ -12,8 +12,11 @@ const badgeVariants = cva(
         err: "border-err/20 bg-err/10 text-err",
         warn: "border-warning/20 bg-warning/10 text-warning",
         info: "border-info/20 bg-info/10 text-info",
-        muted:
-          "border-border bg-[rgba(255,255,255,0.05)] text-text-secondary",
+        // heading/5, not white/5: Figma washes the muted chip with rgba(240,240,240,.05),
+        // i.e. the HEADING value at 5% rather than pure white. On this ground the two are a
+        // single step apart, but naming it after a palette entry is what stops the value
+        // drifting the next time someone eyeballs it.
+        muted: "border-border bg-heading/5 text-text-secondary",
       },
     },
     defaultVariants: { variant: "default" },

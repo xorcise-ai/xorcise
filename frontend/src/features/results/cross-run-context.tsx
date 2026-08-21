@@ -1,4 +1,5 @@
 import { Card, CardContent } from "@/components/ui/card";
+import { StatTile, StatTileRow } from "@/components/ui/stat-tile";
 import { pct } from "@/lib/api/format";
 import { cn } from "@/components/ui/cn";
 import type { RunEntry } from "@/lib/api/types";
@@ -62,44 +63,20 @@ export function CrossRunContext({
           <h2 className="text-label uppercase text-text-tertiary">
             Cross-run context · this mission
           </h2>
-          <span className={cn("text-dense font-semibold tabular-nums", deltaCls)}>
+          <span className={cn("text-dense tabular-nums", deltaCls)}>
             {deltaLabel}
           </span>
         </div>
-        <div className="flex flex-wrap gap-x-8 gap-y-2">
-          <Stat label="This run" value={pct(thisOverall)} strong />
-          <Stat label={`Avg (n=${summary.n})`} value={pct(summary.avgOverall)} />
-          <Stat label="Best" value={pct(summary.bestOverall)} />
-        </div>
+        {/* StatTile renders <dt>/<dd>, so the row is a real <dl>. `primary` marks the ONE
+            figure this card is about — the run being read — instead of a local size bump. */}
+        <StatTileRow>
+          <StatTile label="This run" value={pct(thisOverall)} tone="primary" />
+          <StatTile label={`Avg (n=${summary.n})`} value={pct(summary.avgOverall)} />
+          <StatTile label="Best" value={pct(summary.bestOverall)} />
+        </StatTileRow>
         <Trend values={summary.trend} />
       </CardContent>
     </Card>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  strong,
-}: {
-  label: string;
-  value: string;
-  strong?: boolean;
-}) {
-  return (
-    <div className="flex flex-col gap-1">
-      <span className="text-label uppercase text-text-tertiary">
-        {label}
-      </span>
-      <span
-        className={cn(
-          "tabular-nums",
-          strong ? "text-lg font-bold text-heading" : "text-body font-semibold text-foreground",
-        )}
-      >
-        {value}
-      </span>
-    </div>
   );
 }
 
@@ -111,7 +88,7 @@ function Trend({ values }: { values: number[] }) {
       {values.map((v, i) => (
         <div
           key={i}
-          className="w-2 rounded-sm bg-primary/60"
+          className="w-2 rounded-full bg-primary/60"
           style={{ height: `${Math.max(2, Math.round((v ?? 0) * 28))}px` }}
           title={pct(v)}
         />

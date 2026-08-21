@@ -12,6 +12,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, Maximize2, Minimize2, Minus, Plus, Radio } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { foldIndexForEvent, foldTerrain, probingPathEdgeIds, pulseIdsForIndex, type FoldedNode } from "./terrain-fold";
 import { layoutTerrainV2, type LaidOutEdge, type LaidOutGroup, type LaidOutNode } from "./terrain-layout";
 import { edgeColor, groupStyle, nodeColor, otelActive, T } from "./terrain-colors";
@@ -68,8 +70,12 @@ function drawnParentId(id: string): string {
 // is wider than the node's horizontal slot (`slotW` = bandW / node-count). Clamp each label to its
 // slot: greedy word-wrap to a per-line character budget, HARD-break a token longer than the budget,
 // and clamp to two lines with an ellipsis. The full label is preserved in a <title> when truncated.
-const LABEL_CHAR_W = 6.3; // mono advance ≈ 0.6em at fontSize 10.5
-const LABEL_LINE_H = 11;
+// The node label sits on the CAPTION rung (--text-caption, 11px): it is map meta-text, not an
+// uppercase eyebrow, and the 10.5px it used to draw at was off the type scale entirely. The
+// wrap budget below is recalibrated to it — the clamp measures in characters, so the advance
+// has to track the size or a long label stops fitting its slot.
+const LABEL_CHAR_W = 6.6; // mono advance ≈ 0.6em at --text-caption (11px)
+const LABEL_LINE_H = 12;
 const LABEL_MAX_LINES = 2;
 const LABEL_GUTTER = 10; // px kept clear each side so a line never touches the neighbour's slot
 
@@ -185,7 +191,7 @@ function NodeMark({
                 y={r + 13 + i * LABEL_LINE_H}
                 textAnchor="middle"
                 fill="var(--color-foreground)"
-                fontSize={10.5}
+                style={{ fontSize: "var(--text-caption)" }}
                 fontFamily="var(--font-mono)"
               >
                 {line}
@@ -235,9 +241,15 @@ function GroupBox({
         x={x + 8}
         y={y + 15}
         fill="var(--color-muted-foreground)"
-        fontSize={9}
         fontFamily="var(--font-mono)"
-        style={{ textTransform: "uppercase", letterSpacing: "0.08em" }}
+        // The group name is an eyebrow, so it takes the label role WHOLE — 10px at the role's
+        // own 0.16em, not the half-tracking (0.08em) it had drifted to. It was also drawing at
+        // 9px, under the role's 10px floor.
+        style={{
+          textTransform: "uppercase",
+          fontSize: "var(--text-label)",
+          letterSpacing: "var(--text-label--letter-spacing)",
+        }}
       >
         {fgroup.group.label}
       </text>
@@ -366,9 +378,12 @@ function NodeTooltip({ ln }: { ln: LaidOutNode }) {
   const descLines = description ? wrapText(description) : [];
   if (descLines.length === 0 && routes.length === 0) return null;
 
-  const lineH = 13;
+  // Sized for the CAPTION rung (11px): the tooltip's prose used to draw at 9px, under the type
+  // scale's 10px floor. lineH and the per-character width both track the rung — the box is laid
+  // out by measurement-free arithmetic, so they cannot be left behind.
+  const lineH = 15;
   const maxLineLen = Math.max(0, ...descLines.map((l) => l.length), ...routes.map((r) => r.label.length));
-  const boxW = Math.max(88, maxLineLen * 5.7 + 20);
+  const boxW = Math.max(88, maxLineLen * 7 + 20);
   const headerRows = routes.length > 0 ? 1 : 0;
   const boxH = (descLines.length + headerRows + routes.length) * lineH + 16;
 
@@ -394,7 +409,7 @@ function NodeTooltip({ ln }: { ln: LaidOutNode }) {
           y={12 + i * lineH}
           textAnchor="middle"
           fill="var(--color-popover-foreground)"
-          fontSize={9}
+          style={{ fontSize: "var(--text-caption)" }}
           fontFamily="var(--font-mono)"
         >
           {/* trailing space on all but the last line — adjacent SVG <text> siblings have no
@@ -410,9 +425,13 @@ function NodeTooltip({ ln }: { ln: LaidOutNode }) {
             y={12 + descLines.length * lineH}
             textAnchor="middle"
             fill="var(--color-muted-foreground)"
-            fontSize={7.5}
             fontFamily="var(--font-mono)"
-            style={{ textTransform: "uppercase", letterSpacing: "0.08em" }}
+            // Another eyebrow → the label role, whole. 7.5px was the worst offender on the map.
+            style={{
+              textTransform: "uppercase",
+              fontSize: "var(--text-label)",
+              letterSpacing: "var(--text-label--letter-spacing)",
+            }}
           >
             routes
           </text>
@@ -423,7 +442,7 @@ function NodeTooltip({ ln }: { ln: LaidOutNode }) {
               y={12 + (descLines.length + 1 + i) * lineH}
               textAnchor="middle"
               fill="var(--color-popover-foreground)"
-              fontSize={9}
+              style={{ fontSize: "var(--text-caption)" }}
               fontFamily="var(--font-mono)"
             >
               {r.label}
@@ -993,15 +1012,15 @@ export function TerrainMapView({
 
   if (isError)
     return (
-      <div className="rounded-md border border-border bg-card p-4 text-body text-err">
+      <Card className="p-4 text-body text-err">
         Couldn’t load the terrain.
-      </div>
+      </Card>
     );
   if (!terrain || !layout || (terrain.nodes ?? []).length === 0)
     return (
-      <div className="rounded-md border border-border bg-card p-4 text-body text-text-secondary">
+      <Card className="p-4 text-body text-text-secondary">
         No terrain yet.
-      </div>
+      </Card>
     );
 
   // No-model degradation notice: only meaningful once there's a mission (segment) group.
@@ -1016,17 +1035,17 @@ export function TerrainMapView({
     // pane. The component instance (zoom/pan/queries) survives the toggle; only the DOM
     // subtree re-homes, and the element-bound effects above re-attach off `expanded`.
     <div
-      className={expanded ? "fixed inset-0 z-50 flex bg-black/60 p-3 sm:p-6" : "contents"}
+      className={expanded ? "fixed inset-0 z-50 flex bg-scrim p-3 sm:p-6" : "contents"}
       role={expanded ? "dialog" : undefined}
       aria-modal={expanded || undefined}
       aria-label={expanded ? "Terrain map — fullscreen" : undefined}
       onClick={expanded ? () => setExpanded(false) : undefined}
     >
-      <div
+      <Card
         // `relative` anchors the summary layer, which grows over the map without changing its
         // dimensions or causing the auto-fit observer to visually zoom the graph.
         data-testid="terrain-map-card"
-        className="relative flex h-full min-h-[360px] w-full flex-col overflow-hidden rounded-md border border-border bg-card"
+        className="relative flex h-full min-h-[360px] w-full flex-col overflow-hidden"
         onClick={expanded ? (e) => e.stopPropagation() : undefined}
       >
       {terrain.summary && (
@@ -1075,7 +1094,10 @@ export function TerrainMapView({
           // Inset a few px from the card's rounded border and clip HERE, so panned/zoomed content
           // stays inside a clean gutter and never butts up against (or paints over) the outer
           // border — the fit measures this inset box, so a fitted graph gets the gutter too.
-          className="absolute inset-[3px] isolate overflow-hidden rounded-[4px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          // rounded-lg (8px), not an arbitrary rounded-[4px]: the clip has to sit CONCENTRIC
+          // inside the card's rounded-xl (12px) minus this 3px inset, or the gutter pinches at
+          // the corners.
+          className="absolute inset-[3px] isolate overflow-hidden rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           // focusable so focus/blur/Escape can gate plain-wheel zoom (the wheel listener itself is
           // native + non-passive, attached in the effect above)
           tabIndex={0}
@@ -1129,14 +1151,18 @@ export function TerrainMapView({
             className="absolute left-1/2 top-2 z-20 max-w-[calc(100%-1rem)] -translate-x-1/2"
             onPointerDown={(e) => e.stopPropagation()}
           >
-            <button
+            {/* Button (outline) with the three overrides a FLOATING pill needs — rounded-full,
+                its own ground, the lift shadow — identical to the Trace's return-to-live pill. */}
+            <Button
               type="button"
+              variant="outline"
+              size="sm"
               onClick={onReturnToLive}
-              className="flex items-center gap-1.5 rounded-full border border-primary/40 bg-card/90 px-3 py-1 text-caption text-primary shadow-lg backdrop-blur hover:border-primary"
+              className="gap-1.5 rounded-full bg-card/90 px-3 shadow-lg backdrop-blur"
             >
               <Radio className="size-3" />
               {active ? "Return to live" : "Back to latest"}
-            </button>
+            </Button>
           </div>
         )}
 
@@ -1167,48 +1193,57 @@ export function TerrainMapView({
           data-testid="terrain-view-controls"
           className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1 text-text-secondary"
         >
+          {/* Button, size sm (h-7 — the geometry these already had, and a ≥24px hit area for the
+              icon-only three). GHOST rather than outline: outline is amber-bordered/amber-labelled,
+              and four amber controls in a footer would read as four primary actions when this is a
+              utility cluster. The − / + were unicode glyphs standing in for icons; lucide's Minus
+              and Plus (already imported for the legend) are the real ones. */}
           {expandable && (
-            <button
+            <Button
               type="button"
+              variant="ghost"
+              size="sm"
               aria-label={expanded ? "exit fullscreen" : "fullscreen"}
               title={expanded ? "Exit fullscreen (Esc)" : "Fullscreen"}
               onClick={() => setExpanded((v) => !v)}
-              className="flex h-7 items-center rounded border border-border bg-card px-2 hover:text-foreground"
             >
               {expanded ? (
                 <Minimize2 className="size-3" aria-hidden />
               ) : (
                 <Maximize2 className="size-3" aria-hidden />
               )}
-            </button>
+            </Button>
           )}
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="sm"
             aria-label="zoom out"
             onClick={() => zoomBy(0.9)}
-            className="h-7 rounded border border-border bg-card px-2 text-dense hover:text-foreground"
           >
-            −
-          </button>
-          <button
+            <Minus className="size-3" aria-hidden />
+          </Button>
+          <Button
             type="button"
+            variant="ghost"
+            size="sm"
             aria-label="fit to view"
             onClick={() => {
               userControlled.current = false; // resume auto-fit following
               fitToView();
             }}
-            className="h-7 rounded border border-border bg-card px-2 text-dense hover:text-foreground"
           >
             Fit
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            variant="ghost"
+            size="sm"
             aria-label="zoom in"
             onClick={() => zoomBy(1.1)}
-            className="h-7 rounded border border-border bg-card px-2 text-dense hover:text-foreground"
           >
-            +
-          </button>
+            <Plus className="size-3" aria-hidden />
+          </Button>
         </div>
       </div>
       {attributionOff && hasMissionGroup && (
@@ -1216,7 +1251,7 @@ export function TerrainMapView({
           target attribution off — set a model in Settings
         </p>
       )}
-      </div>
+      </Card>
     </div>
   );
   // Fullscreen must escape every ancestor: a transformed/filtered/overflow-clipping parent

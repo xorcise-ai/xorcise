@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/components/ui/cn";
+import { StatusDot } from "@/components/ui/dot";
 import { Progress } from "@/components/ui/progress";
 import type { CatalogEntry } from "@/lib/api/types";
 import { errorDetail } from "@/lib/api/client";
@@ -244,9 +245,12 @@ export function MissionCard({ mission: c }: { mission: CatalogEntry }) {
         // `isolate` keeps the card's internal z-layering (stretched link z-10, action z-20) inside
         // its own stacking context — otherwise that z-20 leaks to the root and paints over the
         // sticky filter bar as the card scrolls under it.
-        "relative isolate flex h-full flex-col overflow-hidden border-l-2 transition-colors",
+        "relative isolate flex h-full flex-col overflow-hidden transition-colors",
         "hover:bg-raised focus-within:ring-2 focus-within:ring-ring",
-        installed ? "border-l-ok bg-ok/[0.03]" : "border-l-primary",
+        // No tone bar down the left edge — see MissionRow. `installed` is already
+        // stated by the INSTALLED badge and by Open-vs-Pull; the faint ok tint stays
+        // because it groups the card rather than encoding the state on its own.
+        installed && "bg-ok/[0.03]",
       )}
     >
       {/* Whole-card click target (stretched link). Real controls sit above it at z-20 so
@@ -301,7 +305,7 @@ export function MissionCard({ mission: c }: { mission: CatalogEntry }) {
             its ad-hoc leading: a two-word card title needs no compression, and neither
             1.25 nor 1.375 is a rung on the §5.3 line-height ladder — text-body's 1.6 is. */}
         <div>
-          <p className="break-words text-body font-semibold text-heading">
+          <p className="break-words text-body font-bold text-heading">
             {c.name}
           </p>
           {c.summary && (
@@ -331,12 +335,9 @@ export function MissionCard({ mission: c }: { mission: CatalogEntry }) {
         {shownTech.length > 0 && (
           <div className="flex flex-wrap items-center gap-1">
             {shownTech.map((t) => (
-              <span
-                key={t}
-                className="whitespace-nowrap rounded border border-border bg-raised px-1.5 py-0.5 font-mono text-caption text-text-tertiary"
-              >
+              <Badge key={t} variant="muted" className="whitespace-nowrap font-mono">
                 {t}
-              </span>
+              </Badge>
             ))}
             {extraTech > 0 && (
               <span className="text-caption text-text-tertiary">+{extraTech}</span>
@@ -422,10 +423,11 @@ export function MissionRow({ mission: c }: { mission: CatalogEntry }) {
   return (
     <li>
       <div
-        className={cn(
-          "group relative isolate flex items-center gap-3 rounded-md border border-l-2 border-border px-3 py-2 transition-colors hover:bg-raised focus-within:ring-2 focus-within:ring-ring",
-          installed ? "border-l-ok" : "border-l-primary",
-        )}
+        // No tone bar down the left edge. This row already states `installed` three
+        // times — the leading StatusDot, the installed/available Badge, and the
+        // Open-vs-Pull action — and the design system assigns state to dots and badges,
+        // which carry a label or a glyph, never to a 2px rule that carries only hue.
+        className="group relative isolate flex items-center gap-3 rounded-md border border-border px-3 py-2 transition-colors hover:bg-raised focus-within:ring-2 focus-within:ring-ring"
       >
         {/* Whole-row click target; real controls sit above it at z-20. */}
         <Link
@@ -433,19 +435,12 @@ export function MissionRow({ mission: c }: { mission: CatalogEntry }) {
           aria-label={`Open ${c.name}`}
           className="absolute inset-0 z-10 focus-visible:outline-none"
         />
-        <span
-          className={cn("size-1.5 shrink-0 rounded-full", installed ? "bg-ok" : "bg-primary")}
-          aria-hidden
-        />
-        <span className="min-w-0 flex-1 truncate text-row font-medium text-heading">
+        <StatusDot tone={installed ? "ok" : "primary"} />
+        <span className="min-w-0 flex-1 truncate text-row text-heading">
           {c.name}
         </span>
         <div className="hidden shrink-0 items-center gap-1.5 md:flex">
-          {c.specialty && (
-            <Badge variant="info" className="capitalize">
-              {titleCase(c.specialty)}
-            </Badge>
-          )}
+          {c.specialty && <Badge variant="info">{titleCase(c.specialty)}</Badge>}
           {c.proficiency && <DifficultyBadge proficiency={c.proficiency} />}
           {c.type && <EnvironmentBadge type={c.type} />}
         </div>

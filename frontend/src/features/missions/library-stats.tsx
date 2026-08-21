@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/components/ui/cn";
+import { StatTile, StatTileRow } from "@/components/ui/stat-tile";
 import { proficiencyLevel, titleCase } from "./labels";
 import type { CatalogEntry } from "@/lib/api/types";
 
@@ -91,16 +92,23 @@ export function LibraryStats({ missions }: { missions: CatalogEntry[] }) {
           once there is room for two, one row at lg where all four fit without squeezing
           the difficulty meter (it needs ~210px and cannot compress). */}
       <CardContent className="grid grid-cols-1 items-stretch gap-x-6 gap-y-4 p-4 min-[30rem]:grid-cols-2 lg:grid-cols-4">
-        {/* ── headline count — number stacked over the label ── */}
+        {/* ── headline count — the label eyebrow over the figure ── */}
         <Section>
-          <div>
-            <span className="block text-4xl font-bold tabular-nums leading-none text-primary">
-              {stats.total}
-            </span>
-            <p className="mt-2 text-label uppercase text-text-tertiary">
-              missions
-            </p>
-          </div>
+          {/* The real StatTile, not a hand-rolled copy of it. It renders <dt>/<dd>, so
+              its parent has to be a genuine <dl> — StatTileRow is that <dl>. `primary`
+              is the tone reserved for the one figure a view is actually about, which is
+              what this count was using the amber for already. */}
+          <StatTileRow>
+            {/* The catalog's hero figure: this cell is a quarter of a full-width
+                strip, and the stat rung (18px) left it reading as a caption in a
+                430px box. `display` is the tile's own hero size. */}
+            <StatTile
+              label="missions"
+              value={stats.total}
+              tone="primary"
+              size="display"
+            />
+          </StatTileRow>
         </Section>
 
         {/* ── install progress ── */}
@@ -110,7 +118,7 @@ export function LibraryStats({ missions }: { missions: CatalogEntry[] }) {
               <span className="text-label uppercase text-text-tertiary">
                 installed
               </span>
-              <span className="text-dense font-semibold tabular-nums text-ok">
+              <span className="text-dense tabular-nums text-ok">
                 {stats.installed} / {stats.total}
               </span>
             </div>

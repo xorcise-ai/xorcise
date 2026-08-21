@@ -53,15 +53,15 @@ export interface RunPresentation {
  * Deliberately separate from {@link runStateMeta} so the live-run, dashboard, and results
  * consumers (and their locked tests) stay untouched: this maps the same server state/trigger onto
  * the §10 status vocabulary (Running / Completed / Partial / Timeout / Failed / Terminal) and the
- * matching action (Running → Open Live Run; Completed/Partial → View Result; Timeout → View
- * Partial Result; Failed → Inspect Run). The `budget` trigger reads as "Partial" — a run that hit
+ * matching action (Running → Open live run; Completed/Partial → View result; Timeout → View
+ * Partial Result; Failed → Inspect run). The `budget` trigger reads as "Partial" — a run that hit
  * its budget stops with partial progress rather than erroring or timing out hard.
  */
 export function runPresentation(
   state: string,
   trigger?: string | null,
 ): RunPresentation {
-  const openLive = { label: "Open Live Run", target: "live" as const };
+  const openLive = { label: "Open live run", target: "live" as const };
   if (state === "created")
     return { label: "Created", tone: "amber", action: openLive };
   if (state === "active")
@@ -71,25 +71,25 @@ export function runPresentation(
       return {
         label: "Completed",
         tone: "green",
-        action: { label: "View Result", target: "result" },
+        action: { label: "View result", target: "result" },
       };
     if (trigger === "timeout")
       return {
         label: "Timeout",
         tone: "red",
-        action: { label: "View Partial Result", target: "result" },
+        action: { label: "View partial result", target: "result" },
       };
     if (trigger === "budget")
       return {
         label: "Partial",
         tone: "amber",
-        action: { label: "View Result", target: "result" },
+        action: { label: "View result", target: "result" },
       };
     if (trigger === "error")
       return {
         label: "Failed",
         tone: "red",
-        action: { label: "Inspect Run", target: "live" },
+        action: { label: "Inspect run", target: "live" },
       };
     // The readiness gate closed this run out: its environment died at deploy or never came up. A
     // failure the operator must see — and there is nothing graded to open, so inspect the run.
@@ -97,14 +97,14 @@ export function runPresentation(
       return {
         label: "Deploy failed",
         tone: "red",
-        action: { label: "Inspect Run", target: "live" },
+        action: { label: "Inspect run", target: "live" },
       };
     // terminated / cancelled / unknown trigger → grey. Inspect via the live view, which always
     // renders for any run (a terminated run may not have a graded result to open).
     return {
       label: "Terminal",
       tone: "muted",
-      action: { label: "Inspect Run", target: "live" },
+      action: { label: "Inspect run", target: "live" },
     };
   }
   return { label: state, tone: "muted", action: openLive };

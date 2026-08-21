@@ -1,6 +1,8 @@
 "use client";
 
 import { Bot, Boxes, Flag } from "lucide-react";
+import { Chip, ChipRow } from "@/components/ui/chip";
+import type { DotTone } from "@/components/ui/dot";
 import type { RunEntry, RunEnvironment } from "@/lib/api/types";
 import { runPhase, toneColor, type RunPhase } from "./run-phase";
 
@@ -125,6 +127,19 @@ export function connectionChips(
   return chips;
 }
 
+/** The run-phase tone vocabulary → the design system's dot tones.
+ *
+ *  `amber` maps to `primary`, not `warn`: `toneColor()` (run-phase.ts) already resolves amber to
+ *  --color-primary for the status bulb, and the bulb and the chip report the SAME phase — a chip
+ *  dot in --color-warning beside a bulb in --color-primary would read as two different states.
+ *  Moving both to the warning rung is a run-phase change, not a presentation one. */
+export const CHIP_DOT_TONE: Record<ConnectionChipData["tone"], DotTone> = {
+  green: "ok",
+  amber: "primary",
+  red: "err",
+  muted: "muted",
+};
+
 /** Environment / Objective connection chips derived from the run + trace. Content-sized and
  *  wrapping, so a variable-length chip list can never orphan a cell on a half-empty row. */
 export function ConnectionPanel({
@@ -137,54 +152,19 @@ export function ConnectionPanel({
   environment?: RunEnvironment;
 }) {
   return (
-    <div className="flex flex-wrap gap-2">
+    // The design system's Chip (KEY · dot · value). Its leading slot takes an icon OR the dot,
+    // never both, and for these chips the DOT is the payload — it is the only thing that says
+    // Ready vs Failed vs Released — so the decorative Boxes/Flag mark yields to it.
+    <ChipRow>
       {connectionChips(run, eventCount, environment).map((c) => (
         <Chip
           key={c.label}
-          icon={c.icon}
           label={c.label}
           value={c.value}
-          tone={c.tone}
+          tone={CHIP_DOT_TONE[c.tone]}
           title={c.title}
         />
       ))}
-    </div>
-  );
-}
-
-function Chip({
-  icon: Icon,
-  label,
-  value,
-  tone,
-  title,
-}: {
-  icon: typeof Bot;
-  label: string;
-  value: string;
-  tone: "green" | "amber" | "red" | "muted";
-  title?: string;
-}) {
-  const color = toneColor(tone);
-  return (
-    <div
-      className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2"
-      title={title}
-    >
-      <Icon className="size-3.5 shrink-0 text-text-tertiary" />
-      <span className="text-label uppercase text-text-tertiary">
-        {label}
-      </span>
-      <span className="ml-auto flex items-center gap-1.5">
-        <span
-          className="inline-block size-1.5 rounded-full"
-          style={{ backgroundColor: color }}
-          aria-hidden
-        />
-        <span className="truncate text-dense text-foreground">
-          {value}
-        </span>
-      </span>
-    </div>
+    </ChipRow>
   );
 }

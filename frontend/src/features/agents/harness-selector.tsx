@@ -39,16 +39,21 @@ export function HarnessSelector({
 
   const card = (selected: boolean) =>
     cn(
-      "flex w-full items-start gap-3 rounded-lg border p-3 text-left transition-colors",
+      // rounded-md, not rounded-lg: the shape scale gives rounded-lg to chips and rounded-md
+      // to selection controls. These tiles are `role="radio"` buttons, and the sibling
+      // selection group (register-agent-page's LaunchModeEditor) already uses rounded-md.
+      "flex w-full items-start gap-3 rounded-md border p-3 text-left transition-colors",
       compact && "xl:gap-2 xl:p-2.5",
       selected
-        ? "border-primary bg-[rgba(255,255,255,0.06)] text-heading [&_svg]:text-heading"
-        : "border-border text-text-secondary hover:text-heading hover:border-text-tertiary",
+        ? "border-primary bg-raised text-heading [&_svg]:text-heading"
+        // border-border-hover is the app's one hover edge (see globals.css); the old
+        // hover:border-text-tertiary borrowed a TYPE token for a border role.
+        : "border-border text-text-secondary hover:text-heading hover:border-border-hover",
     );
 
   return (
     <div className="space-y-2">
-      <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Agent harness">
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Agent harness">
         {HARNESSES.map((h) => {
           const selected = !customMode && value === h.kind;
           return (

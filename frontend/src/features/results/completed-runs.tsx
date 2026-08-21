@@ -91,7 +91,7 @@ export function CompletedRuns() {
 
       {summaries.length > 0 && (
         <>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {summaries.map((s, i) => (
               <Reveal key={s.agentId} delay={i * 40}>
                 <AgentPerformanceCard
@@ -124,7 +124,10 @@ function AgentPerformanceCard({
     <div className="flex items-center justify-between gap-2">
       <span className="flex min-w-0 items-center gap-2">
         <HarnessGlyph kind={kind} className="[&_svg]:!size-5" />
-        <span className="truncate text-row font-semibold text-heading">
+        {/* Card head — 14px/700, the same value CardTitle carries (Figma sets a card
+            head in JetBrains Mono Bold at 14). `row` not `body` because this name is
+            one truncating line and body's 1.6 leading only pays for wrapped copy. */}
+        <span className="truncate text-row font-bold text-heading">
           {summary.agentName}
         </span>
       </span>
@@ -155,7 +158,7 @@ function AgentPerformanceCard({
       href={`/agents/detail?name=${encodeURIComponent(summary.agentName)}`}
       className="block h-full"
     >
-      <Card className="group h-full p-4 transition-colors hover:border-[rgba(255,255,255,0.14)]">
+      <Card className="group h-full p-4 transition-colors hover:border-border-hover">
         {body}
       </Card>
     </Link>
@@ -168,14 +171,14 @@ function EmptyResults() {
     <Card className="flex flex-col items-center gap-3 p-6 text-center">
       <Trophy className="size-6 text-text-tertiary" aria-hidden />
       <div className="space-y-2">
-        <p className="text-body font-semibold text-heading">No results yet</p>
+        <p className="text-body font-bold text-heading">No results yet</p>
         <p className="mx-auto max-w-sm text-body text-text-secondary">
           No agent has completed an evaluation. Start a run and its scores will
           roll up here per agent.
         </p>
       </div>
       <Link href="/runs/new" className={cn(buttonVariants(), "mt-1")}>
-        Start Run
+        Start run
       </Link>
     </Card>
   );
