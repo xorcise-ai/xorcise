@@ -100,4 +100,32 @@ describe("design system conformance", () => {
       "Add an unprefixed grid-cols-1 (or grid-cols-N) alongside the responsive variants.",
     ).toEqual([]);
   });
+
+  /* The fourth rule, and the one that fails most quietly. tailwind-merge groups
+     `text-<x>` as a COLOUR unless told otherwise, so any rung missing from cn.ts's
+     font-size group is silently DELETED whenever a colour shares the merged string —
+     the element renders at the inherited size and stops matching `.text-<rung>`.
+     `stat` and `display` shipped that way: StatTile's cva pairs its size rung with a
+     tone colour by construction, so every toned tile lost its figure size. Nothing
+     caught it, because the class list still looked right in the source. Pinning the
+     two lists against each other is the only check that survives a new rung. */
+  it("registers every declared type rung with tailwind-merge", () => {
+    const theme = readFileSync(join(SRC, "app", "globals.css"), "utf8");
+    const declared = [
+      ...new Set([...theme.matchAll(/^\s*--text-([a-z]+):/gm)].map((m) => m[1])),
+    ].sort();
+
+    const cn = readFileSync(join(SRC, "components", "ui", "cn.ts"), "utf8");
+    const group = /"font-size":\s*\[[\s\S]*?text:\s*\[([\s\S]*?)\]/.exec(cn);
+    expect(group, "cn.ts no longer declares a font-size class group").not.toBeNull();
+    const registered = [...group![1].matchAll(/"([a-z]+)"/g)].map((m) => m[1]).sort();
+
+    expect(
+      registered,
+      "the type rungs in globals.css @theme and the font-size group in " +
+        "components/ui/cn.ts have drifted. A rung missing here is not overridden — " +
+        "it is DROPPED from any cn() call that also carries a colour.",
+    ).toEqual(declared);
+  });
+
 });
