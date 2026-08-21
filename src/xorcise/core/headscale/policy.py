@@ -95,11 +95,22 @@ def assert_policy_safe(
     policy_text: str,
     networks: Sequence[RunNetwork],
     *,
-    router_tag: str = "",
+    router_tag: str,
     collector_addr: str = "",
     collector_port: int = 4318,
 ) -> None:
     """Defensive gate before a policy is ever applied. Raises ValueError on violation."""
+    # Hoisted ABOVE every loop, and required rather than defaulted. Both matter: as a
+    # loop-invariant inside `for net in networks:` this never ran for an empty `networks`, so
+    # `assert_policy_safe(text, [])` certified a policy without checking a single router-sourced
+    # rule; and a `router_tag: str = ""` default let any future caller opt out of a gate whose
+    # whole purpose is that it cannot be opted out of. `render_policy` already requires the tag,
+    # so the two now agree.
+    if not router_tag:
+        raise ValueError(
+            "cannot certify a policy's inbound rules — no router_tag was supplied to "
+            "assert_policy_safe"
+        )
     lowered = policy_text.lower()
     for token in _FORBIDDEN:
         if token.lower() in lowered:
@@ -133,11 +144,6 @@ def assert_policy_safe(
     # be handed a path to another run's agent.
     ingress_dsts = {f"{n.agent_user}@:*" for n in networks}
     for net in networks:
-        if not router_tag:
-            raise ValueError(
-                f"cannot certify the inbound rule for {net.agent_user}@ — no router_tag was "
-                "supplied to assert_policy_safe"
-            )
         wanted = [f"{net.agent_user}@:*"]
         matches = [
             r
@@ -149,10 +155,9 @@ def assert_policy_safe(
                 f"Policy must contain exactly one inbound rule {router_tag} -> {wanted[0]!r} "
                 f"for {net.agent_user}@ (found {len(matches)})"
             )
-    if router_tag:
-        for rule in pol.get("acls", []):
-            if rule.get("src") != [router_tag]:
-                continue
-            for dst in rule.get("dst", []):
-                if dst not in ingress_dsts:
-                    raise ValueError(f"Policy contains unexpected router-sourced dst {dst!r}")
+    for rule in pol.get("acls", []):
+        if rule.get("src") != [router_tag]:
+            continue
+        for dst in rule.get("dst", []):
+            if dst not in ingress_dsts:
+                raise ValueError(f"Policy contains unexpected router-sourced dst {dst!r}")

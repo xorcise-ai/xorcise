@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json as _json
 from collections.abc import Callable
-from typing import Any
+from typing import Any, ClassVar
 
 from xorcise.core.runner.docker import (
     MANAGED_LABEL,
@@ -165,6 +165,8 @@ class DockerSdkDriver(DockerDriver):
         os_name, arch = attrs.get("Os"), attrs.get("Architecture")
         return f"{os_name}/{arch}" if os_name and arch else None
 
+    reads_image_files: ClassVar[bool] = True
+
     def read_image_file(self, image: str, path: str) -> str | None:
         """Read a file out of an image via a created-but-never-started container.
 
@@ -177,20 +179,34 @@ class DockerSdkDriver(DockerDriver):
 
         import docker.errors
 
-        from xorcise.core.contracts.errors import ImageNotInstalledError
+        from xorcise.core.contracts.errors import ImageNotInstalledError, NotFoundError
 
         # This runs BEFORE `run()`'s own presence guard, so an absent image would otherwise
         # surface here as a raw docker 404 instead of the domain error the REST layer already
         # translates into "…(re)build it". Same error, same remediation, whichever hits first.
         try:
-            container = self._client.containers.create(image, entrypoint=["/bin/true"], command=[])
+            container = self._client.containers.create(
+                image,
+                entrypoint=["/bin/true"],
+                command=[],
+                # Every fused image descends from docker:dind, whose config declares a
+                # /var/lib/docker VOLUME — so `create` allocates an anonymous volume that
+                # `remove(force=True)` alone would orphan on EVERY deploy, unlabelled and
+                # therefore invisible to the project-scoped volume sweep in _remove_run_resources.
+                # The managed label covers the other half: without it a server killed between
+                # create and remove leaves a container `reap_managed` cannot find either. (No
+                # RUN_ID_LABEL: this call knows an image, not a run.)
+                labels={MANAGED_LABEL: "true"},
+            )
         except docker.errors.ImageNotFound as exc:
             raise ImageNotInstalledError(f"image {image!r} is not in the local store") from exc
         try:
             stream, _stat = container.get_archive(path)
             blob = b"".join(stream)
+        except docker.errors.NotFound as exc:
+            raise NotFoundError(f"{image}: no {path} in the image") from exc
         finally:
-            container.remove(force=True)
+            container.remove(force=True, v=True)
         with tarfile.open(fileobj=io.BytesIO(blob)) as tar:
             member = next((m for m in tar.getmembers() if m.isfile()), None)
             if member is None:

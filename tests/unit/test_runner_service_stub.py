@@ -192,3 +192,80 @@ def test_teardown_stops_container_by_name_across_a_restart():
     result = fresh.teardown("run-restart")
     assert "run-restart" in driver.stopped_by_name  # stopped by run-id name, not a cached handle
     assert result.ok
+
+
+# --- confinement: the compose read is not allowed to fail quietly ----------------------------
+
+
+class _ReadingDriver(StubDockerDriver):
+    """A driver WITH an image store — the confinement pass is entitled to a real answer from it."""
+
+    reads_image_files = True
+
+    def __init__(self, compose: str | None) -> None:
+        super().__init__()
+        self._compose = compose
+        self.asked: list[str] = []
+
+    def read_image_file(self, image: str, path: str) -> str | None:
+        self.asked.append(path)
+        return self._compose
+
+
+def test_confinement_refuses_to_deploy_when_the_compose_cannot_be_read():
+    """Fail CLOSED. An unreadable compose can only narrow confinement to the carved entry
+    networks, which leaves a multi-homed service its route off box — the exact hole this closes.
+    A run that cannot be confined must not deploy pretending it was."""
+    import pytest
+
+    svc = RunnerControlService(_ReadingDriver(None))
+    with pytest.raises(ValueError, match="cannot be confined"):
+        svc.deploy(_req())
+
+
+def test_a_driver_with_no_image_store_still_deploys():
+    """The stub creates no networks, so there is nothing it could leave unconfined. Only a driver
+    that HAS an image store and still yields nothing is a failure."""
+    svc = RunnerControlService(StubDockerDriver())
+    assert svc.deploy(_req()).run_id == "run-1"
+
+
+def test_an_allow_egress_mission_is_not_held_to_the_confinement_read():
+    """Nothing is being confined, so an unreadable compose costs nothing."""
+    svc = RunnerControlService(_ReadingDriver(None))
+    req = DeployRequest(
+        run_id="run-e",
+        mission=MissionRef(mission_id="c", image="xorcise/mission-c:0"),
+        network=NetworkSpec(
+            tailnet="10.200.1.0/24", auth_key="k", agent_user=AGENT, allow_egress=True
+        ),
+    )
+    assert svc.deploy(req).run_id == "run-e"
+
+
+def test_the_compose_is_read_at_the_name_the_manifest_authored():
+    """`environment.compose_file` is freely settable and build.py/preflight.py both honour it, so
+    a mission that authored `compose.yaml` would otherwise have had its networks left unconfined
+    (or, after the fail-closed guard, been undeployable) against a hardcoded default."""
+    driver = _ReadingDriver("services: {}\nnetworks: {back: {}}\n")
+    svc = RunnerControlService(driver)
+    req = DeployRequest(
+        run_id="run-f",
+        mission=MissionRef(
+            mission_id="c", image="xorcise/mission-c:0", compose_file="compose.yaml"
+        ),
+        network=NetworkSpec(
+            tailnet="10.200.1.0/24",
+            auth_key="k",
+            agent_user=AGENT,
+            entry_networks=("dmz",),
+            routes=("10.200.1.0/24",),
+        ),
+    )
+    svc.deploy(req)
+    assert driver.asked == ["/mission/compose.yaml"]
+    override = yaml.safe_load(
+        base64.b64decode(dict(driver.specs[0].env)["XORCISE_NET_OVERRIDE_B64"]).decode()
+    )
+    # the network only the compose knows about is confined too, not just the carved entry one
+    assert override["networks"]["back"]["internal"] is True

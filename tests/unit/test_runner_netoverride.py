@@ -4,11 +4,11 @@ import pytest
 
 from xorcise.core.runner.netoverride import (
     EGRESS_NET,
-    ROUTER_OCTET,
     build_net_override,
     carve_entry_subnets,
     compose_network_names,
     ingress_address,
+    router_address,
     target_ips_for,
 )
 
@@ -173,7 +173,7 @@ def test_router_gets_an_egress_network_with_default_route_priority():
 
 def test_router_address_is_pinned_not_docker_sequential():
     o = _override()
-    assert o["services"]["xorcise-router"]["networks"]["dmz_net"]["ipv4_address"] == "10.200.1.2"
+    assert o["services"]["xorcise-router"]["networks"]["dmz_net"]["ipv4_address"] == "10.200.1.253"
 
 
 def test_allow_egress_leaves_networks_routable_and_adds_no_egress_net():
@@ -201,6 +201,50 @@ def test_ingress_is_armed_on_every_run():
     assert script.rstrip().endswith("exec /usr/local/bin/containerboot")
 
 
+def test_ingress_is_armed_on_every_entry_segment_not_just_one():
+    """Confinement makes each entry network `internal: true`, and an internal network gives its
+    containers an on-link route and NO default route — so an address in a SIBLING subnet is
+    `Network unreachable`, not merely filtered. Arming one address on one segment therefore left
+    every other segment with no way to reach the agent at all, which is the shape segmented-pivot
+    and operation-tessera both have. Verified live: a container on 10.200.1.0/25 could reach
+    .126 (its own segment) and got `Network unreachable` for .254 (the sibling)."""
+    two = {"zulu_net": "10.200.1.0/25", "alpha_net": "10.200.1.128/25"}
+    services: Any = build_net_override("run1", two, agent_user=USER)["services"]
+    script = services["xorcise-router"]["entrypoint"][2]
+    for addr in ("10.200.1.126", "10.200.1.254"):
+        assert f"ip addr add {addr}/25" in script, f"{addr} never armed on its own segment"
+        assert addr in script.split("INGRESS_IPS=")[1], f"{addr} missing from the DNAT set"
+
+
+def test_ingress_dnat_matches_every_protocol():
+    """The prompt promises the agent any port; a `-p tcp` match silently dropped a UDP beacon or
+    an ICMP probe of the callback address, which from the mission author's side is indistinguishable
+    from a mission bug."""
+    script = _override()["services"]["xorcise-router"]["entrypoint"][2]
+    dnat = [ln for ln in script.splitlines() if "DNAT" in ln]
+    assert dnat and not any("-p tcp" in ln or "-p udp" in ln for ln in dnat)
+
+
+def test_ingress_uses_the_nft_backend_and_refuses_to_boot_unarmed():
+    """The image symlinks `iptables` to iptables-legacy, which needs ip_tables/iptable_nat; this
+    container is nested with no /lib/modules to modprobe them, so on an nftables-only host legacy
+    installs ZERO rules and the data plane is silently dead while the control plane looks healthy.
+    That is the same failure TS_DEBUG_FIREWALL_MODE=nftables exists to prevent."""
+    script = _override()["services"]["xorcise-router"]["entrypoint"][2]
+    assert "IPT=iptables-nft" in script
+    assert "FATAL" in script and "exit 1" in script
+
+
+def test_ingress_ignores_offline_peers_when_resolving_the_agent():
+    """`tailscale status` lists offline peers too, so a stale registration from an earlier join
+    matched the grep and `head -1` returned it forever — pinning the DNAT to a dead address while
+    the log said `agent ingress ... -> ...`, i.e. armed."""
+    script = _override()["services"]["xorcise-router"]["entrypoint"][2]
+    resolve = script.split("aip=$$(tailscale status")[1].split("\n    case")[0]
+    assert 'grep -v "offline"' in resolve
+    assert resolve.index('grep -v "offline"') < resolve.index("head -1")
+
+
 def test_ingress_requires_an_agent_user_to_discover():
     """Fail closed: without the user the router cannot find the agent, and an override that
     silently omitted the DNAT would leave a callback timing out with no signal at all."""
@@ -215,15 +259,39 @@ def test_ca_and_ingress_prologues_compose():
     assert script.count("exec /usr/local/bin/containerboot") == 1
 
 
-@pytest.mark.parametrize("octet", [ROUTER_OCTET, 254])
+@pytest.mark.parametrize("octet", [253, 254])
 def test_reserved_addresses_refuse_to_collide_with_a_mission_pin(octet):
     with pytest.raises(ValueError, match="reserved"):
         _override(static_ips={"web": {"dmz_net": octet}})
 
 
+def test_the_router_keeps_clear_of_dockers_dynamic_range():
+    """Docker's IPAM allocates from the BOTTOM (.1 gateway, then .2 onward), so a router pinned
+    low races every unpinned mission service: at .2 a two-service stack failed `compose up` 4
+    times in 5 with `Address already in use`, which under the fused entrypoint's `set -eu` kills
+    the outer container and reports the run FAILED."""
+    assert router_address("10.200.1.0/24") == "10.200.1.253"
+    assert router_address("10.200.1.128/25") == "10.200.1.253"
+    assert router_address("10.200.1.0/25") == "10.200.1.125"
+    for name, spec in _override()["services"]["xorcise-router"]["networks"].items():
+        if name == EGRESS_NET:
+            continue
+        assert not spec["ipv4_address"].endswith((".1", ".2", ".3"))
+
+
 def test_a_normal_static_ip_pin_is_untouched():
     o = _override(static_ips={"web": {"dmz_net": 10}})
     assert o["services"]["web"]["networks"]["dmz_net"]["ipv4_address"] == "10.200.1.10"
+
+
+def test_compose_network_names_reads_yaml_12_like_compose_does():
+    """PyYAML defaults to YAML 1.1, where the bare keys no/on/yes/off/y/n resolve to BOOLEANS —
+    so a network named `no` came back as the string "False", the override declared a phantom
+    network by that name, and the real one was never marked internal. Compose reads YAML 1.2
+    (gopkg.in/yaml.v3), where they stay strings. A confinement control that disagrees with Compose
+    about a network's NAME fails open."""
+    text = "networks:\n  no: {}\n  on: {}\nservices:\n  a: {networks: [no]}\n"
+    assert compose_network_names(text) == ("no", "on")
 
 
 def test_compose_network_names_reads_declarations_and_attachments():

@@ -29,6 +29,11 @@ class MissionRef(_Frozen):
 
     mission_id: str
     image: str  # OCI image ref, e.g. ghcr.io/xorcise/mission-xyz:1.2.3
+    # The manifest's `environment.compose_file`, relative to the bundle root the fused image copies
+    # to /mission. The runner reads that file OUT of the image to enumerate the networks the run
+    # will create, so it has to be the authored name — the default is only a default, and a mission
+    # that sets `compose_file: compose.yaml` would otherwise have its networks left unconfined.
+    compose_file: str = "docker-compose.yml"
 
 
 class InstalledImageIdentity(_Frozen):

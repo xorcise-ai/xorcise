@@ -66,6 +66,14 @@ if command -v setsid >/dev/null 2>&1; then DETACH="setsid"; else DETACH="nohup";
 # into container args/env/image metadata. `XORCISE_TAILSCALE_MODE=sidecar|native` is an explicit
 # diagnostic override that skips the capability detection entirely.
 TS_MODE="${XORCISE_TAILSCALE_MODE:-auto}"
+# One probe, cached: `docker info` on an unreachable daemon blocks for its full timeout, and this
+# used to be asked twice on every join (once to detect, once to guard).
+HAVE_DOCKER=no
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then HAVE_DOCKER=yes; fi
+# Set when `auto` chose the sidecar, so a sidecar that cannot start can fall back to native
+# instead of failing the join. An EXPLICIT XORCISE_TAILSCALE_MODE=sidecar never falls back — an
+# operator naming the mode is diagnosing something and wants the failure.
+TS_FALLBACK=no
 case "$TS_MODE" in
   auto)
     if [ "$(uname -s)" = "Darwin" ]; then
@@ -74,12 +82,13 @@ case "$TS_MODE" in
       # Kernel mode: a real TUN, so the host stack applies. Loopback stays private, targets are
       # reachable directly by IP, and no proxy exists to expose. The faithful option; preferred.
       TS_MODE=native
-    elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    elif [ "$HAVE_DOCKER" = yes ]; then
       # No TUN, but Docker: run userspace-networking in a CONTAINER rather than on the host.
       # In userspace mode netstack delivers inbound tailnet connections to 127.0.0.1 — whichever
       # 127.0.0.1 tailscaled happens to own. On the host that publishes EVERY host loopback
       # service to the mission network; inside a container it is a near-empty namespace.
       TS_MODE=sidecar
+      TS_FALLBACK=yes
     else
       # Last resort: userspace on the host. Works anywhere, but see the warning it prints.
       TS_MODE=native
@@ -92,12 +101,13 @@ case "$TS_MODE" in
     ;;
 esac
 
+if [ "$TS_MODE" = sidecar ] && [ "$HAVE_DOCKER" != yes ]; then
+  echo "xorcise: Docker is required for the tailnet sidecar." >&2
+  echo "  Start Docker (Desktop, or the daemon), then re-run the join command." >&2
+  exit 1
+fi
+
 if [ "$TS_MODE" = sidecar ]; then
-  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
-    echo "xorcise: Docker is required for the tailnet sidecar." >&2
-    echo "  Start Docker (Desktop, or the daemon), then re-run the join command." >&2
-    exit 1
-  fi
 
   RUN_TOKEN=$(printf '%s' "${RC_BASE##*/}" | tr -cd 'A-Za-z0-9_.-' | cut -c1-48)
   [ -n "$RUN_TOKEN" ] || RUN_TOKEN=$(cksum < /dev/null | awk '{print $1}')
@@ -149,9 +159,14 @@ if [ "$TS_MODE" = sidecar ]; then
     # identity. The docker published-port proxy dials the container address, so binding it keeps
     # the host side working while removing the tailnet side. (No apostrophes: this whole script is
     # a single-quoted argument to sh -c.)
-    bip=$(ip -4 -o addr show eth0 2>/dev/null |
-      sed -n "s|.*inet \([0-9.][0-9.]*\)/.*|\1|p" | head -1)
-    [ -n "$bip" ] || bip=0.0.0.0
+    bip=$(ip -4 -o addr show 2>/dev/null |
+      sed -n "s|.*inet \([0-9.][0-9.]*\)/.*|\1|p" | grep -v "^127\." | head -1)
+    if [ -z "$bip" ]; then
+      echo "xorcise: no non-loopback address to bind the tailnet proxies to; refusing to" >&2
+      echo "  start. Falling back to a wildcard bind here would publish this SOCKS5/HTTP" >&2
+      echo "  proxy ON the tailnet, handing mission code a relay with the agent identity." >&2
+      exit 1
+    fi
     tailscaled --socks5-server="$bip":1055 --outbound-http-proxy-listen="$bip":1056 "$@" &
     tailscaled_pid=$!
 
@@ -194,9 +209,25 @@ if [ "$TS_MODE" = sidecar ]; then
     --tun=userspace-networking \
     --state=/tmp/xorcise-tailscaled.state --socket="$SIDECAR_SOCK"
   if ! "$@" >/dev/null; then
-    echo "xorcise: tailnet sidecar failed to start (image $SIDECAR_IMAGE)." >&2
-    exit 1
+    if [ "$TS_FALLBACK" = yes ]; then
+      # The sidecar image comes from Docker Hub; the native client comes from run-control, which
+      # caches it for exactly this case. So an air-gapped host — the one the tarball path exists
+      # to serve — is precisely where the sidecar cannot start, and `auto` preferring the sidecar
+      # would otherwise have made the join impossible there rather than merely less contained.
+      # Say what is being given up: host userspace mode puts netstack on THIS host's 127.0.0.1.
+      echo "xorcise: tailnet sidecar could not start (image $SIDECAR_IMAGE)." >&2
+      echo "  Falling back to host userspace networking. Inbound tailnet connections will be" >&2
+      echo "  delivered to this host's loopback rather than a container's — set" >&2
+      echo "  XORCISE_TAILSCALE_MODE=sidecar to make this a hard failure instead." >&2
+      TS_MODE=native
+    else
+      echo "xorcise: tailnet sidecar failed to start (image $SIDECAR_IMAGE)." >&2
+      exit 1
+    fi
   fi
+fi
+
+if [ "$TS_MODE" = sidecar ]; then
 
   i=0
   while [ "$i" -lt 15 ]; do

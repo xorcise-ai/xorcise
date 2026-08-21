@@ -533,12 +533,19 @@ def _resolve_run_name(name: str | None, agent_id: str, agent_name: str, mission_
 def _ingress_addr_for(entry_subnets: dict[str, str]) -> str:
     """The mission-network address the router forwards to the agent, for the prompt.
 
+    The router arms an ingress address on EVERY entry subnet (they are separate segments with no
+    route between them, so one address cannot serve all of them). The prompt can only name one, so
+    it names the FIRST network the manifest declares — `entry_subnets` preserves manifest order —
+    rather than the alphabetically first. Collation order is not a property the author controls:
+    for `entry_networks: [zulu_net, alpha_net]` it silently advertised alpha_net's address, so an
+    agent registering it was unreachable from the segment the author meant to be agent-facing.
+
     Lazy import, like every other part-island reach from this module: pulling the runner plane in
     at module scope would break role isolation (tests/topology::test_role_boots_only_its_plane).
     """
     from xorcise.core.runner.netoverride import ingress_address
 
-    return ingress_address(entry_subnets[sorted(entry_subnets)[0]])
+    return ingress_address(next(iter(entry_subnets.values())))
 
 
 def _acl_active_provider() -> list[RunNetwork]:
@@ -697,6 +704,9 @@ def _create_run_with_cidr(
             mission=MissionRef(
                 mission_id=installed.mission_ref.mission_id,
                 image=installed.mission_ref.image,
+                # The authored compose name, so the runner reads the right file out of the image
+                # to enumerate (and therefore confine) the networks this run will create.
+                compose_file=installed.environment.compose_file,
             ),
             network=NetworkSpec(
                 tailnet=cidr,

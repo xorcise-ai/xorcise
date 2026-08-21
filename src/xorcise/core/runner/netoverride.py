@@ -19,10 +19,18 @@ from xorcise.core.runner.docker import MANAGED_LABEL, RUN_ID_LABEL
 # bakes this into the fused image's images.tar so no run-time pull is needed at deploy.
 ROUTER_IMAGE = "tailscale/tailscale:stable"
 
-# The router's own address on each carved entry subnet. Pinned rather than left to docker: the
-# ingress DNAT and the agent-facing callback address both have to be knowable before the stack is
-# up, and a docker-sequential address is not.
-ROUTER_OCTET = 2
+# How far below the broadcast address the router and the agent's callback address sit. Both are
+# pinned rather than left to docker: the ingress DNAT and the callback address have to be knowable
+# before the stack is up, and a docker-sequential address is not.
+#
+# They sit at the TOP of the range because docker's IPAM allocates from the BOTTOM: the gateway
+# takes .1 and the first unpinned service takes .2, so a router pinned there races every mission
+# service that does not pin itself. That race is not theoretical and it is not rare — a two-service
+# stack with the router at .2 failed `compose up` 4 times in 5 with `Address already in use`, which
+# under the fused entrypoint's `set -eu` kills the outer container and reports the run FAILED with
+# an error naming neither side. At the top of the range the same stack came up 6 times in 6.
+INGRESS_OFFSET = 1  # /24 -> .254
+ROUTER_OFFSET = 2  # /24 -> .253
 
 # The confinement network. Mission networks are `internal: true`, which removes their route off
 # box entirely — including the docker-bridge path that let a mission container reach the agent
@@ -56,18 +64,31 @@ def _host_in_subnet(cidr: str, octet: int) -> str:
     return str(ipaddress.ip_network(cidr).network_address + octet)
 
 
+def _from_top(cidr: str, offset: int) -> str:
+    """The address <offset> below <cidr>'s broadcast address. Pure.
+
+    Counting DOWN from the broadcast keeps these clear of docker's bottom-up sequential allocation
+    and stays in range for a carved sub-subnet, which a fixed high octet would not.
+    """
+    return str(ipaddress.ip_network(cidr).broadcast_address - offset)
+
+
 def ingress_address(cidr: str) -> str:
-    """The agent's callback address ON the mission subnet, taken from the TOP of the range.
+    """The agent's callback address ON the mission subnet.
 
     The target reaches the agent here and the router DNATs it across the tailnet. Putting the
     address inside the mission subnet is what keeps the fused container out of this: a mission
     container talks to it as a same-segment neighbour, so no route off the subnet — and therefore
-    no gateway change — is ever needed. Counting down from the broadcast address keeps it clear of
-    docker's bottom-up sequential allocation and stays in range for a carved sub-subnet, which a
-    fixed high octet would not.
+    no gateway change — is ever needed. That last point is load-bearing under confinement: an
+    `internal: true` network gives its containers an on-link route and NO default route, so an
+    address outside their own subnet is not merely filtered, it is `Network unreachable`.
     """
-    net = ipaddress.ip_network(cidr)
-    return str(net.broadcast_address - 1)
+    return _from_top(cidr, INGRESS_OFFSET)
+
+
+def router_address(cidr: str) -> str:
+    """The router's own address on a carved entry subnet."""
+    return _from_top(cidr, ROUTER_OFFSET)
 
 
 def target_ips_for(
@@ -100,35 +121,57 @@ def target_ips_for(
 # The agent is found by its HEADSCALE USER, which is derived from the run id and therefore known
 # here; its tailnet ADDRESS is not knowable at compose time (the agent joins later, and may rejoin
 # with a different one), so the DNAT target is discovered and re-pointed rather than pinned.
-_INGRESS_PROLOGUE = r"""
+#
+# `iptables-nft`, not bare `iptables`: the image symlinks `iptables` to iptables-legacy, which needs
+# the ip_tables/iptable_nat kernel modules. This container is nested with no /lib/modules to
+# modprobe them, so on an nftables-only host (Kali) legacy installs ZERO rules — the same
+# silent-dead-data-plane failure TS_DEBUG_FIREWALL_MODE=nftables exists to prevent, and mixing the
+# two backends would split the ruleset besides. There is no `set -e` here, so every rule that
+# matters is checked explicitly and a failure aborts the router rather than booting it unarmed.
+_INGRESS_ADDR_BLOCK = r"""
 rip="%%ROUTER_IP%%"
 dev=$$(ip -4 -o addr show 2>/dev/null | awk -v r="$$rip" '$$4 ~ "^"r"/" {print $$2; exit}')
 [ -n "$$dev" ] || dev=eth0
 ip addr add %%INGRESS_CIDR%% dev "$$dev" 2>/dev/null || true
-iptables -t nat -C POSTROUTING -o tailscale0 -j MASQUERADE 2>/dev/null ||
-  iptables -t nat -A POSTROUTING -o tailscale0 -j MASQUERADE
+""".strip()
+
+_INGRESS_WATCHER = r"""
+IPT=iptables-nft
+command -v "$$IPT" >/dev/null 2>&1 || IPT=iptables
+INGRESS_IPS="%%INGRESS_IPS%%"
+"$$IPT" -t nat -C POSTROUTING -o tailscale0 -j MASQUERADE 2>/dev/null ||
+  "$$IPT" -t nat -A POSTROUTING -o tailscale0 -j MASQUERADE || {
+    echo "xorcise: FATAL agent ingress SNAT rule would not install ($$IPT)" >&2
+    exit 1
+  }
 (
   cur=""
   waited=0
   while :; do
     aip=$$(tailscale status 2>/dev/null |
-      grep -E "[[:space:]]%%AGENT_USER%%[[:space:]]" | head -1 | awk '{print $$1}')
+      grep -E "[[:space:]]%%AGENT_USER%%[[:space:]]" | grep -v "offline" |
+      head -1 | awk '{print $$1}')
     case "$$aip" in 100.*) ;; *) aip="" ;; esac
     if [ -n "$$aip" ] && [ "$$aip" != "$$cur" ]; then
-      if [ -n "$$cur" ]; then
-        iptables -t nat -D PREROUTING -d %%INGRESS_IP%% -p tcp \
-          -j DNAT --to-destination "$$cur" 2>/dev/null || true
-      fi
-      iptables -t nat -A PREROUTING -d %%INGRESS_IP%% -p tcp -j DNAT --to-destination "$$aip"
+      for iip in $$INGRESS_IPS; do
+        if [ -n "$$cur" ]; then
+          "$$IPT" -t nat -D PREROUTING -d "$$iip" \
+            -j DNAT --to-destination "$$cur" 2>/dev/null || true
+        fi
+        "$$IPT" -t nat -A PREROUTING -d "$$iip" -j DNAT --to-destination "$$aip" || {
+          echo "xorcise: FATAL agent ingress DNAT for $$iip would not install" >&2
+          kill -TERM 1
+        }
+      done
       cur="$$aip"
       waited=0
-      echo "xorcise: agent ingress %%INGRESS_IP%% -> $$aip" >&2
+      echo "xorcise: agent ingress [$$INGRESS_IPS] -> $$aip" >&2
     fi
     if [ -z "$$cur" ]; then
       waited=$$((waited + 3))
       if [ "$$waited" -ge 60 ] && [ $$((waited % 60)) -eq 0 ]; then
         echo "xorcise: WARNING agent ingress NOT armed after $${waited}s -" \
-          "no tailnet node for user %%AGENT_USER%%" >&2
+          "no online tailnet node for user %%AGENT_USER%%" >&2
       fi
     fi
     sleep 3
@@ -137,16 +180,28 @@ iptables -t nat -C POSTROUTING -o tailscale0 -j MASQUERADE 2>/dev/null ||
 """.strip()
 
 
-def _ingress_prologue(*, agent_user: str, router_ip: str, cidr: str) -> str:
-    """Render the ingress prologue for one run. Pure."""
-    net = ipaddress.ip_network(cidr)
-    ingress_ip = ingress_address(cidr)
-    return (
-        _INGRESS_PROLOGUE.replace("%%AGENT_USER%%", agent_user)
-        .replace("%%ROUTER_IP%%", router_ip)
-        .replace("%%INGRESS_CIDR%%", f"{ingress_ip}/{net.prefixlen}")
-        .replace("%%INGRESS_IP%%", ingress_ip)
-    )
+def _ingress_prologue(*, agent_user: str, entry_subnets: Mapping[str, str]) -> str:
+    """Render the ingress prologue for one run. Pure.
+
+    An ingress address is armed on EVERY carved entry subnet, not just one. Under confinement each
+    entry network is `internal: true` and therefore has no default route, so a mission service can
+    only ever reach a callback address that is on-link for its OWN segment — one address armed on
+    one segment is simply unreachable from the others (`Network unreachable`, not a timeout). The
+    DNAT carries no protocol match, so a beacon over UDP, or an ICMP probe of the callback address,
+    reaches the agent the same as TCP does; the prompt promises the agent any port, and the
+    mission author should not have to know which protocols the fence happens to forward.
+    """
+    blocks = [
+        _INGRESS_ADDR_BLOCK.replace("%%ROUTER_IP%%", router_address(cidr)).replace(
+            "%%INGRESS_CIDR%%",
+            f"{ingress_address(cidr)}/{ipaddress.ip_network(cidr).prefixlen}",
+        )
+        for cidr in entry_subnets.values()
+    ]
+    watcher = _INGRESS_WATCHER.replace(
+        "%%INGRESS_IPS%%", " ".join(ingress_address(c) for c in entry_subnets.values())
+    ).replace("%%AGENT_USER%%", agent_user)
+    return "\n".join([*blocks, watcher])
 
 
 def compose_network_names(compose_text: str) -> tuple[str, ...]:
@@ -159,7 +214,14 @@ def compose_network_names(compose_text: str) -> tuple[str, ...]:
     box intact, which is exactly the shape the segmentation missions use.
     """
     try:
-        doc = yaml.safe_load(compose_text) or {}
+        # BaseLoader, not safe_load: PyYAML's default resolver is YAML 1.1, where the bare keys
+        # `no`/`on`/`yes`/`off`/`y`/`n` become booleans — so a network legitimately named `no`
+        # would be stringified back to "False" here, and the real network would never be marked
+        # internal. Docker Compose reads YAML 1.2 (gopkg.in/yaml.v3), where they stay strings.
+        # BaseLoader leaves every scalar a string, which is what makes this read the same document
+        # Compose will. Silently disagreeing with Compose about a network's NAME is a fail-open in
+        # a confinement control, which is why it is worth the non-default loader.
+        doc = yaml.load(compose_text, Loader=yaml.BaseLoader) or {}  # noqa: S506
     except yaml.YAMLError as exc:
         raise ValueError(f"mission compose is not valid YAML: {exc}") from exc
     if not isinstance(doc, dict):
@@ -198,10 +260,10 @@ def _assert_reserved_addresses_free(
             if cidr is None:
                 continue
             claimed = _host_in_subnet(cidr, octet)
-            if octet == ROUTER_OCTET:
+            if claimed == router_address(cidr):
                 raise ValueError(
                     f"mission service {service!r} pins {claimed} on network {net!r}, which is "
-                    f"reserved for the run's tailscale router (octet {ROUTER_OCTET})"
+                    "reserved for the run's tailscale router"
                 )
             if claimed == ingress_address(cidr):
                 raise ValueError(
@@ -274,8 +336,7 @@ def build_net_override(
         "TS_STATE_DIR=/var/lib/tailscale",
     ]
     router_nets: dict[str, object] = {
-        name: {"ipv4_address": _host_in_subnet(cidr, ROUTER_OCTET)}
-        for name, cidr in entry_subnets.items()
+        name: {"ipv4_address": router_address(cidr)} for name, cidr in entry_subnets.items()
     }
     if confine:
         router_nets[EGRESS_NET] = {"priority": EGRESS_PRIORITY}
@@ -310,16 +371,7 @@ def build_net_override(
                 "agent ingress requires agent_user — the router discovers the agent's tailnet "
                 "address by its headscale user and cannot arm ingress without it"
             )
-        # One ingress endpoint, on the first carved subnet by name so the address is stable.
-        net_name = sorted(entry_subnets)[0]
-        cidr = entry_subnets[net_name]
-        prologue.append(
-            _ingress_prologue(
-                agent_user=agent_user,
-                router_ip=_host_in_subnet(cidr, ROUTER_OCTET),
-                cidr=cidr,
-            )
-        )
+        prologue.append(_ingress_prologue(agent_user=agent_user, entry_subnets=entry_subnets))
     if prologue:
         # Anything the router must do in its OWN netns before tailscaled owns it. iptables rules
         # naming tailscale0 are accepted before the interface exists (matched at packet time), so

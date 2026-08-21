@@ -294,7 +294,7 @@ def test_auto_prefers_kernel_then_sidecar_over_userspace_on_the_host():
     s = _script()
     auto = s[s.index("  auto)") : s.index("  sidecar | native) ;;")]
     kernel = auto.index('[ "$(id -u)" = "0" ] && [ -w /dev/net/tun ]')
-    assert kernel < auto.index("command -v docker")
+    assert kernel < auto.index('[ "$HAVE_DOCKER" = yes ]')
     assert auto.count("TS_MODE=native") == 2  # kernel first, host-userspace last
     assert "TS_MODE=sidecar" in auto
 
@@ -324,3 +324,42 @@ def test_linux_sidecar_maps_host_docker_internal_to_the_gateway():
 def test_both_native_modes_say_how_to_accept_connections():
     s = _script()
     assert s.count("to ACCEPT connections, bind a port on this host") == 2
+
+
+def test_the_sidecar_proxy_bind_fails_closed_rather_than_going_wildcard():
+    """`[ -n "$bip" ] || bip=0.0.0.0` undid the whole point of the contained bind. In
+    userspace-networking mode netstack delivers inbound tailnet connections to 127.0.0.1 INSIDE
+    the sidecar, so a wildcard bind publishes the SOCKS5/HTTP proxy ON the tailnet — and with
+    agent ingress now open, that hands mission code a working relay carrying the agent's identity.
+    The join printed success either way, so nobody would have found out."""
+    s = _script()
+    assert "bip=0.0.0.0" not in s
+    body = s[s.index("bip=$(ip -4 -o addr show") :]
+    assert "exit 1" in body[: body.index("tailscaled --socks5-server")]
+
+
+def test_auto_falls_back_to_native_when_the_sidecar_cannot_start():
+    """The sidecar image comes from Docker Hub; the native client comes from run-control, which
+    caches it precisely for the air-gapped host. So the offline host is exactly where the sidecar
+    cannot start — and `auto` preferring the sidecar with no fall-through made the join impossible
+    there, on a path the script itself advertises."""
+    s = _script()
+    fail = s[s.index('if ! "$@" >/dev/null; then') :]
+    fail = fail[: fail.index('if [ "$TS_MODE" = sidecar ]; then')]
+    assert 'TS_FALLBACK" = yes' in fail
+    assert "TS_MODE=native" in fail
+
+
+def test_an_explicitly_requested_sidecar_never_falls_back():
+    """An operator naming the mode is diagnosing something and wants the failure, not a quiet
+    downgrade to the less contained path."""
+    s = _script()
+    auto = s[s.index("  auto)") : s.index("  sidecar | native) ;;")]
+    assert auto.count("TS_FALLBACK=yes") == 1  # set only where `auto` chose the sidecar
+    assert "TS_FALLBACK=no" in s[: s.index("  auto)")]
+
+
+def test_the_docker_daemon_is_probed_once_per_join():
+    """`docker info` on an unreachable daemon blocks for its full timeout, and this was asked
+    twice on every join — once to detect the mode, once to guard the sidecar branch."""
+    assert _script().count("docker info >/dev/null 2>&1") == 1

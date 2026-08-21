@@ -246,7 +246,39 @@ def test_mission_networks_are_confined_unless_the_author_opts_out():
     the target can reach the agent: that direction is always open, because the agent is a host on
     the mission network and making it unreachable is the artificial state.
     """
+    from xorcise.core.contracts.control import NetworkSpec
     from xorcise.core.contracts.mission import EnvironmentSpec
 
     assert EnvironmentSpec().allow_egress is False
-    assert not hasattr(EnvironmentSpec(), "agent_ingress")
+    # `agent_ingress` survives on the manifest ONLY as a compat shim for already-published
+    # catalog entries (see the regression test below). Nothing carries it inward: the runner
+    # contract has no such field, so there is no switch left to flip.
+    assert not hasattr(NetworkSpec(), "agent_ingress")
+    assert "agent_ingress" not in NetworkSpec.model_fields
+
+
+def test_a_published_manifest_carrying_agent_ingress_still_installs():
+    """Regression: `EnvironmentSpec` is `extra="forbid"`, and the published catalog is versioned
+    independently of this code. Deleting `agent_ingress` when reachability stopped being a
+    per-mission switch turned every already-published manifest that sets it into a hard install
+    failure — `xorcise run create --mission segmented-pivot` died with "Extra inputs are not
+    permitted" on a client that had done nothing but upgrade. The field is accepted and ignored
+    until the catalog stops emitting it."""
+    from xorcise.core.contracts.mission import EnvironmentSpec
+
+    env = EnvironmentSpec.model_validate(
+        {"compose_file": "docker-compose.yml", "entry_networks": ["dmz_net"], "agent_ingress": True}
+    )
+    assert env.entry_networks == ("dmz_net",)
+
+
+def test_an_unknown_environment_key_is_still_rejected():
+    """Accepting one legacy field must not turn the whole model permissive — a typo'd key is
+    still the author's bug, and silently ignoring it is how a mission ships misconfigured."""
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    from xorcise.core.contracts.mission import EnvironmentSpec
+
+    with _pytest.raises(ValidationError):
+        EnvironmentSpec.model_validate({"allow_egres": True})

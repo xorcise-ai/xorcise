@@ -9,6 +9,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import ClassVar
 
 # Every per-run container the driver creates is stamped with this label so it can be reaped
 # without any in-process bookkeeping — survives a server restart, an abandoned run,
@@ -110,6 +111,12 @@ class DockerDriver(ABC):
         Keyed on the deterministic container name, not an in-memory handle, so teardown works
         across a server restart or from a second process. Absent ⇒ False."""
 
+    # Whether this driver has an image store to read from at all. The stub does not; a real driver
+    # does. The confinement pass keys off this to tell "nothing to read here" apart from "the read
+    # failed", so a driver can only decline to confine by saying so explicitly.
+    reads_image_files: ClassVar[bool] = False
+
+    @abstractmethod
     def read_image_file(self, image: str, path: str) -> str | None:
         """A file's text from inside an image, WITHOUT running it. None ⇒ this driver can't read.
 
@@ -118,8 +125,12 @@ class DockerDriver(ABC):
         confinement pass has to read it from there. A real driver either returns the content or
         raises; None is the stub's answer (no image store to read), never a real driver's way of
         reporting failure, because a silent empty answer would leave networks unconfined.
+
+        Abstract, with no base implementation, precisely because of that last sentence: as a
+        non-abstract `return None` default, a future real driver that simply never overrode it
+        would silently disable confinement for every run it deployed, and nothing — not a log line,
+        not a test — would say so. Declining is now something a driver has to write down.
         """
-        return None
 
     @abstractmethod
     def inspect_by_name(self, name: str) -> ContainerHandle | None:
@@ -241,6 +252,11 @@ class StubDockerDriver(DockerDriver):
 
     def image_exists(self, image: str) -> bool:
         return image in self.present
+
+    def read_image_file(self, image: str, path: str) -> str | None:
+        """No image store to read from — see `reads_image_files`. The stub creates no networks
+        either, so there is nothing here left unconfined."""
+        return None
 
     def run(self, spec: ContainerSpec) -> ContainerHandle:
         self._counter += 1

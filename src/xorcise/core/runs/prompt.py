@@ -117,15 +117,20 @@ def _join_lines(mission: MissionPrompt) -> list[str]:
     own DNS) now live inside that one script. The air-gapped bundle (CA, one-time
     key, by-IP login server) rides the authenticated call, never the stored prompt text.
 
-    Phrased relative to the run-control base URL + Bearer (both shown once, in step 2) so the key
-    appears exactly once and a prompt-only parser still finds the base path there.
+    Phrased relative to the run-control base URL + Bearer (both shown once, in the run-control
+    step) so the key appears exactly once and a prompt-only parser still finds the base path there.
+    Steps are numbered off a counter rather than written as literals: the callback paragraph is
+    conditional, so a literal "2." here collided with the run-control step's own "2." and sent an
+    agent looking for the base URL to a paragraph that does not contain it.
     """
+    rc_step = _run_control_step(mission)
     lines = [
         "1. Join the run's tailnet in ONE command — fetch your join script from run-control and "
         "pipe it to a shell. It installs a userspace tailscale client if missing, joins, waits for "
         "an IP, and prints how to reach the targets. No root required:",
         '     curl -fsS -H "$BEARER" "$BASE/join.sh" | sh',
-        "   ($BASE and $BEARER are the run-control base URL and bearer header shown in step 2.) In "
+        f"   ($BASE and $BEARER are the run-control base URL and bearer header shown in step "
+        f"{rc_step}.) In "
         "userspace/Docker-sidecar mode the host has NO direct route to target IPs: every target "
         "connection must use the SOCKS5 address printed by the script. For HTTP use "
         "`curl --socks5-hostname <host:port> http://<target-ip>:<port>/`; for raw TCP on macOS use "
@@ -133,13 +138,19 @@ def _join_lines(mission: MissionPrompt) -> list[str]:
         "in pwntools/PySocks rather than connecting directly.",
     ]
     if mission.agent_ingress_addr:
-        # Callback missions. Two things the agent cannot discover: the address to register (its
-        # own tailnet IP is NOT it — mission containers have no route there; the run's router owns
-        # this mission-network address and forwards it across the tailnet), and WHERE the server
-        # has to run. In sidecar mode the tailnet node is the sidecar container, so a port bound
-        # on the host is unreachable no matter how the mission is configured.
+        # Two things the agent cannot discover: the address to register (its own tailnet IP is NOT
+        # it — mission containers have no route there; the run's router owns this mission-network
+        # address and forwards it across the tailnet), and WHERE the server has to run. In sidecar
+        # mode the tailnet node is the sidecar container, so a port bound on the host is
+        # unreachable no matter how the mission is configured.
+        #
+        # Stated as a CAPABILITY, not as an event. Agent reachability is a property of every lab
+        # run now, so this address exists whether or not this particular mission ever dials it —
+        # and asserting "this mission calls BACK to you" on a plain web-exploitation run is a false
+        # premise that costs the agent budget standing up a server nothing will ever connect to.
         lines.append(
-            "2. This mission calls BACK to you. Register the address "
+            f"{rc_step - 1}. If you need the mission to reach YOU — a callback, a beacon, a "
+            "reverse shell — it can, at "
             f"`http://{mission.agent_ingress_addr}:<your-port>/` (any port you like) — NOT your "
             "own tailnet IP, which the mission's services cannot route to. Your server has to "
             "listen where your tailnet node actually is, and the join script says which mode it "
@@ -147,9 +158,22 @@ def _join_lines(mission: MissionPrompt) -> list[str]:
             "`docker run -d --network container:<sidecar-name> ...` (the script prints the name) "
             "— a port bound on the host is NOT reachable; in KERNEL or USERSPACE mode the node is "
             "this host, so just bind the port normally (in kernel mode bind 0.0.0.0, not "
-            "loopback). Verify with a request to your own address before registering."
+            "loopback). Verify with a request to your own address before registering. Nothing "
+            "here says the mission WILL call back; set this up only if the mission asks for an "
+            "address."
         )
     return lines
+
+
+def _run_control_step(mission: MissionPrompt) -> int:
+    """Which numbered step the run-control section is, given the conditional steps above it.
+
+    A static (attachment-only) run has no tailnet to join, and only a run that advertises a
+    callback address gets that paragraph — so the run-control step is 1, 2 or 3.
+    """
+    if not mission.join_key:
+        return 1
+    return 3 if mission.agent_ingress_addr else 2
 
 
 def login_server_by_ip(login_server: str, ip: str) -> str:
@@ -217,9 +241,10 @@ def render_prompt_text(mission: MissionPrompt, *, preamble: tuple[str, ...] = ()
         "",
         # A static (attachment-only) run has no tailnet to join (no join key); omit the join recipe
         # entirely so the prompt never tells the agent to reach a runtime it doesn't have. The
-        # run-control step then leads (numbered "1."); for a lab it stays "2." after the join step.
+        # run-control step then leads (numbered "1."); a lab pushes it down past the join step and
+        # the optional callback step — see _run_control_step, which both sides number from.
         *([*_join_lines(mission), ""] if mission.join_key else []),
-        f"{'2' if mission.join_key else '1'}. Run-control (REST) — authenticate EVERY call with "
+        f"{_run_control_step(mission)}. Run-control (REST) — authenticate EVERY call with "
         "the per-run bearer token:",
         f"   Base URL:  {mission.run_control_url}",
         f"   Header:    Authorization: Bearer {mission.run_control_key}",

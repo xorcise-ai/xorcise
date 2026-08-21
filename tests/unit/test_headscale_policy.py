@@ -50,7 +50,7 @@ def test_safe_passes_for_good_policy():
 )
 def test_safe_rejects_allow_all_tokens(evil):
     with pytest.raises(ValueError):
-        assert_policy_safe(evil, [])
+        assert_policy_safe(evil, [], router_tag=TAG)
 
 
 def test_safe_rejects_missing_run_rule():
@@ -64,7 +64,7 @@ def test_safe_rejects_missing_cidr():
     nets = [_net("agent-1", "10.200.1.0/24")]
     text = render_policy([_net("agent-1", "10.200.9.0/24")], router_tag=TAG, orchestrator_user=ORCH)
     with pytest.raises(ValueError):
-        assert_policy_safe(text, nets)
+        assert_policy_safe(text, nets, router_tag=TAG)
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +135,9 @@ def test_assert_policy_safe_rejects_a_foreign_dst():
         }
     )
     with pytest.raises(ValueError):
-        assert_policy_safe(bad, [_net("run-a-agent", "10.9.0.0/24")], collector_addr="172.17.0.1")
+        assert_policy_safe(
+            bad, [_net("run-a-agent", "10.9.0.0/24")], router_tag=TAG, collector_addr="172.17.0.1"
+        )
 
 
 @pytest.mark.unit
@@ -166,19 +168,23 @@ def test_assert_policy_safe_raises_when_agent_rule_missing_from_acls():
         }
     )
     with pytest.raises(ValueError):
-        assert_policy_safe(crafted, [_net("run-a-agent", "10.9.0.0/24")])
+        assert_policy_safe(crafted, [_net("run-a-agent", "10.9.0.0/24")], router_tag=TAG)
 
 
 # --- agent ingress -----------------------------------------------------------------------------
 
 
-def test_safe_refuses_to_certify_without_a_router_tag():
+@pytest.mark.parametrize("nets", [[_net("agent-1", "10.200.1.0/24")], []])
+def test_safe_refuses_to_certify_without_a_router_tag(nets):
     """Fail closed. The inbound rule's safety rests entirely on its source being pinned to THIS
-    run's router, so a policy that cannot be checked against that tag must not be certified."""
-    nets = [_net("agent-1", "10.200.1.0/24")]
+    run's router, so a policy that cannot be checked against that tag must not be certified.
+
+    The empty-`networks` case is the one that mattered: the gate used to sit INSIDE
+    `for net in networks:`, so a zero-iteration loop skipped it — and skipped the foreign-dst sweep
+    below with it — certifying a policy without having checked one router-sourced rule."""
     text = render_policy(nets, router_tag=TAG, orchestrator_user=ORCH)
     with pytest.raises(ValueError, match="router_tag"):
-        assert_policy_safe(text, nets)
+        assert_policy_safe(text, nets, router_tag="")
 
 
 def test_safe_rejects_a_missing_inbound_rule():

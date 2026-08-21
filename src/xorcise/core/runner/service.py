@@ -39,9 +39,11 @@ _CA_PATH = "/mission/headscale-ca.pem"
 _RUN_ID_RE = re.compile(r"[0-9a-f]{32}")
 
 
-# Where the fused image keeps the mission's authored compose. Read at deploy to enumerate the
-# networks the run will create so every one of them can be confined.
-MISSION_COMPOSE_PATH = "/mission/docker-compose.yml"
+# Where the fused image copies the mission bundle. The compose file's NAME within it comes from
+# the manifest (`environment.compose_file`, default docker-compose.yml) and rides on MissionRef —
+# build.py and preflight.py both honour it, so hardcoding a third copy of the default here would
+# make any mission that authored `compose.yaml` unreadable, and therefore unconfined.
+MISSION_BUNDLE_DIR = "/mission"
 
 
 @dataclass
@@ -74,7 +76,12 @@ class RunnerControlService:
             ContainerSpec(
                 image=request.mission.image,
                 name=request.run_id,
-                env=self._deploy_env(request.run_id, request.network, image=request.mission.image),
+                env=self._deploy_env(
+                    request.run_id,
+                    request.network,
+                    image=request.mission.image,
+                    compose_file=request.mission.compose_file,
+                ),
             )
         )
         endpoints = RunnerEndpoints(
@@ -90,7 +97,12 @@ class RunnerControlService:
         return endpoints
 
     def _deploy_env(
-        self, run_id: RunId, network: NetworkSpec, *, image: str = ""
+        self,
+        run_id: RunId,
+        network: NetworkSpec,
+        *,
+        image: str = "",
+        compose_file: str = "docker-compose.yml",
     ) -> tuple[tuple[str, str], ...]:
         """The env the fused entrypoint needs: the per-run net-override (the mission nets +
         the Tailscale router as an inner container) plus the secrets compose interpolates into
@@ -113,7 +125,22 @@ class RunnerControlService:
         # only authoritative source (the installed bundle carries the manifest, not the compose).
         # Confining just the carved entry networks would leave a multi-homed service its route off
         # box, so this is what makes the tailnet the ONLY path to the agent.
-        compose_text = self.driver.read_image_file(image, MISSION_COMPOSE_PATH) if image else None
+        compose_text = (
+            self.driver.read_image_file(image, f"{MISSION_BUNDLE_DIR}/{compose_file}")
+            if image
+            else None
+        )
+        if not compose_text and self.driver.reads_image_files and not network.allow_egress:
+            # Fail CLOSED. A driver that has an image store and still yields nothing has failed to
+            # read, and the only thing an empty answer can do downstream is silently narrow
+            # confinement to the carved entry networks — leaving a multi-homed service its route
+            # off box, which is the whole hole this exists to close. A run that cannot be confined
+            # must not deploy pretending it was. Drivers with no image store (the stub) create no
+            # networks, and an `allow_egress` mission is not being confined in the first place.
+            raise ValueError(
+                f"deploy({run_id}): could not read {compose_file!r} from image {image!r} — "
+                "refusing to deploy, because the mission's networks cannot be confined without it"
+            )
         all_networks = compose_network_names(compose_text) if compose_text else ()
         override = build_net_override(
             run_id,
