@@ -369,3 +369,54 @@ def test_recorded_platform_wins_over_the_image_inspect(tmp_path: Path, monkeypat
     row = next(e for e in list_catalog(deps) if e.mission_id == slug)
     assert row.platform == "linux/arm64"  # the record, not the inspect
     assert calls == []  # and the fallback never ran
+
+
+# --- platform probes must not accept docker's empty-field output --------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("linux/amd64", "linux/amd64"),
+        ("/", None),  # containerd snapshotter, foreign-arch local image: both fields empty
+        ("linux/", None),
+        ("/amd64", None),
+        ("", None),
+    ],
+)
+def test_local_image_platform_rejects_half_empty_output(monkeypatch, raw, expected):
+    """`"/" in raw` accepted a bare "/" — docker exits 0 with both fields empty for a
+    foreign-arch image under the containerd snapshotter. That surfaced to the operator as an
+    architecture ("This install is /, not native ARM64"). Unknown must stay None."""
+    from xorcise.core.config import Settings
+    from xorcise.core.rest import docker_runtime
+
+    docker_runtime.reset_host_platform_memo()
+
+    class _Result:
+        returncode = 0
+        stdout = raw
+
+    monkeypatch.setattr(
+        "xorcise.core.rest.docker_runtime.subprocess.run", lambda *a, **k: _Result()
+    )
+    assert docker_runtime.local_image_platform(Settings(use_stubs=False), "img:tag") == expected
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("linux/arm64", "linux/arm64"), ("/", None)])
+def test_host_platform_rejects_half_empty_output(monkeypatch, raw, expected):
+    """Same guard, same reasoning, on the host probe."""
+    from xorcise.core.config import Settings
+    from xorcise.core.rest import docker_runtime
+
+    docker_runtime.reset_host_platform_memo()
+
+    class _Result:
+        returncode = 0
+        stdout = raw
+
+    monkeypatch.setattr(
+        "xorcise.core.rest.docker_runtime.subprocess.run", lambda *a, **k: _Result()
+    )
+    assert docker_runtime.host_platform(Settings(use_stubs=False)) == expected
+    docker_runtime.reset_host_platform_memo()

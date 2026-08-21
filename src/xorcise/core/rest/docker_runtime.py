@@ -176,12 +176,26 @@ def host_platform(settings: Settings) -> str | None:
             text=True,
         )
         raw = result.stdout.strip()
-        if result.returncode == 0 and "/" in raw:
+        if result.returncode == 0 and _both_halves(raw):
             value = raw
     except (OSError, subprocess.SubprocessError):
         value = None
     _host_platform_memo = (now, value)
     return value
+
+
+def _both_halves(raw: str) -> bool:
+    """Whether `raw` is a usable `os/arch`, i.e. BOTH halves are present.
+
+    `"/" in raw` is not enough. Under the containerd snapshotter, `docker image inspect
+    --format '{{.Os}}/{{.Architecture}}'` exits 0 and prints a bare "/" for a foreign-arch local
+    image — both fields empty. That passed the old guard, so an unknown platform was recorded as
+    the literal "/" and surfaced to the operator as an architecture: the run form warned "This
+    install is /, not native ARM64", and the detail page painted a "/" tag. Unknown must stay
+    None, which the callers already render as "no claim".
+    """
+    os_, _, arch = raw.partition("/")
+    return bool(os_ and arch)
 
 
 def reset_host_platform_memo() -> None:
@@ -219,7 +233,7 @@ def local_image_platform(settings: Settings, image: str) -> str | None:
             text=True,
         )
         raw = result.stdout.strip()
-        if result.returncode == 0 and "/" in raw:
+        if result.returncode == 0 and _both_halves(raw):
             value = raw
     except (OSError, subprocess.SubprocessError):
         value = None

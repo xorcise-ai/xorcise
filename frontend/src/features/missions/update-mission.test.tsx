@@ -19,6 +19,9 @@ const BASE: CatalogEntry = {
   installed: true,
   skills: [],
   technologies: [],
+  // A lab mission always ships a container; platform tags are a claim about that artifact.
+  type: "lab",
+  image: "registry/mis-sqli-login:1.0.0",
   platforms: ["linux/amd64", "linux/arm64"],
   mission_version: "1.0.0",
   mission_base_version: "2.0.0",

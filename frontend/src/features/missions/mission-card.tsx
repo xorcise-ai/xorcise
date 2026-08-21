@@ -43,6 +43,11 @@ export type PlatformTag = {
  * one thing a lone "installed" badge could never tell you: WHICH arch you actually have.
  */
 export function platformTags(c: CatalogEntry): PlatformTag[] {
+  // A static mission ships an attachment and no container, so it has no architecture to claim.
+  // The catalog still sends platforms: ["linux/amd64"] for those rows, which would otherwise
+  // paint an AMD64 badge on a mission that never runs an image. Keyed on the artifact as well as
+  // the type, so a tag only ever reflects something that actually exists.
+  if (c.type === "static" || !c.image) return [];
   const all =
     c.platform && !c.platforms.includes(c.platform)
       ? [...c.platforms, c.platform]
