@@ -48,14 +48,6 @@ class RunRow(Base):
     # network_cidr is the /24 for allocation; entry_cidrs is the carved set the ACL rule needs (they
     # differ for multi-entry-network missions). Read via active_run_networks(); empty pre-column.
     entry_cidrs: Mapped[str] = mapped_column(Text, default="", server_default="")
-    # whether this run's mission expects the TARGET to connect back to the agent. Pinned at
-    # reserve time rather than re-read from the mission, for the same reason entry_cidrs is: the
-    # ACL is re-rendered from persisted non-terminal runs (including after a restart, in a process
-    # that never saw the manifest), and an upgraded mission must not silently change a live run's
-    # fence. False for runs created before this column — the pre-existing behaviour.
-    agent_ingress: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default="0"
-    )
     # terminal state machine. trigger ∈ {done, timeout, flag}; first-wins.
     terminal_trigger: Mapped[str | None] = mapped_column(String(16), default=None)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)

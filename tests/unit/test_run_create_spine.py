@@ -512,7 +512,7 @@ def test_create_run_failure_releases_the_reserved_subnet(migrated_home, install_
     _write_installed(install_root)
 
     class _BoomFence(NetworkFencePort):
-        def create_run_network(self, run_id, agent_user, entry_cidrs, *, agent_ingress=False):
+        def create_run_network(self, run_id, agent_user, entry_cidrs):
             raise RuntimeError("boom")
 
         def teardown_run_network(self, run_id): ...
@@ -533,7 +533,7 @@ class _RecordingFence(NetworkFencePort):
         self._sink = sink
         self._lock = lock
 
-    def create_run_network(self, run_id, agent_user, entry_cidrs, *, agent_ingress=False):
+    def create_run_network(self, run_id, agent_user, entry_cidrs):
         rec = tuple(entry_cidrs)
         if self._lock is not None:
             with self._lock:
@@ -654,7 +654,7 @@ def test_create_run_persists_entry_cidrs_for_acl(migrated_home, install_root):
         budget_seconds=None,
         deps=_deps(install_root),
     )
-    nets = {rid: cidrs for rid, cidrs, _ in runs.active_run_networks()}
+    nets = dict(runs.active_run_networks())
     assert run.run_id in nets and nets[run.run_id]  # non-empty carved entry cidrs
 
 

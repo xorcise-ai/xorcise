@@ -13,16 +13,9 @@ class HeadscaleFenceClient(NetworkFencePort):
         self._controller = controller
 
     def create_run_network(
-        self,
-        run_id: str,
-        agent_user: str,
-        entry_cidrs: Sequence[str],
-        *,
-        agent_ingress: bool = False,
+        self, run_id: str, agent_user: str, entry_cidrs: Sequence[str]
     ) -> RunNetwork:
-        return self._controller.create_run_network(
-            run_id, agent_user, entry_cidrs, agent_ingress=agent_ingress
-        )
+        return self._controller.create_run_network(run_id, agent_user, entry_cidrs)
 
     def teardown_run_network(self, run_id: str) -> None:
         self._controller.teardown_run_network(run_id)

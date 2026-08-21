@@ -20,7 +20,9 @@ def test_render_is_valid_json_with_expected_structure():
     assert doc["autoApprovers"]["routes"] == {"10.200.1.0/24": [TAG]}
     assert {"action": "accept", "src": [f"{ORCH}@"], "dst": [f"{ORCH}@:*"]} in doc["acls"]
     assert {"action": "accept", "src": ["agent-1@"], "dst": ["10.200.1.0/24:*"]} in doc["acls"]
-    assert len(doc["acls"]) == 2
+    # ...and the inbound rule back to the agent, which every run gets
+    assert {"action": "accept", "src": [TAG], "dst": ["agent-1@:*"]} in doc["acls"]
+    assert len(doc["acls"]) == 3
 
 
 def test_render_is_deterministic_and_sorted():
@@ -40,7 +42,7 @@ def test_render_no_runs_has_baseline_only():
 def test_safe_passes_for_good_policy():
     nets = [_net("agent-1", "10.200.1.0/24")]
     text = render_policy(nets, router_tag=TAG, orchestrator_user=ORCH)
-    assert_policy_safe(text, nets)
+    assert_policy_safe(text, nets, router_tag=TAG)
 
 
 @pytest.mark.parametrize(
@@ -55,7 +57,7 @@ def test_safe_rejects_missing_run_rule():
     nets = [_net("agent-1", "10.200.1.0/24")]
     text = render_policy([], router_tag=TAG, orchestrator_user=ORCH)
     with pytest.raises(ValueError):
-        assert_policy_safe(text, nets)
+        assert_policy_safe(text, nets, router_tag=TAG)
 
 
 def test_safe_rejects_missing_cidr():
@@ -108,7 +110,7 @@ def test_assert_policy_safe_accepts_collector_dst():
         orchestrator_user="orchestrator",
         collector_addr="172.17.0.1",
     )
-    assert_policy_safe(text, [net], collector_addr="172.17.0.1")
+    assert_policy_safe(text, [net], router_tag="tag:router", collector_addr="172.17.0.1")
     pol = json.loads(text)
     agent_rule = next(r for r in pol["acls"] if r["src"] == ["run-a-agent@"])
     assert "10.9.0.0/24:*" in agent_rule["dst"]
@@ -167,64 +169,42 @@ def test_assert_policy_safe_raises_when_agent_rule_missing_from_acls():
         assert_policy_safe(crafted, [_net("run-a-agent", "10.9.0.0/24")])
 
 
-# --- agent ingress (callback missions) -------------------------------------------------------
+# --- agent ingress -----------------------------------------------------------------------------
 
 
-def _ingress(user: str, *cidrs: str) -> RunNetwork:
-    return RunNetwork(agent_user=user, auth_key="k", entry_cidrs=tuple(cidrs), agent_ingress=True)
-
-
-def test_ingress_emits_one_router_sourced_rule():
-    nets = [_ingress("agent-1", "10.200.1.0/24")]
-    doc = json.loads(render_policy(nets, router_tag=TAG, orchestrator_user=ORCH))
-    assert {"action": "accept", "src": [TAG], "dst": ["agent-1@:*"]} in doc["acls"]
-    # baseline + outbound + inbound
-    assert len(doc["acls"]) == 3
-
-
-def test_no_ingress_rule_when_not_requested():
+def test_safe_refuses_to_certify_without_a_router_tag():
+    """Fail closed. The inbound rule's safety rests entirely on its source being pinned to THIS
+    run's router, so a policy that cannot be checked against that tag must not be certified."""
     nets = [_net("agent-1", "10.200.1.0/24")]
-    doc = json.loads(render_policy(nets, router_tag=TAG, orchestrator_user=ORCH))
-    assert not [r for r in doc["acls"] if r.get("src") == [TAG]]
-
-
-def test_safe_passes_for_ingress_policy():
-    nets = [_ingress("agent-1", "10.200.1.0/24")]
-    text = render_policy(nets, router_tag=TAG, orchestrator_user=ORCH)
-    assert_policy_safe(text, nets, router_tag=TAG)
-
-
-def test_safe_refuses_ingress_without_router_tag():
-    """Fail closed: an inbound rule that cannot be verified must not be certified."""
-    nets = [_ingress("agent-1", "10.200.1.0/24")]
     text = render_policy(nets, router_tag=TAG, orchestrator_user=ORCH)
     with pytest.raises(ValueError, match="router_tag"):
         assert_policy_safe(text, nets)
 
 
-def test_safe_rejects_missing_ingress_rule():
-    nets = [_ingress("agent-1", "10.200.1.0/24")]
-    text = render_policy([_net("agent-1", "10.200.1.0/24")], router_tag=TAG, orchestrator_user=ORCH)
+def test_safe_rejects_a_missing_inbound_rule():
+    nets = [_net("agent-1", "10.200.1.0/24")]
+    doc = json.loads(render_policy(nets, router_tag=TAG, orchestrator_user=ORCH))
+    doc["acls"] = [r for r in doc["acls"] if r.get("src") != [TAG]]
     with pytest.raises(ValueError, match="exactly one inbound rule"):
-        assert_policy_safe(text, nets, router_tag=TAG)
+        assert_policy_safe(json.dumps(doc), nets, router_tag=TAG)
 
 
-def test_safe_rejects_router_sourced_dst_for_a_foreign_agent():
+def test_safe_rejects_a_router_sourced_dst_for_a_foreign_agent():
     """A run's router must never be handed a path to another run's agent."""
-    nets = [_ingress("agent-1", "10.200.1.0/24")]
+    nets = [_net("agent-1", "10.200.1.0/24")]
     doc = json.loads(render_policy(nets, router_tag=TAG, orchestrator_user=ORCH))
     doc["acls"].append({"action": "accept", "src": [TAG], "dst": ["agent-2@:*"]})
     with pytest.raises(ValueError, match="unexpected router-sourced dst"):
         assert_policy_safe(json.dumps(doc), nets, router_tag=TAG)
 
 
-def test_ingress_dst_does_not_break_the_one_rule_per_agent_invariant():
+def test_inbound_dst_does_not_break_the_one_rule_per_agent_invariant():
     """Regression: assert_policy_safe counts occurrences of '"<user>@"' (quotes included).
 
     The inbound rule's dst is '"<user>@:*"', which must NOT match that needle — otherwise every
-    ingress policy would trip the "exactly one rule per agent" check.
+    rendered policy would trip the "exactly one rule per agent" check.
     """
-    nets = [_ingress("agent-1", "10.200.1.0/24")]
+    nets = [_net("agent-1", "10.200.1.0/24")]
     text = render_policy(nets, router_tag=TAG, orchestrator_user=ORCH)
     assert text.count('"agent-1@"') == 1
     assert '"agent-1@:*"' in text

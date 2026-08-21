@@ -475,7 +475,6 @@ def _reserve_run_subnet(
     mission: str,
     entry_networks: tuple[str, ...],
     *,
-    agent_ingress: bool = False,
     name: str | None = None,
 ) -> tuple[str, dict[str, str]]:
     """Allocate a /prefix avoiding every live run's subnet and reserve it as a DB row.
@@ -507,7 +506,6 @@ def _reserve_run_subnet(
                     mission,
                     network_cidr=cidr,
                     entry_cidrs=",".join(entry_subnets.values()),
-                    agent_ingress=agent_ingress,
                     name=name,
                 )
                 return cidr, entry_subnets
@@ -557,9 +555,8 @@ def _acl_active_provider() -> list[RunNetwork]:
             auth_key="",
             router_key="",
             entry_cidrs=ec,
-            agent_ingress=ingress,
         )
-        for rid, ec, ingress in runs.active_run_networks()
+        for rid, ec in runs.active_run_networks()
     ]
 
 
@@ -638,7 +635,6 @@ def create_run(
         agent.id,
         mission_slug,
         entry_networks,
-        agent_ingress=installed.environment.agent_ingress,
         name=run_name,
     )
     try:
@@ -686,9 +682,7 @@ def _create_run_with_cidr(
     # advertises — these CIDRs (the compose network NAMES are the keys, the subnets the values).
     entry_cidrs = tuple(entry_subnets.values())
 
-    net = deps.fence.create_run_network(
-        run_id, agent_user, entry_cidrs, agent_ingress=installed.environment.agent_ingress
-    )
+    net = deps.fence.create_run_network(run_id, agent_user, entry_cidrs)
     # capture the enforced per-run boundary config as observed facts (the anti-forgery
     # stream), independent of the agent's self-reported trace. Per-flow/violation facts
     # are future work.
@@ -713,7 +707,6 @@ def _create_run_with_cidr(
                 ca_cert=deps.ca_cert or None,  # air-gapped: router trusts the self-signed CA
                 extra_hosts=deps.extra_hosts,
                 static_ips=installed.environment.static_ips,  # pin to authored IPs
-                agent_ingress=installed.environment.agent_ingress,
                 allow_egress=installed.environment.allow_egress,
                 agent_user=_agent_user_for(run_id),
             ),
@@ -789,11 +782,7 @@ def _create_run_with_cidr(
         # Callback missions: the mission-network address the router forwards to the agent.
         # Derived from the SAME carved subnet the override pins the router on, so the
         # prompt and the deployed DNAT can never name different addresses.
-        agent_ingress_addr=(
-            _ingress_addr_for(entry_subnets)
-            if installed.environment.agent_ingress and entry_subnets
-            else ""
-        ),
+        agent_ingress_addr=_ingress_addr_for(entry_subnets) if entry_subnets else "",
     )
     budget = budget_seconds if budget_seconds is not None else deps.default_budget
     # A known harness contributes a bounded preamble to the agent-facing mission, baked into the

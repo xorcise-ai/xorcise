@@ -58,7 +58,7 @@ def test_active_run_networks_returns_nonterminal_with_entry_cidrs(migrated_home)
     runs.create_run("a", "c3", run_id="r3", entry_cidrs="")  # no cidrs → excluded
     runs.mark_terminal("r1", "done", datetime.now(UTC))  # terminal → excluded
 
-    assert {r: c for r, c, _ in runs.active_run_networks()} == {
+    assert dict(runs.active_run_networks()) == {
         "r2": ("10.200.2.0/25", "10.200.2.128/25"),
     }
 
@@ -67,7 +67,7 @@ def test_reserve_run_makes_cidr_active_before_finalize(migrated_home):
     # the reservation is durable + visible the instant it's taken (before deploy/finalize).
     runs.reserve_run("rr1", "ag", "sqli", network_cidr="10.200.5.0/24", entry_cidrs="10.200.5.0/24")
     assert "10.200.5.0/24" in runs.active_cidrs()
-    assert {r: c for r, c, _ in runs.active_run_networks()}["rr1"] == ("10.200.5.0/24",)
+    assert dict(runs.active_run_networks())["rr1"] == ("10.200.5.0/24",)
 
 
 def test_reserve_run_rejects_a_duplicate_live_cidr(migrated_home):
@@ -86,7 +86,7 @@ def test_terminal_frees_the_cidr_for_reuse(migrated_home):
     runs.reserve_run("rr1", "ag", "c", network_cidr="10.200.5.0/24", entry_cidrs="10.200.5.0/24")
     runs.mark_terminal("rr1", "done", datetime.now(UTC))
     runs.reserve_run("rr2", "ag", "c", network_cidr="10.200.5.0/24", entry_cidrs="10.200.5.0/24")
-    assert {r: c for r, c, _ in runs.active_run_networks()} == {"rr2": ("10.200.5.0/24",)}
+    assert dict(runs.active_run_networks()) == {"rr2": ("10.200.5.0/24",)}
 
 
 def test_active_runs_to_reconcile_flags_deployed_vs_reserved_only(migrated_home):

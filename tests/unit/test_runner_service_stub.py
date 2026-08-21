@@ -6,12 +6,15 @@ from xorcise.core.contracts.control import DeployRequest, MissionRef, NetworkSpe
 from xorcise.core.runner.docker import StubDockerDriver
 from xorcise.core.runner.service import RunnerControlService
 
+# The router discovers the agent by this headscale user to arm ingress; every run has one.
+AGENT = "run-1-agent"
+
 
 def _req(run_id: str = "run-1") -> DeployRequest:
     return DeployRequest(
         run_id=run_id,
         mission=MissionRef(mission_id="c", image="xorcise/mission-c:0"),
-        network=NetworkSpec(tailnet="10.200.1.0/24", auth_key="k"),
+        network=NetworkSpec(tailnet="10.200.1.0/24", auth_key="k", agent_user=AGENT),
     )
 
 
@@ -24,7 +27,7 @@ def test_deploy_fails_loud_on_empty_auth_key():
     bad = DeployRequest(
         run_id="run-x",
         mission=MissionRef(mission_id="c", image="xorcise/mission-c:0"),
-        network=NetworkSpec(tailnet="10.200.1.0/24", auth_key=""),
+        network=NetworkSpec(tailnet="10.200.1.0/24", auth_key="", agent_user=AGENT),
     )
     with pytest.raises(ValueError, match="auth key"):
         svc.deploy(bad)
@@ -42,6 +45,7 @@ def test_deploy_pins_subnets_from_contract_routes_not_recarve():
             network=NetworkSpec(
                 tailnet="10.200.9.0/24",  # a re-carve would pin 10.200.9.0/24
                 auth_key="k",
+                agent_user=AGENT,
                 entry_networks=("default",),
                 routes=("10.88.0.0/24",),  # but the fence advertised THIS
             ),
@@ -63,6 +67,7 @@ def test_deploy_delivers_net_override_and_authkey_env():
             network=NetworkSpec(
                 tailnet="10.200.9.0/24",
                 auth_key="tskey-abc",
+                agent_user=AGENT,
                 login_server="http://hs:8080",
                 entry_networks=("default",),
                 routes=("10.200.9.0/24",),
@@ -92,6 +97,7 @@ def test_deploy_delivers_ca_and_extra_hosts_when_airgapped():
             network=NetworkSpec(
                 tailnet="10.200.1.0/24",
                 auth_key="k",
+                agent_user=AGENT,
                 login_server="https://headscale.local:8443",
                 entry_networks=("default",),
                 routes=("10.200.1.0/24",),

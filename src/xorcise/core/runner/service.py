@@ -122,7 +122,6 @@ class RunnerControlService:
             ca_cert_path=ca_path,
             static_ips=network.static_ips,
             all_networks=all_networks,
-            agent_ingress=network.agent_ingress,
             agent_user=network.agent_user,
             allow_egress=network.allow_egress,
         )

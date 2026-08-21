@@ -12,6 +12,9 @@ from xorcise.core.runner.netoverride import (
     target_ips_for,
 )
 
+# The router discovers the agent by this headscale user; ingress is armed on every run.
+USER = "run-run1-agent"
+
 
 def test_no_entries_is_empty():
     assert carve_entry_subnets("10.200.1.0/24", ()) == {}
@@ -29,7 +32,7 @@ def test_two_entries_split_the_cidr():
 
 
 def test_build_override_pins_subnets_and_adds_router():
-    override = build_net_override("run-1", {"dmz": "10.200.1.0/25"})
+    override = build_net_override("run-1", {"dmz": "10.200.1.0/25"}, agent_user=USER)
     networks = override["networks"]
     services = override["services"]
     assert isinstance(networks, dict) and isinstance(services, dict)
@@ -39,7 +42,7 @@ def test_build_override_pins_subnets_and_adds_router():
 
 def test_router_is_official_tailscale_image_in_kernel_mode():
     # Tailscale runs as its own inner container (the official image), NOT in the outer netns.
-    services = build_net_override("run-1", {"dmz": "10.200.1.0/25"})["services"]
+    services = build_net_override("run-1", {"dmz": "10.200.1.0/25"}, agent_user=USER)["services"]
     assert isinstance(services, dict)
     router = services["xorcise-router"]
     assert router["image"].startswith("tailscale/tailscale")
@@ -59,7 +62,7 @@ def test_router_pins_nftables_firewall_backend():
     # nested container can't modprobe; on nftables hosts they're absent, so the router silently
     # installs no forwarding rules and every run is unwinnable. Pinning nftables removes that
     # host-module dependency.
-    services = build_net_override("run-1", {"dmz": "10.200.1.0/25"})["services"]
+    services = build_net_override("run-1", {"dmz": "10.200.1.0/25"}, agent_user=USER)["services"]
     assert isinstance(services, dict)
     env = services["xorcise-router"]["environment"]
     assert "TS_DEBUG_FIREWALL_MODE=nftables" in env
@@ -71,6 +74,7 @@ def test_router_trusts_ca_and_resolves_host_when_airgapped():
     services = build_net_override(
         "run-1",
         {"dmz": "10.200.1.0/25"},
+        agent_user=USER,
         extra_hosts=("headscale.local:172.17.0.1",),
         ca_cert_path="/mission/headscale-ca.pem",
     )["services"]
@@ -87,7 +91,7 @@ def test_router_trusts_ca_and_resolves_host_when_airgapped():
 
 def test_no_ca_or_hosts_by_default():
     # Dev (plain-HTTP) path: no CA mount, no extra_hosts.
-    services = build_net_override("run-1", {"dmz": "10.200.1.0/25"})["services"]
+    services = build_net_override("run-1", {"dmz": "10.200.1.0/25"}, agent_user=USER)["services"]
     assert isinstance(services, dict)
     router = services["xorcise-router"]
     assert "extra_hosts" not in router
@@ -97,7 +101,7 @@ def test_no_ca_or_hosts_by_default():
 
 def test_override_labels_router_and_target_for_exact_host_daemon_teardown():
     services = build_net_override(
-        "run-1", {"default": "10.200.1.0/24"}, static_ips={"web": {"default": 10}}
+        "run-1", {"default": "10.200.1.0/24"}, agent_user=USER, static_ips={"web": {"default": 10}}
     )["services"]
     assert isinstance(services, dict)
     for name in ("xorcise-router", "web"):
@@ -122,7 +126,7 @@ def test_target_ips_for_skips_service_on_uncarved_network():
 
 def test_build_override_pins_service_ipv4_address_from_static_ips():
     override = build_net_override(
-        "run-x", {"default": "10.200.20.0/24"}, static_ips={"web": {"default": 10}}
+        "run-x", {"default": "10.200.20.0/24"}, agent_user=USER, static_ips={"web": {"default": 10}}
     )
     services = override["services"]
     assert isinstance(services, dict)
@@ -135,7 +139,9 @@ def test_build_override_pins_service_ipv4_address_from_static_ips():
 
 
 def test_build_override_without_static_ips_pins_no_service_ip():
-    services = build_net_override("run-x", {"default": "10.200.20.0/24"})["services"]
+    services = build_net_override("run-x", {"default": "10.200.20.0/24"}, agent_user=USER)[
+        "services"
+    ]
     assert isinstance(services, dict)
     assert set(services) == {"xorcise-router"}  # only the router, as before
 
@@ -146,6 +152,7 @@ ENTRY = {"dmz_net": "10.200.1.0/24"}
 
 
 def _override(**kw: Any) -> dict[str, Any]:
+    kw.setdefault("agent_user", USER)
     return build_net_override("run1", ENTRY, **kw)
 
 
@@ -183,30 +190,26 @@ def test_ingress_address_sits_at_the_top_of_a_carved_subnet():
     assert ingress_address("10.200.1.128/25") == "10.200.1.254"
 
 
-def test_no_ingress_prologue_unless_the_mission_asks_for_it():
+def test_ingress_is_armed_on_every_run():
+    """Not a per-mission switch: the agent is a host on the mission network, so the router always
+    arms the path back to it. A mission that never calls back simply does not use it."""
     router = _override()["services"]["xorcise-router"]
-    assert "entrypoint" not in router
-
-
-def test_ingress_prologue_arms_dnat_and_masquerade():
-    o = _override(agent_ingress=True, agent_user="run-run1-agent")
-    router = o["services"]["xorcise-router"]
     script = router["entrypoint"][2]
     assert "MASQUERADE" in script and "-o tailscale0" in script
     assert "10.200.1.254" in script  # the callback address the target dials
-    assert "run-run1-agent" in script  # discovered by user, never a pinned address
+    assert USER in script  # discovered by headscale user, never a pinned address
     assert script.rstrip().endswith("exec /usr/local/bin/containerboot")
 
 
 def test_ingress_requires_an_agent_user_to_discover():
+    """Fail closed: without the user the router cannot find the agent, and an override that
+    silently omitted the DNAT would leave a callback timing out with no signal at all."""
     with pytest.raises(ValueError, match="agent_user"):
-        _override(agent_ingress=True)
+        build_net_override("run1", ENTRY)
 
 
 def test_ca_and_ingress_prologues_compose():
-    router = _override(agent_ingress=True, agent_user="run-run1-agent", ca_cert_path="/tmp/ca.pem")[
-        "services"
-    ]["xorcise-router"]
+    router = _override(ca_cert_path="/tmp/ca.pem")["services"]["xorcise-router"]
     script = router["entrypoint"][2]
     assert "headscale-ca.pem" in script and "MASQUERADE" in script
     assert script.count("exec /usr/local/bin/containerboot") == 1

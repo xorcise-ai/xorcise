@@ -219,7 +219,6 @@ def build_net_override(
     ca_cert_path: str = "",
     static_ips: Mapping[str, Mapping[str, int]] | None = None,
     all_networks: Sequence[str] = (),
-    agent_ingress: bool = False,
     agent_user: str = "",
     allow_egress: bool = False,
 ) -> dict[str, object]:
@@ -305,10 +304,10 @@ def build_net_override(
         prologue.append(
             'printf "%s" "$$XORCISE_HEADSCALE_CA_B64" | base64 -d > /tmp/headscale-ca.pem'
         )
-    if agent_ingress and entry_subnets:
+    if entry_subnets:
         if not agent_user:
             raise ValueError(
-                "agent_ingress requires agent_user — the router discovers the agent's tailnet "
+                "agent ingress requires agent_user — the router discovers the agent's tailnet "
                 "address by its headscale user and cannot arm ingress without it"
             )
         # One ingress endpoint, on the first carved subnet by name so the address is stable.

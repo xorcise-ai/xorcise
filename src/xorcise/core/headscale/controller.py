@@ -115,12 +115,7 @@ class NetworkController:
         self._reapply()
 
     def create_run_network(
-        self,
-        run_id: str,
-        agent_user: str,
-        entry_cidrs: Sequence[str],
-        *,
-        agent_ingress: bool = False,
+        self, run_id: str, agent_user: str, entry_cidrs: Sequence[str]
     ) -> RunNetwork:
         self._cli.create_user(agent_user)
         self._cli.create_user(self._orchestrator_user)  # owns the router tag; must exist to mint
@@ -135,7 +130,6 @@ class NetworkController:
             auth_key=agent_key,
             router_key=router_key,
             entry_cidrs=tuple(entry_cidrs),
-            agent_ingress=agent_ingress,
         )
         # Hold the lock across the _active mutation + apply so the render sees a consistent
         # snapshot. Key-minting above stays outside — it is per-run and independent.

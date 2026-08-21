@@ -238,18 +238,15 @@ def test_manifest_rejects_unknown_top_level_field() -> None:
     assert "bogus_top" in str(exc.value)
 
 
-def test_agent_ingress_is_on_by_default_and_egress_is_not():
-    """Two deliberate, opposite defaults.
+def test_mission_networks_are_confined_unless_the_author_opts_out():
+    """The one network switch a mission gets, and it is an escape hatch from a restriction.
 
-    A mission's target may reach the agent unless the author says otherwise: the agent is a host
-    on that network, and making it unreachable is the artificial state (it is what made callback
-    missions unwinnable). What it may reach is the mission's firewall to decide.
-
-    Mission networks, by contrast, are confined unless the author opts out — otherwise a mission
-    whose whole premise is "no internet here" can be undercut by real internet nobody intended.
+    Without it a mission that legitimately needs external access is unbuildable, and someone
+    works around the confinement instead. There is deliberately NO matching switch for whether
+    the target can reach the agent: that direction is always open, because the agent is a host on
+    the mission network and making it unreachable is the artificial state.
     """
     from xorcise.core.contracts.mission import EnvironmentSpec
 
-    env = EnvironmentSpec()
-    assert env.agent_ingress is True
-    assert env.allow_egress is False
+    assert EnvironmentSpec().allow_egress is False
+    assert not hasattr(EnvironmentSpec(), "agent_ingress")

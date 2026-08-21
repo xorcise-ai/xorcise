@@ -28,11 +28,6 @@ class RunNetwork:
     auth_key: str
     entry_cidrs: tuple[str, ...]
     router_key: str = ""
-    # Callback missions need the TARGET to open connections back to the agent (the mission
-    # registers an address the target dials). Without a rule in that direction the agent node's
-    # packet filter is empty and every inbound SYN is dropped ("no rules matched"). Opt-in per
-    # mission: a mission that never calls back gets no inbound rule at all.
-    agent_ingress: bool = False
 
 
 _FORBIDDEN = ('"*:*"', '"src": ["*"]', "autogroup:members")
@@ -72,19 +67,21 @@ def render_policy(
                 "dst": dst,
             }
         )
-        if net.agent_ingress:
-            # The reverse direction, scoped to this run's router as the ONLY source. Ports are
-            # deliberately wildcard: the agent is a host on the mission network and a mission may
-            # legitimately expect it to listen anywhere (a callback API, a shell, a C2 port), so
-            # the port policy belongs to the mission, not to the harness. What keeps this safe is
-            # the source pin, not a port list.
-            acls.append(
-                {
-                    "action": "accept",
-                    "src": [router_tag],
-                    "dst": [f"{net.agent_user}@:*"],
-                }
-            )
+        # The reverse direction, scoped to this run's router as the ONLY source. The target has
+        # to be able to open connections back to the agent — without a rule this way the agent
+        # node's packet filter is empty and every inbound SYN is dropped ("no rules matched").
+        #
+        # Ports are deliberately wildcard: the agent is a host on the mission network and a
+        # mission may legitimately expect it to listen anywhere (a callback API, a shell, a C2
+        # port), so the port policy belongs to the mission, not to the harness. What keeps this
+        # safe is the source pin, not a port list.
+        acls.append(
+            {
+                "action": "accept",
+                "src": [router_tag],
+                "dst": [f"{net.agent_user}@:*"],
+            }
+        )
 
     policy = {
         "tagOwners": {router_tag: [f"{orchestrator_user}@"]},
@@ -130,18 +127,16 @@ def assert_policy_safe(
             if dst not in allowed:
                 raise ValueError(f"Policy contains foreign dst {dst!r} for {net.agent_user}@")
 
-    # Inbound (agent-ingress) rules. The invariant is NOT "no wildcard port" — ports are
-    # deliberately wildcard (see render_policy). It is that every router-sourced rule names THIS
-    # run's router tag as its only source and THIS run's agent user as its only destination, so a
-    # run's router can never be handed a path to another run's agent.
-    ingress_dsts = {f"{n.agent_user}@:*" for n in networks if n.agent_ingress}
+    # Inbound rules. The invariant is NOT "no wildcard port" — ports are deliberately wildcard
+    # (see render_policy). It is that every router-sourced rule names THIS run's router tag as its
+    # only source and THIS run's agent user as its only destination, so a run's router can never
+    # be handed a path to another run's agent.
+    ingress_dsts = {f"{n.agent_user}@:*" for n in networks}
     for net in networks:
-        if not net.agent_ingress:
-            continue
         if not router_tag:
             raise ValueError(
-                f"{net.agent_user}@ requests agent ingress but no router_tag was supplied to "
-                "assert_policy_safe — refusing to certify an unverifiable inbound rule"
+                f"cannot certify the inbound rule for {net.agent_user}@ — no router_tag was "
+                "supplied to assert_policy_safe"
             )
         wanted = [f"{net.agent_user}@:*"]
         matches = [
