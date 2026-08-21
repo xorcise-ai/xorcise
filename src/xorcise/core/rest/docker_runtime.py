@@ -27,7 +27,9 @@ opens a connection, and the memo builds exactly one client per (re)probe.
 from __future__ import annotations
 
 import logging
+import subprocess
 import threading
+import time
 from collections.abc import Callable, Mapping
 
 from xorcise.core.config import Settings
@@ -143,6 +145,100 @@ def require_nested_support(
         "To bypass this check on a host you know is fine, set "
         "XORCISE_NESTED_CONTAINER_CHECK=skip"
     )
+
+
+# Memoised daemon platform: the arch of a running daemon cannot change, but "docker was down,
+# try again" can — so a short TTL rather than a process-lifetime latch. Shared by the catalog
+# view (per-row `emulated`) and the system view (`host_platform`), both of which poll.
+_HOST_PLATFORM_TTL = 60.0
+_host_platform_memo: tuple[float, str | None] | None = None
+
+
+def host_platform(settings: Settings) -> str | None:
+    """The `os/arch` the local daemon executes natively (AS1), or None when unknowable.
+
+    None in stub mode (no daemon by design), when docker is absent/unreachable, and on any
+    probe failure — unknown, never guessed. A subprocess probe (not the SDK) so a browse call
+    never pays a docker client construction; memoised because every page polls the views that
+    read this."""
+    global _host_platform_memo
+    if settings.use_stubs:
+        return None
+    now = time.monotonic()
+    if _host_platform_memo is not None and now - _host_platform_memo[0] < _HOST_PLATFORM_TTL:
+        return _host_platform_memo[1]
+    value: str | None = None
+    try:
+        result = subprocess.run(
+            ["docker", "version", "--format", "{{.Server.Os}}/{{.Server.Arch}}"],
+            capture_output=True,
+            timeout=5,
+            text=True,
+        )
+        raw = result.stdout.strip()
+        if result.returncode == 0 and _both_halves(raw):
+            value = raw
+    except (OSError, subprocess.SubprocessError):
+        value = None
+    _host_platform_memo = (now, value)
+    return value
+
+
+def _both_halves(raw: str) -> bool:
+    """Whether `raw` is a usable `os/arch`, i.e. BOTH halves are present.
+
+    `"/" in raw` is not enough. Under the containerd snapshotter, `docker image inspect
+    --format '{{.Os}}/{{.Architecture}}'` exits 0 and prints a bare "/" for a foreign-arch local
+    image — both fields empty. That passed the old guard, so an unknown platform was recorded as
+    the literal "/" and surfaced to the operator as an architecture: the run form warned "This
+    install is /, not native ARM64", and the detail page painted a "/" tag. Unknown must stay
+    None, which the callers already render as "no claim".
+    """
+    os_, _, arch = raw.partition("/")
+    return bool(os_ and arch)
+
+
+def reset_host_platform_memo() -> None:
+    """Drop the platform memos (tests)."""
+    global _host_platform_memo
+    _host_platform_memo = None
+    _image_platform_memo.clear()
+
+
+_IMAGE_PLATFORM_TTL = 60.0
+_image_platform_memo: dict[str, tuple[float, str | None]] = {}
+
+
+def local_image_platform(settings: Settings, image: str) -> str | None:
+    """The `os/arch` of a LOCAL image (docker image inspect), or None when unknowable.
+
+    The §30 install record normally carries the platform a pull selected — but installs that
+    predate the record (and your_own fuses) have nothing recorded, and their runs still deserve
+    the emulation warning. The local image itself is the honest fallback: it IS what a run of
+    this install executes. Memoised per ref (browse polls; an image's arch only changes when
+    its tag is re-pointed by an update/re-fuse, which the short TTL absorbs); None in stub mode
+    and on any probe failure — unknown, never guessed."""
+    if settings.use_stubs or not image:
+        return None
+    now = time.monotonic()
+    hit = _image_platform_memo.get(image)
+    if hit is not None and now - hit[0] < _IMAGE_PLATFORM_TTL:
+        return hit[1]
+    value: str | None = None
+    try:
+        result = subprocess.run(
+            ["docker", "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", image],
+            capture_output=True,
+            timeout=5,
+            text=True,
+        )
+        raw = result.stdout.strip()
+        if result.returncode == 0 and _both_halves(raw):
+            value = raw
+    except (OSError, subprocess.SubprocessError):
+        value = None
+    _image_platform_memo[image] = (now, value)
+    return value
 
 
 def require_base_compatible(

@@ -79,14 +79,25 @@ def _update_available(ic: InstalledMission, current: LibraryItem | None) -> bool
     return None
 
 
+def _emulated(installed_platform: str | None, host: str | None) -> bool | None:
+    """Whether this install executes under emulation HERE. None when either side is unknown —
+    never a guess; the UI renders nothing rather than a wrong "native"."""
+    if installed_platform is None or host is None:
+        return None
+    return installed_platform != host
+
+
 def list_catalog(deps: CatalogViewDeps) -> tuple[CatalogEntry, ...]:
     """Your Own (installed local store) + the free library, deduped by id (Your Own wins)."""
+    from xorcise.core.config import get_settings
     from xorcise.core.missions import get_installed, list_installed
+    from xorcise.core.rest.docker_runtime import host_platform, local_image_platform
 
     # One list call serves both halves: the library loop below AND the update check on
     # installed library rows (comparing a recorded install against the catalog's CURRENT row).
     library_items = deps.source.list_library()
     library_by_id = {item.mission_id: item for item in library_items}
+    host = host_platform(get_settings())
 
     installed_entries: list[CatalogEntry] = []
     installed_ids: set[str] = set()
@@ -99,6 +110,10 @@ def list_catalog(deps: CatalogViewDeps) -> tuple[CatalogEntry, ...]:
         compat = base_compat_of(ic.mission_ref.image)
         # Update status only makes sense for a LIBRARY install (your_own has no upstream).
         current = library_by_id.get(meta.mission_id) if ic.origin == "library" else None
+        # Installs that predate the §30 record carry no platform — inspect the LOCAL image
+        # instead (it IS what a run executes), so the emulation warning reaches every
+        # existing installation, not only post-contract pulls.
+        platform = ic.platform or local_image_platform(get_settings(), ic.mission_ref.image)
         installed_entries.append(
             CatalogEntry(
                 # origin decides the tab: a pulled library mission stays under XORCISE Remote,
@@ -126,6 +141,11 @@ def list_catalog(deps: CatalogViewDeps) -> tuple[CatalogEntry, ...]:
                 update_available=_update_available(ic, current),
                 current_mission_version=current.mission_version if current else None,
                 current_mission_base_version=(current.mission_base_version if current else None),
+                # The catalog's CURRENT platform offer, so an installed row can still render
+                # the tags (the install itself records only the one platform it pulled).
+                platforms=current.platforms if current else (),
+                platform=platform,
+                emulated=_emulated(platform, host),
             )
         )
 

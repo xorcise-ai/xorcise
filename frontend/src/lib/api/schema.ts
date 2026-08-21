@@ -1489,6 +1489,8 @@ export interface components {
             current_mission_version?: string | null;
             /** Download Size Bytes */
             download_size_bytes?: number | null;
+            /** Emulated */
+            emulated?: boolean | null;
             /** Image */
             image?: string | null;
             /** Image Size Bytes */
@@ -1508,6 +1510,8 @@ export interface components {
             mission_version?: string | null;
             /** Name */
             name: string;
+            /** Platform */
+            platform?: string | null;
             /**
              * Platforms
              * @default []
@@ -2729,6 +2733,8 @@ export interface components {
              * @default
              */
             home: string;
+            /** Host Platform */
+            host_platform?: string | null;
             mission_base?: components["schemas"]["MissionBaseView"] | null;
             /** Planes */
             planes: components["schemas"]["PlaneStatus"][];

@@ -116,6 +116,34 @@ describe("ResultsView", () => {
     expect(screen.getByText("sqli-login v1")).toBeInTheDocument();
   });
 
+  it("surfaces the executed platform in the meta bar when the run recorded one", async () => {
+    // §31/§43-UX8: the architecture a run actually ran on belongs on the report.
+    server.use(
+      http.get("*/api/runs", () =>
+        HttpResponse.json([
+          runFixture({ run_id: "r1", mission: "sqli-login", name: "recon-run", platform: "linux/arm64" }),
+        ]),
+      ),
+      http.get("*/api/runs/r1/result", () => HttpResponse.json(resultView())),
+    );
+    renderWithProviders(<ResultsView runId="r1" />);
+    await screen.findByRole("heading", { name: "recon-run" });
+    expect(screen.getByText("Platform")).toBeInTheDocument();
+    expect(screen.getByText("linux/arm64")).toBeInTheDocument();
+  });
+
+  it("omits the platform cell for a run that recorded none (pre-contract)", async () => {
+    server.use(
+      http.get("*/api/runs", () =>
+        HttpResponse.json([runFixture({ run_id: "r1", mission: "sqli-login", name: "recon-run" })]),
+      ),
+      http.get("*/api/runs/r1/result", () => HttpResponse.json(resultView())),
+    );
+    renderWithProviders(<ResultsView runId="r1" />);
+    await screen.findByRole("heading", { name: "recon-run" });
+    expect(screen.queryByText("Platform")).not.toBeInTheDocument();
+  });
+
   it("surfaces a clear note when the judge is unavailable", async () => {
     server.use(
       http.get("*/api/runs/r1/result", () =>

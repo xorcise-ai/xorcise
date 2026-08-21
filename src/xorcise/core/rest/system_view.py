@@ -269,7 +269,16 @@ def build_system_info(settings: Settings) -> SystemInfo:
         db_url=settings.database_url,
         topology=settings.deployment_topology,
         mission_base=_cached("mission_base", lambda: _mission_base_view(source)),
+        host_platform=_host_platform(settings),
     )
+
+
+def _host_platform(settings: Settings) -> str | None:
+    """The daemon native platform via docker_runtime's memoised probe (lazy import: the docker
+    plane stays off this module's import path for roles that don't run it)."""
+    from xorcise.core.rest.docker_runtime import host_platform
+
+    return host_platform(settings)
 
 
 def _mission_base_view(source: object) -> MissionBaseView:

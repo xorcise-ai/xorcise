@@ -164,6 +164,11 @@ class _ContractSource(StubCatalogSource):
 
 
 class _ArmDriver(StubDockerDriver):
+    # An arm64 host whose registry serves what was asked: daemon_platform drives the native
+    # selection, image_platform is the post-pull inspect the record and verification read.
+    def daemon_platform(self) -> str | None:
+        return "linux/arm64"
+
     def image_platform(self, image: str) -> str | None:
         return "linux/arm64"
 
@@ -246,3 +251,172 @@ def test_installed_row_carries_recorded_identity(tmp_path: Path) -> None:
     assert row.mission_base_version == "2.0.0"
     assert row.index_digest == "sha256:idx"
     assert row.platforms == ()  # an install records ONE platform; the offer is the library's
+
+
+# ── platform surfacing for the UI (browse row `platform`/`emulated`, host exposure) ──────────
+
+
+def test_installed_row_carries_platform_and_emulated_verdict(tmp_path: Path, monkeypatch) -> None:
+    # The install pulled arm64; the daemon is amd64 ⇒ the row says which platform landed AND
+    # that it executes under emulation here (server-computed — only the server sees the daemon).
+    monkeypatch.setattr(
+        "xorcise.core.rest.docker_runtime.host_platform", lambda settings: "linux/amd64"
+    )
+    slug = "c1"
+    ref = MissionRef(mission_id=slug, image="reg/xorcise/mis-c1:1.0.0-base2.0.0")
+    _write(
+        tmp_path,
+        slug,
+        InstalledMission(
+            slug, tmp_path / slug, _manifest(), ref, origin="library", identity=_identity()
+        ),
+    )
+    deps = CatalogViewDeps(source=StubCatalogSource(enabled=False), install_root=tmp_path)
+    row = next(e for e in list_catalog(deps) if e.mission_id == slug)
+    assert row.platform == "linux/arm64"
+    assert row.emulated is True
+
+
+def test_installed_row_platform_unknowns_stay_none(tmp_path: Path, monkeypatch) -> None:
+    # No recorded platform (pre-contract install) and/or no daemon ⇒ None, never a guess.
+    monkeypatch.setattr("xorcise.core.rest.docker_runtime.host_platform", lambda settings: None)
+    slug = "c1"
+    ref = MissionRef(mission_id=slug, image="img")
+    _write(tmp_path, slug, InstalledMission(slug, tmp_path / slug, _manifest(), ref))
+    deps = CatalogViewDeps(source=StubCatalogSource(enabled=False), install_root=tmp_path)
+    row = next(e for e in list_catalog(deps) if e.mission_id == slug)
+    assert row.platform is None
+    assert row.emulated is None
+
+
+def test_installed_row_borrows_the_catalog_platform_offer(tmp_path: Path) -> None:
+    # An install records ONE platform; the browse tags still need the catalog's current offer,
+    # so an installed library row borrows `platforms` from its current catalog row.
+    from xorcise.core.rest.mission_pull import PullDeps, pull_mission
+
+    class _Src(StubCatalogSource):
+        def list_library(self) -> tuple[LibraryItem, ...]:
+            return (
+                LibraryItem(
+                    mission_id="sqli-login",
+                    name="SQLi Login",
+                    image="xorcise/mission-sqli-login:1",
+                    platforms=("linux/amd64", "linux/arm64"),
+                ),
+            )
+
+    src = _Src(enabled=True)
+    pull_mission(
+        "sqli-login", PullDeps(source=src, driver=StubDockerDriver(), install_root=tmp_path)
+    )
+    row = next(
+        e
+        for e in list_catalog(CatalogViewDeps(source=src, install_root=tmp_path))
+        if e.mission_id == "sqli-login"
+    )
+    assert row.installed is True
+    assert row.platforms == ("linux/amd64", "linux/arm64")
+
+
+def test_pre_record_install_falls_back_to_the_local_image_platform(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # An EXISTING installation (made before installed.json recorded a platform) must still get
+    # the emulation verdict: the server inspects the local image — which IS what a run of this
+    # install executes — instead of staying silent.
+    monkeypatch.setattr(
+        "xorcise.core.rest.docker_runtime.host_platform", lambda settings: "linux/arm64"
+    )
+    monkeypatch.setattr(
+        "xorcise.core.rest.docker_runtime.local_image_platform",
+        lambda settings, image: "linux/amd64" if image else None,
+    )
+    slug = "c1"
+    ref = MissionRef(mission_id=slug, image="reg/xorcise/mis-c1:abc123-base2")
+    _write(
+        tmp_path,
+        slug,
+        InstalledMission(slug, tmp_path / slug, _manifest(), ref, origin="library"),
+    )
+    deps = CatalogViewDeps(source=StubCatalogSource(enabled=False), install_root=tmp_path)
+    row = next(e for e in list_catalog(deps) if e.mission_id == slug)
+    assert row.platform == "linux/amd64"  # read off the local image, not the (absent) record
+    assert row.emulated is True  # → the run form's warning fires for this existing install
+
+
+def test_recorded_platform_wins_over_the_image_inspect(tmp_path: Path, monkeypatch) -> None:
+    # A §30 record is authoritative; the inspect is only the fallback for its absence.
+    calls: list[str] = []
+
+    def fake_inspect(settings, image):  # noqa: ANN001 — test stub
+        calls.append(image)
+        return "linux/amd64"
+
+    monkeypatch.setattr(
+        "xorcise.core.rest.docker_runtime.host_platform", lambda settings: "linux/arm64"
+    )
+    monkeypatch.setattr("xorcise.core.rest.docker_runtime.local_image_platform", fake_inspect)
+    slug = "c1"
+    ref = MissionRef(mission_id=slug, image="reg/xorcise/mis-c1:1.0.0-base2.0.0")
+    _write(
+        tmp_path,
+        slug,
+        InstalledMission(
+            slug, tmp_path / slug, _manifest(), ref, origin="library", identity=_identity()
+        ),
+    )
+    deps = CatalogViewDeps(source=StubCatalogSource(enabled=False), install_root=tmp_path)
+    row = next(e for e in list_catalog(deps) if e.mission_id == slug)
+    assert row.platform == "linux/arm64"  # the record, not the inspect
+    assert calls == []  # and the fallback never ran
+
+
+# --- platform probes must not accept docker's empty-field output --------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("linux/amd64", "linux/amd64"),
+        ("/", None),  # containerd snapshotter, foreign-arch local image: both fields empty
+        ("linux/", None),
+        ("/amd64", None),
+        ("", None),
+    ],
+)
+def test_local_image_platform_rejects_half_empty_output(monkeypatch, raw, expected):
+    """`"/" in raw` accepted a bare "/" — docker exits 0 with both fields empty for a
+    foreign-arch image under the containerd snapshotter. That surfaced to the operator as an
+    architecture ("This install is /, not native ARM64"). Unknown must stay None."""
+    from xorcise.core.config import Settings
+    from xorcise.core.rest import docker_runtime
+
+    docker_runtime.reset_host_platform_memo()
+
+    class _Result:
+        returncode = 0
+        stdout = raw
+
+    monkeypatch.setattr(
+        "xorcise.core.rest.docker_runtime.subprocess.run", lambda *a, **k: _Result()
+    )
+    assert docker_runtime.local_image_platform(Settings(use_stubs=False), "img:tag") == expected
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("linux/arm64", "linux/arm64"), ("/", None)])
+def test_host_platform_rejects_half_empty_output(monkeypatch, raw, expected):
+    """Same guard, same reasoning, on the host probe."""
+    from xorcise.core.config import Settings
+    from xorcise.core.rest import docker_runtime
+
+    docker_runtime.reset_host_platform_memo()
+
+    class _Result:
+        returncode = 0
+        stdout = raw
+
+    monkeypatch.setattr(
+        "xorcise.core.rest.docker_runtime.subprocess.run", lambda *a, **k: _Result()
+    )
+    assert docker_runtime.host_platform(Settings(use_stubs=False)) == expected
+    docker_runtime.reset_host_platform_memo()

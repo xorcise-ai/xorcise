@@ -119,7 +119,10 @@ class Settings(BaseSettings):
     # platform passed to docker pull/run. Mission images are built amd64-only, so an
     # arm64 host (Apple Silicon) must request linux/amd64 or the pull 404s on a missing arm64
     # manifest; Docker Desktop then runs it under emulation. Empty ⇒ docker picks the host platform.
-    docker_platform: str = "linux/amd64"
+    # Execution-platform OVERRIDE (XORCISE_DOCKER_PLATFORM). "" = automatic: the pull spine
+    # selects per mission — the host-native platform when the mission validated it, AMD64 under
+    # emulation otherwise (AS3/AS4). Setting a value pins every pull/run to it, unconditionally.
+    docker_platform: str = ""
     # The mission stack ALWAYS runs inside the run's own container (DinD). The former
     # host-daemon "sibling" topology is gone — it put every mission's containers on the operator's
     # daemon, so parallel runs collided on fixed container_names and published ports.

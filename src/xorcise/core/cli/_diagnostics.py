@@ -265,6 +265,29 @@ def control_plane(container: str = "headscale", *, timeout: float = 5.0) -> Chec
     return Check("control plane", False, f"{container!r} is not reachable", _PLANE_FIX)
 
 
+def daemon_platform() -> Check:
+    """The platform missions execute on (AS1 visibility): the DAEMON's native os/arch — which
+    may differ from this Python process (Docker Desktop VM, remote daemon). Informational."""
+    try:
+        result = subprocess.run(
+            ["docker", "version", "--format", "{{.Server.Os}}/{{.Server.Arch}}"],
+            capture_output=True,
+            timeout=5,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return Check("host platform", True, "unknown (docker unreachable)", level="warning")
+    value = result.stdout.strip()
+    if result.returncode != 0 or not value:
+        return Check("host platform", True, "unknown (docker unreachable)", level="warning")
+    return Check(
+        "host platform",
+        True,
+        f"missions execute on {value} (native); mission support is per mission — "
+        "some missions offer fewer platforms than the base",
+    )
+
+
 def mission_base_release() -> Check:
     """§36 version visibility: the base MAJOR this client requires, beside the release the
     catalog currently promotes. Informational — a pre-contract catalog (prod today) simply

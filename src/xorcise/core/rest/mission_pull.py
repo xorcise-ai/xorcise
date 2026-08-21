@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -29,9 +30,12 @@ from xorcise.core.contracts.control import (
 from xorcise.core.contracts.errors import (
     MissionNotInCatalogError,
     NotFoundError,
+    PlatformUnsupportedError,
     PullCancelled,
     PullError,
 )
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     # Type-only: keep the part-islands off the control-plane boot path (role isolation),
@@ -104,6 +108,9 @@ class PullDeps:
     source: CatalogSource
     driver: DockerDriver
     install_root: Path
+    # Operator platform override (XORCISE_DOCKER_PLATFORM). "" = automatic: native-first
+    # per-mission selection at pull time (AS3), AMD64 fallback under emulation (AS4).
+    platform_override: str = ""
 
 
 def _use_real_docker(settings: Settings) -> bool:
@@ -128,8 +135,8 @@ def _real_docker_driver() -> DockerDriver:
     from xorcise.core.runner.docker.driver import DockerSdkDriver
 
     try:
-        # pin the pull/run platform (default linux/amd64) so amd64-only mission images
-        # resolve on an arm64 host; overridable via XORCISE_DOCKER_PLATFORM.
+        # docker_platform is the operator OVERRIDE (XORCISE_DOCKER_PLATFORM); its "" default
+        # means automatic — the spine selects per mission (native-first) at pull time.
         return DockerSdkDriver(platform=get_settings().docker_platform)
     except Exception as exc:  # daemon unreachable / docker.from_env failure
         raise RuntimeError(
@@ -151,6 +158,7 @@ def build_pull_deps(settings: Settings, *, use_docker: bool | None = None) -> Pu
         source=build_catalog_source(settings),
         driver=driver,
         install_root=Path(settings.missions_root),
+        platform_override=settings.docker_platform,
     )
 
 
@@ -248,6 +256,37 @@ def update_mission(
     return record, True
 
 
+def _select_platform(
+    offered: tuple[str, ...], host: str | None, override: str
+) -> tuple[str | None, str | None]:
+    """The execution platform for this pull → (selection, notice). Native-first (AS3).
+
+    An operator override wins unconditionally. With no validated-platform list (a pre-contract
+    catalog) the selection is None — the driver's construction-time behaviour, exactly as
+    before this feature. Otherwise: the host-native platform when the mission validated it;
+    else AMD64 under the host's emulation layer, with a user-facing notice (AS4); else there
+    is no execution path and the typed error says which platforms the mission does support."""
+    if override:
+        return override, None
+    if not offered:
+        return None, None
+    if host and host in offered:
+        return host, None
+    if "linux/amd64" in offered:
+        notice = None
+        if host:
+            arch = host.rsplit("/", 1)[-1].upper()
+            notice = (
+                f"Native {arch} image unavailable for this mission. "
+                "Running the AMD64 mission using compatibility/emulation mode."
+            )
+        return "linux/amd64", notice
+    raise PlatformUnsupportedError(
+        f"this mission supports {', '.join(offered)}, and this host "
+        f"({host or 'unknown platform'}) has no way to execute any of them"
+    )
+
+
 def _is_current(existing: InstalledMission, detail: MissionDetail, image: str | None) -> bool:
     """Whether the install already IS the catalog's current artifact.
 
@@ -304,6 +343,17 @@ def _acquire_and_install(
         # A lab mission with a download ahead of it — gate now (nesting), before the pull.
         if precheck is not None:
             precheck()
+        # Native-first platform selection (AS1–AS5), decided BEFORE any byte moves so an
+        # impossible host/mission pairing costs one error message, not a download. None ⇒ no
+        # selection was possible (pre-contract catalog / operator made none): the driver's
+        # construction-time behaviour, exactly as before this feature.
+        selected, notice = _select_platform(
+            tuple(p.platform for p in detail.platforms),
+            deps.driver.daemon_platform(),
+            deps.platform_override,
+        )
+        if notice:
+            log.warning("%s: %s", mission_id, notice)
         token = deps.source.pull_token(mission_id)  # None ⇒ image needs no registry auth
         report(PHASE_PREPARING_IMAGE)
         # Aggregate docker's per-layer events into running totals. The sum of layer totals
@@ -348,11 +398,24 @@ def _acquire_and_install(
                 kwargs["auth"] = (token.username, token.password)
             if progress is not None or should_cancel is not None:
                 kwargs["progress"] = on_layer
+            if selected is not None:
+                # Explicit selection (AS5) — forwarded only when one was made, so fakes and
+                # subclasses predating the kwarg keep working (same convention as `progress`).
+                kwargs["platform"] = selected
             deps.driver.pull(image, **kwargs)  # real registry; nothing written yet on failure
         except PullCancelled:
             raise  # NOT a pull failure — let the worker record it as `cancelled`, not `error`
         except Exception as exc:
             raise PullError(f"could not pull {image}: {exc}") from exc
+        # §43-CL6: verify the registry served the platform that was selected. Checked before
+        # anything is written, so a mismatch leaves the mission cleanly not-installed.
+        if selected is not None:
+            actual = deps.driver.image_platform(image)
+            if actual is not None and actual != selected:
+                raise PullError(
+                    f"pulled {image} resolved to {actual}, not the selected {selected} — "
+                    "refusing to install a mismatched artifact"
+                )
 
     # Attachments travel out-of-band in the delivery bundle, not the image: fetch +
     # integrity-check the zip so install_pulled can materialize the declared files. The cloud

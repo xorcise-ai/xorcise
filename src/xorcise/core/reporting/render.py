@@ -181,6 +181,9 @@ def _metadata_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
         ),
         ("Agent", f"{agent} v{ctx.conditions.agent_version}"),
         ("Harness", ctx.run.source_agent or "generic"),
+        # The architecture the run executed on (§31/§43-UX8) — present only for a run that
+        # recorded provenance, so a pre-contract run's table is unchanged.
+        *([("Platform", ctx.conditions.platform)] if ctx.conditions.platform else []),
         ("Started", _ts(ctx.run.created_at)),
         ("Duration", _duration(_elapsed_seconds(ctx))),
         ("Run ID", ctx.run.run_id),
