@@ -6,6 +6,94 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are derived from git tags (hatch-vcs).
 
+## [0.1.3] - 2026-08-21
+
+### Added
+
+- **Missions carry their creator's own version, and updating one is a single action** — the
+  catalog serves schema 3.0 manifests with a required SemVer version, which this client
+  previously refused outright: `xorcise mission pull` died on a pydantic traceback for every
+  published mission. Manifests now validate as 2.0 or 3.0, and one this build cannot read says
+  so ("upgrade XORCISE") instead of raising. An installed mission compares its recorded index
+  digest against the catalog's current one and reads "Update available" only where that is
+  true; `xorcise mission update <id>` and the console's update action re-pull it in place,
+  atomically, and an already-current install is an untouched no-op. The delete-then-pull
+  remedy is retired everywhere it used to be suggested.
+- **A mission runs on your machine's own architecture when it has one** — the client no longer
+  pins `linux/amd64`, so an Apple Silicon or other ARM host runs a validated native arm64
+  image rather than emulating an amd64 one. The decision is made before any byte moves: an
+  explicit `XORCISE_DOCKER_PLATFORM` still wins unconditionally, a pre-contract catalog
+  behaves byte-for-byte as it did before, and a mission with no runnable platform on this host
+  is refused up front — naming what it does support — instead of failing after a download. The
+  platform that actually landed is verified after the pull, recorded in the install, and
+  carried into the run's evidence and its report. `xorcise doctor` and the mission detail page
+  both show it.
+- **A run's raw OpenTelemetry stream exports as JSONL** — `GET /api/runs/{id}/otlp.jsonl`, an
+  "OTLP Traces (.jsonl)" button on the result page, and `xorcise run traces --export`. The
+  file carries no XORCISE framing: it is the Collector's own `otlpjson` format, so it feeds
+  straight into an OpenTelemetry Collector and on to Jaeger, Tempo or anything else that reads
+  OTLP. Exports work mid-run — the evidence stores are append-only with whole-batch commits,
+  so a partial export is always a valid prefix of the final stream — and a snapshot can only
+  be over-labelled partial, never under-labelled complete.
+
+### Security
+
+- **The tailnet is the only path between an agent and its mission** — a run's mission networks
+  are now created `internal`, so no mission service has a route off the box; the run's own
+  Tailscale router is the single egress, and the agent reaches the mission over the tailnet
+  rather than over any shared bridge. The target can open connections back to the agent, which
+  it previously could not — an inbound rule scoped to that one run's router, which now carries
+  a **per-run** ACL tag. That scoping is the point: while every router shared one `tag:router`
+  identity, each run's inbound rule matched *every* run's router, so a mission that pivoted
+  through its router had a compiled path to a concurrent run's agent on any port. The policy
+  gate now pairs each router tag with its single permitted agent and rejects any policy that
+  does not.
+- **A mission that cannot be confined is refused rather than deployed** — a compose file
+  declaring a network named `xorcise-egress` (the reserved name for the run's own egress
+  network) or an `external: true` network is refused at build time with the collision named.
+  Both would have deployed a run that reported itself confined while one network silently was
+  not: the reserved name was overwritten, and `internal` is a no-op on a network Compose did
+  not create.
+
+### Changed
+
+- **BREAKING: a mission's containers run inside the run's own container** — the runner is
+  DinD-only on `docker:29.7.1`. The former topology put every mission's containers on the
+  operator's own daemon, where parallel runs collided on fixed container names and published
+  ports. Missions fused against an older base generation are gated with a named refusal in
+  both the CLI and the console rather than failing partway through a run.
+- **The console uses the design system it already declared** — the surface ladder, status
+  palette and named type scale in `globals.css` were largely bypassed: 36 hardcoded colour
+  values, 9 raw Tailwind type sizes and 21 grids with no base column template, across 29
+  files, all now zero. The primitives the system implies but never had — `StatTile`, `Chip`,
+  `StatusDot`, `Radio`, `Checkbox`, `Avatar` — exist and are used, and three rules in the test
+  suite read the source and fail on a regression, so the drift cannot silently return.
+- **Releases publish; deployments discover** — the mission-base release workflow ends at a
+  verified multi-platform artifact on GHCR and notifies nothing. Deployments poll the registry
+  and adopt a release through their own review. This repository therefore holds no deployment
+  URL, no token and no secret, and no automated hand ever rests on a consumer's adoption
+  lever. `containers/mission-base/RELEASING.md` records what MAJOR, MINOR and PATCH mean for
+  that image and that a published version is immutable.
+- **`run events export` reads the server, not the local store** — the last CLI command still
+  reading run evidence in-process now goes through `GET /runs/{id}/events.jsonl`, matching
+  `run report` and `run traces --export`. Its default output path moves to the working
+  directory alongside them; the server still writes its own copy under `~/.xorcise/runs/<id>/`
+  when a run seals.
+
+### Fixed
+
+- **`xorcise serve` shuts down promptly** — the nested-container support probe is started at
+  boot and deliberately never awaited, but it ran on asyncio's default executor, which
+  `asyncio.run()` joins before the process may exit. Every listener closed in about 0.3 s and
+  the process then sat for the remainder of a probe documented at 20-40 s. It now runs on a
+  daemon thread, so teardown walks away from it — which is exactly what a failed warm-up is
+  documented to cost: a cold memo the first run recomputes.
+- **Stat figures render at their declared size** — two rungs of the type scale were missing
+  from the tailwind-merge configuration, so any class list pairing them with a colour had the
+  size silently deleted rather than overridden. Every toned `StatTile` and the scorecard's
+  hero percentage rendered at the inherited size. The scale and the configuration are now
+  pinned against each other by a test.
+
 ## [0.1.2] - 2026-08-06
 
 ### Added
