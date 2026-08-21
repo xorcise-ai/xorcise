@@ -38,7 +38,7 @@
     "@vitejs/plugin-react": "^4",
     "@testing-library/react": "^16",
     "@testing-library/jest-dom": "^6",
-    "jsdom": "^25",
+    "jsdom": "^29",
     "msw": "^2",
     "openapi-typescript": "^7",
     "@playwright/test": "^1"
