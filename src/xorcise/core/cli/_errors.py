@@ -34,6 +34,7 @@ _EXAMPLES = {
     "xorcise agent delete": "xorcise agent delete my-agent",
     "xorcise mission show": "xorcise mission show aviary-access",
     "xorcise mission pull": "xorcise mission pull aviary-access",
+    "xorcise mission update": "xorcise mission update aviary-access",
     "xorcise mission delete": "xorcise mission delete aviary-access",
     "xorcise mission rm": "xorcise mission rm aviary-access",
     "xorcise mission ingest": "xorcise mission ingest ./my-mission-bundle",

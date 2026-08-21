@@ -507,8 +507,8 @@
             "default": {
               "agent_version": 1,
               "budget_seconds": 0,
-              "intel_disclosed": 0,
-              "mission_version": 1
+              "install_revision": 1,
+              "intel_disclosed": 0
             }
           },
           "created_at": {
@@ -773,6 +773,28 @@
             ],
             "title": "Compatible"
           },
+          "current_mission_base_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Mission Base Version"
+          },
+          "current_mission_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Mission Version"
+          },
           "download_size_bytes": {
             "anyOf": [
               {
@@ -806,18 +828,59 @@
             ],
             "title": "Image Size Bytes"
           },
+          "index_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Index Digest"
+          },
           "installed": {
             "default": false,
             "title": "Installed",
             "type": "boolean"
           },
+          "mission_base_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mission Base Version"
+          },
           "mission_id": {
             "title": "Mission Id",
             "type": "string"
           },
+          "mission_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mission Version"
+          },
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "platforms": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Platforms",
+            "type": "array"
           },
           "proficiency": {
             "anyOf": [
@@ -880,6 +943,17 @@
               }
             ],
             "title": "Type"
+          },
+          "update_available": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Update Available"
           }
         },
         "required": [
@@ -1957,6 +2031,48 @@
         "title": "KindSupport",
         "type": "string"
       },
+      "MissionBaseView": {
+        "additionalProperties": false,
+        "description": "The mission-base picture for settings/diagnostics (contract \u00a727/\u00a736): what THIS client\nrequires (the compatibility MAJOR it was built for) beside what the catalog currently\npromotes. The promoted side is None when the catalog predates the endpoint (prod today)\nor is unreachable \u2014 unknown, never fabricated.",
+        "properties": {
+          "client_version": {
+            "default": "",
+            "title": "Client Version",
+            "type": "string"
+          },
+          "promoted_index_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promoted Index Digest"
+          },
+          "promoted_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promoted Version"
+          },
+          "required_major": {
+            "title": "Required Major",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "required_major"
+        ],
+        "title": "MissionBaseView",
+        "type": "object"
+      },
       "MissionInfo": {
         "description": "What `GET /runs/{id}/mission` returns: the run's single mission, unlocked.",
         "properties": {
@@ -1986,7 +2102,7 @@
       },
       "MissionManifest": {
         "additionalProperties": false,
-        "description": "The `mission.json` v2 object \u2014 the shared contract all consumers import.\n\nRequired: schema_version, metadata (incl. metadata.type \u2208 {lab, static}; the agent objective\nlives under metadata.objective). `environment` is conditional: required for lab, omitted for\nstatic (see _check_execution_contract). Everything else defaults empty/None so a minimal bundle\nvalidates (terrain/intel absent is valid; lab needs environment, static needs attachments).",
+        "description": "The `mission.json` object (schema 2.0 or 3.0) \u2014 the shared contract all consumers import.\n\nRequired: schema_version, metadata (incl. metadata.type \u2208 {lab, static}; the agent objective\nlives under metadata.objective) and \u2014 on schema 3.0 \u2014 the creator-owned SemVer `version`\n(2.0 predates the field and must not carry it; see _check_version_contract). `environment` is\nconditional: required for lab, omitted for static (see _check_execution_contract). Everything\nelse defaults empty/None so a minimal bundle validates (terrain/intel absent is valid; lab\nneeds environment, static needs attachments).",
         "properties": {
           "artifacts": {
             "default": [],
@@ -2053,7 +2169,10 @@
             "type": "array"
           },
           "schema_version": {
-            "const": "2.0",
+            "enum": [
+              "2.0",
+              "3.0"
+            ],
             "title": "Schema Version",
             "type": "string"
           },
@@ -2077,6 +2196,17 @@
                 "type": "null"
               }
             ]
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
           }
         },
         "required": [
@@ -2160,6 +2290,24 @@
           "type"
         ],
         "title": "MissionMetadata",
+        "type": "object"
+      },
+      "MissionUpdateOut": {
+        "description": "POST /{id}/update result: whether anything moved, and the row as installed now.",
+        "properties": {
+          "entry": {
+            "$ref": "#/components/schemas/CatalogEntry"
+          },
+          "updated": {
+            "title": "Updated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "updated",
+          "entry"
+        ],
+        "title": "MissionUpdateOut",
         "type": "object"
       },
       "ModelConfigUpdate": {
@@ -2598,6 +2746,11 @@
             "title": "Budget Seconds",
             "type": "integer"
           },
+          "install_revision": {
+            "default": 1,
+            "title": "Install Revision",
+            "type": "integer"
+          },
           "intel_disclosed": {
             "default": 0,
             "title": "Intel Disclosed",
@@ -2614,10 +2767,27 @@
             ],
             "title": "Judge Model"
           },
+          "mission_base_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mission Base Version"
+          },
           "mission_version": {
-            "default": 1,
-            "title": "Mission Version",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mission Version"
           },
           "model": {
             "anyOf": [
@@ -2629,6 +2799,17 @@
               }
             ],
             "title": "Model"
+          },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
           },
           "sandbox_ref": {
             "anyOf": [
@@ -2786,10 +2967,37 @@
             ],
             "title": "Completed At"
           },
+          "content_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Hash"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
             "type": "string"
+          },
+          "index_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Index Digest"
+          },
+          "install_revision": {
+            "default": 1,
+            "title": "Install Revision",
+            "type": "integer"
           },
           "intel_policy": {
             "default": "all",
@@ -2812,10 +3020,27 @@
             "title": "Mission",
             "type": "string"
           },
+          "mission_base_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mission Base Version"
+          },
           "mission_version": {
-            "default": 1,
-            "title": "Mission Version",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mission Version"
           },
           "model": {
             "anyOf": [
@@ -2832,6 +3057,28 @@
             "default": "",
             "title": "Name",
             "type": "string"
+          },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
+          "platform_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Digest"
           },
           "run_control_key": {
             "title": "Run Control Key",
@@ -2913,10 +3160,37 @@
             ],
             "title": "Completed At"
           },
+          "content_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Hash"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
             "type": "string"
+          },
+          "index_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Index Digest"
+          },
+          "install_revision": {
+            "default": 1,
+            "title": "Install Revision",
+            "type": "integer"
           },
           "intel_policy": {
             "default": "all",
@@ -2939,10 +3213,27 @@
             "title": "Mission",
             "type": "string"
           },
+          "mission_base_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mission Base Version"
+          },
           "mission_version": {
-            "default": 1,
-            "title": "Mission Version",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mission Version"
           },
           "model": {
             "anyOf": [
@@ -2959,6 +3250,28 @@
             "default": "",
             "title": "Name",
             "type": "string"
+          },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
+          "platform_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Digest"
           },
           "run_id": {
             "title": "Run Id",
@@ -3264,6 +3577,16 @@
             "default": "",
             "title": "Home",
             "type": "string"
+          },
+          "mission_base": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MissionBaseView"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "planes": {
             "items": {
@@ -4954,6 +5277,49 @@
           }
         },
         "summary": "Mission Terrain",
+        "tags": [
+          "missions"
+        ]
+      }
+    },
+    "/api/missions/{mission_id}/update": {
+      "post": {
+        "description": "Update an installed library mission to the catalog's current artifact (\u00a735's ONE\nupdate action) \u2014 an in-place, atomic re-pull. updated=false \u21d2 the install already matches\nthe catalog (digest compared first) and nothing was touched.\n\n404: not installed, or gone from the catalog. 409: a your_own install owns the id (update\nit by re-ingesting), or a pull job is mid-flight. 502: the pull itself failed (nothing\nreplaced \u2014 the previous install stays byte-for-byte intact).",
+        "operationId": "update_api_missions__mission_id__update_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mission_id",
+            "required": true,
+            "schema": {
+              "title": "Mission Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MissionUpdateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update",
         "tags": [
           "missions"
         ]

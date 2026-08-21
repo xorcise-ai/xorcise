@@ -174,7 +174,7 @@ def test_base_compat_verdict_by_generation():
 
     older = base_compat(1)
     assert older.compatible is False and older.base_major == 1
-    assert "einstall" in (older.hint or "")  # reinstall the mission
+    assert "pdate" in (older.hint or "")  # update the mission (§35's one action)
 
     newer = base_compat(9)
     assert newer.compatible is False and newer.base_major == 9

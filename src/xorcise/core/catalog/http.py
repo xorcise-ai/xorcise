@@ -11,16 +11,24 @@ AWS credentials (published = pullable).
 from __future__ import annotations
 
 import httpx
+from pydantic import ValidationError
 
 from xorcise.core.catalog.source import (
     CatalogSource,
     DeliveryBundle,
     LibraryItem,
+    MissionBaseRelease,
+    MissionDetail,
+    PlatformImage,
     PullToken,
 )
 from xorcise.core.contracts.catalog import CatalogStatus
-from xorcise.core.contracts.errors import NotFoundError, PullError
-from xorcise.core.contracts.mission import MissionManifest
+from xorcise.core.contracts.errors import (
+    NotFoundError,
+    PullError,
+    UnsupportedManifestVersionError,
+)
+from xorcise.core.contracts.mission import SUPPORTED_SCHEMA_VERSIONS, MissionManifest
 
 _TIMEOUT = 10.0
 _DOWNLOAD_TIMEOUT = 60.0  # attachment bundles (pcaps, binaries) can be larger than JSON
@@ -40,11 +48,88 @@ class HttpCatalogSource(CatalogSource):
         return tuple(_to_item(row) for row in resp.json().get("catalog", []))
 
     def fetch_manifest(self, mission_id: str) -> MissionManifest:
+        return self.fetch_detail(mission_id).manifest
+
+    def fetch_detail(self, mission_id: str) -> MissionDetail:
+        """One GET serves both the manifest and the artifact-identity siblings.
+
+        A pre-contract deployment (prod today) sends only {manifest, image_ref}; every
+        identity field degrades to None/empty and the caller behaves exactly as before."""
         resp = self._client.get(f"{self._base}/v1/missions/{mission_id}")
         if resp.status_code == 404:
             raise NotFoundError(mission_id)
         resp.raise_for_status()
-        return MissionManifest.model_validate(resp.json()["manifest"])
+        body = resp.json()
+        manifest = self._validate_manifest(mission_id, body.get("manifest"))
+        image = body.get("image") if isinstance(body.get("image"), dict) else {}
+        base = body.get("mission_base") if isinstance(body.get("mission_base"), dict) else {}
+        digests = base.get("platform_digests")
+        return MissionDetail(
+            manifest=manifest,
+            mission_version=_opt_str(body.get("mission_version")),
+            mission_base_version=_opt_str(body.get("mission_base_version")),
+            content_hash=_opt_str(body.get("content_hash")),
+            pull_ref=_opt_str(image.get("pull_ref")),
+            release_ref=_opt_str(image.get("release_ref")),
+            index_digest=_opt_str(image.get("index_digest")),
+            platforms=_platform_images(image.get("platforms")),
+            base_index_digest=_opt_str(base.get("index_digest")),
+            base_platform_digests=(
+                {str(k): str(v) for k, v in digests.items() if v is not None}
+                if isinstance(digests, dict)
+                else {}
+            ),
+        )
+
+    def _validate_manifest(self, mission_id: str, payload: object) -> MissionManifest:
+        try:
+            return MissionManifest.model_validate(payload)
+        except ValidationError as exc:
+            # Typed, actionable — never a pydantic traceback. The overwhelmingly likely cause is
+            # a catalog serving a manifest schema newer than this client (the cloud moved first);
+            # the remedy in both arms is the same: upgrade XORCISE.
+            raw = payload.get("schema_version") if isinstance(payload, dict) else None
+            served = raw if isinstance(raw, str) else None
+            if served not in SUPPORTED_SCHEMA_VERSIONS:
+                raise UnsupportedManifestVersionError(
+                    f"mission '{mission_id}' serves manifest schema {served!r}; this XORCISE "
+                    f"reads {', '.join(SUPPORTED_SCHEMA_VERSIONS)} — upgrade XORCISE "
+                    "(e.g. pip install -U xorcise) to pull it",
+                    served=served,
+                    supported=SUPPORTED_SCHEMA_VERSIONS,
+                ) from exc
+            raise UnsupportedManifestVersionError(
+                f"mission '{mission_id}' serves a schema {served} manifest this XORCISE cannot "
+                f"validate ({exc.error_count()} field error(s)) — the catalog and this client "
+                "disagree about the shape; upgrading XORCISE may resolve it",
+                served=served,
+                supported=SUPPORTED_SCHEMA_VERSIONS,
+            ) from exc
+
+    def mission_base(self) -> MissionBaseRelease | None:
+        """GET /v1/mission-base — 404 (a pre-contract deployment) and any transport failure
+        both degrade to None: the promoted base is display/diagnostic data, and its absence
+        must never take a settings page or doctor run down."""
+        try:
+            resp = self._client.get(f"{self._base}/v1/mission-base")
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            body = resp.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        version = _opt_str(body.get("mission_base_version"))
+        if version is None:
+            return None
+        image = body.get("image") if isinstance(body.get("image"), dict) else {}
+        raw_major = body.get("required_base_major")
+        return MissionBaseRelease(
+            version=version,
+            required_base_major=int(raw_major) if isinstance(raw_major, int) else None,
+            ref=_opt_str(image.get("ref")),
+            index_digest=_opt_str(image.get("index_digest")),
+            platforms=_platform_images(image.get("platforms")),
+        )
 
     def pull_token(self, mission_id: str) -> PullToken | None:
         resp = self._client.post(f"{self._base}/v1/missions/{mission_id}/pull-token")
@@ -112,11 +197,38 @@ def _to_item(row: dict[str, object]) -> LibraryItem:
         image_size_bytes=_opt_int(row.get("image_size_bytes")),
         attachments_size_bytes=_opt_int(row.get("attachments_size_bytes")),
         download_size_bytes=_opt_int(row.get("download_size_bytes")),
+        # Artifact identity (API1). Absent on a pre-contract catalog -> None/() and the row
+        # browses exactly as before; the values power update detection and platform selection.
+        mission_version=_opt_str(row.get("mission_version")),
+        mission_base_version=_opt_str(row.get("mission_base_version")),
+        index_digest=_opt_str(row.get("index_digest")),
+        platforms=_str_tuple(row.get("platforms")),
     )
 
 
 def _str_tuple(value: object) -> tuple[str, ...]:
     return tuple(str(v) for v in value) if isinstance(value, list) else ()
+
+
+def _platform_images(value: object) -> tuple[PlatformImage, ...]:
+    """Detail-response platform entries ({os, architecture, digest, variant?}) — entries
+    missing the identifying pair are dropped, never fatal (browse/pull must survive a
+    malformed row)."""
+    if not isinstance(value, list):
+        return ()
+    out: list[PlatformImage] = []
+    for entry in value:
+        if not isinstance(entry, dict) or "os" not in entry or "architecture" not in entry:
+            continue
+        out.append(
+            PlatformImage(
+                os=str(entry["os"]),
+                architecture=str(entry["architecture"]),
+                digest=_opt_str(entry.get("digest")),
+                variant=_opt_str(entry.get("variant")),
+            )
+        )
+    return tuple(out)
 
 
 def _opt_str(value: object) -> str | None:

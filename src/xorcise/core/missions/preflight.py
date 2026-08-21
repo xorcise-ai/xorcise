@@ -8,10 +8,8 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from xorcise.core.contracts.mission import MissionManifest
+from xorcise.core.contracts.mission import SUPPORTED_SCHEMA_VERSIONS, MissionManifest
 from xorcise.core.missions.errors import PreflightError
-
-_SUPPORTED = "2.0"
 
 
 def preflight(bundle_dir: Path) -> MissionManifest:
@@ -28,8 +26,11 @@ def preflight(bundle_dir: Path) -> MissionManifest:
     version = raw.get("schema_version")
     if version is None:
         raise PreflightError("missing required field: schema_version")
-    if version != _SUPPORTED:
-        raise PreflightError(f"unsupported schema version: {version} (supported: {_SUPPORTED})")
+    if version not in SUPPORTED_SCHEMA_VERSIONS:
+        raise PreflightError(
+            f"unsupported schema version: {version} "
+            f"(supported: {', '.join(SUPPORTED_SCHEMA_VERSIONS)})"
+        )
 
     try:
         manifest = MissionManifest.model_validate(raw)

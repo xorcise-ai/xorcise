@@ -20,6 +20,25 @@ import { DifficultyBadge } from "./difficulty-badge";
 
 const MAX_TECH = 3;
 
+/**
+ * The secondary "why" line under the single Update available status (§35/UX1): which of the
+ * two versions moved — mission, base, or both. Undefined when the catalog didn't say (the
+ * digest alone flagged the update) so the badge still renders, just without a tooltip.
+ */
+function updateReason(c: CatalogEntry): string | undefined {
+  const parts: string[] = [];
+  if (c.current_mission_version && c.current_mission_version !== c.mission_version) {
+    parts.push(`Mission ${c.mission_version ?? "?"} → ${c.current_mission_version}`);
+  }
+  if (
+    c.current_mission_base_version &&
+    c.current_mission_base_version !== c.mission_base_version
+  ) {
+    parts.push(`Mission base ${c.mission_base_version ?? "?"} → ${c.current_mission_base_version}`);
+  }
+  return parts.length ? parts.join(" · ") : undefined;
+}
+
 const ENV_TOOLTIP: Record<string, string> = {
   lab: "Lab — a live sandbox environment spins up for the run.",
   static: "Static — attachment-only; no environment is started.",
@@ -158,6 +177,13 @@ export function MissionCard({ mission: c }: { mission: CatalogEntry }) {
             {c.compatible === false && (
               <Badge variant="warn" title={c.compat_hint ?? undefined}>
                 update required
+              </Badge>
+            )}
+            {/* §34/§35: digest-driven, ONE primary status. Suppressed while the row is
+                incompatible — "update required" already demands the same single action. */}
+            {c.compatible !== false && c.update_available === true && (
+              <Badge variant="muted" title={updateReason(c)}>
+                update available
               </Badge>
             )}
             {installed ? (

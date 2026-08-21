@@ -153,7 +153,7 @@ def test_browse_entry_exposes_base_incompatibility_to_the_ui(tmp_path: Path):
 
     assert entry.base_major == 1
     assert entry.compatible is False
-    assert entry.compat_hint and "einstall" in entry.compat_hint
+    assert entry.compat_hint and "pdate" in entry.compat_hint
 
 
 def test_browse_entry_is_compatible_for_the_current_generation(tmp_path: Path):

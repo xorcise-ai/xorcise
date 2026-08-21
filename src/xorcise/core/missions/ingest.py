@@ -13,7 +13,7 @@ import zipfile
 from collections.abc import Callable
 from pathlib import Path
 
-from xorcise.core.contracts.control import MissionRef
+from xorcise.core.contracts.control import MissionInstallIdentity, MissionRef
 from xorcise.core.contracts.mission import MissionManifest
 from xorcise.core.missions.builder import BundleBuilder
 from xorcise.core.missions.errors import (
@@ -72,6 +72,7 @@ def _atomic_install(
     install_root: Path,
     populate_staging: Callable[[Path], None],
     origin: Origin,
+    identity: MissionInstallIdentity | None = None,
 ) -> InstalledMission:
     """Shared staging → atomic swap for both install paths.
 
@@ -104,7 +105,7 @@ def _atomic_install(
     for leftover in (staging, backup):
         if leftover.exists():
             shutil.rmtree(leftover)
-    version = existing.version + 1 if existing is not None else 1  # monotonic bump
+    revision = existing.install_revision + 1 if existing is not None else 1  # monotonic bump
     try:
         populate_staging(staging)
         record = InstalledMission(
@@ -112,8 +113,9 @@ def _atomic_install(
             root=final,
             manifest=manifest,
             mission_ref=mission_ref,
-            version=version,
+            install_revision=revision,
             origin=origin,
+            identity=identity,
         )
         (staging / INSTALLED_FILE).write_text(record.to_record())
         if final.exists():
@@ -152,6 +154,7 @@ def install_pulled(
     mission_ref: MissionRef,
     install_root: Path,
     delivery_zip: bytes | None = None,
+    identity: MissionInstallIdentity | None = None,
 ) -> InstalledMission:
     """Record a pulled prebuilt-image mission — manifest from the catalog, no builder.
 
@@ -173,4 +176,5 @@ def install_pulled(
         install_root=install_root,
         populate_staging=populate,
         origin="library",  # pulled from the remote XORCISE catalog
+        identity=identity,  # §30 slice from the catalog detail + post-pull inspect
     )

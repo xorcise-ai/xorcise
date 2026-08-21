@@ -81,4 +81,4 @@ def test_history_single_run_returns_one_entry_cleanly(migrated_home) -> None:
     entry = entries[0]
     assert "conditions" in entry
     assert entry["conditions"]["agent_version"] >= 1
-    assert entry["conditions"]["mission_version"] >= 1
+    assert entry["conditions"]["install_revision"] >= 1

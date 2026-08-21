@@ -187,7 +187,7 @@ def test_get_returns_run_or_none(migrated_home):
 
 
 def test_create_run_persists_versions(migrated_home):
-    """agent_version + mission_version are persisted and surfaced on create + get."""
+    """agent_version + install_revision are persisted and surfaced on create + get."""
     entry = runs.create_run(
         agent_id="ag1",
         mission="c1",
@@ -196,19 +196,19 @@ def test_create_run_persists_versions(migrated_home):
         prompt="p",
         run_control_key="k",
         agent_version=2,
-        mission_version=3,
+        install_revision=3,
     )
-    assert entry.agent_version == 2 and entry.mission_version == 3
+    assert entry.agent_version == 2 and entry.install_revision == 3
     got = runs.get("r1")
     assert got is not None
-    assert got.agent_version == 2 and got.mission_version == 3
+    assert got.agent_version == 2 and got.install_revision == 3
 
 
 def test_create_run_versions_default_one(migrated_home):
-    """agent_version + mission_version default to 1 (back-compat)."""
+    """agent_version + install_revision default to 1 (back-compat)."""
     entry = runs.create_run(agent_id="ag2", mission="c2")
     assert entry.agent_version == 1
-    assert entry.mission_version == 1
+    assert entry.install_revision == 1
 
 
 def test_delete_for_agent_removes_only_that_agent(migrated_home):

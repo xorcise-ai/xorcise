@@ -84,7 +84,7 @@ def _no_nested_check() -> None:
     """Default `require_nested`: the stub/unit path deploys nothing, so there is nothing to nest."""
 
 
-def _no_base_check(image_ref: str) -> None:
+def _no_base_check(image_ref: str, origin: str) -> None:
     """Default `check_base_compat`: the stub/unit path deploys no real image to gate."""
 
 
@@ -123,7 +123,7 @@ class RunCreateDeps:
     require_nested: Callable[[], None] = _no_nested_check
     # Raises BaseImageIncompatibleError if the mission's fused image was built on a base
     # generation this XORCISE cannot run. Takes the image ref; boot wires label+tag inspection.
-    check_base_compat: Callable[[str], None] = _no_base_check
+    check_base_compat: Callable[[str, str], None] = _no_base_check
 
 
 def _use_real_headscale(settings: Settings) -> bool:
@@ -211,7 +211,7 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
     live_subnets: Callable[[], set[str]] = _no_live_subnets
     # Default: the stub path deploys nothing, so nesting/base compat are not preconditions for it.
     require_nested: Callable[[], None] = _no_nested_check
-    check_base_compat: Callable[[str], None] = _no_base_check
+    check_base_compat: Callable[[str, str], None] = _no_base_check
     if control_real:
         # Real runner: _real_docker_driver fails loud if Docker/the runner extra is absent.
         from xorcise.core.headscale import overlapping_subnets
@@ -252,8 +252,8 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
         def require_nested() -> None:
             require_nested_support(settings, _client)
 
-        def check_base_compat(image_ref: str) -> None:
-            require_base_compatible(image_ref, label_lookup=driver.image_labels)
+        def check_base_compat(image_ref: str, origin: str) -> None:
+            require_base_compatible(image_ref, label_lookup=driver.image_labels, origin=origin)
     else:
         control = InProcessControlStub(api_key="local")
     ca_cert = Path(settings.headscale_ca_cert).read_text() if settings.headscale_ca_cert else ""
@@ -606,7 +606,7 @@ def create_run(
     deps.require_nested()
     # And refuse an artifact fused on a base generation this XORCISE cannot run (e.g. a stale
     # engine-27 fuse after an upgrade) — it would die at deploy with no host-daemon fallback.
-    deps.check_base_compat(installed.mission_ref.image)
+    deps.check_base_compat(installed.mission_ref.image, installed.origin)
     agent_user = _agent_user_for(run_id)
     assert installed.environment is not None  # is_lab ⇒ environment present (contract-enforced)
     entry_networks = tuple(installed.environment.entry_networks) or ("default",)
@@ -784,7 +784,14 @@ def _create_run_with_cidr(
         sandbox_ref=installed.mission_ref.image,
         agent_version=agent.version,
         source_agent=source_agent,
-        mission_version=installed.version,
+        install_revision=installed.install_revision,
+        # §31: artifact provenance copied from installed.json, never re-resolved later.
+        mission_version=installed.mission_version,
+        mission_base_version=installed.mission_base_version,
+        content_hash=installed.content_hash,
+        platform=installed.platform,
+        index_digest=installed.index_digest,
+        platform_digest=installed.platform_digest,
         intel_policy=intel_policy,
     )
     # the ACL was applied in create_run_network BEFORE this row persisted, so a truly
@@ -887,7 +894,14 @@ def _create_static_run(
             sandbox_ref=installed.mission_ref.image,  # "" for static (no fused image)
             agent_version=agent.version,
             source_agent=source_agent,
-            mission_version=installed.version,
+            install_revision=installed.install_revision,
+            # §31: artifact provenance copied from installed.json, never re-resolved later.
+            mission_version=installed.mission_version,
+            mission_base_version=installed.mission_base_version,
+            content_hash=installed.content_hash,
+            platform=installed.platform,
+            index_digest=installed.index_digest,
+            platform_digest=installed.platform_digest,
             intel_policy=intel_policy,
         )
         return run, mission

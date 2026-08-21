@@ -26,6 +26,7 @@ from xorcise.core.rest.mission_pull import (
     PullProgressSink,
     build_pull_deps,
     pull_mission,
+    update_mission,
 )
 from xorcise.core.rest.pull_jobs import PullJob, pull_job_store
 
@@ -49,6 +50,13 @@ class IngestJobView(BaseModel):
     slug: str | None = None
     image: str | None = None
     detail: str | None = None
+
+
+class MissionUpdateOut(BaseModel):
+    """POST /{id}/update result: whether anything moved, and the row as installed now."""
+
+    updated: bool
+    entry: CatalogEntry
 
 
 class PullJobStarted(BaseModel):
@@ -177,6 +185,39 @@ def pull(mission_id: str) -> CatalogEntry:
     except PullError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return _installed_entry(ic.manifest.metadata, ic.mission_ref.image, ic.origin)
+
+
+@router.post("/{mission_id}/update")
+def update(mission_id: str) -> MissionUpdateOut:
+    """Update an installed library mission to the catalog's current artifact (§35's ONE
+    update action) — an in-place, atomic re-pull. updated=false ⇒ the install already matches
+    the catalog (digest compared first) and nothing was touched.
+
+    404: not installed, or gone from the catalog. 409: a your_own install owns the id (update
+    it by re-ingesting), or a pull job is mid-flight. 502: the pull itself failed (nothing
+    replaced — the previous install stays byte-for-byte intact)."""
+    if pull_job_store().active_for(mission_id) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"a pull for '{mission_id}' is already in progress — wait for it to finish",
+        )
+    try:
+        ic, updated = update_mission(mission_id, build_pull_deps(get_settings()))
+    except NotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"mission '{mission_id}' is not installed — pull it instead",
+        ) from exc
+    except MissionNotInCatalogError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except MissionCollisionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PullError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return MissionUpdateOut(
+        updated=updated,
+        entry=_installed_entry(ic.manifest.metadata, ic.mission_ref.image, ic.origin),
+    )
 
 
 def _job_progress_sink(job_id: str) -> PullProgressSink:

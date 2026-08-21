@@ -30,7 +30,7 @@ def test_history_lists_completed_runs(migrated_home):
 
 
 def test_history_entries_carry_conditions_with_versions(migrated_home):
-    """Each history entry must expose conditions.agent_version + conditions.mission_version."""
+    """Each history entry must expose conditions.agent_version + conditions.install_revision."""
     install_mission(migrated_home, "c1")
     c = _client()
     _register_run_done(c, "beta")
@@ -40,10 +40,10 @@ def test_history_entries_carry_conditions_with_versions(migrated_home):
     assert "conditions" in entry
     cond = entry["conditions"]
     assert "agent_version" in cond
-    assert "mission_version" in cond
+    assert "install_revision" in cond
     # versions are positive integers
     assert isinstance(cond["agent_version"], int) and cond["agent_version"] >= 1
-    assert isinstance(cond["mission_version"], int) and cond["mission_version"] >= 1
+    assert isinstance(cond["install_revision"], int) and cond["install_revision"] >= 1
 
 
 def test_history_unknown_agent_404(migrated_home):

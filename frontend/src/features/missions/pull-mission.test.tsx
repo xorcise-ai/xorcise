@@ -14,6 +14,7 @@ const LIBRARY: CatalogEntry = {
   installed: false,
   skills: [],
   technologies: [],
+  platforms: [],
 };
 const INSTALLED: CatalogEntry = { ...LIBRARY, mission_id: "idor", name: "IDOR", installed: true };
 

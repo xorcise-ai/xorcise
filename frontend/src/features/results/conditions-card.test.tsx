@@ -11,7 +11,7 @@ const base: ResultConditions = {
   budget_seconds: 0,
   sandbox_ref: null,
   agent_version: 1,
-  mission_version: 1,
+  install_revision: 1,
   intel_disclosed: 0,
 };
 

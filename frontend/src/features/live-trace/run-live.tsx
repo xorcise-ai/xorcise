@@ -361,7 +361,7 @@ export function RunLive({ runId }: { runId: string | null }) {
                 href={`/missions/detail?id=${encodeURIComponent(r.mission)}`}
                 className="truncate font-mono text-dense text-foreground hover:underline"
               >
-                {r.mission} v{r.mission_version}
+                {r.mission} v{r.mission_version ?? r.install_revision}
               </Link>
             </div>
             <MetaItem label="Agent" value={`${agentName} v${r.agent_version}`} />

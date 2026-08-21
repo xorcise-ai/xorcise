@@ -121,6 +121,13 @@ class DockerDriver(ABC):
         None, which the base-compat gate reads as 'label unknown' and falls back to the tag."""
         return None
 
+    def image_platform(self, image: str) -> str | None:
+        """The `os/architecture` the local copy of the image was built for, or None.
+
+        Non-abstract None default (same reasoning as image_labels): only the real driver
+        inspects, and a None simply leaves the install record's platform unknown."""
+        return None
+
     @abstractmethod
     def reap_managed(self) -> list[str]:
         """Force-remove every xorcise-managed per-run container; return what was reaped.

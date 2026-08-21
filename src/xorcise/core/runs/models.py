@@ -62,9 +62,25 @@ class RunRow(Base):
     agent_version: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1, server_default="1"
     )
-    mission_version: Mapped[int] = mapped_column(
+    install_revision: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1, server_default="1"
     )
+    # Artifact provenance, copied from installed.json at create time (mission-versioning
+    # contract §31) and NEVER re-resolved: the local mission may later be updated, and a
+    # floating tag must not be able to rewrite what this run actually executed. All nullable —
+    # a your_own fuse and any pre-contract install carry none of it.
+    mission_version: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, default=None
+    )  # creator SemVer, e.g. "1.4.2"
+    mission_base_version: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, default=None
+    )
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    platform: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, default=None
+    )  # what was pulled for THIS machine, e.g. "linux/arm64"
+    index_digest: Mapped[str | None] = mapped_column(String(96), nullable=True, default=None)
+    platform_digest: Mapped[str | None] = mapped_column(String(96), nullable=True, default=None)
     # the rendering agent's kind, snapshotted at create time — frozen, NOT a live
     # lookup through the agents registry, so a run keeps its adapter after the agent is
     # re-declared (kind change bumps version) or removed (mirrors model/agent_version above).

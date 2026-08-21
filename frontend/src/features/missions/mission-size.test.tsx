@@ -24,6 +24,7 @@ const AVAILABLE: CatalogEntry = {
   installed: false,
   skills: [],
   technologies: [],
+  platforms: [],
   image_size_bytes: 260306509,
   attachments_size_bytes: 384284,
   download_size_bytes: 260690793,

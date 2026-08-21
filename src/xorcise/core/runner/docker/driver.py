@@ -140,6 +140,19 @@ class DockerSdkDriver(DockerDriver):
             return None
         return dict((img.attrs.get("Config") or {}).get("Labels") or {})
 
+    def image_platform(self, image: str) -> str | None:
+        """What the LOCAL copy of the image was actually built for, e.g. "linux/amd64".
+
+        Read from the image config (Os/Architecture), not from any tag or catalog claim — this
+        is the honest provenance value the install record and run evidence carry. Variant is
+        deliberately excluded (the contract's platform grammar is os/arch)."""
+        try:
+            attrs = self._client.images.get(image).attrs
+        except Exception:  # noqa: BLE001 — absent/unreadable image ⇒ unknown, never a crash
+            return None
+        os_name, arch = attrs.get("Os"), attrs.get("Architecture")
+        return f"{os_name}/{arch}" if os_name and arch else None
+
     def run(self, spec: ContainerSpec) -> ContainerHandle:
         # The fused image is local-only (no registry). containers.run auto-PULLS a missing image,
         # which for a local-only ref fails with a cryptic "pull access denied" — so fail loud

@@ -97,36 +97,36 @@ def test_result_conditions_returns_none_for_missing_run(migrated_home):
 
 
 def test_record_result_with_versions_persists_versions(migrated_home):
-    """agent_version + mission_version in ResultConditions are persisted and round-tripped."""
+    """agent_version + install_revision in ResultConditions are persisted and round-tripped."""
     conditions = ResultConditions(
         model="gpt-4o",
         agent_version=2,
-        mission_version=3,
+        install_revision=3,
     )
     reporting.record_result("r1", "a1", _result("r1"), conditions)
     rc = reporting.result_conditions("r1")
     assert rc is not None
     assert rc.agent_version == 2
-    assert rc.mission_version == 3
+    assert rc.install_revision == 3
 
 
 def test_agent_history_entry_carries_versions(migrated_home):
-    """AgentHistoryEntry.conditions carries agent_version + mission_version."""
-    conditions = ResultConditions(agent_version=5, mission_version=7)
+    """AgentHistoryEntry.conditions carries agent_version + install_revision."""
+    conditions = ResultConditions(agent_version=5, install_revision=7)
     reporting.record_result("r1", "a1", _result("r1"), conditions)
     hist = reporting.agent_history("a1")
     assert len(hist) == 1
     assert hist[0].conditions.agent_version == 5
-    assert hist[0].conditions.mission_version == 7
+    assert hist[0].conditions.install_revision == 7
 
 
 def test_record_result_without_versions_defaults_to_1(migrated_home):
-    """Back-compat: no-conditions call yields agent_version=1 + mission_version=1."""
+    """Back-compat: no-conditions call yields agent_version=1 + install_revision=1."""
     reporting.record_result("r2", "a1", _result("r2"))
     rc = reporting.result_conditions("r2")
     assert rc is not None
     assert rc.agent_version == 1
-    assert rc.mission_version == 1
+    assert rc.install_revision == 1
 
 
 def test_record_result_marks_partial(migrated_home):

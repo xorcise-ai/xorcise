@@ -41,7 +41,17 @@ class RunEntry(BaseModel):
     model: str | None = None  # disclosed model (agent's declared model at create time)
     sandbox_ref: str | None = None  # disclosed sandbox (mission image at create time)
     agent_version: int = 1  # agent monotonic version at create time
-    mission_version: int = 1  # mission monotonic version at create time
+    install_revision: int = 1  # mission's monotonic LOCAL install counter at create time
+    # Artifact provenance copied from installed.json at create time (contract §31): the
+    # creator SemVer (the public mission_version — a string, per the naming contract §25),
+    # the base SemVer, the bundle hash, and what exactly this machine pulled and executed.
+    # All None for a your_own fuse or a pre-contract install.
+    mission_version: str | None = None
+    mission_base_version: str | None = None
+    content_hash: str | None = None
+    platform: str | None = None
+    index_digest: str | None = None
+    platform_digest: str | None = None
     source_agent: str = "generic"  # rendering-agent kind, snapshotted at create time
     intel_policy: str = "all"  # per-run intel disclosure policy (runcontrol.intel_policy grammar)
     # Server-side receipt time of the run's newest OTLP export (trace OR log signal). None until

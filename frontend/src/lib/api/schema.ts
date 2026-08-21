@@ -554,6 +554,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/missions/{mission_id}/update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Update
+         * @description Update an installed library mission to the catalog's current artifact (§35's ONE
+         *     update action) — an in-place, atomic re-pull. updated=false ⇒ the install already matches
+         *     the catalog (digest compared first) and nothing was touched.
+         *
+         *     404: not installed, or gone from the catalog. 409: a your_own install owns the id (update
+         *     it by re-ingesting), or a pull job is mid-flight. 502: the pull itself failed (nothing
+         *     replaced — the previous install stays byte-for-byte intact).
+         */
+        post: operations["update_api_missions__mission_id__update_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs": {
         parameters: {
             query?: never;
@@ -1334,8 +1360,8 @@ export interface components {
              * @default {
              *       "agent_version": 1,
              *       "budget_seconds": 0,
-             *       "intel_disclosed": 0,
-             *       "mission_version": 1
+             *       "install_revision": 1,
+             *       "intel_disclosed": 0
              *     }
              */
             conditions: components["schemas"]["ResultConditions"];
@@ -1457,21 +1483,36 @@ export interface components {
             compat_hint?: string | null;
             /** Compatible */
             compatible?: boolean | null;
+            /** Current Mission Base Version */
+            current_mission_base_version?: string | null;
+            /** Current Mission Version */
+            current_mission_version?: string | null;
             /** Download Size Bytes */
             download_size_bytes?: number | null;
             /** Image */
             image?: string | null;
             /** Image Size Bytes */
             image_size_bytes?: number | null;
+            /** Index Digest */
+            index_digest?: string | null;
             /**
              * Installed
              * @default false
              */
             installed: boolean;
+            /** Mission Base Version */
+            mission_base_version?: string | null;
             /** Mission Id */
             mission_id: string;
+            /** Mission Version */
+            mission_version?: string | null;
             /** Name */
             name: string;
+            /**
+             * Platforms
+             * @default []
+             */
+            platforms: string[];
             /** Proficiency */
             proficiency?: string | null;
             /**
@@ -1498,6 +1539,8 @@ export interface components {
             technologies: string[];
             /** Type */
             type?: string | null;
+            /** Update Available */
+            update_available?: boolean | null;
         };
         /**
          * CatalogStatus
@@ -1998,6 +2041,26 @@ export interface components {
          */
         KindSupport: "supported" | "partial" | "unsupported";
         /**
+         * MissionBaseView
+         * @description The mission-base picture for settings/diagnostics (contract §27/§36): what THIS client
+         *     requires (the compatibility MAJOR it was built for) beside what the catalog currently
+         *     promotes. The promoted side is None when the catalog predates the endpoint (prod today)
+         *     or is unreachable — unknown, never fabricated.
+         */
+        MissionBaseView: {
+            /**
+             * Client Version
+             * @default
+             */
+            client_version: string;
+            /** Promoted Index Digest */
+            promoted_index_digest?: string | null;
+            /** Promoted Version */
+            promoted_version?: string | null;
+            /** Required Major */
+            required_major: number;
+        };
+        /**
          * MissionInfo
          * @description What `GET /runs/{id}/mission` returns: the run's single mission, unlocked.
          */
@@ -2014,12 +2077,14 @@ export interface components {
         };
         /**
          * MissionManifest
-         * @description The `mission.json` v2 object — the shared contract all consumers import.
+         * @description The `mission.json` object (schema 2.0 or 3.0) — the shared contract all consumers import.
          *
          *     Required: schema_version, metadata (incl. metadata.type ∈ {lab, static}; the agent objective
-         *     lives under metadata.objective). `environment` is conditional: required for lab, omitted for
-         *     static (see _check_execution_contract). Everything else defaults empty/None so a minimal bundle
-         *     validates (terrain/intel absent is valid; lab needs environment, static needs attachments).
+         *     lives under metadata.objective) and — on schema 3.0 — the creator-owned SemVer `version`
+         *     (2.0 predates the field and must not carry it; see _check_version_contract). `environment` is
+         *     conditional: required for lab, omitted for static (see _check_execution_contract). Everything
+         *     else defaults empty/None so a minimal bundle validates (terrain/intel absent is valid; lab
+         *     needs environment, static needs attachments).
          */
         MissionManifest: {
             /**
@@ -2053,12 +2118,14 @@ export interface components {
             rubric: components["schemas"]["RubricCriterion"][];
             /**
              * Schema Version
-             * @constant
+             * @enum {string}
              */
-            schema_version: "2.0";
+            schema_version: "2.0" | "3.0";
             /** Source */
             source?: string | null;
             terrain?: components["schemas"]["TerrainSpec"] | null;
+            /** Version */
+            version?: string | null;
         };
         /** MissionMetadata */
         MissionMetadata: {
@@ -2092,6 +2159,15 @@ export interface components {
              * @enum {string}
              */
             type: "lab" | "static";
+        };
+        /**
+         * MissionUpdateOut
+         * @description POST /{id}/update result: whether anything moved, and the row as installed now.
+         */
+        MissionUpdateOut: {
+            entry: components["schemas"]["CatalogEntry"];
+            /** Updated */
+            updated: boolean;
         };
         /**
          * ModelConfigUpdate
@@ -2273,19 +2349,25 @@ export interface components {
              */
             budget_seconds: number;
             /**
+             * Install Revision
+             * @default 1
+             */
+            install_revision: number;
+            /**
              * Intel Disclosed
              * @default 0
              */
             intel_disclosed: number;
             /** Judge Model */
             judge_model?: string | null;
-            /**
-             * Mission Version
-             * @default 1
-             */
-            mission_version: number;
+            /** Mission Base Version */
+            mission_base_version?: string | null;
+            /** Mission Version */
+            mission_version?: string | null;
             /** Model */
             model?: string | null;
+            /** Platform */
+            platform?: string | null;
             /** Sandbox Ref */
             sandbox_ref?: string | null;
         };
@@ -2356,11 +2438,20 @@ export interface components {
             budget_seconds: number;
             /** Completed At */
             completed_at?: string | null;
+            /** Content Hash */
+            content_hash?: string | null;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
+            /** Index Digest */
+            index_digest?: string | null;
+            /**
+             * Install Revision
+             * @default 1
+             */
+            install_revision: number;
             /**
              * Intel Policy
              * @default all
@@ -2370,11 +2461,10 @@ export interface components {
             last_telemetry_at?: string | null;
             /** Mission */
             mission: string;
-            /**
-             * Mission Version
-             * @default 1
-             */
-            mission_version: number;
+            /** Mission Base Version */
+            mission_base_version?: string | null;
+            /** Mission Version */
+            mission_version?: string | null;
             /** Model */
             model?: string | null;
             /**
@@ -2382,6 +2472,10 @@ export interface components {
              * @default
              */
             name: string;
+            /** Platform */
+            platform?: string | null;
+            /** Platform Digest */
+            platform_digest?: string | null;
             /** Run Control Key */
             run_control_key: string;
             /** Run Id */
@@ -2417,11 +2511,20 @@ export interface components {
             budget_seconds: number;
             /** Completed At */
             completed_at?: string | null;
+            /** Content Hash */
+            content_hash?: string | null;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
+            /** Index Digest */
+            index_digest?: string | null;
+            /**
+             * Install Revision
+             * @default 1
+             */
+            install_revision: number;
             /**
              * Intel Policy
              * @default all
@@ -2431,11 +2534,10 @@ export interface components {
             last_telemetry_at?: string | null;
             /** Mission */
             mission: string;
-            /**
-             * Mission Version
-             * @default 1
-             */
-            mission_version: number;
+            /** Mission Base Version */
+            mission_base_version?: string | null;
+            /** Mission Version */
+            mission_version?: string | null;
             /** Model */
             model?: string | null;
             /**
@@ -2443,6 +2545,10 @@ export interface components {
              * @default
              */
             name: string;
+            /** Platform */
+            platform?: string | null;
+            /** Platform Digest */
+            platform_digest?: string | null;
             /** Run Id */
             run_id: string;
             /** Sandbox Ref */
@@ -2623,6 +2729,7 @@ export interface components {
              * @default
              */
             home: string;
+            mission_base?: components["schemas"]["MissionBaseView"] | null;
             /** Planes */
             planes: components["schemas"]["PlaneStatus"][];
             /**
@@ -3687,6 +3794,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ResolvedTerrainV2"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_api_missions__mission_id__update_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MissionUpdateOut"];
                 };
             };
             /** @description Validation Error */
