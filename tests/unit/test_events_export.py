@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from xorcise.core import runs
@@ -115,13 +117,96 @@ def test_export_written_on_seal_via_grade_and_record(migrated_home):
     assert header["run_id"] == "r4" and len(events) == 2
 
 
-def test_cli_run_events_export(migrated_home):
+# ── The download endpoint (GET /runs/{id}/events.jsonl) ──────────────────────────────────────
+
+
+def test_events_jsonl_download_matches_the_projection(migrated_home):
+    from fastapi.testclient import TestClient
+
+    from xorcise.core.rest import events_view
+    from xorcise.core.roles.boot.role_all import build_rest_app
+
+    _seed("r6", [(0, "s0", "shell.exec"), (1, "s1", "assistant.msg")])
+    resp = TestClient(build_rest_app()).get("/api/runs/r6/events.jsonl")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/x-ndjson")
+    assert (
+        resp.headers["content-disposition"]
+        == 'attachment; filename="xorcise-run-r6-c-events.jsonl"'
+    )
+    lines = [json.loads(ln) for ln in resp.text.splitlines() if ln.strip()]
+    header, events = lines[0], lines[1:]
+    assert header["type"] == "header" and header["run_id"] == "r6"
+    assert header["event_count"] == len(events) == 2
+    view = events_view._full_view("r6")
+    assert [e["id"] for e in events] == [e.id for e in view.events]
+
+
+def test_events_jsonl_unknown_run_404(migrated_home):
+    from fastapi.testclient import TestClient
+
+    from xorcise.core.roles.boot.role_all import build_rest_app
+
+    assert TestClient(build_rest_app()).get("/api/runs/ghost/events.jsonl").status_code == 404
+
+
+# ── The CLI thin client (`xorcise run events export`) ────────────────────────────────────────
+
+RID = "a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6"
+
+
+def _plain(text: str) -> str:
+    """Terminal-colour-proof: strip ANSI codes, collapse whitespace."""
+    return re.sub(r"\s+", " ", re.sub(r"\x1b\[[0-9;]*m", "", text))
+
+
+def _cli_app() -> typer.Typer:
     import xorcise.core.cli.app  # noqa: F401 — registers commands on the shared app
     from xorcise.core.cli._shared import app
-    from xorcise.core.rest.events_export import default_export_path
 
-    _seed("r5", [(0, "s0", "shell.exec")])
-    result = CliRunner().invoke(app, ["run", "events", "export", "r5"])
+    return app
+
+
+def _patch_download(monkeypatch, body: str) -> dict[str, str]:
+    """Stub the one REST call the export makes; capture the get_text path."""
+    captured: dict[str, str] = {}
+
+    def fake_get_text(self, path: str) -> str:  # noqa: ANN001 — test stub
+        captured["path"] = path
+        return body
+
+    monkeypatch.setattr("xorcise.core.cli.commands.run.RestClient.get_text", fake_get_text)
+    return captured
+
+
+def test_cli_run_events_export_downloads_via_rest(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    body = json.dumps({"type": "header", "event_count": 2}) + '\n{"kind":"a"}\n{"kind":"b"}\n'
+    captured = _patch_download(monkeypatch, body)
+    result = CliRunner().invoke(_cli_app(), ["run", "events", "export", RID])
     assert result.exit_code == 0, result.output
-    assert default_export_path("r5").exists()
-    assert "wrote" in result.output
+    assert captured["path"] == f"/runs/{RID}/events.jsonl"
+    written = tmp_path / f"xorcise-run-{RID[:8]}-events.jsonl"
+    assert written.read_text(encoding="utf-8") == body
+    assert f"wrote {written.name} (2 events)" in _plain(result.output)
+
+
+def test_cli_run_events_export_out_override(monkeypatch, tmp_path):
+    body = json.dumps({"type": "header", "event_count": 1}) + '\n{"kind":"a"}\n'
+    _patch_download(monkeypatch, body)
+    out = tmp_path / "events.jsonl"
+    result = CliRunner().invoke(_cli_app(), ["run", "events", "export", RID, "--out", str(out)])
+    assert result.exit_code == 0, result.output
+    assert out.read_text(encoding="utf-8") == body
+    assert "(1 event)" in _plain(result.output)
+
+
+def test_cli_run_events_export_resolves_short_ids(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    body = json.dumps({"type": "header", "event_count": 0}) + "\n"
+    captured = _patch_download(monkeypatch, body)
+    monkeypatch.setattr("xorcise.core.cli.commands.run.resolve_run_id", lambda client, given: RID)
+    result = CliRunner().invoke(_cli_app(), ["run", "events", "export", RID[:8]])
+    assert result.exit_code == 0, result.output
+    assert captured["path"] == f"/runs/{RID}/events.jsonl"
+    assert "(0 events)" in _plain(result.output)

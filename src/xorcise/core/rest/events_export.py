@@ -7,8 +7,9 @@ never canonical, always rebuildable from RAW; the grader never reads it. Reuses 
 events_view read seam (the same projection GET /runs/{id}/events serves), so the file matches the
 normalized `agent_events` cache exactly.
 
-Written server-side on run finalization (run_terminate.grade_and_record, best-effort) and on
-demand via `xorcise run events export`. The `runs/` tree is durable (not cleared by `down`).
+Written server-side on run finalization (run_terminate.grade_and_record, best-effort); served
+on demand as a download by GET /runs/{id}/events.jsonl (what `xorcise run events export`
+fetches). The `runs/` tree is durable (not cleared by `down`).
 """
 
 from __future__ import annotations
@@ -29,8 +30,8 @@ def default_export_path(run_id: str) -> Path:
     return run_dir(run_id) / "agent-events.jsonl"
 
 
-def export_run_events(run_id: str, out: Path | None = None) -> Path:
-    """Write the run's normalized AgentEvent projection to JSONL; return the path written.
+def render_run_events(run_id: str) -> str:
+    """The run's normalized AgentEvent projection as JSONL text.
 
     Rebuilt from RAW via the events_view read seam (identical to GET /runs/{id}/events). A header
     line carries run + adapter metadata; each subsequent line is one `AgentEvent` (model_dump_json).
@@ -39,8 +40,6 @@ def export_run_events(run_id: str, out: Path | None = None) -> Path:
     from xorcise.core.rest import events_view
 
     view = events_view._full_view(run_id)
-    path = out if out is not None else default_export_path(run_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
     header = {
         "type": "header",
         "run_id": view.run_id,
@@ -55,5 +54,12 @@ def export_run_events(run_id: str, out: Path | None = None) -> Path:
     }
     lines = [json.dumps(header)]
     lines.extend(event.model_dump_json() for event in view.events)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return "\n".join(lines) + "\n"
+
+
+def export_run_events(run_id: str, out: Path | None = None) -> Path:
+    """Write the run's normalized AgentEvent projection to JSONL; return the path written."""
+    path = out if out is not None else default_export_path(run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(render_run_events(run_id), encoding="utf-8")
     return path

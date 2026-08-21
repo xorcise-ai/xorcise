@@ -5534,6 +5534,47 @@
         ]
       }
     },
+    "/api/runs/{run_id}/events.jsonl": {
+      "get": {
+        "description": "The run's NORMALIZED AgentEvent projection as a downloadable JSONL file.\n\nA `{\"type\": \"header\", ...}` line (run + adapter metadata), then one AgentEvent per\nline \u2014 clean bodies, not raw OTLP. The same content the on-seal artifact under\n`~/.xorcise/runs/<id>/` carries; what `xorcise run events export` fetches. For the\nraw OTLP stream, use GET /runs/{run_id}/otlp.jsonl. Works mid-run as a partial\nprojection of what's been ingested so far. Unknown run \u2192 404. Content-Disposition\nis `attachment`, so a browser downloads rather than renders it.",
+        "operationId": "run_events_jsonl_api_runs__run_id__events_jsonl_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Events Jsonl",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
     "/api/runs/{run_id}/events/{event_id}/raw": {
       "get": {
         "description": "The source RAW OTLP span(s) an event was derived from (drill-down).\n\n`{event_id:path}` \u2014 AgentEvent ids derive from base64 span ids, which may contain '/'.",
