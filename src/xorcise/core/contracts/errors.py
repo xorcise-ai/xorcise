@@ -28,6 +28,19 @@ class ImageNotInstalledError(ContractError):
     runner must fail loud (the caller re-ingests) rather than attempt a doomed registry pull."""
 
 
+class EnvironmentConfigError(ContractError, ValueError):
+    """A lab mission cannot be safely turned into a per-run environment as configured.
+
+    Covers the deploy-time refusals that are the MISSION's fault, not the host's: a service pinned
+    on the router's or the callback's reserved address, a network named like the reserved
+    confinement egress net, or a compose file the confinement pass could not read (so the run's
+    networks could not be confined and deploying anyway would silently leave a hole). A confinement
+    control that fails must fail loud and CLASSIFIED — surfaced as a clean 409 with the collision
+    named, never a bare 500 that drops the diagnosis. Subclasses ValueError so the pure builders
+    that raise it stay `pytest.raises(ValueError)`-compatible and any generic ValueError handler
+    still catches it."""
+
+
 class NestedContainersUnavailableError(ContractError):
     """This host cannot run a container inside a container, so a lab mission cannot be deployed.
 

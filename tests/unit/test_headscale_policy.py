@@ -2,7 +2,12 @@ import json
 
 import pytest
 
-from xorcise.core.headscale.policy import RunNetwork, assert_policy_safe, render_policy
+from xorcise.core.headscale.policy import (
+    RunNetwork,
+    assert_policy_safe,
+    render_policy,
+    router_tag_for,
+)
 
 ORCH = "orchestrator"
 TAG = "tag:router"
@@ -16,12 +21,15 @@ def test_render_is_valid_json_with_expected_structure():
     nets = [_net("agent-1", "10.200.1.0/24")]
     text = render_policy(nets, router_tag=TAG, orchestrator_user=ORCH)
     doc = json.loads(text)
-    assert doc["tagOwners"] == {TAG: [f"{ORCH}@"]}
-    assert doc["autoApprovers"]["routes"] == {"10.200.1.0/24": [TAG]}
+    rtag = router_tag_for("agent-1", TAG)
+    # both the base tag (owns the shared collector route) and this run's per-run tag are declared
+    assert doc["tagOwners"] == {TAG: [f"{ORCH}@"], rtag: [f"{ORCH}@"]}
+    # the run's own subnet is auto-approved for its per-run tag, NOT the shared base tag
+    assert doc["autoApprovers"]["routes"] == {"10.200.1.0/24": [rtag]}
     assert {"action": "accept", "src": [f"{ORCH}@"], "dst": [f"{ORCH}@:*"]} in doc["acls"]
     assert {"action": "accept", "src": ["agent-1@"], "dst": ["10.200.1.0/24:*"]} in doc["acls"]
-    # ...and the inbound rule back to the agent, which every run gets
-    assert {"action": "accept", "src": [TAG], "dst": ["agent-1@:*"]} in doc["acls"]
+    # ...and the inbound rule back to the agent, sourced from THIS run's per-run router tag
+    assert {"action": "accept", "src": [rtag], "dst": ["agent-1@:*"]} in doc["acls"]
     assert len(doc["acls"]) == 3
 
 
@@ -190,18 +198,57 @@ def test_safe_refuses_to_certify_without_a_router_tag(nets):
 def test_safe_rejects_a_missing_inbound_rule():
     nets = [_net("agent-1", "10.200.1.0/24")]
     doc = json.loads(render_policy(nets, router_tag=TAG, orchestrator_user=ORCH))
-    doc["acls"] = [r for r in doc["acls"] if r.get("src") != [TAG]]
+    rtag = router_tag_for("agent-1", TAG)
+    doc["acls"] = [r for r in doc["acls"] if r.get("src") != [rtag]]
     with pytest.raises(ValueError, match="exactly one inbound rule"):
         assert_policy_safe(json.dumps(doc), nets, router_tag=TAG)
 
 
 def test_safe_rejects_a_router_sourced_dst_for_a_foreign_agent():
-    """A run's router must never be handed a path to another run's agent."""
+    """A run's router must never be handed a path to another run's agent.
+
+    Two shapes, both cross-run reachability: this run's per-run tag reaching a foreign agent, and
+    the bare shared base tag reaching any agent (the pre-per-run-tag shape, where every router
+    shared one identity)."""
     nets = [_net("agent-1", "10.200.1.0/24")]
-    doc = json.loads(render_policy(nets, router_tag=TAG, orchestrator_user=ORCH))
-    doc["acls"].append({"action": "accept", "src": [TAG], "dst": ["agent-2@:*"]})
+    rtag = router_tag_for("agent-1", TAG)
+    for foreign in ({"src": [rtag], "dst": ["agent-2@:*"]}, {"src": [TAG], "dst": ["agent-1@:*"]}):
+        doc = json.loads(render_policy(nets, router_tag=TAG, orchestrator_user=ORCH))
+        doc["acls"].append({"action": "accept", **foreign})
+        with pytest.raises(ValueError, match="unexpected router-sourced dst"):
+            assert_policy_safe(json.dumps(doc), nets, router_tag=TAG)
+
+
+def test_safe_rejects_cross_run_reachability_in_a_two_run_policy():
+    """The blocker: with a shared base tag, run A's inbound rule (src base tag) was matched by
+    run B's router, because every router carried that one tag. Per-run tags make each inbound rule
+    name exactly one router. This asserts a genuinely two-run rendered policy certifies, and that
+    grafting A's tag onto B's agent is caught."""
+    a = _net("run-aaaa1111-agent", "10.200.1.0/24")
+    b = _net("run-bbbb2222-agent", "10.200.2.0/24")
+    text = render_policy(
+        [a, b], router_tag=TAG, orchestrator_user=ORCH, collector_addr="172.17.0.1"
+    )
+    assert_policy_safe(text, [a, b], router_tag=TAG, collector_addr="172.17.0.1")
+    # every router-sourced rule names a per-run tag, never the bare base tag
+    doc = json.loads(text)
+    router_srcs = [r["src"][0] for r in doc["acls"] if r["src"][0].startswith(TAG)]
+    assert TAG not in router_srcs
+    assert set(router_srcs) == {
+        router_tag_for(a.agent_user, TAG),
+        router_tag_for(b.agent_user, TAG),
+    }
+    # A's router must not be allowed to reach B's agent
+    cross = json.loads(text)
+    cross["acls"].append(
+        {
+            "action": "accept",
+            "src": [router_tag_for(a.agent_user, TAG)],
+            "dst": [f"{b.agent_user}@:*"],
+        }
+    )
     with pytest.raises(ValueError, match="unexpected router-sourced dst"):
-        assert_policy_safe(json.dumps(doc), nets, router_tag=TAG)
+        assert_policy_safe(json.dumps(cross), [a, b], router_tag=TAG, collector_addr="172.17.0.1")
 
 
 def test_inbound_dst_does_not_break_the_one_rule_per_agent_invariant():

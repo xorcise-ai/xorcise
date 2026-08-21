@@ -13,6 +13,7 @@ from collections.abc import Mapping, Sequence
 
 import yaml
 
+from xorcise.core.contracts.errors import EnvironmentConfigError
 from xorcise.core.runner.docker import MANAGED_LABEL, RUN_ID_LABEL
 
 # The Tailscale router runs as its own inner container from the official image; the builder
@@ -161,6 +162,7 @@ INGRESS_IPS="%%INGRESS_IPS%%"
         "$$IPT" -t nat -A PREROUTING -d "$$iip" -j DNAT --to-destination "$$aip" || {
           echo "xorcise: FATAL agent ingress DNAT for $$iip would not install" >&2
           kill -TERM 1
+          exit 1
         }
       done
       cur="$$aip"
@@ -243,6 +245,36 @@ def compose_network_names(compose_text: str) -> tuple[str, ...]:
     return tuple(sorted(names)) or ("default",)
 
 
+def external_network_names(compose_text: str) -> tuple[str, ...]:
+    """The networks a mission's compose declares `external: true`, sorted. Pure.
+
+    An external network is created OUTSIDE the run's compose project, so the override's
+    `internal: true` on it is a no-op — compose merges the flag but never applies it to a network
+    it did not create (verified: `up` succeeds and the network keeps its real config). Confinement
+    would therefore SILENTLY not hold on such a network, the fail-open this pass exists to close.
+    The caller refuses to deploy a confined run that declares one. External is spelled either
+    `external: true` (short form) or `external: {name: ...}` (long form); BaseLoader renders the
+    bool as the string "true", so both a truthy string and a mapping count.
+    """
+    try:
+        doc = yaml.load(compose_text, Loader=yaml.BaseLoader) or {}  # noqa: S506
+    except yaml.YAMLError:
+        return ()
+    if not isinstance(doc, dict):
+        return ()
+    declared = doc.get("networks")
+    if not isinstance(declared, dict):
+        return ()
+    out: set[str] = set()
+    for name, cfg in declared.items():
+        if not isinstance(cfg, dict):
+            continue
+        ext = cfg.get("external")
+        if ext == "true" or isinstance(ext, dict):
+            out.add(str(name))
+    return tuple(sorted(out))
+
+
 def _assert_reserved_addresses_free(
     entry_subnets: Mapping[str, str],
     static_ips: Mapping[str, Mapping[str, int]],
@@ -261,12 +293,12 @@ def _assert_reserved_addresses_free(
                 continue
             claimed = _host_in_subnet(cidr, octet)
             if claimed == router_address(cidr):
-                raise ValueError(
+                raise EnvironmentConfigError(
                     f"mission service {service!r} pins {claimed} on network {net!r}, which is "
                     "reserved for the run's tailscale router"
                 )
             if claimed == ingress_address(cidr):
-                raise ValueError(
+                raise EnvironmentConfigError(
                     f"mission service {service!r} pins {claimed} on network {net!r}, which is "
                     "reserved for the agent's callback address"
                 )
@@ -294,6 +326,16 @@ def build_net_override(
     from the container env at `compose up` time and never lands in the override file.
     """
     confine = not allow_egress
+    # The confinement egress network's name is reserved. A mission that declares a network called
+    # `xorcise-egress` would have its `internal: true` overwritten by `networks[EGRESS_NET] = {}`
+    # below — silently losing confinement AND sharing an L2 segment with the run's router, while
+    # the run still reports itself confined. Refuse at build time with the collision named rather
+    # than deploy a mission that is quietly unconfined on exactly one network.
+    if confine and EGRESS_NET in {*entry_subnets, *all_networks}:
+        raise EnvironmentConfigError(
+            f"mission declares a network named {EGRESS_NET!r}, which is reserved for the run's "
+            "confinement egress network — rename the mission network"
+        )
     # EVERY mission network, not just the carved entry ones. A service attached to an entry
     # network AND a second, unconfined one keeps its route off box through the second — and the
     # multi-homed services (segmented-pivot's `web`, operation-tessera's `eval-harness`) are
@@ -367,7 +409,7 @@ def build_net_override(
         )
     if entry_subnets:
         if not agent_user:
-            raise ValueError(
+            raise EnvironmentConfigError(
                 "agent ingress requires agent_user — the router discovers the agent's tailnet "
                 "address by its headscale user and cannot arm ingress without it"
             )

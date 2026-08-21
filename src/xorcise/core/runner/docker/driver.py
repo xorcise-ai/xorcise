@@ -189,13 +189,19 @@ class DockerSdkDriver(DockerDriver):
                 image,
                 entrypoint=["/bin/true"],
                 command=[],
+                # Same platform pin as run()/pull(): an amd64-only mission image on an arm64 host
+                # resolves via emulation instead of a manifest-mismatch surprise. The file we
+                # extract is arch-independent, but staying consistent with how the same image is
+                # run keeps one selection rule, not two.
+                platform=self._platform or None,
                 # Every fused image descends from docker:dind, whose config declares a
                 # /var/lib/docker VOLUME — so `create` allocates an anonymous volume that
                 # `remove(force=True)` alone would orphan on EVERY deploy, unlabelled and
                 # therefore invisible to the project-scoped volume sweep in _remove_run_resources.
-                # The managed label covers the other half: without it a server killed between
-                # create and remove leaves a container `reap_managed` cannot find either. (No
-                # RUN_ID_LABEL: this call knows an image, not a run.)
+                # The managed label is the safety net for the create↔remove window: if the server
+                # dies between them, reap_managed force-removes any MANAGED_LABEL container that has
+                # no run id directly (this call knows an image, not a run — so deliberately no
+                # RUN_ID_LABEL, which the project-keyed _remove_run_resources could not reach).
                 labels={MANAGED_LABEL: "true"},
             )
         except docker.errors.ImageNotFound as exc:
@@ -394,11 +400,28 @@ class DockerSdkDriver(DockerDriver):
         # the running ones — the leak the bug report saw included a 3-day-old exited container.
         managed = self._client.containers.list(all=True, filters={"label": f"{MANAGED_LABEL}=true"})
         run_ids: set[str] = set()
+        run_scoped = []
+        unscoped = []
         for container in managed:
             run_id = (container.labels or {}).get(RUN_ID_LABEL)
-            if isinstance(run_id, str):
+            if isinstance(run_id, str) and run_id:
                 run_ids.add(run_id)
+                run_scoped.append(container)
+            else:
+                unscoped.append(container)
         reaped = [c.name for c in managed]
+        # Run-scoped containers are reclaimed by PROJECT (their networks + anon volumes go too).
         for run_id in run_ids:
             self._remove_run_resources(run_id)
+        # A managed container with NO run id is not reachable by _remove_run_resources (which keys
+        # on the project == run id), so it would be REPORTED reaped here yet never removed. The
+        # read_image_file throwaway is exactly that shape — MANAGED_LABEL, deliberately no
+        # RUN_ID_LABEL — and it only survives its own `finally` remove if the process died between
+        # create and remove. Force-remove it directly (with its anon dind volume) so "reaped" is
+        # true for it too, not just claimed.
+        import contextlib
+
+        for container in unscoped:
+            with contextlib.suppress(Exception):  # best-effort reap; a racing removal is fine
+                container.remove(force=True, v=True)
         return reaped

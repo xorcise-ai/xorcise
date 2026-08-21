@@ -26,9 +26,13 @@ from xorcise.core.contracts.control import (
     StatusResult,
     TeardownResult,
 )
-from xorcise.core.contracts.errors import NotFoundError
+from xorcise.core.contracts.errors import EnvironmentConfigError, NotFoundError
 from xorcise.core.runner.docker import ContainerHandle, ContainerSpec, DockerDriver
-from xorcise.core.runner.netoverride import build_net_override, compose_network_names
+from xorcise.core.runner.netoverride import (
+    build_net_override,
+    compose_network_names,
+    external_network_names,
+)
 
 # Where the entrypoint writes the delivered Headscale CA (in the OUTER fused container); the
 # net-override bind-mounts this into the router. Kept in sync with the entrypoint.
@@ -137,11 +141,25 @@ class RunnerControlService:
             # off box, which is the whole hole this exists to close. A run that cannot be confined
             # must not deploy pretending it was. Drivers with no image store (the stub) create no
             # networks, and an `allow_egress` mission is not being confined in the first place.
-            raise ValueError(
+            raise EnvironmentConfigError(
                 f"deploy({run_id}): could not read {compose_file!r} from image {image!r} — "
                 "refusing to deploy, because the mission's networks cannot be confined without it"
             )
         all_networks = compose_network_names(compose_text) if compose_text else ()
+        if compose_text and not network.allow_egress:
+            external = external_network_names(compose_text)
+            if external:
+                # An external network is created outside this run's compose project, so the
+                # override's `internal: true` on it is a no-op — confinement would silently not
+                # hold there. Refuse rather than deploy a run that reports itself confined while a
+                # network it declares is not. (None ship today, and the fresh inner dockerd makes
+                # external networks non-functional anyway, but a silent false-confine is the exact
+                # fail-open this pass exists to close.)
+                raise EnvironmentConfigError(
+                    f"deploy({run_id}): mission declares external network(s) "
+                    f"{', '.join(external)!r}, which cannot be confined — a confined run may not "
+                    "use a network it does not create; set allow_egress or drop the external net"
+                )
         override = build_net_override(
             run_id,
             entry_subnets,
@@ -159,6 +177,10 @@ class RunnerControlService:
             ("XORCISE_AUTHKEY", network.auth_key),
             ("XORCISE_ROUTES", ",".join(routes)),
             ("XORCISE_NET_OVERRIDE_B64", override_b64),
+            # The entrypoint composes `-f /mission/$XORCISE_COMPOSE_FILE`, the SAME file the
+            # confinement pass above read the network list from. One filename source for both, so
+            # the deployed stack and the confined network set can never name different files.
+            ("XORCISE_COMPOSE_FILE", compose_file),
         ]
         if network.ca_cert:
             env.append(

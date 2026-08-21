@@ -13,7 +13,7 @@ from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 
 from .cli import HeadscaleCli
-from .policy import RunNetwork, assert_policy_safe, render_policy
+from .policy import RunNetwork, assert_policy_safe, render_policy, router_tag_for
 
 # the ACL apply is a non-transactional read(DB)-render-write(`policy set`) against
 # the ONE shared Headscale control plane. build_run_create_deps builds a fresh NetworkController per
@@ -122,8 +122,16 @@ class NetworkController:
         agent_key = self._cli.create_preauth_key(agent_user, expiration=self._key_expiration)
         # The router joins as the orchestrator user, ACL-tagged so autoApprovers approves its
         # advertised routes; the agent joins untagged as agent_user. Two distinct keys.
+        #
+        # TWO tags on the router: the shared base tag (auto-approves the collector /32, the one
+        # route identical across runs) and this run's PER-RUN tag, which is what the inbound ACL
+        # rule pins as source. Without the per-run tag every router shares one identity and each
+        # run's inbound rule matches every run's router — cross-run reachability. render_policy
+        # derives the same per-run tag from agent_user, so the two sides agree.
         router_key = self._cli.create_preauth_key(
-            self._orchestrator_user, expiration=self._key_expiration, tags=[self._router_tag]
+            self._orchestrator_user,
+            expiration=self._key_expiration,
+            tags=[self._router_tag, router_tag_for(agent_user, self._router_tag)],
         )
         net = RunNetwork(
             agent_user=agent_user,

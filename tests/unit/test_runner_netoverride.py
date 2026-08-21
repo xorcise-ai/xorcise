@@ -7,6 +7,7 @@ from xorcise.core.runner.netoverride import (
     build_net_override,
     carve_entry_subnets,
     compose_network_names,
+    external_network_names,
     ingress_address,
     router_address,
     target_ips_for,
@@ -245,6 +246,38 @@ def test_ingress_ignores_offline_peers_when_resolving_the_agent():
     assert resolve.index('grep -v "offline"') < resolve.index("head -1")
 
 
+def test_a_mission_network_named_like_the_egress_net_is_refused():
+    """`xorcise-egress` is reserved. A mission that declares a network by that name would have its
+    `internal: true` overwritten by `networks[EGRESS_NET] = {}` — silently losing confinement on
+    exactly one network while the run still reports itself confined, and sharing an L2 segment with
+    the router besides. Refuse at build time rather than deploy quietly unconfined."""
+    with pytest.raises(ValueError, match="reserved for the run's confinement egress"):
+        build_net_override("run1", ENTRY, agent_user=USER, all_networks=(EGRESS_NET,))
+
+
+def test_the_egress_name_is_only_reserved_while_confining():
+    """Under allow_egress nothing is confined and no egress network is injected, so a mission may
+    legitimately use any name."""
+    o = build_net_override(
+        "run1", ENTRY, agent_user=USER, all_networks=(EGRESS_NET,), allow_egress=True
+    )
+    networks: Any = o["networks"]
+    assert EGRESS_NET in networks
+
+
+def test_the_watcher_does_not_log_armed_after_a_fatal_dnat_failure():
+    """`kill -TERM 1` signals PID 1 but does not stop the watcher subshell, so the `for` loop used
+    to fall through to `cur=$aip` and echo "agent ingress ... armed" for addresses that were never
+    DNATed — the same false-armed log the offline-peer filter was added to prevent. The fatal path
+    must exit before the success log."""
+    script = _override()["services"]["xorcise-router"]["entrypoint"][2]
+    fatal = script.split("would not install")[1].split("done")[0]
+    assert "exit 1" in fatal
+    assert script.index("kill -TERM 1\n          exit 1") < script.index(
+        'echo "xorcise: agent ingress'
+    )
+
+
 def test_ingress_requires_an_agent_user_to_discover():
     """Fail closed: without the user the router cannot find the agent, and an override that
     silently omitted the DNAT would leave a callback timing out with no signal at all."""
@@ -282,6 +315,15 @@ def test_the_router_keeps_clear_of_dockers_dynamic_range():
 def test_a_normal_static_ip_pin_is_untouched():
     o = _override(static_ips={"web": {"dmz_net": 10}})
     assert o["services"]["web"]["networks"]["dmz_net"]["ipv4_address"] == "10.200.1.10"
+
+
+def test_external_network_names_finds_both_spellings():
+    """External is spelled `external: true` (short) or `external: {name: ...}` (long); BaseLoader
+    renders the bool as the string "true", so both a truthy string and a mapping count. A network
+    without the flag is not external."""
+    text = "networks:\n  short: {external: true}\n  long: {external: {name: shared}}\n  own: {}\n"
+    assert external_network_names(text) == ("long", "short")
+    assert external_network_names("networks:\n  a: {}\n") == ()
 
 
 def test_compose_network_names_reads_yaml_12_like_compose_does():

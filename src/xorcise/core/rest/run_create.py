@@ -540,6 +540,14 @@ def _ingress_addr_for(entry_subnets: dict[str, str]) -> str:
     for `entry_networks: [zulu_net, alpha_net]` it silently advertised alpha_net's address, so an
     agent registering it was unreachable from the segment the author meant to be agent-facing.
 
+    LIMITATION for a MULTI-ENTRY mission (none ship today — every catalog mission has exactly one
+    entry network): a mission service that calls back from a NON-first entry segment cannot reach
+    this advertised address, because confinement leaves each internal segment with no route to a
+    sibling's addresses. The mechanism is already in place for it — every entry segment's ingress
+    IP DNATs to the same agent — so lifting this is a prompt-advertisement change (name all entry
+    addresses, one per segment), not a data-plane one. Deferred until a mission needs it rather
+    than expanding the connect contract to a list speculatively.
+
     Lazy import, like every other part-island reach from this module: pulling the runner plane in
     at module scope would break role isolation (tests/topology::test_role_boots_only_its_plane).
     """

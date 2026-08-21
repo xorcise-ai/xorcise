@@ -433,6 +433,13 @@ fi
 if [ "$MODE" = userspace ]; then
   ENVF="$WORK/ts-env.sh"
   {
+    # The mode-independent handle, written in EVERY mode that has a proxy (the sidecar writes the
+    # same two) so an agent keying off XORCISE_SOCKS5 is portable across modes. The standard
+    # ALL_PROXY/HTTP(S)_PROXY names below are the userspace-only convenience for `set -a; . env`;
+    # the sidecar deliberately omits them, since a global proxy on that host would route the
+    # agent's own Claude API traffic through the tailnet.
+    echo "export XORCISE_SOCKS5=$PROXY_ADDR:$SOCKS"
+    echo "export XORCISE_HTTP_PROXY=http://$PROXY_ADDR:$HTTP"
     echo "export ALL_PROXY=socks5://$PROXY_ADDR:$SOCKS"
     echo "export HTTPS_PROXY=http://$PROXY_ADDR:$HTTP"
     echo "export HTTP_PROXY=http://$PROXY_ADDR:$HTTP"

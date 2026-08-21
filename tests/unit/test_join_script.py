@@ -363,3 +363,16 @@ def test_the_docker_daemon_is_probed_once_per_join():
     """`docker info` on an unreachable daemon blocks for its full timeout, and this was asked
     twice on every join — once to detect the mode, once to guard the sidecar branch."""
     assert _script().count("docker info >/dev/null 2>&1") == 1
+
+
+def test_the_portable_socks_handle_is_written_in_every_proxy_mode():
+    """XORCISE_SOCKS5 is the mode-independent handle: the sidecar path always wrote it, and the
+    userspace path now does too, so an agent keying off it is portable across modes. This PR made
+    `auto` pick the sidecar on non-root Linux where it used to pick userspace, so the two paths'
+    env files must expose the same handle or an agent's config silently stops resolving."""
+    s = _script()
+    # sidecar block
+    assert "export XORCISE_SOCKS5=127.0.0.1:$SOCKS" in s
+    # userspace block — additive; the standard ALL_PROXY convenience stays
+    assert "export XORCISE_SOCKS5=$PROXY_ADDR:$SOCKS" in s
+    assert "export ALL_PROXY=socks5://$PROXY_ADDR:$SOCKS" in s

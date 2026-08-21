@@ -33,6 +33,19 @@ class RunNetwork:
 _FORBIDDEN = ('"*:*"', '"src": ["*"]', "autogroup:members")
 
 
+def router_tag_for(agent_user: str, base_tag: str) -> str:
+    """The PER-RUN router tag: the base router tag namespaced by the run's agent user.
+
+    The shared derivation between the minting side (the controller tags a run's router key with
+    this) and the rendering side (render_policy scopes that run's inbound rule to this). It is the
+    per-run scoping that keeps the inbound ACL honest: with every router carrying only the base
+    `tag:router`, a rule `src:[tag:router] dst:[A-agent:*]` is matched by EVERY run's router, so
+    B's router (or a mission that pivots through it) has a compiled path to A's agent on any port.
+    Namespacing the tag per run makes the source pin name exactly one router — this run's.
+    """
+    return f"{base_tag}-{agent_user}"
+
+
 def render_policy(
     networks: Sequence[RunNetwork],
     *,
@@ -44,10 +57,15 @@ def render_policy(
     """Render the full HuJSON ACL from the active run set (deterministic, sorted)."""
     ordered = sorted(networks, key=lambda n: n.agent_user)
 
+    # A run's router carries TWO tags: its per-run tag (below), and the shared base `router_tag`.
+    # The base tag exists only to auto-approve the ONE route that is identical across runs — the
+    # collector /32 — so that logic stays run-independent. Every per-run subnet is approved for
+    # just that run's tag, so a router can advertise only its own run's routes.
     routes: dict[str, list[str]] = {}
     for net in ordered:
+        rtag = router_tag_for(net.agent_user, router_tag)
         for cidr in net.entry_cidrs:
-            routes.setdefault(cidr, [router_tag])
+            routes.setdefault(cidr, [rtag])
     if collector_addr:
         routes.setdefault(f"{collector_addr}/32", [router_tag])
 
@@ -56,7 +74,10 @@ def render_policy(
     acls: list[dict[str, object]] = [
         {"action": "accept", "src": [f"{orchestrator_user}@"], "dst": [f"{orchestrator_user}@:*"]}
     ]
+    tag_owners: dict[str, list[str]] = {router_tag: [f"{orchestrator_user}@"]}
     for net in ordered:
+        rtag = router_tag_for(net.agent_user, router_tag)
+        tag_owners[rtag] = [f"{orchestrator_user}@"]
         dst = [f"{c}:*" for c in net.entry_cidrs]
         if collector_dst:
             dst.append(collector_dst)
@@ -67,24 +88,25 @@ def render_policy(
                 "dst": dst,
             }
         )
-        # The reverse direction, scoped to this run's router as the ONLY source. The target has
-        # to be able to open connections back to the agent — without a rule this way the agent
-        # node's packet filter is empty and every inbound SYN is dropped ("no rules matched").
+        # The reverse direction, scoped to THIS run's router as the ONLY source — its per-run tag,
+        # not the shared base tag. The target has to be able to open connections back to the agent
+        # — without a rule this way the agent node's packet filter is empty and every inbound SYN
+        # is dropped ("no rules matched").
         #
         # Ports are deliberately wildcard: the agent is a host on the mission network and a
         # mission may legitimately expect it to listen anywhere (a callback API, a shell, a C2
         # port), so the port policy belongs to the mission, not to the harness. What keeps this
-        # safe is the source pin, not a port list.
+        # safe is the source pin — and the pin is now per-run, so no other run's router matches.
         acls.append(
             {
                 "action": "accept",
-                "src": [router_tag],
+                "src": [rtag],
                 "dst": [f"{net.agent_user}@:*"],
             }
         )
 
     policy = {
-        "tagOwners": {router_tag: [f"{orchestrator_user}@"]},
+        "tagOwners": dict(sorted(tag_owners.items())),
         "autoApprovers": {"routes": dict(sorted(routes.items()))},
         "acls": acls,
     }
@@ -139,25 +161,38 @@ def assert_policy_safe(
                 raise ValueError(f"Policy contains foreign dst {dst!r} for {net.agent_user}@")
 
     # Inbound rules. The invariant is NOT "no wildcard port" — ports are deliberately wildcard
-    # (see render_policy). It is that every router-sourced rule names THIS run's router tag as its
-    # only source and THIS run's agent user as its only destination, so a run's router can never
-    # be handed a path to another run's agent.
-    ingress_dsts = {f"{n.agent_user}@:*" for n in networks}
+    # (see render_policy). It is that every router-sourced rule names THIS run's PER-RUN router tag
+    # as its only source and THIS run's agent user as its only destination. The per-run pin is what
+    # the gate is really enforcing: a rule sourced from run A's router tag whose dst is run B's
+    # agent would hand A's router a path to B's agent, which is the cross-run reachability the
+    # shared base tag used to allow. Pairing each tag with its one permitted dst catches it; a
+    # union of all agent dsts (the previous shape) did not, because every dst was "allowed" for
+    # every tag.
+    allowed_by_tag: dict[str, str] = {
+        router_tag_for(n.agent_user, router_tag): f"{n.agent_user}@:*" for n in networks
+    }
     for net in networks:
+        rtag = router_tag_for(net.agent_user, router_tag)
         wanted = [f"{net.agent_user}@:*"]
         matches = [
-            r
-            for r in pol.get("acls", [])
-            if r.get("src") == [router_tag] and r.get("dst") == wanted
+            r for r in pol.get("acls", []) if r.get("src") == [rtag] and r.get("dst") == wanted
         ]
         if len(matches) != 1:
             raise ValueError(
-                f"Policy must contain exactly one inbound rule {router_tag} -> {wanted[0]!r} "
+                f"Policy must contain exactly one inbound rule {rtag} -> {wanted[0]!r} "
                 f"for {net.agent_user}@ (found {len(matches)})"
             )
+    # Sweep EVERY router-sourced rule (any per-run router tag, or the bare base tag) and reject a
+    # dst that is not the single agent that tag is allowed to reach. A rule sourced from the base
+    # `tag:router` reaching any agent is itself a violation now — routers source inbound only from
+    # their per-run tag.
     for rule in pol.get("acls", []):
-        if rule.get("src") != [router_tag]:
+        src = rule.get("src")
+        if not (isinstance(src, list) and len(src) == 1 and str(src[0]).startswith(router_tag)):
             continue
+        permitted = allowed_by_tag.get(str(src[0]))
         for dst in rule.get("dst", []):
-            if dst not in ingress_dsts:
-                raise ValueError(f"Policy contains unexpected router-sourced dst {dst!r}")
+            if dst != permitted:
+                raise ValueError(
+                    f"Policy contains unexpected router-sourced dst {dst!r} for src {src[0]!r}"
+                )

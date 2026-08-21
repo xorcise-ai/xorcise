@@ -85,6 +85,27 @@ def test_create_run_image_not_built_is_409_with_remediation(migrated_home, monke
     assert "mission ingest" in r.json()["detail"]  # actionable remediation
 
 
+def test_create_run_unconfinable_environment_is_409_not_500(migrated_home, monkeypatch):
+    """A mission that cannot be safely turned into a confined environment (reserved-address pin,
+    external network, unreadable compose) raises EnvironmentConfigError — a ContractError, not a
+    RuntimeError. Without an explicit mapping it falls through FastAPI's default handler as a bare
+    500 that drops the diagnosis; it must be a 409 carrying the collision."""
+    import xorcise.core.rest.routers.runs as runs_router
+    from xorcise.core.contracts.errors import EnvironmentConfigError
+
+    def _boom(**_k):
+        raise EnvironmentConfigError(
+            "mission declares external network(s) 'ext', which cannot be confined"
+        )
+
+    monkeypatch.setattr(runs_router, "create_run_spine", _boom)
+    c = _client()
+    c.post("/api/agents", json={"name": "alpha"})
+    r = c.post("/api/runs", json={"agent": "alpha", "mission": "c1"})
+    assert r.status_code == 409
+    assert "cannot be confined" in r.json()["detail"]
+
+
 def test_create_run_infra_unready_is_503(migrated_home, monkeypatch):
     # the fail-loud RuntimeError (Docker/Headscale unreachable) → 503 JSON,
     # not a text/plain 500 that the CLI can't decode.

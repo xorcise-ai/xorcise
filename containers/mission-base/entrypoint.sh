@@ -9,6 +9,10 @@
 #   XORCISE_AUTHKEY            per-run pre-auth key (minted by the fence)
 #   XORCISE_ROUTES             comma-separated CIDR(s) the router advertises
 #   XORCISE_NET_OVERRIDE_B64   base64'd compose override (mission nets + the router service)
+#   XORCISE_COMPOSE_FILE       the mission's compose filename in /mission (default
+#                              docker-compose.yml) — the runner reads the SAME file to
+#                              enumerate and confine the run's networks, so the two cannot
+#                              disagree about which file is actually deployed
 # The override references the secrets as ${XORCISE_*}; compose interpolates them from this env
 # at `up` time, so the auth key never lands on disk inside the override file.
 set -eu
@@ -53,7 +57,7 @@ fi
 
 # 4. bring up the mission + the router (compose interpolates ${XORCISE_AUTHKEY} etc. from env)
 docker compose -p "${XORCISE_PROJECT:-mission}" \
-    -f /mission/docker-compose.yml -f /mission/net-override.yml up -d
+    -f "/mission/${XORCISE_COMPOSE_FILE:-docker-compose.yml}" -f /mission/net-override.yml up -d
 
 # Block on the inner dockerd so this container stays alive as the run's lifecycle handle (the
 # one status/teardown address by name == run id). The mission containers are its children, so

@@ -3,6 +3,7 @@ import base64
 import yaml
 
 from xorcise.core.contracts.control import DeployRequest, MissionRef, NetworkSpec, RunState
+from xorcise.core.contracts.errors import EnvironmentConfigError
 from xorcise.core.runner.docker import StubDockerDriver
 from xorcise.core.runner.service import RunnerControlService
 
@@ -269,3 +270,27 @@ def test_the_compose_is_read_at_the_name_the_manifest_authored():
     )
     # the network only the compose knows about is confined too, not just the carved entry one
     assert override["networks"]["back"]["internal"] is True
+
+
+def test_confinement_refuses_a_mission_declaring_an_external_network():
+    """An external network is created outside the run's compose project, so the override's
+    internal:true on it is a no-op — confinement would silently not hold. Refuse rather than deploy
+    a run that reports itself confined while a network it declares is not."""
+    import pytest
+
+    svc = RunnerControlService(_ReadingDriver("services: {}\nnetworks: {ext: {external: true}}\n"))
+    with pytest.raises(EnvironmentConfigError, match="external network"):
+        svc.deploy(_req())
+
+
+def test_an_allow_egress_mission_may_use_an_external_network():
+    """Nothing is being confined, so an external network is fine."""
+    svc = RunnerControlService(_ReadingDriver("services: {}\nnetworks: {ext: {external: true}}\n"))
+    req = DeployRequest(
+        run_id="run-x",
+        mission=MissionRef(mission_id="c", image="xorcise/mission-c:0"),
+        network=NetworkSpec(
+            tailnet="10.200.1.0/24", auth_key="k", agent_user=AGENT, allow_egress=True
+        ),
+    )
+    assert svc.deploy(req).run_id == "run-x"

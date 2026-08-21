@@ -15,7 +15,7 @@ from .cli import (
     StubHeadscaleCli,
 )
 from .controller import NetworkController
-from .policy import RunNetwork, assert_policy_safe, render_policy
+from .policy import RunNetwork, assert_policy_safe, render_policy, router_tag_for
 
 __all__ = [
     "NetworkController",
@@ -25,6 +25,7 @@ __all__ = [
     "DockerExecHeadscaleCli",
     "HeadscaleError",
     "render_policy",
+    "router_tag_for",
     "assert_policy_safe",
     "allocate_cidr",
     "cidr_for_index",
