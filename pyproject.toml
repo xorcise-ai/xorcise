@@ -30,7 +30,7 @@ dependencies = [
     "pyyaml>=6.0",  # runner plane: compose / net-override rendering
     # OTLP/HTTP protobuf decode — the OTLP exporter default wire format (Claude Code / OpenHands).
     # Pinned so the decode path is locked to one proto schema version (no silent drift).
-    "opentelemetry-proto==1.42.1",
+    "opentelemetry-proto==1.44.0",
 ]
 
 # `authors` records who created the project; `maintainers` who looks after it now. Both render
