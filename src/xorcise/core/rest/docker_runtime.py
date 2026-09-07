@@ -7,12 +7,15 @@ mission, and a "no" must fail the run.
 
 Two separate questions live here:
 
-  * HOST capability — can this machine run a container inside a container at all? A behavioural
-    probe (runner/docker/rosetta.py). Expensive (~20-40 s for Tier 2), so its verdict is memoised
-    IN MEMORY for the server's lifetime (host capability does not change without a Docker restart,
-    which restarts the server). `doctor` bypasses the memo (fresh=True) to report current health.
-    There is deliberately NO on-disk cache: a persisted verdict turned a transient probe failure
-    (a registry blip) into a permanent refusal keyed on a fingerprint that never cleared.
+  * HOST capability — can this machine run a container inside a container AT A GIVEN PLATFORM?
+    A behavioural probe (runner/docker/rosetta.py), asked per execution platform: the native one
+    for a mission that pulled a native image, `linux/amd64` for one running under emulation on an
+    arm64 host. Expensive (~10-40 s for Tier 2), so each verdict is memoised IN MEMORY per
+    platform for the server's lifetime (host capability does not change without a Docker
+    restart, which restarts the server). `doctor` bypasses the memo (fresh=True) to report
+    current health. There is deliberately NO on-disk cache: a persisted verdict turned a
+    transient probe failure (a registry blip) into a permanent refusal keyed on a fingerprint
+    that never cleared.
 
   * ARTIFACT compatibility — was THIS mission's fused image built on a base generation this
     XORCISE can run? A cheap label/tag check (require_base_compatible), no container.
@@ -31,6 +34,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Mapping
+from typing import Any, cast
 
 from xorcise.core.config import Settings
 from xorcise.core.contracts.errors import (
@@ -46,17 +50,19 @@ from xorcise.core.runner.docker.build import (
 from xorcise.core.runner.docker.rosetta import (
     NestedSupport,
     binfmt_signal,
+    canonical_platform,
     check_nested_support,
-    verify_nested_amd64,
+    verify_nested,
 )
 
 log = logging.getLogger(__name__)
 
-# In-memory verdict, memoised for the process lifetime. The lock serialises the (slow) probe so
-# concurrent first run-creates queue behind ONE probe instead of each launching a privileged DinD
-# and racing a cache file — the failure the removed on-disk cache used to have.
+# In-memory verdicts, one per execution platform (None = the daemon's native platform), memoised
+# for the process lifetime. The lock serialises the (slow) probe so concurrent first run-creates
+# queue behind ONE probe instead of each launching a privileged DinD and racing a cache file —
+# the failure the removed on-disk cache used to have.
 _MEMO_LOCK = threading.Lock()
-_memo: NestedSupport | None = None
+_memo: dict[str | None, NestedSupport] = {}
 #: The last verdict line logged, so a long-lived server logs only when the verdict CHANGES
 #: (a single value, not an unbounded set of every distinct failure string ever seen).
 _last_logged: str | None = None
@@ -64,22 +70,46 @@ _last_logged: str | None = None
 
 def _log_support(support: NestedSupport) -> None:
     global _last_logged
-    line = f"{'ok' if support.ok else 'unavailable'}: {support.detail}"
+    line = (
+        f"{'ok' if support.ok else 'unavailable'} [{support.platform or 'native'}]: "
+        f"{support.detail}"
+    )
     if line == _last_logged:
         return
     _last_logged = line
     (log.info if support.ok else log.warning)("nested containers — %s", line)
 
 
-def _probe(client_factory: Callable[[], object]) -> NestedSupport:
-    """Run both tiers against one client, closing it after. Never memoises — caller decides."""
+def _daemon_platform(client: object) -> str | None:
+    """What the daemon executes natively, from its own version report — or None if unknowable."""
+    try:
+        version = cast(Any, client).version() or {}
+        os_name, arch = version.get("Os"), version.get("Arch")
+    except Exception:  # noqa: BLE001 — unknown, never a crash; only sharpens the memo + message
+        return None
+    return canonical_platform(f"{os_name}/{arch}") if os_name and arch else None
+
+
+def _probe(
+    client_factory: Callable[[], object], platform: str | None
+) -> tuple[NestedSupport, str | None]:
+    """Run both tiers for `platform` against one client, closing it after. Never memoises — the
+    caller decides. Also returns the daemon's native platform, so a native verdict can be filed
+    under its explicit spelling too."""
     client = client_factory()  # may raise (daemon down); the caller wraps it into a typed error
     try:
-        return check_nested_support(
+        native = _daemon_platform(client)
+        # Probe with an EXPLICIT platform whenever one is known: "native" spelt out lets the
+        # wrapper insist on the right image when the local tag holds another platform's copy
+        # (docker keeps one per tag under overlay2), instead of silently running whatever is there.
+        support = check_nested_support(
             skip=False,
             probe_tier1=lambda: binfmt_signal(client),
-            probe_tier2=lambda _t1: verify_nested_amd64(client),
+            probe_tier2=lambda _t1: verify_nested(client, platform=platform or native),
+            platform=platform,
+            host_platform=native,
         )
+        return support, native
     finally:
         close = getattr(client, "close", None)
         if callable(close):
@@ -90,32 +120,48 @@ def nested_support(
     settings: Settings,
     client_factory: Callable[[], object],
     *,
+    platform: str | None = None,
     fresh: bool = False,
 ) -> NestedSupport:
-    """Can this host nest containers? Memoised in memory; `fresh` re-probes (doctor).
+    """Can this host nest containers at `platform`? Memoised in memory; `fresh` re-probes (doctor).
+
+    `platform` is the execution platform of the mission about to run — the one its install
+    recorded — or None for the daemon's native platform (what boot pre-warms and `doctor`
+    reports). The two spellings of "native" share one verdict: a probe made with None is also
+    filed under the platform the daemon reported, so the first run of a native mission reads the
+    pre-warmed answer instead of paying a second probe.
 
     A skipped check answers immediately without touching Docker. Otherwise the verdict is computed
-    once and held; `fresh=True` recomputes AND refreshes the memo, so an operator who fixes Rosetta
-    and re-runs `doctor` unblocks subsequent runs without restarting the server.
+    once per platform and held; `fresh=True` recomputes AND refreshes the memo, so an operator who
+    fixes Rosetta and re-runs `doctor` unblocks subsequent runs without restarting the server.
     """
+    key = canonical_platform(platform)
     if settings.nested_container_check == "skip":
-        return NestedSupport(True, "nested-container check skipped by configuration")
-    global _memo
+        return NestedSupport(
+            True, "nested-container check skipped by configuration", platform=key or ""
+        )
     with _MEMO_LOCK:
-        if _memo is not None and not fresh:
-            return _memo
-        support = _probe(client_factory)
-        _memo = support
+        hit = _memo.get(key)
+        if hit is not None and not fresh:
+            return hit
+        support, native = _probe(client_factory, key)
+        _memo[key] = support
+        if key is None and native is not None:
+            _memo[native] = support  # "native" and its explicit spelling are the same question
+        elif key is not None and key == native:
+            _memo[None] = support
         _log_support(support)
         return support
 
 
 def prewarm_nested_support(settings: Settings, client_factory: Callable[[], object]) -> None:
-    """Compute the verdict ahead of the first run-create (called at boot, best-effort).
+    """Compute the NATIVE verdict ahead of the first run-create (called at boot, best-effort).
 
     Warming the memo at startup means run-create reads it instantly instead of the first real run
-    paying the 20-40 s probe under a client timeout. Never raises: a warm-up failure just leaves
-    the memo cold, and the first run recomputes it."""
+    paying the 10-40 s probe under a client timeout. Only the native platform is warmed: it is
+    what every mission with a native image runs at, and probing a foreign platform at every boot
+    would start a privileged emulated DinD for a case most operators never hit. Never raises: a
+    warm-up failure just leaves the memo cold, and the first run recomputes it."""
     try:
         nested_support(settings, client_factory)
     except Exception as exc:  # noqa: BLE001 — a safety-net warm-up must never break boot
@@ -125,26 +171,42 @@ def prewarm_nested_support(settings: Settings, client_factory: Callable[[], obje
 def require_nested_support(
     settings: Settings,
     client_factory: Callable[[], object],
+    *,
+    platform: str | None = None,
 ) -> None:
-    """Raise NestedContainersUnavailableError unless this host can nest containers.
+    """Raise NestedContainersUnavailableError unless this host can nest containers at `platform`.
 
     Call this BEFORE anything stateful or expensive (subnet reservation, control-plane fence,
     image pull) so a host that cannot run missions costs an error message rather than a
     half-built run that has to be torn down.
     """
-    support = nested_support(settings, client_factory)
+    support = nested_support(settings, client_factory, platform=platform)
     if support.ok:
         return
     # The probe's detail often already ends in a period (it quotes a runtime error verbatim), so
     # only add one where it is missing — a stray ".." reads like a typo in the one message an
     # operator sees when nothing works.
     detail = support.detail.rstrip(". ")
+    where = f" ({support.platform})" if support.platform else ""
     raise NestedContainersUnavailableError(
-        f"this host cannot run a mission's containers inside the run container — {detail}. "
-        f"{support.remediation}. "
+        f"this host cannot run a mission's containers inside the run container{where} — "
+        f"{detail}. {support.remediation}. "
+        # Both spellings of the escape hatch, and the restart: the server reads its settings
+        # once at boot, so editing config.toml (or exporting the variable) while it runs changes
+        # nothing until `xorcise down && xorcise up`.
         "To bypass this check on a host you know is fine, set "
-        "XORCISE_NESTED_CONTAINER_CHECK=skip"
+        "XORCISE_NESTED_CONTAINER_CHECK=skip in the server's environment or "
+        'nested_container_check = "skip" in ~/.xorcise/config.toml, then restart it '
+        "(xorcise down && xorcise up)"
     )
+
+
+def reset_nested_support_memo() -> None:
+    """Drop every memoised nesting verdict (tests)."""
+    global _last_logged
+    with _MEMO_LOCK:
+        _memo.clear()
+    _last_logged = None
 
 
 # Memoised daemon platform: the arch of a running daemon cannot change, but "docker was down,

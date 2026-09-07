@@ -138,14 +138,106 @@ def test_tier1_is_not_a_gate() -> None:
 
 
 def test_tier1_explains_a_rosetta_failure_on_macos() -> None:
-    """On macOS, when Tier 1 also failed, its verdict is the actionable half — a bare OCI error
-    chain does not tell an operator to go turn Rosetta on."""
+    """On macOS, when the AMD64 probe fails and Tier 1 also failed, its verdict is the actionable
+    half — a bare OCI error chain does not tell an operator to go turn Rosetta on."""
     s = check_nested_support(
-        skip=False, probe_tier1=lambda: BAD, probe_tier2=lambda _t: BAD, on_macos=True
+        skip=False,
+        probe_tier1=lambda: BAD,
+        probe_tier2=lambda _t: BAD,
+        on_macos=True,
+        platform="linux/amd64",
+        host_platform="linux/arm64",
     )
     assert s.ok is False
     assert "rosetta" in s.detail.lower()
     assert "Rosetta" in s.remediation
+
+
+def test_a_native_failure_on_apple_silicon_is_not_a_rosetta_problem() -> None:
+    """Most catalog missions now ship arm64, so on an Apple Silicon Mac the probe that fails is
+    usually the NATIVE one — Rosetta never enters into it, and Tier 1 always fails there for the
+    unrelated reason that it reads an amd64 handler. Sending the operator to the Rosetta toggle
+    would be the same wrong-fix mistake as on Linux."""
+    s = check_nested_support(
+        skip=False,
+        probe_tier1=lambda: BAD,
+        probe_tier2=lambda _t: RosettaProbe(False, "the DinD probe's inner daemon never came up"),
+        on_macos=True,
+        platform="linux/arm64",
+        host_platform="linux/arm64",
+    )
+    assert s.ok is False
+    assert "Rosetta" not in s.remediation
+    assert "privileged" in s.remediation
+
+
+def test_a_foreign_platform_on_linux_gets_the_emulation_fix_not_privileged() -> None:
+    """The #79 finding. An arm64 Linux host asked to nest an amd64 mission cannot — no binfmt
+    handler means `exec format error`, a qemu handler means the inner dockerd dies at iptables —
+    and neither has anything to do with privileged containers. The honest fix names both
+    platforms and points at a mission that ships the host's, or another host."""
+    exec_error = RosettaProbe(
+        False,
+        "the linux/amd64 DinD probe's inner daemon never came up (exit 255): "
+        "exec /usr/local/bin/dockerd-entrypoint.sh: exec format error",
+        "fp-a",
+    )
+    s = check_nested_support(
+        skip=False,
+        probe_tier1=lambda: BAD,
+        probe_tier2=lambda _t: exec_error,
+        on_macos=False,
+        platform="linux/amd64",
+        host_platform="linux/arm64",
+    )
+    assert s.ok is False
+    assert s.platform == "linux/amd64"
+    assert "exec format error" in s.detail
+    assert "privileged" not in s.remediation
+    assert "Rosetta" not in s.remediation
+    assert "linux/amd64" in s.remediation and "linux/arm64" in s.remediation
+    assert "emulation" in s.remediation
+
+
+def test_an_exec_format_error_marks_the_platform_foreign_even_when_the_host_is_unknown() -> None:
+    """A daemon whose version report could not be read leaves the native platform unknown; the
+    wrapper failing to exec at all is proof enough that the platform is not the host's."""
+    exec_error = RosettaProbe(False, "never came up (exit 255): exec format error", "fp-a")
+    s = check_nested_support(
+        skip=False,
+        probe_tier1=lambda: BAD,
+        probe_tier2=lambda _t: exec_error,
+        on_macos=False,
+        platform="linux/amd64",
+        host_platform=None,
+    )
+    assert "emulation" in s.remediation
+    assert "privileged" not in s.remediation
+
+
+def test_a_native_platform_failure_on_linux_stays_generic() -> None:
+    """Asked about the platform it runs natively, a Linux host that cannot nest has a
+    privileged-container problem — the emulation advice would be nonsense there."""
+    s = check_nested_support(
+        skip=False,
+        probe_tier1=lambda: BAD,
+        probe_tier2=lambda _t: RosettaProbe(False, "the DinD probe's inner daemon never came up"),
+        on_macos=False,
+        platform="linux/arm64",
+        host_platform="linux/arm64",
+    )
+    assert "privileged" in s.remediation
+    assert "emulation" not in s.remediation
+
+
+def test_the_verdict_records_the_platform_it_is_about() -> None:
+    s = check_nested_support(
+        skip=False, probe_tier1=lambda: OK, probe_tier2=lambda _t: OK, platform="linux/arm64/v8"
+    )
+    assert s.ok
+    assert s.platform == "linux/arm64"  # canonical spelling
+    native = check_nested_support(skip=False, probe_tier1=lambda: OK, probe_tier2=lambda _t: OK)
+    assert native.platform == ""  # "" = the daemon's native platform
 
 
 def test_a_linux_failure_gets_the_generic_fix_not_rosetta() -> None:

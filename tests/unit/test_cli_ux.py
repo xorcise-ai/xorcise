@@ -1348,3 +1348,20 @@ def test_config_show_groups_into_sections(monkeypatch):
     assert "inherits the judge model" in out  # said once, not repeated per field
     assert "Disabled" in out and "xorcise catalog connect" in out
     assert "Local" in out  # no network addresses set
+
+
+def test_run_events_with_a_bare_run_id_suggests_the_export_form():
+    """`xorcise run events <run-id>` (#79 finding 6): the group has ONE subcommand and the
+    natural reading skips it, so the run id lands as an unknown command. The hint must be the
+    paste-and-run form with the id carried over, not a bare "No such command"."""
+    result = runner.invoke(app, ["run", "events", "0123456789abcdef0123456789abcdef"])
+    assert result.exit_code == 2
+    assert "no such command" in result.stderr
+    assert "xorcise run events export 0123456789abcdef0123456789abcdef" in result.stderr
+
+
+def test_a_misspelt_subcommand_gets_the_close_match_not_the_carried_value():
+    result = runner.invoke(app, ["run", "events", "exprot"])
+    assert result.exit_code == 2
+    assert "xorcise run events export" in result.stderr
+    assert "export exprot" not in result.stderr

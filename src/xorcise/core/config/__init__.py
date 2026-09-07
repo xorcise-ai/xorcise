@@ -116,20 +116,20 @@ class Settings(BaseSettings):
     catalog_key: str | None = None
     # force stub adapters (Docker-less dev/CI); default real — real-vs-stub also keys off `role`
     use_stubs: bool = False
-    # platform passed to docker pull/run. Mission images are built amd64-only, so an
-    # arm64 host (Apple Silicon) must request linux/amd64 or the pull 404s on a missing arm64
-    # manifest; Docker Desktop then runs it under emulation. Empty ⇒ docker picks the host platform.
-    # Execution-platform OVERRIDE (XORCISE_DOCKER_PLATFORM). "" = automatic: the pull spine
-    # selects per mission — the host-native platform when the mission validated it, AMD64 under
+    # Execution-platform OVERRIDE (XORCISE_DOCKER_PLATFORM), passed to docker pull/run. "" =
+    # automatic: the pull spine selects per mission — the host-native platform when the mission
+    # publishes a validated image for it (most catalog missions ship amd64 AND arm64), AMD64 under
     # emulation otherwise (AS3/AS4). Setting a value pins every pull/run to it, unconditionally.
     docker_platform: str = ""
     # The mission stack ALWAYS runs inside the run's own container (DinD). The former
     # host-daemon "sibling" topology is gone — it put every mission's containers on the operator's
     # daemon, so parallel runs collided on fixed container_names and published ports.
-    # "enforce" verifies the host can actually nest containers and fails run creation with a
-    # diagnosis if not. "skip" bypasses only the CHECK — for hosts where the probe itself cannot
-    # run (restricted CI, no privileged containers) but nesting is known good. It can never
-    # restore the sibling topology.
+    # "enforce" verifies the host can actually nest containers (at each mission's own platform)
+    # and fails run creation with a diagnosis if not. "skip" bypasses only the CHECK — for hosts
+    # where the probe itself cannot run (restricted CI, no privileged containers) but nesting is
+    # known good. It can never restore the sibling topology. Set as XORCISE_NESTED_CONTAINER_CHECK
+    # in the server's environment or `nested_container_check = "skip"` in config.toml; like every
+    # setting it is read once at boot, so a change needs `xorcise down && xorcise up`.
     nested_container_check: Literal["enforce", "skip"] = "enforce"
     # role + service endpoints (defaults mirror the module constants)
     role: str = "all"
