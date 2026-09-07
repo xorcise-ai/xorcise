@@ -12,7 +12,7 @@ import signal
 import subprocess
 import sys
 import time
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import httpx
@@ -339,8 +339,13 @@ def _ensure_db_ready() -> None:
         db.upgrade()
         console.print("prepared the database")
     elif state == "stale":
+        # Name the WHOLE sequence. This message fires exactly when an older server may still be
+        # serving (that is why the DB is behind), and `db upgrade` alone would migrate the tables
+        # underneath it — the stop comes first.
         err_console.print(
-            "[err]database is behind the schema — run 'xorcise db upgrade' first[/err]"
+            "[err]database is behind the schema[/err] — stop any running XORCISE first "
+            "([value]xorcise down[/value]), then run [value]xorcise db upgrade[/value] and "
+            "start it again"
         )
         raise typer.Exit(1)
 
@@ -369,20 +374,22 @@ def up(
     Already-running is success, not an error — safe to re-run any time.
     """
     pf = pid_file()
-    if pf.exists():
-        try:
-            os.kill(int(pf.read_text()), 0)
-        except (ProcessLookupError, ValueError):
-            pf.unlink(missing_ok=True)
-        except PermissionError:
-            # The pid exists but belongs to another user — treat as running.
-            console.print(f"already running — UI at {_effective_ui_url()}")
-            return
+    live = _live_instance(get_settings(), extra_ports=[port] if port else [])
+    if live is not None:
+        if live.source == "probe":
+            # An instance of THIS home is serving but the pid record is gone or names a dead
+            # process (a `down` whose kill failed, an earlier `up` that overwrote it). Booting
+            # here would start a SECOND server over the same database — and migrate it under
+            # the first. Adopt the live one instead: repair the record so `down`/`status`/`ui`
+            # can find it again, and converge.
+            _repair_instance_record(live)
+            console.print(f"already running (pid record repaired) — UI at {_effective_ui_url()}")
         else:
             # Idempotent converge: 'already true' is exit 0, matching `down` on
             # not-running — scripts and agents re-run `up` defensively.
             console.print(f"already running — UI at {_effective_ui_url()}")
-            return
+        return
+    pf.unlink(missing_ok=True)  # absent, corrupt, or names a process that is gone
 
     # Prerequisites BEFORE anything is written. A missing Compose v2 plugin used to
     # surface ~20 lines in, after the home was created, the DB migrated and two RSA
@@ -538,7 +545,9 @@ def _foreign_instance_home(host: str, rest_port: int) -> str | None:
     this home's — else None. Lets doctor say 'held by another XORCISE instance'
     instead of accusing an unknown process."""
     try:
-        info = httpx.get(f"http://{host}:{rest_port}/api/system", timeout=1).json()
+        info = httpx.get(
+            f"http://{host}:{rest_port}/api/system", timeout=_INSTANCE_PROBE_TIMEOUT
+        ).json()
     except (httpx.HTTPError, ValueError):
         return None
     their_home = str(info.get("home") or "") if isinstance(info, dict) else ""
@@ -548,6 +557,153 @@ def _foreign_instance_home(host: str, rest_port: int) -> str | None:
         if Path(their_home).resolve() == Path(xorcise_home()).resolve():
             return None
     return their_home
+
+
+@dataclass(frozen=True)
+class LiveInstance:
+    """A running server of THIS home: how it was found, where it listens, and its pid if known.
+
+    `source` is "pidfile" when the pid file names a live process, "probe" when the pid file was
+    absent/stale but an instance of this home answered on a REST port this home would use —
+    the shape a failed `down` or an overwriting second `up` leaves behind (#72, #73)."""
+
+    pid: int | None
+    rest_port: int
+    otlp_port: int | None
+    source: str
+
+
+def _pid_from_file() -> int | None:
+    """The pid the pid file names, when that process is alive; None when the file is absent,
+    corrupt, or names a process that is gone. A pid that exists but cannot be signalled
+    (another user's) still counts as alive — it is not ours to declare dead."""
+    pf = pid_file()
+    if not pf.exists():
+        return None
+    try:
+        pid = int(pf.read_text())
+    except ValueError:
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return None
+    except PermissionError:
+        return pid
+    return pid
+
+
+# `/api/system` is cheap when warm but its FIRST answer waits on remote catalog probes (measured
+# well over a second cold), and a timeout here reads as "not ours" — which is how a live server
+# got dropped as pid reuse. Nothing listening still fails instantly (connection refused).
+_INSTANCE_PROBE_TIMEOUT = 8.0
+
+
+def _same_home_instance_on(host: str, rest_port: int) -> dict[str, object] | None:
+    """`/api/system` of whatever answers on `host:rest_port`, when it is an instance of THIS
+    home — else None (nothing there, not XORCISE, or another home's instance)."""
+    try:
+        info = httpx.get(
+            f"http://{host}:{rest_port}/api/system", timeout=_INSTANCE_PROBE_TIMEOUT
+        ).json()
+        if not isinstance(info, dict):
+            return None
+        their_home = str(info.get("home") or "")
+        if not their_home:
+            return None
+        same = Path(their_home).resolve() == Path(xorcise_home()).resolve()
+    except Exception:  # noqa: BLE001 — a best-effort probe; anything odd means "not ours"
+        return None
+    return info if same else None
+
+
+def _candidate_rest_ports(settings, extra: list[int] = []) -> list[int]:  # type: ignore[no-untyped-def]  # noqa: B006
+    """Where a server of this home could be listening: the configured REST port, the one the
+    runtime record names (an auto-incremented instance) and any the caller was told about
+    (`up --port N`), configured first, without duplicates."""
+    ports = [settings.rest_port]
+    recorded = (read_runtime_ports() or {}).get("rest")
+    for candidate in (recorded, *extra):
+        if isinstance(candidate, int) and candidate not in ports:
+            ports.append(candidate)
+    return ports
+
+
+def _otlp_from_info(info: dict[str, object]) -> int | None:
+    """The OTLP port an instance reports in its `/api/system` planes, if it does."""
+    planes = info.get("planes")
+    if not isinstance(planes, list):
+        return None
+    for plane in planes:
+        if isinstance(plane, dict) and plane.get("name") == "otlp":
+            _host, _, port = str(plane.get("location") or "").rpartition(":")
+            if port.isdigit():
+                return int(port)
+    return None
+
+
+def _live_instance(settings, extra_ports: list[int] = []) -> LiveInstance | None:  # type: ignore[no-untyped-def]  # noqa: B006
+    """The running server of THIS home, if any: by pid file first, then by asking the REST
+    port(s) this home would use whether an instance of this home answers.
+
+    The pid file alone is not enough — `up` used to guard on it only, so once it was stale or
+    gone (a failed `down`, see #72) a live sibling on the REST port read as a generic busy port,
+    `up` auto-incremented past it and booted a second instance over the same SQLite file (#73).
+    """
+    pid = _pid_from_file()
+    if pid is not None:
+        recorded = read_runtime_ports() or {}
+        return LiveInstance(
+            pid, recorded.get("rest", settings.rest_port), recorded.get("otlp"), "pidfile"
+        )
+    for port in _candidate_rest_ports(settings, extra_ports):
+        info = _same_home_instance_on(settings.host, port)
+        if info is not None:
+            reported = info.get("pid")
+            return LiveInstance(
+                reported if isinstance(reported, int) else None,
+                port,
+                _otlp_from_info(info),
+                "probe",
+            )
+    return None
+
+
+def _repair_instance_record(live: LiveInstance) -> None:
+    """Re-create the pid file and runtime-ports record for an instance found by probe, so the
+    sibling commands can name it again."""
+    if live.pid is not None:
+        pid_file().write_text(str(live.pid))
+    ports = {"rest": live.rest_port}
+    if live.otlp_port is not None:
+        ports["otlp"] = live.otlp_port
+    write_runtime_ports(ports)
+
+
+def _stop_process(pid: int) -> str:
+    """SIGTERM `pid`, escalate to SIGKILL, and say what actually happened:
+
+    "stopped" — it exited; "gone" — it was already gone; "unsignalable" — it is alive but not
+    ours to signal (another user's process, or pid reuse); "survived" — it outlived SIGKILL.
+    `down` used to swallow the last two into "stopped" and unlink the pid file regardless,
+    which turned a failed kill into a permanently orphaned server (#72)."""
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return "gone"
+    except PermissionError:
+        return "unsignalable"
+    # Wait for it to actually exit (release its ports) so a following `up` isn't racing a
+    # still-terminating server; escalate to SIGKILL if it won't stop.
+    if _await_exit(pid):
+        return "stopped"
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return "stopped"
+    except PermissionError:
+        return "unsignalable"
+    return "stopped" if _await_exit(pid, timeout=2.0) else "survived"
 
 
 def _note_foreign_instance(host: str, rest_port: int) -> None:
@@ -873,28 +1029,102 @@ def down(
         )
         raise typer.Exit(2)
 
+    from xorcise.core.config import get_settings
+
+    settings = get_settings()
     pf = pid_file()
     running = pf.exists()
     if running:
-        with (
-            contextlib.suppress(ProcessLookupError, ValueError, PermissionError),
-            step_progress("stopping XORCISE"),
-        ):
-            pid = int(pf.read_text())
-            os.kill(pid, signal.SIGTERM)
-            # Wait for it to actually exit (release its ports) so a following `up` isn't
-            # racing a still-terminating server; escalate to SIGKILL if it won't stop.
-            if not _await_exit(pid):
-                os.kill(pid, signal.SIGKILL)
-                _await_exit(pid, timeout=2.0)
+        try:
+            pid: int | None = int(pf.read_text())
+        except ValueError:
+            pid = None  # corrupt record: nothing to signal by it; the port sweep below decides
+        outcome = "gone"
+        if pid is not None:
+            with step_progress("stopping XORCISE"):
+                outcome = _stop_process(pid)
+        # Alive but not ours to signal? Two very different situations look like this: the pid
+        # was reused by some unrelated process (the server is gone, or is running as some OTHER
+        # pid — the record is merely wrong), or the server really is running under another
+        # user. Only the ports tell them apart: ask every port an instance of this home could
+        # be on, and compare the pid each one reports with the one in the file.
+        if outcome == "unsignalable":
+            reported = {
+                info.get("pid")
+                for p in _candidate_rest_ports(settings)
+                if (info := _same_home_instance_on(settings.host, p)) is not None
+            }
+            if pid not in reported and all(isinstance(r, int) for r in reported):
+                # No instance of this home claims this pid: the file is stale. Whatever IS
+                # serving (if anything) is stopped by the sweep below, by the pid it reports.
+                console.print(
+                    f"[dim]pid {pid} in the pid file is not XORCISE (pid reuse) — "
+                    "dropping the stale record[/dim]"
+                )
+                outcome = "gone"
+        if outcome in ("unsignalable", "survived"):
+            # A failed kill must stay visible: the pid file is LEFT IN PLACE (unlinking it is
+            # what made the server unfindable forever), the pid is named, and the exit is
+            # non-zero.
+            reason = (
+                "it is alive but cannot be signalled from this user"
+                if outcome == "unsignalable"
+                else "it did not exit after SIGKILL"
+            )
+            err_console.print(
+                f"[err]error[/err]: could not stop XORCISE (pid {pid}) — {reason}. "
+                f"The pid file {pf} is left in place; stop the process "
+                f"([value]kill {pid}[/value], as the user that owns it) and re-run "
+                "[value]xorcise down[/value]"
+            )
+            raise typer.Exit(1)
         pf.unlink(missing_ok=True)
         runtime_ports_file().unlink(missing_ok=True)  # the record dies with the server
+    # The pid file names ONE process. An instance of this home can be serving without being in
+    # it — a second `up` overwrote the record (#73), or the record was lost — so ask the ports
+    # this home would use, and stop any instance of this home that still answers, by the pid it
+    # reports. A foreign home's instance is left alone (and named). Bounded: one per candidate
+    # port, never a loop on something we cannot stop.
+    for port in _candidate_rest_ports(settings):
+        info = _same_home_instance_on(settings.host, port)
+        if info is None:
+            continue
+        orphan_pid = info.get("pid")
+        if not isinstance(orphan_pid, int) or orphan_pid == os.getpid():
+            err_console.print(
+                f"[err]error[/err]: an instance of this home still answers on port {port} but "
+                "did not report its pid (an older server) — find it with "
+                f"[value]ss -tlnp 'sport = :{port}'[/value] and stop it, then re-run "
+                "[value]xorcise down[/value]"
+            )
+            raise typer.Exit(1)
+        with step_progress(f"stopping an orphaned instance of this home (pid {orphan_pid})"):
+            outcome = _stop_process(orphan_pid)
+        if outcome not in ("stopped", "gone"):
+            err_console.print(
+                f"[err]error[/err]: could not stop the instance of this home on port {port} "
+                f"(pid {orphan_pid}) — stop it by hand and re-run [value]xorcise down[/value]"
+            )
+            raise typer.Exit(1)
+        running = True
+        console.print(
+            f"stopped an orphaned instance of this home (pid {orphan_pid}) that was still "
+            f"serving port {port}"
+        )
+    # Verify the release. "stopped" is claimed only when nothing of ours listens any more; a
+    # foreign holder is a fact worth one line, not a failure of THIS home's `down`.
+    still = ports_in_use(settings.host, sorted({settings.rest_port, settings.otlp_port}))
+    for port in still:
+        foreign = (
+            _foreign_instance_home(settings.host, port) if port == settings.rest_port else None
+        )
+        who = f"the XORCISE instance at {foreign}" if foreign else "another process"
+        console.print(f"[dim]note: port {port} is held by {who} — not this home's server[/dim]")
     # Reap orphaned per-run mission containers. Unconditional and label-driven, so it
     # also clears containers from abandoned runs (agent crashed before terminal) and prior sessions
     # — the server's in-process deploy map is gone once it is killed above. Runs BEFORE the
     # Headscale teardown so a reaped router never lingers pointing at a control plane we are
     # about to remove.
-    from xorcise.core.config import get_settings
     from xorcise.core.rest.reap import reap_managed_containers
 
     with step_progress("reaping orphaned run containers"):

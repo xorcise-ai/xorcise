@@ -184,3 +184,8 @@ class SystemInfo(_Frozen):
     # The daemon's native os/arch (AS1) — what missions execute on natively here. None in stub
     # mode or when docker is unreachable. The run form warns off it (emulation, no-native).
     host_platform: str | None = None
+    # The serving process's pid. A sibling CLI whose pid file is gone or wrong (a `down` whose
+    # kill failed, a second `up` that overwrote it) can still find the instance by asking the
+    # port — and, with the pid, stop it or repair the record instead of orphaning it. None from
+    # a server that predates the field.
+    pid: int | None = None

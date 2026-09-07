@@ -23,3 +23,13 @@ def test_system_reports_role_planes_db_catalog(migrated_home) -> None:
     assert body["db_schema"] in {"head", "behind", "fresh", "unknown"}
     assert "state" in body["catalog"]
     assert isinstance(body["remotes"], list)
+
+
+@pytest.mark.unit
+def test_system_reports_the_serving_pid(migrated_home) -> None:
+    """`down`/`up`/`db upgrade` find an instance whose pid file is gone by asking its port; the
+    pid is what lets them stop it or repair the record instead of orphaning it (#72/#73)."""
+    import os
+
+    body = _client().get("/api/system").json()
+    assert body["pid"] == os.getpid()  # TestClient serves in-process
