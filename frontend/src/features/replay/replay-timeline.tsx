@@ -415,9 +415,13 @@ export function ReplayTimeline({
     const root = scrollRef.current;
     if (!root) return;
     // Ids can contain CSS-hostile characters (":", "="); CSS.escape may be absent in old jsdom.
+    // Called THROUGH `CSS`, never as a detached reference: it is an interface static, and
+    // jsdom's generated IDL wrapper rejects a call whose receiver is not `CSS` itself
+    // ("'escape' called on an object that is not a valid instance of CSS") even though
+    // browsers tolerate it.
     const esc =
       typeof CSS !== "undefined" && typeof CSS.escape === "function"
-        ? CSS.escape
+        ? (s: string) => CSS.escape(s)
         : (s: string) => s.replace(/["\\]/g, "\\$&");
     const el = root.querySelector<HTMLElement>(`[data-event-id="${esc(selectedEventId)}"]`);
     if (!el) return;
