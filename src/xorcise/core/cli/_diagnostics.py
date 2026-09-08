@@ -364,6 +364,27 @@ def nested_containers() -> Check:
     return Check("nested containers", False, clip_detail(support.detail), support.remediation)
 
 
+def nested_containers_foreign() -> list[Check]:
+    """One line per FOREIGN platform a run has asked this server about (e.g. amd64 on Apple
+    Silicon), after `nested_containers()` has re-probed them. A refused foreign platform is not
+    a blocker — native missions still run — but it is exactly the verdict the operator is trying
+    to change when they enable Rosetta and re-run `doctor`, so it must be visible here, and
+    visibly cleared, rather than discoverable only by the next `run create`."""
+    from xorcise.core.rest.docker_runtime import memoised_verdicts
+    from xorcise.core.runner.docker.rosetta import clip_detail
+
+    checks: list[Check] = []
+    for plat, support in sorted(memoised_verdicts().items()):
+        name = f"nested containers ({plat})"
+        if support.ok:
+            checks.append(Check(name, True, clip_detail(support.detail)))
+        else:
+            checks.append(
+                Check(name, True, clip_detail(support.detail), support.remediation, level="warning")
+            )
+    return checks
+
+
 def external_control_plane(url: str, *, timeout: float = 5.0) -> Check:
     """Is a CONFIGURED remote control plane actually answering?
 

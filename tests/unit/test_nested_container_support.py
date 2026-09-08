@@ -244,3 +244,51 @@ def test_base_compat_keeps_the_allowance_for_your_own_fuses() -> None:
     # A local fuse has no catalog upstream; "update from the catalog" is not even the right
     # advice, so the undeterminable-base allowance stays.
     dr.require_base_compatible("xorcise/mission-x:local", origin="your_own")
+
+
+def test_a_fresh_native_probe_also_refreshes_every_foreign_verdict(monkeypatch) -> None:
+    """Review of #80. `doctor` asks with no platform, so `fresh=True` used to rewrite only the
+    native keys — and the amd64 refusal on an Apple Silicon host, the one case Rosetta applies to,
+    survived a green doctor: the operator enabled Rosetta, doctor said fine, the next run still
+    told them to enable Rosetta. A fresh native probe now re-probes every platform a run has asked
+    about since boot."""
+    monkeypatch.setattr(dr, "binfmt_signal", lambda _c: RosettaProbe(True, "h", "fp"))
+    amd64 = {"ok": False}
+    asked: list[str | None] = []
+
+    def _tier2(_client, *, platform=None, **_kw):
+        asked.append(platform)
+        if platform == "linux/amd64":
+            return RosettaProbe(amd64["ok"], "amd64 probe")
+        return RosettaProbe(True, f"ok {platform}")
+
+    monkeypatch.setattr(dr, "verify_nested", _tier2)
+    daemon = lambda: _Daemon("arm64")  # noqa: E731
+    dr.prewarm_nested_support(_settings(), daemon)  # native
+    assert dr.nested_support(_settings(), daemon, platform="linux/amd64").ok is False  # a run
+    amd64["ok"] = True  # the operator enables Rosetta…
+    assert dr.nested_support(_settings(), daemon, fresh=True).ok  # …and re-runs doctor
+    assert dr.nested_support(_settings(), daemon, platform="linux/amd64").ok is True  # cleared
+    assert asked == ["linux/arm64", "linux/amd64", "linux/arm64", "linux/amd64"]
+    assert set(dr.memoised_verdicts()) == {"linux/amd64"}  # what doctor lists beside native
+
+
+def test_prewarm_also_warms_amd64_on_apple_silicon(monkeypatch) -> None:
+    """On a Mac the common cold case is amd64 under Rosetta (missions without an arm64 image), so
+    boot warms it too; on Linux a foreign warm-up would start a 90 s emulated DinD for nothing."""
+    monkeypatch.setattr(dr, "binfmt_signal", lambda _c: RosettaProbe(True, "h", "fp"))
+    asked: list[str | None] = []
+
+    def _tier2(_client, *, platform=None, **_kw):
+        asked.append(platform)
+        return RosettaProbe(True, "ok")
+
+    monkeypatch.setattr(dr, "verify_nested", _tier2)
+    monkeypatch.setattr(dr, "host_is_macos", lambda: True)
+    dr.prewarm_nested_support(_settings(), lambda: _Daemon("arm64"))
+    assert asked == ["linux/arm64", "linux/amd64"]
+    dr.reset_nested_support_memo()
+    asked.clear()
+    monkeypatch.setattr(dr, "host_is_macos", lambda: False)
+    dr.prewarm_nested_support(_settings(), lambda: _Daemon("arm64"))
+    assert asked == ["linux/arm64"]  # Linux: native only

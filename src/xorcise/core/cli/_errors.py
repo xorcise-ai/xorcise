@@ -20,6 +20,7 @@ import sys
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
 
 from xorcise.core.cli._shared import XORCISE_THEME
 from xorcise.core.cli._ux import command_path_from_argv
@@ -96,17 +97,21 @@ def _print_error(
     example: str | None = None,
     see: tuple[str, ...] = (),
 ) -> None:
+    # Everything interpolated here can carry what the user TYPED (an unknown command token, a
+    # stray argument, a mission name), and rich reads square brackets as markup: `[abc]` would
+    # silently vanish from the suggestion and `[/x]` would raise MarkupError instead of printing
+    # a usage error. Escape at the one funnel, so no renderer above has to remember.
     console = _console()
-    console.print(f"[err]error[/err]: {message}", highlight=False)
+    console.print(f"[err]error[/err]: {escape(message)}", highlight=False)
     if suggestions:
         console.print("\nDid you mean?")
         for s in suggestions:
-            console.print(f"  [value]{s}[/value]")
+            console.print(f"  [value]{escape(s)}[/value]")
     if example:
-        console.print(f"\ntry:\n  [value]{example}[/value]")
+        console.print(f"\ntry:\n  [value]{escape(example)}[/value]")
     for pointer in see:
-        console.print(f"see: [value]{pointer}[/value]")
-    console.print(f"\n[dim]run '{path} --help' for all options[/dim]")
+        console.print(f"see: [value]{escape(pointer)}[/value]")
+    console.print(f"\n[dim]run '{escape(path)} --help' for all options[/dim]")
 
 
 def _group_commands(command: Any) -> dict[str, Any]:

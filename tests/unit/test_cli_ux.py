@@ -1365,3 +1365,15 @@ def test_a_misspelt_subcommand_gets_the_close_match_not_the_carried_value():
     assert result.exit_code == 2
     assert "xorcise run events export" in result.stderr
     assert "export exprot" not in result.stderr
+
+
+def test_bracketed_tokens_render_literally_in_usage_errors():
+    """Review aside on #80: user-typed tokens reach rich as markup. `[/x]` used to raise
+    MarkupError out of the error renderer, and `[abc]` vanished from the suggestion."""
+    result = runner.invoke(app, ["run", "events", "[/x]"])
+    assert result.exit_code == 2, result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "[/x]" in result.stderr
+    result = runner.invoke(app, ["run", "events", "[abc]"])
+    assert result.exit_code == 2
+    assert "xorcise run events export [abc]" in result.stderr

@@ -421,6 +421,15 @@ def _acquire_and_install(
                     f"pulled {image} resolved to {actual}, not the selected {selected} — "
                     "refusing to install a mismatched artifact"
                 )
+        elif precheck is not None:
+            # No selection was possible (a pre-contract entry lists no platforms), so the gate
+            # above was asked about the daemon's native platform — but the registry may have
+            # served a single-arch FOREIGN image. Ask the gate about what actually landed, before
+            # anything is installed: the download is already paid (unavoidable without a platform
+            # list), but a refused install, and a run-create refusal after it, are not.
+            actual = deps.driver.image_platform(image)
+            if actual is not None and actual != deps.driver.daemon_platform():
+                precheck(actual)
 
     # Attachments travel out-of-band in the delivery bundle, not the image: fetch +
     # integrity-check the zip so install_pulled can materialize the declared files. The cloud

@@ -488,15 +488,16 @@ _FIX_GENERIC = (
     "XORCISE runs each mission's containers INSIDE its own container, which this host could not "
     "do. Check that Docker can run privileged containers, then re-run 'xorcise doctor'"
 )
-# A Linux host asked to nest a platform it does not execute natively. There is no toggle for
-# this: a qemu binfmt handler runs foreign user-space but cannot service the nf_tables netlink
-# calls the inner dockerd makes, so amd64 DinD under emulation dies at iptables init.
+# A host asked to nest a platform it does not execute natively, where Rosetta is not the answer
+# (not a Mac, an Intel Mac asked for arm64, or Rosetta already on and still failing). There is
+# no toggle for this: a qemu binfmt handler runs foreign user-space but cannot service the
+# nf_tables netlink calls the inner dockerd makes, so foreign DinD under emulation dies at
+# iptables init — on Linux and inside Docker Desktop's Linux VM alike.
 _FIX_EMULATION = (
     "this mission's image is {platform}, but this host executes {host} natively and cannot run "
     "{platform} containers nested — running a foreign platform's Docker-in-Docker needs CPU "
-    "emulation (qemu binfmt), which cannot bring up the inner Docker daemon on Linux. Choose a "
-    "mission that publishes a {host} image (see 'xorcise mission list'), or run XORCISE on a "
-    "{platform} host"
+    "emulation, which cannot bring up the inner Docker daemon. Choose a mission that publishes "
+    "a {host} image (see 'xorcise mission list'), or run XORCISE on a {platform} host"
 )
 
 
@@ -540,23 +541,30 @@ def check_nested_support(
     and `host_platform` what the daemon executes natively (None = unknown). Together they pick
     the remediation, because the three ways nesting fails need three different fixes:
 
-      * a FOREIGN platform on a Linux host — amd64 asked of an arm64 machine — is not a
-        privileged-container problem, it is "this host cannot run that platform's DinD at all"
-        (no binfmt handler ⇒ `exec format error`; a qemu handler ⇒ the inner dockerd dies at
-        iptables init). The fix is a different mission or a different host, and saying
-        "check privileged containers" sends the operator to fix something that is not broken;
       * amd64 on Apple Silicon is the Rosetta case: on macOS a Tier 1 failure (or a "rosetta"
         error from Tier 2) is the actionable cause, and only there — Tier 1 ALWAYS fails on
         Linux (no rosetta binfmt handler exists there), so choosing the fix on `not tier1.ok`
         alone handed every Linux nesting failure the "enable Rosetta in Docker Desktop" advice
         for settings that do not exist. Rosetta is also irrelevant to a NATIVE arm64 failure on
         the same Mac;
+      * any OTHER foreign platform — amd64 asked of an arm64 Linux box, arm64 asked of an Intel
+        Mac, amd64 on Apple Silicon with Rosetta already on and still failing — is not a
+        privileged-container problem, it is "this host cannot run that platform's DinD at all"
+        (no binfmt handler ⇒ `exec format error`; a qemu handler ⇒ the inner dockerd dies at
+        iptables init). The fix is a different mission or a different host, and saying
+        "check privileged containers" sends the operator to fix something that is not broken.
+        The OS does not enter into it: what decides is that the platform is foreign AND Rosetta
+        is not the missing piece;
       * everything else is the host's ability to nest its own platform: privileged containers.
 
     `on_macos` defaults to the real host OS; injected in tests.
     """
     if skip:
-        return NestedSupport(True, "nested-container check skipped by configuration")
+        return NestedSupport(
+            True,
+            "nested-container check skipped by configuration",
+            platform=canonical_platform(platform) or "",
+        )
 
     macos = host_is_macos() if on_macos is None else on_macos
     wanted = canonical_platform(platform)
@@ -587,7 +595,7 @@ def check_nested_support(
         detail = f"{detail} (rosetta: {tier1.detail})"
     if rosetta_at_fault:
         fix = _FIX_ROSETTA
-    elif foreign and not macos:
+    elif foreign:
         fix = _emulation_fix(wanted, native)
     else:
         fix = _FIX_GENERIC

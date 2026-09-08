@@ -52,6 +52,7 @@ from xorcise.core.runner.docker.rosetta import (
     binfmt_signal,
     canonical_platform,
     check_nested_support,
+    host_is_macos,
     verify_nested,
 )
 
@@ -132,8 +133,11 @@ def nested_support(
     pre-warmed answer instead of paying a second probe.
 
     A skipped check answers immediately without touching Docker. Otherwise the verdict is computed
-    once per platform and held; `fresh=True` recomputes AND refreshes the memo, so an operator who
-    fixes Rosetta and re-runs `doctor` unblocks subsequent runs without restarting the server.
+    once per platform and held. `fresh=True` recomputes AND refreshes the memo — for the platform
+    asked about and, when that is the native one (what `doctor` asks), for EVERY other platform a
+    run has asked about since boot. That second half is what makes "fix Rosetta, re-run `doctor`,
+    the next run works" true: the refusal that needs clearing is the amd64 entry on an Apple
+    Silicon host, and a native re-probe alone would leave it standing while doctor printed green.
     """
     key = canonical_platform(platform)
     if settings.nested_container_check == "skip":
@@ -144,26 +148,58 @@ def nested_support(
         hit = _memo.get(key)
         if hit is not None and not fresh:
             return hit
-        support, native = _probe(client_factory, key)
-        _memo[key] = support
-        if key is None and native is not None:
-            _memo[native] = support  # "native" and its explicit spelling are the same question
-        elif key is not None and key == native:
-            _memo[None] = support
-        _log_support(support)
+        support, native = _probe_into_memo(client_factory, key)
+        if fresh and key is None:
+            # Re-probe the other platforms runs have asked about, so a stale foreign refusal is
+            # cleared by the same `doctor` that reports the host healthy.
+            for other in [k for k in _memo if k is not None and k != native]:
+                _probe_into_memo(client_factory, other)
         return support
 
 
+def _probe_into_memo(
+    client_factory: Callable[[], object], key: str | None
+) -> tuple[NestedSupport, str | None]:
+    """Probe `key` (None = native), file the verdict under every spelling it answers, log it."""
+    support, native = _probe(client_factory, key)
+    _memo[key] = support
+    if key is None and native is not None:
+        _memo[native] = support  # "native" and its explicit spelling are the same question
+    elif key is not None and key == native:
+        _memo[None] = support
+    _log_support(support)
+    return support, native
+
+
+def memoised_verdicts() -> dict[str, NestedSupport]:
+    """The verdicts held for EXPLICIT platforms other than the daemon's native one — what
+    `doctor` lists alongside the native check, so a refused foreign platform is visible (and,
+    after a fresh re-probe, visibly cleared) rather than only discoverable by the next run."""
+    with _MEMO_LOCK:
+        native = _memo.get(None)
+        return {
+            k: v for k, v in _memo.items() if k is not None and (native is None or v is not native)
+        }
+
+
 def prewarm_nested_support(settings: Settings, client_factory: Callable[[], object]) -> None:
-    """Compute the NATIVE verdict ahead of the first run-create (called at boot, best-effort).
+    """Compute the verdicts a first run is likely to need, ahead of it (boot, best-effort).
 
     Warming the memo at startup means run-create reads it instantly instead of the first real run
-    paying the 10-40 s probe under a client timeout. Only the native platform is warmed: it is
-    what every mission with a native image runs at, and probing a foreign platform at every boot
-    would start a privileged emulated DinD for a case most operators never hit. Never raises: a
-    warm-up failure just leaves the memo cold, and the first run recomputes it."""
+    paying the 10-40 s probe under a client timeout — which is what made a first run look hung and
+    get retried into a duplicate. The native platform is always warmed: every mission with a
+    native image runs at it. On an Apple Silicon Mac the amd64 verdict is warmed too: Docker
+    Desktop runs amd64 under Rosetta there, missions without an arm64 image are common, and the
+    Rosetta probe is the one whose cold cost is highest. On Linux a foreign platform is NOT
+    warmed — that would start a privileged emulated DinD at every boot to learn, ninety seconds
+    later, the answer every arm64 Linux host gives. Never raises: a warm-up failure just leaves
+    the memo cold, and the first run recomputes it."""
     try:
-        nested_support(settings, client_factory)
+        native = nested_support(settings, client_factory)
+        with _MEMO_LOCK:
+            amd64_is_native = _memo.get("linux/amd64") is native  # filed under both spellings
+        if host_is_macos() and not amd64_is_native:
+            nested_support(settings, client_factory, platform="linux/amd64")
     except Exception as exc:  # noqa: BLE001 — a safety-net warm-up must never break boot
         log.debug("nested-support pre-warm skipped: %s", exc)
 

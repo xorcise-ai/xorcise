@@ -283,3 +283,51 @@ def test_tier1_verdict_is_handed_to_tier2() -> None:
 
     check_nested_support(skip=False, probe_tier1=lambda: tier1, probe_tier2=_tier2)
     assert seen == [tier1]
+
+
+def test_a_foreign_platform_on_macos_gets_the_emulation_fix_when_rosetta_is_not_the_cause():
+    """Review of #80: `elif foreign and not macos` left every macOS foreign failure on the generic
+    "check privileged containers" fix — the same wrong-fix problem being fixed for Linux. Two ways
+    in: Apple Silicon with Rosetta already ON (Tier 1 fine) whose amd64 probe still fails, and an
+    Intel Mac asked for an arm64 mission. Neither is a Rosetta problem; both are "this host cannot
+    run that platform's DinD"."""
+    fail = RosettaProbe(False, "the linux/amd64 DinD probe's inner daemon never came up (exit 1)")
+    rosetta_on = check_nested_support(
+        skip=False,
+        probe_tier1=lambda: OK,
+        probe_tier2=lambda _t: fail,
+        on_macos=True,
+        platform="linux/amd64",
+        host_platform="linux/arm64",
+    )
+    intel_mac = check_nested_support(
+        skip=False,
+        probe_tier1=lambda: BAD,
+        probe_tier2=lambda _t: fail,
+        on_macos=True,
+        platform="linux/arm64",
+        host_platform="linux/amd64",
+    )
+    for s in (rosetta_on, intel_mac):
+        assert s.ok is False
+        assert "emulation" in s.remediation
+        assert "privileged" not in s.remediation
+        assert "Rosetta" not in s.remediation
+    # …while the genuine Rosetta case (Tier 1 failing, amd64 on Apple Silicon) still gets Rosetta.
+    rosetta_off = check_nested_support(
+        skip=False,
+        probe_tier1=lambda: BAD,
+        probe_tier2=lambda _t: fail,
+        on_macos=True,
+        platform="linux/amd64",
+        host_platform="linux/arm64",
+    )
+    assert "Rosetta" in rosetta_off.remediation
+
+
+def test_a_skipped_verdict_still_names_its_platform():
+    s = check_nested_support(
+        skip=True, probe_tier1=_never, probe_tier2=_never, platform="linux/arm64/v8"
+    )
+    assert s.ok is True
+    assert s.platform == "linux/arm64"
