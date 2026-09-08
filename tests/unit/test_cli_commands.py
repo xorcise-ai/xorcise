@@ -762,7 +762,13 @@ def test_down_running_stops_server_and_reports(monkeypatch, tmp_path):
     pf = tmp_path / "xorcise.pid"
     pf.write_text("999999")
     killed: dict[str, int] = {}
-    monkeypatch.setattr(os, "kill", lambda pid, sig: killed.update(pid=pid, sig=sig))
+
+    def fake_kill(pid, sig):
+        if sig == 0 and killed:  # liveness probe after the SIGTERM: the server has exited
+            raise ProcessLookupError
+        killed.update(pid=pid, sig=sig)
+
+    monkeypatch.setattr(os, "kill", fake_kill)
     result = runner.invoke(app, ["down"])
     assert result.exit_code == 0
     assert "xorcise down" in result.output
@@ -1180,7 +1186,7 @@ def test_up_auto_increments_and_records_runtime_ports(_prereqs_ok, monkeypatch, 
     class _Resp:
         status_code = 200
 
-    def fake_get(url, timeout=1):
+    def fake_get(url, timeout=1, **kwargs):
         polled["url"] = url
         return _Resp()
 

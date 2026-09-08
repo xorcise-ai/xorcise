@@ -115,6 +115,19 @@ def _force_stubs(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_loopback_instance_probe(monkeypatch):
+    """Keep the unit lane off the loopback network: `up`/`down`/`db upgrade` ask `/api/system` on
+    the REST ports this home could be serving on. Unstubbed, that is a real HTTP call from a unit
+    test — and on a developer machine with `xorcise up` running it can find a REAL instance and
+    turn a green test red. Default to "nothing of ours is there"; tests that exercise the probe
+    override this with their own monkeypatch (fixture order: autouse first, the test's wins).
+    """
+    from xorcise.core.cli.commands import lifecycle
+
+    monkeypatch.setattr(lifecycle, "_same_home_instance_on", lambda host, port: None)
+
+
+@pytest.fixture(autouse=True)
 def _skip_frontend_build(monkeypatch):
     """Keep the suite npm-free: `xorcise up` tests must not shell out to `npm run build:static`.
 

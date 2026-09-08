@@ -7,6 +7,7 @@ because cli is ABOVE rest in the layer order and rest must not import upward (.i
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import time
@@ -270,6 +271,7 @@ def build_system_info(settings: Settings) -> SystemInfo:
         topology=settings.deployment_topology,
         mission_base=_cached("mission_base", lambda: _mission_base_view(source)),
         host_platform=_host_platform(settings),
+        pid=os.getpid(),  # lets `down`/`up`/`db upgrade` find this instance without the pid file
     )
 
 
