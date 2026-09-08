@@ -51,7 +51,7 @@ def test_up_builds_frontend_before_spawning_serve(tmp_path, monkeypatch) -> None
     monkeypatch.setattr("xorcise.core.cli.commands.lifecycle.subprocess.Popen", _popen)
     monkeypatch.setattr(
         "xorcise.core.cli.commands.lifecycle.httpx.get",
-        lambda url, timeout=1: SimpleNamespace(status_code=200),
+        lambda url, **kw: SimpleNamespace(status_code=200),
     )
 
     try:

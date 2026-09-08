@@ -1186,7 +1186,7 @@ def test_up_auto_increments_and_records_runtime_ports(_prereqs_ok, monkeypatch, 
     class _Resp:
         status_code = 200
 
-    def fake_get(url, timeout=1):
+    def fake_get(url, timeout=1, **kwargs):
         polled["url"] = url
         return _Resp()
 

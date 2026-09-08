@@ -113,12 +113,16 @@ def test_main_guard_unexpected_error_mentions_debug_hatch(monkeypatch, capsys):
     assert "XORCISE_DEBUG=1" in err
 
 
-def test_db_upgrade_history_mismatch_is_a_targeted_error(monkeypatch):
+def test_db_upgrade_history_mismatch_is_a_targeted_error(monkeypatch, tmp_path):
     """A DB stamped by a different build (a revision id this build's migration
     chain doesn't know) must explain itself, not surface as 'unexpected error'."""
     from alembic.util.exc import CommandError
 
     from xorcise.core.cli.commands import db as db_cmd
+
+    # Its own home: the liveness guard reads the pid file, and the developer's real ~/.xorcise
+    # may well have a server running.
+    monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
 
     def boom():
         raise CommandError("Can't locate revision identified by '9999_other_build'")
@@ -733,7 +737,7 @@ def test_status_names_a_foreign_instance_after_down(monkeypatch, tmp_path):
         def json():
             return {"home": "/somebody/elses/.xorcise"}
 
-    monkeypatch.setattr(httpx, "get", lambda url, timeout=1: FakeResp())
+    monkeypatch.setattr(httpx, "get", lambda url, **kwargs: FakeResp())
     result = runner.invoke(app, ["status"])
     get_settings.cache_clear()
     assert result.exit_code == 0

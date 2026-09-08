@@ -83,7 +83,7 @@ def test_up_tty_prints_update_notice_after_banner(monkeypatch, tmp_path) -> None
     monkeypatch.setattr(lifecycle, "_maybe_provision_headscale", lambda *a, **k: "skip-stub")
     monkeypatch.setattr(lifecycle, "pid_file", lambda: tmp_path / "pid")
     monkeypatch.setattr(f"{_LC}.subprocess.Popen", lambda cmd, **kw: SimpleNamespace(pid=4321))
-    monkeypatch.setattr(f"{_LC}.httpx.get", lambda url, timeout=1: SimpleNamespace(status_code=200))
+    monkeypatch.setattr(f"{_LC}.httpx.get", lambda url, **kw: SimpleNamespace(status_code=200))
     monkeypatch.setattr(
         lifecycle,
         "begin_update_check",

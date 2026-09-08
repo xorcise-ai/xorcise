@@ -225,7 +225,7 @@ def test_up_still_boots_when_only_a_foreign_instance_holds_the_port(home, monkey
     monkeypatch.setattr(lifecycle, "ensure_frontend_ready", lambda console: None)
     monkeypatch.setattr(lifecycle, "resolve_ports", lambda host, wanted: {**wanted, "rest": 3002})
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: SimpleNamespace(pid=4321))
-    monkeypatch.setattr(httpx, "get", lambda url, timeout=1: SimpleNamespace(status_code=200))
+    monkeypatch.setattr(httpx, "get", lambda url, **k: SimpleNamespace(status_code=200))
     # `_same_home_instance_on` is already "nobody of THIS home" from the fixture.
     result = runner.invoke(app, ["up", "--stub"])
     assert result.exit_code == 0, result.output
@@ -283,3 +283,202 @@ def test_stale_db_refusal_says_to_stop_the_server_first(home, monkeypatch, capsy
     with pytest.raises(typer.Exit):
         lifecycle._ensure_db_ready()
     assert "xorcise down" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------ review follow-ups (#82)
+
+
+def test_down_probes_the_recorded_port_even_though_it_unlinks_the_record(home, monkeypatch):
+    """The review's blocker. `_candidate_rest_ports` read runtime-ports.json, but `down` unlinked
+    that file before the sweep — so the instance that auto-incremented to 3002 (exactly the #73
+    shape) was never probed and "stopped" was printed over it. The candidates are read first now."""
+    (home / "xorcise.pid").write_text("999999")  # stale: a dead pid
+    (home / "runtime-ports.json").write_text('{"rest": 3002, "otlp": 4319}')
+    killed: list[int] = []
+    alive = {4242}
+
+    def kill(pid, sig):
+        if pid not in alive:
+            raise ProcessLookupError
+        if sig != 0:
+            killed.append(pid)
+            alive.discard(pid)
+
+    monkeypatch.setattr(os, "kill", kill)
+    # Only 3002 answers, reporting a live pid 4242.
+    monkeypatch.setattr(
+        lifecycle,
+        "_same_home_instance_on",
+        lambda h, p: _instance(4242, rest=3002) if p == 3002 and 4242 in alive else None,
+    )
+    result = runner.invoke(app, ["down"])
+    assert result.exit_code == 0, result.output
+    assert killed == [4242]
+    assert "orphaned instance of this home (pid 4242)" in result.output
+    assert not (home / "runtime-ports.json").exists()
+
+
+def test_down_verifies_release_on_the_recorded_ports_too(home, monkeypatch):
+    (home / "runtime-ports.json").write_text('{"rest": 3002, "otlp": 4319}')
+    probed: list[list[int]] = []
+
+    def record(h: str, ports: list[int]) -> list[int]:
+        probed.append(ports)
+        return []
+
+    monkeypatch.setattr(lifecycle, "ports_in_use", record)
+    assert runner.invoke(app, ["down"]).exit_code == 0
+    assert probed == [[3001, 3002, 4318, 4319]]
+
+
+def test_up_adopting_an_instance_without_a_pid_says_so_and_names_the_right_port(home, monkeypatch):
+    """Review: with no pid reported nothing was repaired, yet `up` printed "pid record repaired"
+    and advertised the CONFIGURED port's URL for an instance found on another port."""
+    _up_never_spawns(monkeypatch)
+    (home / "runtime-ports.json").write_text('{"rest": 3005}')  # a relocated instance, pid lost
+    monkeypatch.setattr(
+        lifecycle,
+        "_same_home_instance_on",
+        lambda h, p: _instance(None, rest=3005) if p == 3005 else None,
+    )
+    result = runner.invoke(app, ["up"])
+    assert result.exit_code == 0
+    assert "repaired" not in result.output
+    assert "pid is not known" in result.output
+    assert ":3005/ui" in result.output and ":3001/ui" not in result.output
+    assert not (home / "xorcise.pid").exists()  # nothing to write
+    from xorcise.core.home import read_runtime_ports
+
+    assert read_runtime_ports() == {"rest": 3005, "otlp": 4318}  # what lets `down` find it
+
+
+def test_an_undetermined_port_fails_up_closed(home, monkeypatch):
+    """A port of ours accepted but did not answer (hung server, proxy stall): booting past it is
+    the duplicate-instance outcome the guard exists for, so `up` refuses and says why."""
+    _up_never_spawns(monkeypatch)
+    monkeypatch.setattr(lifecycle, "_ensure_db_ready", lambda: pytest.fail("DB touched"))
+    monkeypatch.setattr(lifecycle, "_same_home_instance_on", lambda h, p: lifecycle.UNDETERMINED)
+    result = runner.invoke(app, ["up"])
+    assert result.exit_code == 1
+    assert "did not answer /api/system" in result.output and "port 3001" in result.output
+
+
+def test_an_undetermined_port_fails_db_upgrade_closed_and_force_overrides(home, monkeypatch):
+    monkeypatch.setattr(lifecycle, "_same_home_instance_on", lambda h, p: lifecycle.UNDETERMINED)
+    monkeypatch.setattr("xorcise.core.cli.commands.db._upgrade", lambda: "migrations: ran")
+    result = runner.invoke(app, ["db", "upgrade"])
+    assert result.exit_code == 1 and "Not migrating" in result.output
+    assert runner.invoke(app, ["db", "upgrade", "--force"]).exit_code == 0
+
+
+def test_an_undetermined_port_fails_down_closed(home, monkeypatch):
+    monkeypatch.setattr(lifecycle, "_same_home_instance_on", lambda h, p: lifecycle.UNDETERMINED)
+    result = runner.invoke(app, ["down"])
+    assert result.exit_code == 1
+    assert "did not answer /api/system" in result.output
+
+
+def test_db_upgrade_guard_holds_for_a_direct_call(home, monkeypatch):
+    """Review: `bool(typer.Option(False))` is True, so `if force:` skipped the guard whenever
+    db_upgrade() was called directly (a test, a script, a future internal caller)."""
+    from xorcise.core.cli.commands import db as db_cmd
+
+    (home / "xorcise.pid").write_text(str(os.getpid()))
+    ran: list[int] = []
+
+    def _upgrade() -> str:
+        ran.append(1)
+        return "ran"
+
+    monkeypatch.setattr(db_cmd, "_upgrade", _upgrade)
+    with pytest.raises(typer.Exit):
+        db_cmd.db_upgrade()  # default = the OptionInfo, not False
+    assert ran == []
+
+
+@pytest.mark.parametrize("bad", [True, 0, -1, 2**40, "4242", None])
+def test_pids_from_a_json_body_are_validated_before_any_signal(home, monkeypatch, bad):
+    """Review: `isinstance(True, int)` is True and os.kill(0, SIGTERM) signals the caller's whole
+    process group. Nothing from /api/system reaches os.kill without `_valid_pid`."""
+    signalled: list[int] = []
+    monkeypatch.setattr(os, "kill", lambda pid, sig: signalled.append(pid))
+    monkeypatch.setattr(lifecycle, "_same_home_instance_on", lambda h, p: _instance(bad))
+    result = runner.invoke(app, ["down"])
+    assert signalled == []
+    assert result.exit_code == 1 and "usable pid" in result.output
+
+
+def test_a_pid_file_past_c_long_is_stale_not_a_traceback(home, monkeypatch):
+    """Review: a huge value raised OverflowError from os.kill, which `except ValueError` did not
+    catch — `up`/`down`/`db upgrade` died with a raw traceback."""
+    (home / "xorcise.pid").write_text(str(10**29))
+    _up_never_spawns(monkeypatch)
+    import subprocess
+    from types import SimpleNamespace
+
+    import httpx
+
+    monkeypatch.setattr(lifecycle, "ensure_frontend_ready", lambda console: None)
+    monkeypatch.setattr(lifecycle, "resolve_ports", lambda host, wanted: dict(wanted))
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: SimpleNamespace(pid=4321))
+    monkeypatch.setattr(httpx, "get", lambda url, timeout=1, **k: SimpleNamespace(status_code=200))
+    result = runner.invoke(app, ["up", "--stub"])
+    assert result.exit_code == 0, result.output  # the corrupt record was dropped, not fatal
+    assert (home / "xorcise.pid").read_text() == "4321"
+    result = runner.invoke(app, ["down"])  # and down reads it as nothing to signal
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def test_probes_never_use_the_proxy_environment(monkeypatch):
+    """Review: httpx defaults to trust_env=True with no loopback bypass, so HTTP_PROXY diverted the
+    probe and a dead proxy read as "nothing running" — the failure the probe exists to prevent."""
+    import httpx
+
+    seen: list[dict[str, object]] = []
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"home": os.environ.get("XORCISE_HOME", ""), "pid": 4242}
+
+    def fake_get(url, **kwargs):
+        seen.append(kwargs)
+        return _Resp()
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    lifecycle._probe_system("127.0.0.1", 3001)
+    lifecycle._foreign_instance_home("127.0.0.1", 3001)
+    assert seen and all(k.get("trust_env") is False for k in seen)
+
+
+def test_probe_distinguishes_refused_from_undetermined(monkeypatch):
+    import httpx
+
+    def refused(url, **k):
+        raise httpx.ConnectError("refused")
+
+    def timed_out(url, **k):
+        raise httpx.ReadTimeout("slow")
+
+    monkeypatch.setattr(httpx, "get", refused)
+    assert lifecycle._probe_system("127.0.0.1", 3001) is None  # nothing there
+    monkeypatch.setattr(httpx, "get", timed_out)
+    assert lifecycle._probe_system("127.0.0.1", 3001) is lifecycle.UNDETERMINED  # cannot tell
+
+    class _Resp:
+        def __init__(self, status: int, body: object) -> None:
+            self.status_code, self._body = status, body
+
+        def json(self) -> object:
+            if isinstance(self._body, ValueError):
+                raise self._body
+            return self._body
+
+    # A plain web service on the port (HTML 404) is FOREIGN, not undetermined — `up` must still
+    # auto-increment past it rather than refuse to boot behind it forever.
+    monkeypatch.setattr(httpx, "get", lambda url, **k: _Resp(404, ValueError("not json")))
+    assert lifecycle._probe_system("127.0.0.1", 3001) is None
+    # A 5xx is a server that exists and is broken — possibly a sick instance of ours: cannot tell.
+    monkeypatch.setattr(httpx, "get", lambda url, **k: _Resp(500, {"detail": "boom"}))
+    assert lifecycle._probe_system("127.0.0.1", 3001) is lifecycle.UNDETERMINED

@@ -30,10 +30,24 @@ def db_upgrade(force: bool = _FORCE_OPTION) -> None:
     """
     from alembic.util.exc import CommandError
 
-    from xorcise.core.cli.commands.lifecycle import _live_instance
+    from xorcise.core.cli.commands.lifecycle import InstanceUndetermined, _live_instance
     from xorcise.core.config import get_settings
 
-    live = None if force else _live_instance(get_settings())
+    # `is True`: a direct (non-CLI) call gets the typer OptionInfo as the default, and that
+    # object is truthy — `if force:` would skip the guard that stops database corruption.
+    if force is True:
+        live = None
+    else:
+        try:
+            live = _live_instance(get_settings())
+        except InstanceUndetermined as exc:
+            # Cannot tell whether a server holds the DB: the safe answer is no migration.
+            err_console.print(
+                f"[err]error[/err]: {exc}. Not migrating while that is unknown "
+                "(--force overrides; unsafe.)",
+                highlight=False,
+            )
+            raise typer.Exit(1) from None
     if live is not None:
         where = f"pid {live.pid}" if live.pid is not None else f"port {live.rest_port}"
         err_console.print(
