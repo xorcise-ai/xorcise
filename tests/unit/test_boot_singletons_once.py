@@ -91,3 +91,58 @@ def test_extra_listeners_still_create_only_one_of_each(monkeypatch, migrated_hom
         f"startup ran {listeners}x (one uvicorn.Server per bind host, same app) and built "
         f"duplicate background singletons: {counts}"
     )
+
+
+def test_a_lifespan_restart_builds_fresh_singletons(monkeypatch, migrated_home):
+    """Review of #81: the shutdown hooks left every guard claimed, so a startup → shutdown →
+    startup on the same app object (two TestClient blocks, a host cycling the lifespan) came back
+    with a STOPPED watchdog, no readiness gate and no reconcile — silently. Each shutdown hook now
+    releases its guard."""
+    import asyncio
+
+    import xorcise.core.rest.budget_watchdog as bw
+    import xorcise.core.rest.run_readiness as rr
+    from xorcise.core.roles.boot import role_all
+
+    counts = {"budget": 0, "readiness": 0, "reconcile": 0}
+
+    class _Budget(bw.BudgetWatchdog):
+        def __init__(self, *a, **k):
+            counts["budget"] += 1
+            super().__init__(*a, **k)
+
+        def start(self) -> None:
+            pass
+
+        async def stop(self) -> None:
+            pass
+
+    class _Readiness(rr.ReadinessWatchdog):
+        def __init__(self, *a, **k):
+            counts["readiness"] += 1
+            super().__init__(*a, **k)
+
+        def start(self) -> None:
+            pass
+
+        async def stop(self) -> None:
+            pass
+
+    monkeypatch.setattr(bw, "BudgetWatchdog", _Budget)
+    monkeypatch.setattr(rr, "ReadinessWatchdog", _Readiness)
+    monkeypatch.setattr(
+        "xorcise.core.rest.reconcile.reconcile_all_on_startup",
+        lambda: counts.__setitem__("reconcile", counts["reconcile"] + 1),
+    )
+    app = role_all.build_rest_app()
+
+    async def cycle() -> None:
+        for h in app.router.on_startup:
+            await h()
+        await asyncio.sleep(0.2)
+        for h in app.router.on_shutdown:
+            await h()
+
+    asyncio.run(cycle())
+    asyncio.run(cycle())
+    assert counts == {"budget": 2, "readiness": 2, "reconcile": 2}

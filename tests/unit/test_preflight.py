@@ -175,7 +175,11 @@ def test_find_free_port_sees_a_squatter_on_the_ipv6_loopback():
         port = taken.getsockname()[1]
         assert ports_in_use("::1", [port]) == [port]  # the probe speaks IPv6 now
         assert ports_in_use("127.0.0.1", [port]) == []  # and the IPv4 side really is free
-        assert find_free_port("127.0.0.1", port) > port  # so the scan must walk past it
+        # A listener set that includes ::1 (role:all on a local topology) must walk past it…
+        assert find_free_port(("127.0.0.1", "::1"), port) > port
+        # …but a role whose spec never binds ::1 (runner/control/collector: the configured host
+        # only) must NOT be relocated by an unrelated IPv6 listener.
+        assert find_free_port("127.0.0.1", port, label="runner") == port
 
 
 def test_an_unavailable_address_family_reads_as_free_not_taken(monkeypatch):
@@ -204,10 +208,13 @@ def test_bind_listener_hands_back_a_bound_socket_of_the_right_family():
     try:
         assert sock.family == socket.AF_INET
         assert sock.getsockname() == ("127.0.0.1", port)
-        # It is the preflight AND the listener: once asyncio adopts it (listen), the address is
-        # held and a second bind of the same address fails — SO_REUSEADDR only shares an address
-        # between sockets none of which is listening.
-        sock.listen()
+        # It is the preflight AND the listener, and it LISTENS before returning: SO_REUSEADDR
+        # only shares an address between sockets none of which is listening, so a second bind
+        # — a concurrent `serve` — fails HERE, not later inside uvicorn after the app started.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as rival:
+            rival.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            with pytest.raises(OSError):
+                rival.bind(("127.0.0.1", port))
         with pytest.raises(OSError):
             bind_listener("127.0.0.1", port).close()
     finally:

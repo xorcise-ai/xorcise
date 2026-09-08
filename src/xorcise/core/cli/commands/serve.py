@@ -124,12 +124,13 @@ class BindConflict(Exception):
 def bind_specs(specs: list[AppSpec], default_host: str) -> list[BoundSpec]:
     """Bind every spec on every address `_bind_hosts` resolves for it, BEFORE the event loop.
 
-    Binding is the preflight: the same sockets are handed to uvicorn, so nothing can take a
-    port between the check and the listen, and a conflict surfaces here as a per-address
-    OSError we report cleanly — not from inside uvicorn's Server.startup(), which calls
-    sys.exit(1) and escaped serve()'s handling as a raw traceback. Every address is probed in
-    its own family, so a squatter on `[::1]:3001` is found the same as one on the IPv4 loopback
-    (the IPv4-only probe used to pass it).
+    Binding is the preflight: `bind_listener` binds AND listens, so from the moment it returns
+    the address is held — a concurrent `serve` cannot slip in between the check and the listen
+    (it could when the listen was left to uvicorn: SO_REUSEADDR lets two non-listening sockets
+    share an address) — and a conflict surfaces here as a per-address OSError we report cleanly,
+    not from inside uvicorn's Server.startup() after the app's startup hooks have already run.
+    Every address is probed in its own family, so a squatter on `[::1]:3001` is found the same
+    as one on the IPv4 loopback (the IPv4-only probe used to pass it).
 
     The IPv6 loopback companion is the one address allowed to be missing: on a host with IPv6
     disabled it does not exist, which is not a conflict — the IPv4 listeners still serve, and
@@ -173,36 +174,51 @@ def bind_specs(specs: list[AppSpec], default_host: str) -> list[BoundSpec]:
     return bound
 
 
+def listener_lines(bound: list[BoundSpec]) -> list[str]:
+    """One line per app naming every address it listens on — the record uvicorn no longer
+    writes for us (it logs "Uvicorn running on …" only when IT did the binding), and the one
+    `up` points the operator at (`see serve.log`) when a boot fails."""
+    lines = []
+    for b in bound:
+        addrs = ", ".join(
+            f"[{h}]:{b.spec.port}" if ":" in h else f"{h}:{b.spec.port}" for h in b.hosts
+        )
+        lines.append(f"listening on {addrs}")
+    return lines
+
+
 async def serve_bound(bound: list[BoundSpec]) -> list[BaseException]:
-    """Run one uvicorn.Server per bound app until the first exits; return the failures."""
+    """Run one uvicorn.Server per bound app until the first exits; return the failures.
+
+    A failure is an exception that escaped a Server OR a Server that never started: when an
+    app's lifespan startup fails, uvicorn logs it, skips the main loop and returns normally
+    (`Server.serve()` → None, `started` False), so without the second check `serve` would exit
+    0 having served nothing — and `up` would report only "did not become healthy"."""
     import uvicorn
 
     servers = [
-        (
-            uvicorn.Server(
-                uvicorn.Config(
-                    b.spec.app,
-                    # Only labels the "Uvicorn running on" line — the listeners are the sockets
-                    # (bind_specs guarantees at least one).
-                    host=b.hosts[0],
-                    port=b.spec.port,
-                    log_level=b.spec.log_level,
-                )
-            ),
-            b.sockets,
-        )
+        # Config's host/port are inert on this path — the listeners are the sockets handed to
+        # serve(); uvicorn does not even log "running on" for them (see listener_lines).
+        (uvicorn.Server(uvicorn.Config(b.spec.app, log_level=b.spec.log_level)), b)
         for b in bound
     ]
-    tasks = [asyncio.create_task(server.serve(sockets=socks)) for server, socks in servers]
+    tasks = [asyncio.create_task(server.serve(sockets=b.sockets)) for server, b in servers]
     await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     for server, _ in servers:
         server.should_exit = True
     results = await asyncio.gather(*tasks, return_exceptions=True)
-    return [
-        r
-        for r in results
-        if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError)
-    ]
+    failures: list[BaseException] = []
+    for (server, b), result in zip(servers, results, strict=True):
+        if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+            failures.append(result)
+        elif not server.started:
+            failures.append(
+                RuntimeError(
+                    f"the app on port {b.spec.port} never started — its startup failed "
+                    "(see the log above)"
+                )
+            )
+    return failures
 
 
 @app.command(rich_help_panel="Advanced")
@@ -267,6 +283,8 @@ def serve(
         raise typer.Exit(1) from None
 
     console.print(lifecycle._serve_banner(role_name, specs))
+    for line in listener_lines(bound):
+        err_console.print(f"[dim]{line}[/dim]", highlight=False)  # stderr: lands in serve.log
     try:
         failures = asyncio.run(serve_bound(bound))
     except KeyboardInterrupt:

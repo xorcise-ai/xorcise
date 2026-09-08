@@ -130,8 +130,10 @@ def test_serve_bound_runs_one_server_per_app_with_all_its_sockets(monkeypatch) -
         def __init__(self, config: _Config) -> None:
             self.config = config
             self.should_exit = False
+            self.started = False
 
         async def serve(self, sockets: list[socket.socket] | None = None) -> None:
+            self.started = True  # what uvicorn sets once startup() succeeded
             made.append({"app": self.config.app, "sockets": list(sockets or [])})
 
     monkeypatch.setattr(uvicorn, "Config", _Config)
@@ -152,3 +154,51 @@ def test_serve_bound_runs_one_server_per_app_with_all_its_sockets(monkeypatch) -
     assert [m["app"] for m in made] == ["app-a", "app-b"]  # one Server per APP…
     assert made[0]["sockets"] == a_sockets  # …carrying every one of its listeners
     assert made[1]["sockets"] == b_sockets
+
+
+def test_a_failed_lifespan_startup_is_reported_as_a_failure() -> None:
+    """Review of #81: uvicorn returns normally from serve() when the app's startup fails
+    (`started` stays False), so the exception filter alone found nothing and `serve` exited 0
+    having served nothing."""
+
+    async def failing_app(scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] == "lifespan":
+            await receive()
+            await send({"type": "lifespan.startup.failed", "message": "config error"})
+
+    port = _released_port()
+    bound = serve_mod.bind_specs([AppSpec(failing_app, port, host="127.0.0.1")], "127.0.0.1")
+    try:
+        failures = asyncio.run(serve_mod.serve_bound(bound))
+    finally:
+        for b in bound:
+            b.close()
+    assert len(failures) == 1
+    assert "never started" in str(failures[0]) and str(port) in str(failures[0])
+
+
+def test_bind_specs_holds_the_address_so_a_concurrent_binder_loses_immediately() -> None:
+    """Review of #81: bound-but-not-listening sockets share an address under SO_REUSEADDR, so a
+    concurrent `serve` could bind the same port and win the listen() race inside uvicorn. The
+    sockets bind_specs hands out are listening, so the rival fails at its own bind()."""
+    port = _released_port()
+    bound = serve_mod.bind_specs([AppSpec(_noop_app, port, host="127.0.0.1")], "127.0.0.1")
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as rival:
+            rival.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            with pytest.raises(OSError):
+                rival.bind(("127.0.0.1", port))
+    finally:
+        for b in bound:
+            b.close()
+
+
+def test_listener_lines_name_every_bound_address() -> None:
+    bound = [
+        serve_mod.BoundSpec(AppSpec("a", 3001), ["127.0.0.1", "::1", "172.17.0.1"], []),
+        serve_mod.BoundSpec(AppSpec("b", 4318), ["127.0.0.1"], []),
+    ]
+    assert serve_mod.listener_lines(bound) == [
+        "listening on 127.0.0.1:3001, [::1]:3001, 172.17.0.1:3001",
+        "listening on 127.0.0.1:4318",
+    ]

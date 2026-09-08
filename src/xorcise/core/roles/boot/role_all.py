@@ -60,7 +60,10 @@ def build_rest_app() -> FastAPI:
     # on 409 "removal of container … already in progress" — and, since each hook assigns its
     # instance to a nonlocal, shutdown stopped only the last one. `serve` now runs one Server per
     # app (sockets per address), which fires each hook once; the guards stay because they hold
-    # under ANY ASGI host arrangement, which this module cannot see.
+    # under ANY ASGI host arrangement, which this module cannot see. Each shutdown hook RELEASES
+    # its guard, so a lifespan that restarts on the same app object (two `TestClient(app)`
+    # blocks; a host that cycles the lifespan) comes back with live singletons, not with a
+    # stopped watchdog and no gate silently left behind by the previous cycle.
     _watchdog: BudgetWatchdog | None = None
     _readiness: ReadinessWatchdog | None = None
     # Separate from `_readiness` because the gate cannot be assigned until after an await; see
@@ -105,7 +108,9 @@ def build_rest_app() -> FastAPI:
         import asyncio
         import contextlib
 
+        nonlocal _reconcile_task
         task = _reconcile_task
+        _reconcile_task = None  # release the guard for a lifespan restart
         if isinstance(task, asyncio.Task) and not task.done():
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -130,8 +135,10 @@ def build_rest_app() -> FastAPI:
 
     @app.on_event("shutdown")
     async def _stop_watchdog() -> None:
-        if _watchdog is not None:
-            await _watchdog.stop()
+        nonlocal _watchdog
+        watchdog, _watchdog = _watchdog, None  # release the guard for a lifespan restart
+        if watchdog is not None:
+            await watchdog.stop()
 
     @app.on_event("startup")
     async def _start_readiness_gate() -> None:
@@ -178,10 +185,18 @@ def build_rest_app() -> FastAPI:
 
     @app.on_event("shutdown")
     async def _stop_readiness_gate() -> None:
-        if _readiness is not None:
-            await _readiness.stop()
+        nonlocal _readiness, _readiness_claimed
+        gate, _readiness = _readiness, None
+        _readiness_claimed = False  # release the claim for a lifespan restart
+        if gate is not None:
+            await gate.stop()
 
     _prewarmed = False
+
+    @app.on_event("shutdown")
+    async def _reset_prewarm() -> None:
+        nonlocal _prewarmed
+        _prewarmed = False  # a restarted lifespan may warm again
 
     @app.on_event("startup")
     async def _prewarm_nested_support() -> None:
@@ -200,7 +215,7 @@ def build_rest_app() -> FastAPI:
         # warm-up costs: a cold memo the first run recomputes.
         nonlocal _prewarmed
         if _prewarmed:
-            return  # one uvicorn.Server per bind address shares this app — warm once
+            return  # several Servers may share this app — warm once per lifespan
         _prewarmed = True
         import logging
         import threading
@@ -283,14 +298,26 @@ def _agent_facing_bind_hosts(configured_host: str) -> tuple[str, ...]:
     explicit opt-back-in. Only the Linux gateway-unknown case falls back wide: a silent
     loopback-only bind there would break every run instead of locking anything down.
     """
-    if configured_host == "0.0.0.0":
-        return ("0.0.0.0",)
-    hosts: tuple[str, ...] = (LOOPBACK, "::1")
+    hosts = agent_facing_loopbacks(configured_host)
+    if hosts == ("0.0.0.0",):
+        return hosts
     if _system() == "Linux":
         gateway = _docker_bridge_gateway()
         if not (gateway and _locally_bindable(gateway)):
             return ("0.0.0.0",)
         hosts = (*hosts, gateway)
+    return hosts
+
+
+def agent_facing_loopbacks(configured_host: str) -> tuple[str, ...]:
+    """The addresses every local agent-facing spec binds BEFORE the docker bridge gateway is
+    considered: the IPv4 + IPv6 loopbacks, plus a configured non-loopback host; the wildcard
+    stays an explicit opt-in. Pure and docker-free, so port resolution (cli) can probe the same
+    set `serve` will bind without a subprocess — the gateway it leaves out is a specific IPv4
+    interface, which resolution's wildcard probe already refuses a squatter on."""
+    if configured_host == "0.0.0.0":
+        return ("0.0.0.0",)
+    hosts: tuple[str, ...] = (LOOPBACK, "::1")
     if configured_host not in hosts and configured_host not in LOOPBACK_HOSTS:
         hosts = (*hosts, configured_host)
     return hosts

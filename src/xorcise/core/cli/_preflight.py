@@ -9,6 +9,7 @@ from __future__ import annotations
 import errno
 import os
 import socket
+from collections.abc import Sequence
 from collections.abc import Set as AbstractSet
 
 # Human label per known plane port, for the conflict message.
@@ -42,15 +43,19 @@ def address_unavailable(exc: OSError) -> bool:
 
 
 def bind_listener(host: str, port: int) -> socket.socket:
-    """Bind (not yet listening) `host:port` exactly the way asyncio's `create_server(host=…)`
-    would, and hand the socket back for the server to adopt. Raises OSError on failure.
+    """Bind AND listen on `host:port` the way asyncio's `create_server(host=…)` would, and hand
+    the socket back for the server to adopt. Raises OSError on failure.
 
-    Binding here, once, is the preflight: the same socket is then passed to uvicorn, so there is
-    no gap in which another process can take the port between the check and the listen. Options
-    mirror CPython's base_events.create_server — SO_REUSEADDR on POSIX (so a port left in
-    TIME_WAIT by the previous server rebinds immediately) and IPV6_V6ONLY on an IPv6 socket (so
-    the IPv6 loopback listener never shadows or collides with the IPv4 one). asyncio calls
-    listen() itself when it adopts the socket."""
+    The listen() is what makes this an atomic preflight. `SO_REUSEADDR` deliberately lets two
+    sockets bind the same address while NEITHER is listening (that is how a port in TIME_WAIT is
+    reused), so a bound-but-not-listening socket holds nothing: a concurrent `serve` would bind
+    it too, and the loser would only find out at listen() — inside uvicorn's socket-adoption
+    path, after the app's startup hooks had already run, with no shutdown to follow. Listening
+    here means the conflict surfaces in THIS call, where the caller reports it cleanly, and the
+    address is held from this moment on. asyncio's listen() on adoption merely re-applies the
+    backlog. Options mirror CPython's base_events.create_server — SO_REUSEADDR on POSIX (so a
+    port left in TIME_WAIT by the previous server rebinds immediately) and IPV6_V6ONLY on an IPv6
+    socket (so the IPv6 loopback listener never shadows or collides with the IPv4 one)."""
     sock = socket.socket(address_family(host), socket.SOCK_STREAM)
     try:
         if os.name == "posix":
@@ -58,6 +63,7 @@ def bind_listener(host: str, port: int) -> socket.socket:
         if sock.family == socket.AF_INET6 and hasattr(socket, "IPPROTO_IPV6"):
             sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
         sock.bind((host, port))
+        sock.listen()
     except OSError:
         sock.close()
         raise
@@ -100,8 +106,22 @@ def ports_in_use(host: str, ports: list[int]) -> list[int]:
     return [p for p in ports if not _bindable(host, p)]
 
 
+def _probe_addresses(hosts: str | Sequence[str]) -> list[str]:
+    """The addresses a port must be free on for the listener set `hosts`: every address the
+    server will bind, plus the IPv4 wildcard when any of them is a specific IPv4 interface — a
+    wildcard probe refuses a listener on ANY single interface, so it catches a squatter on an
+    interface the set does not name. Nothing else: the IPv6 loopback is probed exactly when it
+    is in the set (role:all on a local topology), not for a role whose spec never binds it — a
+    `[::1]:8800` listener must not relocate `serve --role runner`."""
+    listen_on = [hosts] if isinstance(hosts, str) else list(hosts)
+    probe = list(dict.fromkeys(listen_on))
+    if any(address_family(h) == socket.AF_INET and h != "0.0.0.0" for h in listen_on):
+        probe.append("0.0.0.0")
+    return probe
+
+
 def find_free_port(
-    host: str,
+    host: str | Sequence[str],
     start: int,
     attempts: int = _SCAN_ATTEMPTS,
     taken: AbstractSet[int] = frozenset(),
@@ -109,28 +129,26 @@ def find_free_port(
 ) -> int:
     """First free port at-or-above `start` (walks start, start+1, … for `attempts` probes).
 
-    A port only counts as free when `host`, the IPv4 wildcard ("0.0.0.0") AND the IPv6
-    loopback ("::1") are all bindable: a wildcard probe refuses a listener on any single IPv4
-    interface, and the IPv6 probe sees the `[::1]` listener an IPv4 probe cannot — role:all
-    binds every agent-facing plane on the IPv6 loopback too, so a port that passes here cannot
-    pass preflight and then crash uvicorn on an address-specific conflict. Reuses _bindable,
-    keeping the SO_REUSEADDR/TIME_WAIT semantics (and "IPv6 disabled" reads as free, not
-    taken). `taken` holds ports already promised to other planes in the same resolution round.
+    `host` is the address the server will bind, or the WHOLE list of addresses it will bind
+    (`_bind_hosts` of the role's spec) — the scan probes exactly that set, plus the IPv4
+    wildcard for any specific IPv4 interface in it (see _probe_addresses). Handing the real
+    listener set in, rather than a hand-maintained guess of it, is what keeps this from
+    drifting behind `_bind_hosts`/`bind_specs` again. Reuses _bindable, keeping the
+    SO_REUSEADDR/TIME_WAIT semantics (and "IPv6 disabled" reads as free, not taken). `taken`
+    holds ports already promised to other planes in the same resolution round.
     """
+    addresses = _probe_addresses(host)
     for candidate in range(start, min(start + attempts, _MAX_PORT + 1)):
         if candidate in taken:
             continue
-        if (
-            _bindable(host, candidate)
-            and (host == "0.0.0.0" or _bindable("0.0.0.0", candidate))
-            and (host == IPV6_LOOPBACK or _bindable(IPV6_LOOPBACK, candidate))
-        ):
+        if all(_bindable(address, candidate) for address in addresses):
             return candidate
     raise PortScanError(label, start, attempts)
 
 
-def resolve_ports(host: str, wanted: dict[str, int]) -> dict[str, int]:
-    """Resolve each plane's requested port to the first free one at-or-above it.
+def resolve_ports(host: str | Sequence[str], wanted: dict[str, int]) -> dict[str, int]:
+    """Resolve each plane's requested port to the first free one at-or-above it, on the
+    address (or the full listener set) the planes will bind.
 
     Planes resolve in dict order; earlier choices feed into `taken` so two planes
     contending for the same base port never resolve to the same one. Raises

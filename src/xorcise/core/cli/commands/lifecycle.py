@@ -280,6 +280,20 @@ def _apply_runtime_env(role: str, *, stub: bool, ports: dict[str, int] | None = 
     get_settings.cache_clear()
 
 
+def _role_bind_hosts(role: str, configured_host: str) -> list[str]:
+    """The addresses the role's planes will listen on — the SAME set `serve` binds, from the
+    same function role_all builds it with — so port resolution probes what will be bound and
+    nothing else. role:all on a local topology binds the agent-facing loopbacks (IPv4 + IPv6;
+    the docker bridge gateway it adds on Linux is a specific IPv4 interface the wildcard probe
+    covers, so no docker call is needed here); every other role binds the configured host, so a
+    `[::1]:8800` listener never relocates `serve --role runner`."""
+    from xorcise.core.roles.boot import role_all
+
+    if role == "all" and get_settings().deployment_topology == "local":
+        return _bind_hosts(role_all.agent_facing_loopbacks(configured_host))
+    return _bind_hosts(configured_host)
+
+
 def _resolve_role_ports(role: str, overrides: dict[str, int | None]) -> dict[str, int]:
     """Auto-increment each of the role's planes to a free port, with a notice per move.
 
@@ -292,7 +306,7 @@ def _resolve_role_ports(role: str, overrides: dict[str, int | None]) -> dict[str
         # isinstance guards direct (non-CLI) calls, where typer defaults are OptionInfo.
         wanted[plane] = override if isinstance(override, int) else getattr(s, f"{plane}_port")
     try:
-        resolved = resolve_ports(s.host, wanted)
+        resolved = resolve_ports(_role_bind_hosts(role, s.host), wanted)
     except PortScanError as exc:
         err_console.print(f"[err]{exc}[/err]")
         raise typer.Exit(1) from None
