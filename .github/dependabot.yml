@@ -64,10 +64,42 @@ updates:
     labels:
       - dependencies
     groups:
+      # Packages that must move TOGETHER, majors included. A partial bump of either set is not
+      # a smaller change than the whole one — it is a broken one, and Dependabot cannot know
+      # that, so it is said here.
+      #
+      # react: `react` and `react-dom` must be on the same major (a 19 renderer against an 18
+      # core is unsupported), and the two @types packages describe them. Bumped one at a time
+      # they produce a PR that cannot pass; bumped together they produce a React migration PR
+      # that can be reviewed as one.
+      react:
+        patterns:
+          - react
+          - react-dom
+          - "@types/react"
+          - "@types/react-dom"
+      # test-toolchain: @vitejs/plugin-react peers on a specific Vite MAJOR (6.x wants
+      # vite ^8), and this project has no direct Vite dependency — it gets Vite from vitest.
+      # So the plugin can only move when vitest moves. Deliberately NOT including jsdom: it is
+      # the DOM implementation the tests run against, versioned independently of Vite, and
+      # coupling it here would hold a good jsdom bump behind a vitest major.
+      test-toolchain:
+        patterns:
+          - vitest
+          - "@vitejs/plugin-react"
+      # Everything else, minor and patch only.
       frontend-minor-patch:
         update-types:
           - minor
           - patch
+    ignore:
+      # @types/node must track the Node this project RUNS, never lead it: package.json
+      # declares engines.node ">=22 <23" and .nvmrc pins 22. Types for a newer Node make
+      # `tsc --noEmit` accept APIs that do not exist at runtime, which turns the typecheck
+      # from evidence into noise. Raise this the same day engines.node moves, not before.
+      # Minor/patch still flow, and `ignore` never suppresses security updates.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
 
   # Grouped into one PR: a single reviewable PR actually gets merged, which is what keeps the
   # SHA pins current.
