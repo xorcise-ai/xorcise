@@ -152,3 +152,70 @@ def test_resolve_ports_never_assigns_the_same_port_twice():
     assert resolved["rest"] == port
     assert resolved["otlp"] != port  # the second plane must not collide with the first
     assert len(set(resolved.values())) == 2
+
+
+def _ipv6_loopback_available() -> bool:
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s:
+            s.bind(("::1", 0))
+            return True
+    except OSError:
+        return False
+
+
+@pytest.mark.skipif(not _ipv6_loopback_available(), reason="no IPv6 loopback here")
+def test_find_free_port_sees_a_squatter_on_the_ipv6_loopback():
+    """Finding 1 of #43. The probe hardcoded AF_INET, so a `[::1]:PORT` listener with the IPv4
+    side free passed — and uvicorn then died on it from inside Server.startup(). role:all binds
+    the IPv6 loopback too, so the scan has to look there."""
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as taken:
+        taken.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        taken.bind(("::1", 0))
+        taken.listen()
+        port = taken.getsockname()[1]
+        assert ports_in_use("::1", [port]) == [port]  # the probe speaks IPv6 now
+        assert ports_in_use("127.0.0.1", [port]) == []  # and the IPv4 side really is free
+        # A listener set that includes ::1 (role:all on a local topology) must walk past it…
+        assert find_free_port(("127.0.0.1", "::1"), port) > port
+        # …but a role whose spec never binds ::1 (runner/control/collector: the configured host
+        # only) must NOT be relocated by an unrelated IPv6 listener.
+        assert find_free_port("127.0.0.1", port, label="runner") == port
+
+
+def test_an_unavailable_address_family_reads_as_free_not_taken(monkeypatch):
+    """IPv6 disabled on the host: `::1` cannot be bound by anyone, so it is not "in use" —
+    reporting it as taken would make EVERY port look busy and exhaust the scan."""
+    import errno
+
+    from xorcise.core.cli import _preflight
+
+    def _no_v6(host: str, port: int) -> socket.socket:
+        if ":" in host:
+            raise OSError(errno.EADDRNOTAVAIL, "Cannot assign requested address")
+        return socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+    monkeypatch.setattr(_preflight, "bind_listener", _no_v6)
+    assert ports_in_use("::1", [3001]) == []
+    port = _released_port()
+    assert find_free_port("127.0.0.1", port) == port
+
+
+def test_bind_listener_hands_back_a_bound_socket_of_the_right_family():
+    from xorcise.core.cli._preflight import bind_listener
+
+    port = _released_port()
+    sock = bind_listener("127.0.0.1", port)
+    try:
+        assert sock.family == socket.AF_INET
+        assert sock.getsockname() == ("127.0.0.1", port)
+        # It is the preflight AND the listener, and it LISTENS before returning: SO_REUSEADDR
+        # only shares an address between sockets none of which is listening, so a second bind
+        # — a concurrent `serve` — fails HERE, not later inside uvicorn after the app started.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as rival:
+            rival.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            with pytest.raises(OSError):
+                rival.bind(("127.0.0.1", port))
+        with pytest.raises(OSError):
+            bind_listener("127.0.0.1", port).close()
+    finally:
+        sock.close()

@@ -36,3 +36,35 @@ def test_tuple_with_wildcard_still_gains_companion_without_duplicates() -> None:
     # and a tuple already naming ::1 doesn't get it twice.
     assert _bind_hosts(("0.0.0.0",)) == ["0.0.0.0", "::1"]
     assert _bind_hosts(("0.0.0.0", "::1")) == ["0.0.0.0", "::1"]
+
+
+def test_role_bind_hosts_is_the_set_serve_binds(monkeypatch) -> None:
+    """Review of #81: port resolution probed a hand-maintained guess (`host`, `0.0.0.0`, then
+    `::1` for everyone) that had to be kept in sync with `_bind_hosts`/`bind_specs` by hand —
+    twice widened after a production miss. Resolution now probes the role's real listener set,
+    built by the same role_all function `serve` uses — without the docker call (the bridge
+    gateway is a specific IPv4 interface the wildcard probe already covers)."""
+    import subprocess
+
+    from xorcise.core.cli.commands import lifecycle
+    from xorcise.core.config import get_settings
+
+    monkeypatch.setenv("XORCISE_DEPLOYMENT_TOPOLOGY", "local")
+    get_settings.cache_clear()
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("resolution shelled out"))
+    try:
+        # role:all binds the agent-facing loopbacks (IPv4 + IPv6) …
+        assert lifecycle._role_bind_hosts("all", "127.0.0.1") == ["127.0.0.1", "::1"]
+        # … plus a configured non-loopback host; the wildcard stays an explicit opt-in.
+        assert lifecycle._role_bind_hosts("all", "192.168.1.10") == [
+            "127.0.0.1",
+            "::1",
+            "192.168.1.10",
+        ]
+        assert lifecycle._role_bind_hosts("all", "0.0.0.0") == ["0.0.0.0", "::1"]
+        # every other role binds the configured host only: no ::1 probe, so an unrelated
+        # `[::1]:8800` listener cannot relocate `serve --role runner`.
+        assert lifecycle._role_bind_hosts("runner", "127.0.0.1") == ["127.0.0.1"]
+        assert lifecycle._role_bind_hosts("collector", "0.0.0.0") == ["0.0.0.0", "::1"]
+    finally:
+        get_settings.cache_clear()

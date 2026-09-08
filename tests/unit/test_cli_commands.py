@@ -1,3 +1,4 @@
+import errno
 import os
 import subprocess
 from collections.abc import Mapping
@@ -482,6 +483,11 @@ def test_up_fails_fast_when_no_free_port(_prereqs_ok, monkeypatch, tmp_path):
     assert result.exception is None or isinstance(result.exception, SystemExit)
 
 
+def _bind_in_use(host, port):
+    """A `bind_listener` whose address is always held by someone else."""
+    raise OSError(errno.EADDRINUSE, "Address already in use")
+
+
 def test_serve_fails_fast_on_port_conflict(monkeypatch, tmp_path):
     from xorcise.core.cli.commands import serve as serve_mod
 
@@ -489,7 +495,8 @@ def test_serve_fails_fast_on_port_conflict(monkeypatch, tmp_path):
     monkeypatch.setenv("XORCISE_HOME", str(tmp_path))  # serve bootstraps home+db now
     monkeypatch.setattr(lifecycle, "resolve_ports", lambda host, wanted: dict(wanted))
     monkeypatch.setattr(serve_mod, "activate", lambda role: [AppSpec(app=object(), port=REST_PORT)])
-    monkeypatch.setattr(serve_mod, "ports_in_use", lambda host, ports: [REST_PORT])
+    # Binding IS the preflight now: a listener already on the address raises EADDRINUSE.
+    monkeypatch.setattr(serve_mod, "bind_listener", _bind_in_use)
     result = runner.invoke(app, ["serve"])
     assert result.exit_code == 1
     assert str(REST_PORT) in result.output
@@ -781,24 +788,23 @@ def test_serve_preflight_uses_configured_host_and_ports(monkeypatch, tmp_path):
     from xorcise.core.config import get_settings
 
     get_settings.cache_clear()
-    seen = {}
+    seen: list[tuple[str, int]] = []
 
-    def fake_ports_in_use(host, ports):
-        seen["host"] = host
-        seen["ports"] = ports
-        return [4001]  # force the fast-fail path, no uvicorn
+    def fake_bind_listener(host, port):
+        seen.append((host, port))
+        raise OSError(errno.EADDRINUSE, "in use")  # force the fast-fail path, no uvicorn
 
     from xorcise.core.cli.commands import serve as serve_mod
 
     monkeypatch.setattr(lifecycle, "resolve_ports", lambda host, wanted: dict(wanted))
-    monkeypatch.setattr(serve_mod, "ports_in_use", fake_ports_in_use)
+    monkeypatch.setattr(serve_mod, "bind_listener", fake_bind_listener)
     try:
         result = runner.invoke(app, ["serve"])
     finally:
         get_settings.cache_clear()
     assert result.exit_code == 1
-    assert seen["host"] == "0.0.0.0"
-    assert 4001 in seen["ports"]
+    assert seen[0][0] == "0.0.0.0"  # the configured host is what gets bound first
+    assert 4001 in {port for _h, port in seen}
 
 
 def test_scaffolded_config_documents_endpoint_knobs(monkeypatch, tmp_path):
@@ -1225,7 +1231,7 @@ def test_serve_port_flag_resolves_before_activate(monkeypatch, tmp_path):
 
     monkeypatch.setattr(serve_mod, "activate", fake_activate)
     # report everything busy so serve fast-fails before reaching uvicorn
-    monkeypatch.setattr(serve_mod, "ports_in_use", lambda host, ports: ports)
+    monkeypatch.setattr(serve_mod, "bind_listener", _bind_in_use)
     try:
         result = runner.invoke(app, ["serve", "--port", "4001"])
     finally:

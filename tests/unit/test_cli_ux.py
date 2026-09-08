@@ -159,7 +159,12 @@ def test_serve_scaffolds_fresh_db_before_boot(monkeypatch, tmp_path):
     monkeypatch.setattr(lifecycle, "resolve_ports", lambda host, wanted: dict(wanted))
     monkeypatch.setattr(serve_mod, "activate", lambda role: [AppSpec(app=object(), port=45501)])
     # Everything 'busy' forces the fast-fail exit AFTER the bootstrap ran — uvicorn never starts.
-    monkeypatch.setattr(serve_mod, "ports_in_use", lambda host, ports: ports)
+    import errno
+
+    def _in_use(host, port):
+        raise OSError(errno.EADDRINUSE, "Address already in use")
+
+    monkeypatch.setattr(serve_mod, "bind_listener", _in_use)
     result = runner.invoke(app, ["serve"])
     assert result.exit_code == 1  # the deliberate port-conflict exit
     assert "prepared the database" in result.output
