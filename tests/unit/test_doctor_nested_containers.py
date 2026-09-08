@@ -138,3 +138,18 @@ def test_up_never_runs_the_nested_probe(monkeypatch) -> None:
     )
     names = {c.name for c in lifecycle._environment_checks()}
     assert "nested containers" not in names
+
+
+def test_doctor_lists_foreign_platform_verdicts_as_warnings(monkeypatch) -> None:
+    """The amd64-on-Apple-Silicon refusal must be visible in doctor's output — and visibly cleared
+    after Rosetta is enabled — not only discoverable by the next run."""
+    refused = NestedSupport(False, "rosetta error: failed to open elf", "fp", "enable Rosetta …")
+    monkeypatch.setattr(dr, "memoised_verdicts", lambda: {"linux/amd64": refused})
+    checks = diag.nested_containers_foreign()
+    assert [c.name for c in checks] == ["nested containers (linux/amd64)"]
+    assert checks[0].ok is True and checks[0].level == "warning"  # native missions still run
+    assert checks[0].remediation == "enable Rosetta …"
+    monkeypatch.setattr(dr, "memoised_verdicts", lambda: {"linux/amd64": OK})
+    assert diag.nested_containers_foreign()[0].level == "blocker"  # a plain green line
+    monkeypatch.setattr(dr, "memoised_verdicts", lambda: {})
+    assert diag.nested_containers_foreign() == []

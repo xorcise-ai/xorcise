@@ -31,6 +31,7 @@ from xorcise.core.cli._diagnostics import (
     home_present,
     mission_base_release,
     nested_containers,
+    nested_containers_foreign,
     openssl_present,
     probe_channel,
     python_version,
@@ -704,6 +705,9 @@ def doctor(
         if as_json is not True:
             console.print("  [dim]○ probing nested containers (may take a minute)…[/dim]")
         env_checks.append(nested_containers())
+        # The foreign platforms runs have asked about (re-probed by the line above), so a
+        # cleared Rosetta refusal shows up here and not only on the next run.
+        env_checks.extend(nested_containers_foreign())
     port_checks: list[Check] = []
     server_ports = _running_server_ports()
     # Probe the ports the server actually runs on (runtime overlay, same resolution

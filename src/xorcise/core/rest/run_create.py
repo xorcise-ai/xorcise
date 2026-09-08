@@ -80,12 +80,17 @@ def _no_live_subnets() -> set[str]:
     return set()
 
 
-def _no_nested_check() -> None:
+def _no_nested_check(platform: str | None = None) -> None:
     """Default `require_nested`: the stub/unit path deploys nothing, so there is nothing to nest."""
 
 
 def _no_base_check(image_ref: str, origin: str) -> None:
     """Default `check_base_compat`: the stub/unit path deploys no real image to gate."""
+
+
+def _no_image_platform(image_ref: str) -> str | None:
+    """Default `image_platform`: no Docker to inspect (stub / unit path) ⇒ unknown."""
+    return None
 
 
 @dataclass(frozen=True)
@@ -118,12 +123,18 @@ class RunCreateDeps:
     # unit path with no Docker); boot wires the docker-backed lister.
     live_subnets: Callable[[], set[str]] = _no_live_subnets
     # Raises NestedContainersUnavailableError if this host cannot run a mission's containers
-    # inside the run container — the only supported topology. Injected (not called inline) so the
+    # inside the run container AT THE GIVEN PLATFORM (None = the daemon's native one) — the only
+    # supported topology. Nesting is a property of the (host, platform) pair: an arm64 host nests
+    # its native arm64 missions fine and cannot nest amd64 without emulation, so the gate must be
+    # asked about the platform the mission actually pulled. Injected (not called inline) so the
     # stub/unit path has nothing to probe and no Docker to reach; boot wires the real check.
-    require_nested: Callable[[], None] = _no_nested_check
+    require_nested: Callable[[str | None], None] = _no_nested_check
     # Raises BaseImageIncompatibleError if the mission's fused image was built on a base
     # generation this XORCISE cannot run. Takes the image ref; boot wires label+tag inspection.
     check_base_compat: Callable[[str, str], None] = _no_base_check
+    # The `os/arch` of a LOCAL image, for installs whose record predates the platform field (and
+    # your_own fuses): the image itself is the honest answer to "what will this run execute as".
+    image_platform: Callable[[str], str | None] = _no_image_platform
 
 
 def _use_real_headscale(settings: Settings) -> bool:
@@ -210,8 +221,9 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
     # Default: no Docker to enumerate (stub/unit path) → the allocator sees no leftover subnets.
     live_subnets: Callable[[], set[str]] = _no_live_subnets
     # Default: the stub path deploys nothing, so nesting/base compat are not preconditions for it.
-    require_nested: Callable[[], None] = _no_nested_check
+    require_nested: Callable[[str | None], None] = _no_nested_check
     check_base_compat: Callable[[str, str], None] = _no_base_check
+    image_platform: Callable[[str], str | None] = _no_image_platform
     if control_real:
         # Real runner: _real_docker_driver fails loud if Docker/the runner extra is absent.
         from xorcise.core.headscale import overlapping_subnets
@@ -229,10 +241,12 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
         def live_subnets() -> set[str]:
             return overlapping_subnets(base, prefix, driver.list_network_cidrs())
 
-        # The mission stack only ever runs nested, so verify the host can do that before a run
-        # commits to anything. Memoised in-process, so it costs ~nothing per run after the first
-        # (which boot pre-warms — see role_all).
+        # The mission stack only ever runs nested, so verify the host can do that — at the
+        # mission's platform — before a run commits to anything. Memoised in-process per platform,
+        # so it costs ~nothing per run after the first (boot pre-warms the native one — see
+        # role_all).
         from xorcise.core.rest.docker_runtime import (
+            local_image_platform,
             require_base_compatible,
             require_nested_support,
         )
@@ -249,11 +263,14 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
                     "Docker daemon is not reachable — start Docker or set XORCISE_USE_STUBS=1"
                 ) from exc
 
-        def require_nested() -> None:
-            require_nested_support(settings, _client)
+        def require_nested(platform: str | None) -> None:
+            require_nested_support(settings, _client, platform=platform)
 
         def check_base_compat(image_ref: str, origin: str) -> None:
             require_base_compatible(image_ref, label_lookup=driver.image_labels, origin=origin)
+
+        def image_platform(image_ref: str) -> str | None:
+            return local_image_platform(settings, image_ref)
     else:
         control = InProcessControlStub(api_key="local")
     ca_cert = Path(settings.headscale_ca_cert).read_text() if settings.headscale_ca_cert else ""
@@ -278,6 +295,7 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
         live_subnets=live_subnets,  # reconcile allocation against live Docker networks
         require_nested=require_nested,  # fail a lab run early if the host cannot nest containers
         check_base_compat=check_base_compat,  # refuse an artifact built on an incompatible base
+        image_platform=image_platform,  # what a record-less install would execute as
     )
 
 
@@ -602,10 +620,11 @@ def create_run(
         # docker-run-style: auto-pull on demand. pull_mission raises
         # MissionNotInCatalogError / PullError if it cannot be obtained.
         #
-        # `precheck` runs the nesting gate AFTER the cheap manifest fetch but BEFORE the multi-GB
-        # image pull, and only for a LAB mission (static missions have no image and need no
-        # nesting). Nesting is a HOST property, independent of the mission, so a host that cannot
-        # nest is refused without first downloading an image it could never run.
+        # `precheck` runs the nesting gate AFTER the cheap manifest fetch and the platform
+        # selection but BEFORE the multi-GB image pull, and only for a LAB mission (static
+        # missions have no image and need no nesting). It is handed the platform the pull
+        # selected, so a host that cannot nest THAT platform is refused without first downloading
+        # an image it could never run.
         installed = pull_mission(mission_slug, deps.pull, precheck=deps.require_nested)
 
     run_id = uuid4().hex
@@ -628,13 +647,16 @@ def create_run(
             intel_policy=policy,
         )
     # Only a LAB mission reaches here, and a lab mission needs its stack nested inside the run
-    # container. Checked HERE — after the static short-circuit, before the subnet reservation,
-    # the Headscale fence and the deploy — so a host that cannot nest costs one error message
-    # instead of a reserved CIDR, a minted auth key and a torn-down half-run. Static missions are
-    # deliberately unaffected: they have no runtime at all. (For an auto-pulled mission this
-    # already ran as the pull precheck, before the image download; re-running is cheap — the
-    # verdict is memoised — and covers the already-installed path that skips the pull.)
-    deps.require_nested()
+    # container AT ITS OWN PLATFORM. Checked HERE — after the static short-circuit, before the
+    # subnet reservation, the Headscale fence and the deploy — so a host that cannot nest costs
+    # one error message instead of a reserved CIDR, a minted auth key and a torn-down half-run.
+    # Static missions are deliberately unaffected: they have no runtime at all. (For an
+    # auto-pulled mission this already ran as the pull precheck, before the image download;
+    # re-running is cheap — the verdict is memoised per platform — and covers the
+    # already-installed path that skips the pull.) The platform is what the install recorded;
+    # an install that predates the record falls back to what its local image was built for, and
+    # an unknown platform probes the daemon's native one — the only thing it could be running.
+    deps.require_nested(installed.platform or deps.image_platform(installed.mission_ref.image))
     # And refuse an artifact fused on a base generation this XORCISE cannot run (e.g. a stale
     # engine-27 fuse after an upgrade) — it would die at deploy with no host-daemon fallback.
     deps.check_base_compat(installed.mission_ref.image, installed.origin)

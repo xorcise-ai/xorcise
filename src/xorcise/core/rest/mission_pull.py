@@ -168,7 +168,7 @@ def pull_mission(
     *,
     progress: PullProgressSink | None = None,
     should_cancel: Callable[[], bool] | None = None,
-    precheck: Callable[[], None] | None = None,
+    precheck: Callable[[str | None], None] | None = None,
 ) -> InstalledMission:
     """Acquire + install a library mission. Idempotent; failure leaves it not-installed.
 
@@ -182,8 +182,10 @@ def pull_mission(
     leaves the mission cleanly not-installed; once install begins it runs to completion.
 
     `precheck` (keyword-only, default None) runs after the cheap manifest fetch identifies a LAB
-    mission but BEFORE the multi-GB image download — run-create wires the nesting gate here so a
-    host that cannot run the mission is refused without first paying the pull. The explicit
+    mission and the pull has SELECTED its execution platform, but BEFORE the multi-GB image
+    download — run-create wires the nesting gate here so a host that cannot run the mission at
+    that platform is refused without first paying the pull. It receives the selected platform
+    (None ⇒ the driver's default, i.e. the daemon's native one). The explicit
     `xorcise mission pull` passes None: pre-staging a mission on a non-nesting host is allowed."""
     from xorcise.core.missions import get_installed
     from xorcise.core.missions.errors import MissionCollisionError
@@ -304,7 +306,7 @@ def _acquire_and_install(
     *,
     progress: PullProgressSink | None,
     should_cancel: Callable[[], bool] | None,
-    precheck: Callable[[], None] | None,
+    precheck: Callable[[str | None], None] | None,
     resolved: tuple[MissionDetail, str | None] | None = None,
 ) -> InstalledMission:
     """The shared acquire spine: resolve → (precheck) → pull → bundle → atomic install.
@@ -340,9 +342,6 @@ def _acquire_and_install(
     manifest = detail.manifest
     ref = MissionRef(mission_id=mission_id, image=image or "")
     if image is not None and not deps.driver.image_exists(image):
-        # A lab mission with a download ahead of it — gate now (nesting), before the pull.
-        if precheck is not None:
-            precheck()
         # Native-first platform selection (AS1–AS5), decided BEFORE any byte moves so an
         # impossible host/mission pairing costs one error message, not a download. None ⇒ no
         # selection was possible (pre-contract catalog / operator made none): the driver's
@@ -354,6 +353,12 @@ def _acquire_and_install(
         )
         if notice:
             log.warning("%s: %s", mission_id, notice)
+        # A lab mission with a download ahead of it — gate now (nesting AT the platform just
+        # selected), still before the pull. After selection, not before: whether this host can
+        # nest depends on WHICH platform it is asked to nest — amd64 under emulation on an arm64
+        # host is a different (and usually negative) answer from native arm64.
+        if precheck is not None:
+            precheck(selected)
         token = deps.source.pull_token(mission_id)  # None ⇒ image needs no registry auth
         report(PHASE_PREPARING_IMAGE)
         # Aggregate docker's per-layer events into running totals. The sum of layer totals
@@ -416,6 +421,15 @@ def _acquire_and_install(
                     f"pulled {image} resolved to {actual}, not the selected {selected} — "
                     "refusing to install a mismatched artifact"
                 )
+        elif precheck is not None:
+            # No selection was possible (a pre-contract entry lists no platforms), so the gate
+            # above was asked about the daemon's native platform — but the registry may have
+            # served a single-arch FOREIGN image. Ask the gate about what actually landed, before
+            # anything is installed: the download is already paid (unavoidable without a platform
+            # list), but a refused install, and a run-create refusal after it, are not.
+            actual = deps.driver.image_platform(image)
+            if actual is not None and actual != deps.driver.daemon_platform():
+                precheck(actual)
 
     # Attachments travel out-of-band in the delivery bundle, not the image: fetch +
     # integrity-check the zip so install_pulled can materialize the declared files. The cloud

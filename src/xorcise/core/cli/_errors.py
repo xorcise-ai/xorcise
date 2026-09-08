@@ -20,6 +20,7 @@ import sys
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
 
 from xorcise.core.cli._shared import XORCISE_THEME
 from xorcise.core.cli._ux import command_path_from_argv
@@ -48,6 +49,7 @@ _EXAMPLES = {
     "xorcise run launch-cmd": "xorcise run launch-cmd <run-id>",
     "xorcise run launch-profile": "xorcise run launch-profile <run-id>",
     "xorcise run events export": "xorcise run events export <run-id>",
+    "xorcise run events": "xorcise run events export <run-id>",
     "xorcise config set-model": "xorcise config set-model --name gpt-4o-mini --key sk-…",
 }
 
@@ -95,17 +97,21 @@ def _print_error(
     example: str | None = None,
     see: tuple[str, ...] = (),
 ) -> None:
+    # Everything interpolated here can carry what the user TYPED (an unknown command token, a
+    # stray argument, a mission name), and rich reads square brackets as markup: `[abc]` would
+    # silently vanish from the suggestion and `[/x]` would raise MarkupError instead of printing
+    # a usage error. Escape at the one funnel, so no renderer above has to remember.
     console = _console()
-    console.print(f"[err]error[/err]: {message}", highlight=False)
+    console.print(f"[err]error[/err]: {escape(message)}", highlight=False)
     if suggestions:
         console.print("\nDid you mean?")
         for s in suggestions:
-            console.print(f"  [value]{s}[/value]")
+            console.print(f"  [value]{escape(s)}[/value]")
     if example:
-        console.print(f"\ntry:\n  [value]{example}[/value]")
+        console.print(f"\ntry:\n  [value]{escape(example)}[/value]")
     for pointer in see:
-        console.print(f"see: [value]{pointer}[/value]")
-    console.print(f"\n[dim]run '{path} --help' for all options[/dim]")
+        console.print(f"see: [value]{escape(pointer)}[/value]")
+    console.print(f"\n[dim]run '{escape(path)} --help' for all options[/dim]")
 
 
 def _group_commands(command: Any) -> dict[str, Any]:
@@ -306,10 +312,39 @@ def compact_usage_error(exc: Any) -> None:
     param_opts = list(getattr(getattr(exc, "param", None), "opts", ()) or ())
     if param_opts:
         message = f"invalid value for {param_opts[0]}: {message}"
-    # Everything else (unknown command — typer already appends its own
-    # "Did you mean …?" — bad parameter values, missing option values, …):
-    # keep the text, drop the box, add the command's example when we have one.
+    unknown = _NO_SUCH_COMMAND.search(message)
+    if unknown is not None:
+        _render_no_such_command(unknown.group(1), ctx, path)
+        return
+    # Everything else (bad parameter values, missing option values, …): keep the text, drop the
+    # box, add the command's example when we have one.
     _print_error(message, path=path, example=_EXAMPLES.get(path))
+
+
+_NO_SUCH_COMMAND = re.compile(r"No such command '([^']+)'")
+
+
+def _render_no_such_command(token: str, ctx: Any, path: str) -> None:
+    """`xorcise run events <run-id>`: the group has ONE subcommand and the user skipped it, so
+    the "command" click could not find is really the argument of that subcommand. Suggest the
+    paste-and-run form with the value carried over. A token that is merely a misspelt subcommand
+    gets the close match instead; anything else, the group's example if it has one."""
+    commands = _group_commands(getattr(ctx, "command", None)) if ctx is not None else {}
+    suggestions: list[str] = []
+    from difflib import get_close_matches
+
+    for close in get_close_matches(token, list(commands), n=2, cutoff=0.6):
+        suggestions.append(f"{path} {close}")
+    if not suggestions and len(commands) == 1:
+        (only,) = commands
+        if _first_positional_of(commands[only]) is not None:
+            suggestions.append(f"{path} {only} {token}")
+    _print_error(
+        f"no such command: {token}",
+        path=path,
+        suggestions=tuple(suggestions),
+        example=None if suggestions else _EXAMPLES.get(path),
+    )
 
 
 def install_compact_errors() -> None:
