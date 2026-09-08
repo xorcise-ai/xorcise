@@ -120,7 +120,10 @@ jobs:
   changes:
     name: changes
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    # Runs on EVERY event, deliberately. This job carried `if: github.event_name ==
+    # 'pull_request'` for one commit, and a skipped job skips everything that `needs` it
+    # whatever the dependant's own `if` says — so on push-to-main `test-heavy` was skipped and
+    # `ci-ok`, which requires it there, failed. Guard the event INSIDE the step instead.
     timeout-minutes: 5
     permissions:
       contents: read
@@ -136,10 +139,18 @@ jobs:
       - name: Decide whether the heavy lanes are needed
         id: filter
         env:
+          EVENT: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
+          # Anything that is not a pull request (push to main, and any future trigger) runs the
+          # lanes unconditionally — there is no "changed files" question to ask.
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "event=$EVENT — the heavy lanes always run"
+            echo "heavy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # Fail SAFE: if the diff cannot be computed for any reason, run the lanes.
           if ! files=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA"); then
             echo "could not diff $BASE_SHA..$HEAD_SHA — running the heavy lanes"
