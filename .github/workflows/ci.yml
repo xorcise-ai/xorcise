@@ -110,18 +110,77 @@ jobs:
           fi
           uv run pytest "${args[@]}"
 
+  # Does this PR touch anything the Docker-heavy lanes could possibly exercise?
+  #
+  # Deliberately an INVERSE rule: heavy=true unless EVERY changed file is documentation. A list
+  # of paths that must trigger the lanes would have to be kept in sync with what
+  # tests/integration and tests/e2e import — which is most of src/xorcise/core — and a list like
+  # that desynchronises silently the first time someone adds a module. Skipping is the dangerous
+  # direction, so anything unrecognised runs them.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      heavy: ${{ steps.filter.outputs.heavy }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Decide whether the heavy lanes are needed
+        id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Fail SAFE: if the diff cannot be computed for any reason, run the lanes.
+          if ! files=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA"); then
+            echo "could not diff $BASE_SHA..$HEAD_SHA — running the heavy lanes"
+            echo "heavy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          heavy=false
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            case "$f" in
+              *.md|docs/*|LICENSE|.github/ISSUE_TEMPLATE/*|.github/*.md) ;;
+              *) heavy=true ;;
+            esac
+          done <<EOF
+          $files
+          EOF
+          echo "changed files:"
+          printf '%s\n' "$files" | sed 's/^/  /'
+          echo "heavy=$heavy"
+          echo "heavy=$heavy" >> "$GITHUB_OUTPUT"
+
   # Docker-heavy lanes: real containers, Headscale, FIXED host ports (:3001, the tailnet) —
   # one matrix leg each so they never share a runner.
   #
-  # Not on every PR: a flaky required check teaches everyone to ignore CI, which is worse than
-  # catching a regression at merge. Runs on push-to-main, nightly, or a `full-ci` label —
-  # and `ci-ok` requires them whenever they do run.
+  # These used to run ONLY on push-to-main, nightly, or an opt-in `full-ci` label, to keep a
+  # potentially flaky required check off every PR. The cost of that showed up in #80/#81/#82: a
+  # three-PR stack rewriting `up`, `down`, `db upgrade` and the run-create gate went review-ready
+  # and green with these lanes never executed — two of the PRs asked for the label in their body
+  # and nobody applied it — and the first place they would have run was the merge commit on main.
+  #
+  # So they now run on any PR that changes something other than documentation (see `changes`).
+  # The label is kept as a manual override for a docs-only PR that still wants them. If this
+  # does turn out to be flaky in practice, narrow `changes`, do not go back to opt-in: a lane
+  # nobody remembers to ask for is a lane that does not run.
   test-heavy:
     name: test-heavy (${{ matrix.lane }})
     runs-on: ubuntu-latest
-    needs: smoke
+    needs: [smoke, changes]
     if: >-
       github.event_name == 'push' ||
+      needs.changes.outputs.heavy == 'true' ||
       contains(github.event.pull_request.labels.*.name, 'full-ci')
     timeout-minutes: 45
     permissions:
@@ -404,7 +463,7 @@ jobs:
     name: ci-ok
     runs-on: ubuntu-latest
     if: always()
-    needs: [smoke, test, test-heavy, frontend, frontend-e2e, build-dist, lint-actions]
+    needs: [smoke, changes, test, test-heavy, frontend, frontend-e2e, build-dist, lint-actions]
     timeout-minutes: 5
     permissions: {}
     steps:
@@ -419,6 +478,7 @@ jobs:
           LINT_ACTIONS: ${{ needs.lint-actions.result }}
           EVENT: ${{ github.event_name }}
           HAS_FULL_CI: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+          HEAVY_NEEDED: ${{ needs.changes.outputs.heavy }}
         run: |
           set -uo pipefail
           status=0
@@ -445,16 +505,18 @@ jobs:
           done
 
           # test-heavy is conditional. It MUST succeed whenever it was supposed to run;
-          # `skipped` is only acceptable on a pull request that did not ask for it.
+          # `skipped` is only acceptable on a documentation-only pull request that did not ask
+          # for it. This condition MIRRORS the `if:` on test-heavy — if the two ever disagree,
+          # the gate either demands a job that never ran or waves through one that should have.
           heavy_required=false
-          if [ "$EVENT" = "push" ] || [ "$HAS_FULL_CI" = "true" ]; then
+          if [ "$EVENT" = "push" ] || [ "$HAS_FULL_CI" = "true" ] || [ "$HEAVY_NEEDED" = "true" ]; then
             heavy_required=true
           fi
 
           if [ "$TEST_HEAVY" = "success" ]; then
             printf 'ok       %-14s %s\n' "test-heavy" "$TEST_HEAVY"
           elif [ "$TEST_HEAVY" = "skipped" ] && [ "$heavy_required" = "false" ]; then
-            printf 'ok       %-14s %s (not required for this event; add the "full-ci" label to run it)\n' \
+            printf 'ok       %-14s %s (documentation-only change; add the "full-ci" label to run it anyway)\n' \
               "test-heavy" "$TEST_HEAVY"
           else
             printf 'FAILED   %-14s %s (required=%s)\n' "test-heavy" "$TEST_HEAVY" "$heavy_required"
