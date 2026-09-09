@@ -29,7 +29,8 @@ labels:
   # ---------------------------------------------------------------------------------------
   # Release-note labels. `.github/release.yml` routes a merged pull request into a section of
   # the generated notes by these, in this order. Every pull request carries exactly one; the
-  # `pr-contract` job in ci.yml enforces that, because an unlabelled pull request lands in
+  # `pr-contract` workflow enforces that (its own workflow, not a job in ci.yml — see the
+  # header of .github/workflows/pr-contract.yml for why), because an unlabelled request lands
   # "Other changes" and the notes stop being readable.
   # ---------------------------------------------------------------------------------------
 

@@ -32,6 +32,7 @@ renamed and the gate is not told. That something is this test.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,7 @@ DEPENDABOT_PATH = GITHUB / "dependabot.yml"
 ISSUE_TEMPLATE_DIR = GITHUB / "ISSUE_TEMPLATE"
 PR_CONTRACT_PATH = GITHUB / "workflows" / "pr-contract.yml"
 LABEL_SYNC_PATH = GITHUB / "workflows" / "label-sync.yml"
+WORKFLOW_DIR = GITHUB / "workflows"
 
 
 def _load(path: Path) -> dict[Any, Any]:
@@ -115,11 +117,30 @@ def referenced_labels() -> dict[str, set[str]]:
         dependabot.update(update.get("labels", []))
     referenced[".github/dependabot.yml"] = dependabot
 
-    for template in sorted(ISSUE_TEMPLATE_DIR.glob("*.yml")):
-        if template.name == "config.yml":  # the chooser, not a form — it has no labels
+    for template in sorted([*ISSUE_TEMPLATE_DIR.glob("*.yml"), *ISSUE_TEMPLATE_DIR.glob("*.yaml")]):
+        if template.stem == "config":  # the chooser, not a form — it has no labels
             continue
         form = _load(template)
         referenced[f".github/ISSUE_TEMPLATE/{template.name}"] = set(form.get("labels", []))
+
+    # The workflows name labels too, and those uses are the ones that go stale silently: a
+    # label read by an `if:` expression or created by `gh label create` is invisible to every
+    # other check here. Without this, `full-ci` (ci.yml) and `ci-nightly` (nightly.yml,
+    # issue-contract.yml) could be deleted from labels.yml with the whole suite still green —
+    # exactly the drift this file exists to catch.
+    for workflow in sorted(WORKFLOW_DIR.glob("*.yml")):
+        names: set[str] = set()
+        text = workflow.read_text()
+        for pattern in (
+            # Anchored on `contains(`: `join(...labels.*.name, '|')` in pr-contract.yml
+            # matches a bare `labels.*.name,` pattern and would yield `|` as a label name.
+            r"""contains\(\s*github\.event\.pull_request\.labels\.\*\.name,\s*['"]([^'"]+)['"]""",
+            r"""gh\s+label\s+create\s+([A-Za-z0-9][\w.-]*)""",
+            r"""--label[=\s]+['"]?([A-Za-z0-9][\w.-]*)['"]?""",
+        ):
+            names.update(re.findall(pattern, text))
+        if names:
+            referenced[f".github/workflows/{workflow.name}"] = names
 
     return referenced
 
@@ -245,6 +266,129 @@ class TestPrContractKnowsTheReleaseNoteLabels:
         )
 
 
+class TestEncodingHolds:
+    """The sync renders labels.yml as TSV. A value carrying a delimiter breaks the record."""
+
+    def test_no_name_or_description_carries_a_delimiter(self) -> None:
+        for entry in DECLARED["labels"]:
+            for field in ("name", "description"):
+                value = entry[field]
+                assert "\t" not in value, f"{entry['name']}: {field} contains a tab"
+                # Worse than a tab: a newline splits one TSV row in two, the reconcile loop
+                # reads the continuation as a label NAME with an empty colour, GitHub answers
+                # 422, and `set -e` aborts with every later label unsynced.
+                assert "\n" not in value, f"{entry['name']}: {field} contains a newline"
+
+    def test_the_sync_rejects_both_delimiters(self) -> None:
+        text = LABEL_SYNC_PATH.read_text()
+        assert '"\\t" in value or "\\n" in value' in text, (
+            "the sync's render step must reject tabs AND newlines: guarding only the field "
+            "delimiter leaves the record delimiter open"
+        )
+
+    def test_the_sync_matches_label_names_case_insensitively(self) -> None:
+        text = LABEL_SYNC_PATH.read_text()
+        # GitHub label names are case-insensitively unique. A case-sensitive existence check
+        # sends a drifted `Bug` to POST, takes a 422 `already_exists`, and `set -e` aborts
+        # the run with every later label unsynced.
+        assert "grep -Fxi" in text, (
+            "the sync must match live label names case-insensitively, or a label that "
+            "differs only by case aborts the whole run"
+        )
+
+
+class TestTheGateIsRegisterable:
+    """The status-check context is the job's display name. It has to stay a bare identifier."""
+
+    def test_the_job_names_itself_exactly_pr_contract(self) -> None:
+        name = PR_CONTRACT["jobs"]["contract"]["name"]
+        # A maintainer registers this string in the `main` ruleset. When it was
+        # `pr-contract (title, release-note label)`, registering `pr-contract` would have
+        # created a required check that never reports and left every pull request stuck at
+        # "Expected — Waiting for status". Descriptive wording belongs on the step.
+        assert name == "pr-contract", (
+            f"the contract job must be named exactly 'pr-contract', not {name!r}: this string "
+            "is the status-check context a maintainer registers as required"
+        )
+
+    def test_ci_does_not_retrigger_on_label_events(self) -> None:
+        ci = _load(WORKFLOW_DIR / "ci.yml")
+        types = _triggers(ci)["pull_request"]["types"]
+        # A release-note label is mandatory on every pull request, so `labeled` here would
+        # supersede and restart the whole suite when that label lands — taking the in-flight
+        # run's `ci-ok` with it and flipping an already-green request back to not-passing.
+        assert "labeled" not in types, (
+            "ci.yml must not trigger on `labeled`: pr-contract makes a label mandatory on "
+            "every pull request, so this would restart the full suite on every one of them "
+            f"(types: {types})"
+        )
+
+
+class TestTheTaxonomyIsDocumentedWhereItIsClaimed:
+    """The release-note label set is hand-copied into prose. Nothing bound the copies."""
+
+    def test_every_release_note_label_appears_in_contributing(self) -> None:
+        text = (ROOT / "CONTRIBUTING.md").read_text()
+        missing = sorted(label for label in selectable_labels() if f"`{label}`" not in text)
+        # This PR exists because five labels were referenced by configuration and declared
+        # nowhere. The mirror of that is a label declared in git and documented nowhere: an
+        # author cannot apply what the contributor guide never mentions.
+        assert not missing, (
+            f"release-note labels missing from CONTRIBUTING.md: {missing}. The gate requires "
+            "exactly one of them, so each has to be named where authors are told to pick one."
+        )
+
+    def test_every_release_note_label_appears_in_the_pull_request_template(self) -> None:
+        text = (GITHUB / "PULL_REQUEST_TEMPLATE.md").read_text()
+        missing = sorted(label for label in selectable_labels() if label not in text)
+        assert not missing, (
+            f"release-note labels missing from .github/PULL_REQUEST_TEMPLATE.md: {missing}. "
+            "The template is where an author reads the list while opening the request."
+        )
+
+
+class TestBootstrapDefinitionsAgree:
+    """`nightly.yml` creates `ci-nightly` inline so a fresh fork works before the first sync."""
+
+    def test_nightly_bootstrap_matches_the_declaration(self) -> None:
+        declared = {e["name"]: e for e in DECLARED["labels"]}["ci-nightly"]
+        text = (WORKFLOW_DIR / "nightly.yml").read_text()
+        # A second definition of a label labels.yml owns. They agree today; the point of this
+        # test is that an edit to one cannot silently diverge from the other — nightly's
+        # `gh label create ... || true` swallows every failure, so nothing else would notice.
+        colour = re.search(r"gh label create ci-nightly.*?--color\s+(\S+)", text, re.S)
+        description = re.search(
+            r"gh label create ci-nightly.*?--description\s+\"([^\"]+)\"", text, re.S
+        )
+        assert colour and description, "nightly.yml no longer bootstraps ci-nightly as expected"
+        assert colour.group(1).lower().strip('"') == declared["color"].lower(), (
+            f"nightly.yml bootstraps ci-nightly as {colour.group(1)!r} but labels.yml "
+            f"declares {declared['color']!r}"
+        )
+        assert description.group(1) == declared["description"], (
+            f"nightly.yml bootstraps ci-nightly with {description.group(1)!r} but labels.yml "
+            f"declares {declared['description']!r}"
+        )
+
+
+class TestDependabotAppliesExactlyOneReleaseNoteLabel:
+    """Every Dependabot pull request must satisfy the same one-label rule humans do."""
+
+    def test_each_update_block_applies_exactly_one(self) -> None:
+        selectable = selectable_labels()
+        for update in DEPENDABOT["updates"]:
+            applied = set(update.get("labels", []))
+            release_note = applied & selectable
+            ecosystem = update["package-ecosystem"]
+            assert len(release_note) == 1, (
+                f"the {ecosystem} update block applies "
+                f"{sorted(release_note) or 'no'} release-note label(s); exactly one is "
+                "required. Two is the state pr-contract rejects for a human author, and "
+                "release.yml files a pull request under the FIRST matching category, so "
+                "the second never fires. Zero means it lands in 'Other changes'."
+            )
+
+
 class TestLabelSyncIsSafe:
     """Deleting a label strips it from every issue that carries it, and that cannot be undone."""
 
@@ -256,9 +400,16 @@ class TestLabelSyncIsSafe:
         # A label removed from GitHub is removed from every issue and pull request that
         # carried it, with no record of what it was. The sync reconciles additively and
         # reports extras instead; this asserts nobody ever "tidies" that up.
-        assert "--method DELETE" not in text, (
+        # Every realistic spelling, not just the one this workflow happens to use today:
+        # `-X DELETE`, `--method=DELETE`, `gh label delete` and `curl -X DELETE` delete just
+        # as permanently, and a literal-substring check on one of them waves the rest through.
+        destructive = re.search(
+            r"(?:-X|--method[=\s])\s*DELETE\b|\blabel\s+delete\b", text, re.IGNORECASE
+        )
+        assert destructive is None, (
             "label-sync must never delete a label: deletion silently strips it from every "
-            "issue and pull request carrying it, irreversibly"
+            "issue and pull request carrying it, irreversibly (found "
+            f"{destructive.group(0)!r})"
         )
 
     def test_sync_runs_only_on_main(self) -> None:
@@ -268,4 +419,12 @@ class TestLabelSyncIsSafe:
         # set before anyone approved it.
         assert triggers.get("push", {}).get("branches") == ["main"], (
             "label-sync must only push labels from main"
+        )
+        # `push` being branch-filtered is not enough: `workflow_dispatch` accepts any ref
+        # from the Run-workflow dropdown, so the job needs its own guard, or an unreviewed
+        # labels.yml can be applied straight from a branch.
+        guard = str(workflow["jobs"]["sync"].get("if", ""))
+        assert "github.ref" in guard and "default_branch" in guard, (
+            "the sync job must be pinned to the default branch: workflow_dispatch accepts "
+            f"any ref, so push.branches alone does not hold the line (if: {guard!r})"
         )

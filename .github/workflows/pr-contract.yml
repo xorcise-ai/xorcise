@@ -3,8 +3,16 @@
 # Both are load-bearing AFTER the merge, which is what makes a human reviewer a poor place to
 # enforce them:
 #
-#   * Pull requests here are SQUASH-merged, so the title becomes the permanent commit message
-#     on `main`. A malformed one cannot be corrected afterwards without rewriting history.
+#   * Pull requests here are normally SQUASH-merged, and the title is what GitHub offers as
+#     the squash subject — so in practice it usually becomes the permanent commit message on
+#     `main`, where a malformed one cannot be corrected without rewriting history.
+#
+#     Deliberately "usually", not "always": the `main` ruleset still permits merge and rebase
+#     (`main` carries real merge commits for #24, #25 and #46), and `squash_merge_commit_title`
+#     is COMMIT_OR_PR_TITLE, so a single-commit pull request squashes under the COMMIT subject
+#     rather than this one. The gate is therefore a strong convention check, not a guarantee
+#     about the bytes that land. Making it a guarantee means squash-only plus a PR_TITLE
+#     squash subject in repository settings — a policy decision, not a workflow edit.
 #   * `.github/release.yml` files each merged pull request into a section of the generated
 #     release notes by its label. An unlabelled one falls into "Other changes" — and that is
 #     invisible until release day, by which point the notes are already wrong.
@@ -40,13 +48,17 @@ concurrency:
 
 jobs:
   contract:
-    name: pr-contract (title, release-note label)
+    # This string IS the status-check context. Keep it a bare, stable identifier: a
+    # maintainer registering `pr-contract` in the ruleset must get a check that actually
+    # reports, not one stuck at "Expected — Waiting for status" forever. The descriptive
+    # wording lives on the step below, where it costs nothing.
+    name: pr-contract
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # No checkout, no toolchain, no token. This reads the pull-request event and exits.
     permissions: {}
     steps:
-      - name: Verify the title and the release-note label
+      - name: Verify the title and the release-note label (exactly one)
         env:
           # Kept in step with .github/release.yml by tests/topology/test_label_contract.py.
           # Hard-coded so this job needs no checkout and no YAML parser; that test is what
@@ -65,14 +77,26 @@ jobs:
           status=0
 
           # Conventional Commits: <type>(<optional scope>)<optional !>: <subject>. The type
-          # list is the one CONTRIBUTING.md documents, plus the types already in use on `main`
-          # (`refactor`, `build`, `perf`) and `revert`.
+          # list is the one CONTRIBUTING.md documents under "Commit messages".
           #
-          # Subject LENGTH is deliberately not checked. CONTRIBUTING.md suggests ~72
-          # characters, but the descriptive titles this project actually merges run longer and
-          # read better for it; enforcing the suggestion would fail most of the history.
+          # Subject LENGTH is deliberately not checked, and CONTRIBUTING.md says the same:
+          # the descriptive titles this project actually merges run long and read better for
+          # it, so enforcing a column limit would fail most of the history.
+          #
+          # Type and scope are LOWERCASE by design — `Feat:` and `feat(CLI):` are rejected, so
+          # that `main` reads consistently and the generated notes group predictably. That is
+          # a choice, not an accident, so the error message below says so outright rather than
+          # leaving an author to guess why a title that "looks fine" failed.
+          #
+          # A scope may carry more than one component (`feat(cli,rest):`); the separator set
+          # matches what a path- or module-shaped scope needs and nothing more.
           types='feat|fix|docs|test|chore|ci|style|refactor|build|perf|revert'
-          if printf '%s' "$TITLE" | grep -qE "^($types)(\([a-z0-9._/-]+\))?!?: .+"; then
+          # GitHub's Revert button generates `Revert "feat: x"` — a title no Conventional
+          # Commits pattern accepts, and one nobody chose to write. Accepted as-is so that
+          # reverting through the UI does not require a manual retitle before the gate goes
+          # green; `revert: <subject>` remains the form to prefer when writing one by hand.
+          if printf '%s' "$TITLE" | grep -qE "^($types)(\([a-z0-9._/,-]+\))?!?: .+" \
+             || printf '%s' "$TITLE" | grep -qE '^Revert "'; then
             printf 'ok       title    %s\n' "$TITLE"
           else
             printf 'FAILED   title    %s\n' "$TITLE"
@@ -80,8 +104,9 @@ jobs:
               echo "::error title=Malformed pull-request title::Titles follow Conventional"
               echo "Commits: <type>(<optional scope>)!: <subject>. Valid types:"
               printf '%s' "$types" | tr '|' ' '
-              echo ". This title becomes the commit message on main, so it cannot be"
-              echo "corrected after the squash-merge. See CONTRIBUTING.md, 'Pull requests'."
+              echo ". The type and any scope must be lowercase. This title is normally what"
+              echo "lands on main as the squash subject, where it cannot be corrected without"
+              echo "rewriting history. See CONTRIBUTING.md, 'Commit messages'."
             } | tr -d '\n'
             echo
             status=1
@@ -112,11 +137,19 @@ jobs:
               # on `|` keeps every name whole and pulls none of them apart.
               original_ifs="$IFS"
               IFS='|'
+              # `set -f` for the split: `$LABELS` must stay unquoted to split on IFS, but the
+              # split words would otherwise also undergo PATHNAME EXPANSION, so a label
+              # literally named `*` would expand to the filenames in the working directory
+              # and inflate the count. This job checks nothing out, so that directory is
+              # empty today and the pattern survives as a literal — this is insurance against
+              # the day a step above it writes a file, not a live defect.
+              set -f
               for label in $LABELS; do
                 case "$recognised" in
                   *" $label "*) applied="$applied $label" ;;
                 esac
               done
+              set +f
               IFS="$original_ifs"
 
               count=$(printf '%s' "$applied" | wc -w)

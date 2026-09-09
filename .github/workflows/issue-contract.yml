@@ -54,8 +54,18 @@ jobs:
           # An HTML comment is invisible in the rendered issue and is what makes this
           # idempotent across the `edited` trigger.
           marker='<!-- xorcise:issue-contract -->'
-          if gh api --paginate "repos/$REPO/issues/$NUMBER/comments" --jq '.[].body' \
-             | grep -qF "$marker"; then
+          # Collected to a FILE, deliberately, rather than piped into `grep -q`.
+          #
+          # `gh api --paginate | grep -qF` looks equivalent and is not: `grep -q` exits the
+          # instant it matches, `gh` takes SIGPIPE on its next page write, and under
+          # `pipefail` the pipeline reports 141. The `if` is then false and this posts a
+          # SECOND advisory comment — on every later `edited` event, which is precisely what
+          # the marker exists to prevent. It only bites once the issue has more than one page
+          # of comments with the marker in an earlier page, so it would have survived every
+          # short-thread test. (`grep >/dev/null` is not a fix: GNU grep short-circuits on a
+          # /dev/null stdout too.)
+          gh api --paginate "repos/$REPO/issues/$NUMBER/comments" --jq '.[].body' > comments.txt
+          if grep -qF -- "$marker" comments.txt; then
             echo "already advised on #$NUMBER — not commenting again"
             exit 0
           fi

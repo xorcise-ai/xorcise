@@ -148,9 +148,14 @@ updates:
       prefix: build
       prefix-development: build
       include: scope
+    # ONE release-note label, like every other ecosystem here. `internal` used to be applied
+    # alongside `dependencies`, which was two — the exact state `pr-contract` rejects for a
+    # human author, and only the blanket bot exemption stopped it failing. It was also dead
+    # weight: `.github/release.yml` files a pull request under the FIRST category that matches
+    # it, and `📦 Dependencies` is listed before `🔧 Internal`, so `internal` never fired.
+    # tests/topology/test_label_contract.py binds this to exactly one.
     labels:
       - dependencies
-      - internal
     groups:
       github-actions:
         patterns:

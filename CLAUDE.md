@@ -58,16 +58,22 @@ uv run lint-imports
 
 ## Filing issues and pull requests
 
-The issue forms and `pr-contract` enforce these, but `gh issue create` and the REST API bypass
-the forms — which is exactly how 20 of this tracker's first 28 issues ended up with no prefix.
+These are enforced ASYMMETRICALLY, and the difference matters to you: `pr-contract` **fails
+the check** on a malformed pull-request title or a missing release-note label, while an issue
+title only earns an advisory comment from `issue-contract` — an issue has no status check to
+gate, so nothing blocks. Do not wait for a red check on an issue; there will not be one.
+
+The issue forms set the prefix for you, but `gh issue create` and the REST API bypass the
+forms — which is exactly how 20 of this tracker's first 28 issues ended up with no prefix.
 If you are opening an issue or a PR from a terminal, you are the reason these rules need
 stating:
 
 - **Issue titles** take a type prefix: `[Bug]: …` or `[Feature]: …`. Apply a type label too
   (`bug`, `feature`, `enhancement`, `documentation`, `security`).
 - **PR titles** are Conventional Commits — `<type>(<scope>)!: <subject>`, from
-  `feat fix docs test chore ci style refactor build perf revert`. PRs are squash-merged, so
-  the title becomes the permanent commit on `main`. Length is not capped.
+  `feat fix docs test chore ci style refactor build perf revert`, lowercase. PRs are normally
+  squash-merged, so the title usually becomes the commit on `main` — but merge and rebase are
+  still permitted, so treat it as a convention, not a guarantee. Length is not capped.
 - **Every PR carries exactly one release-note label.** `pr-contract` fails without one.
   `feature` = a capability that did not exist; `enhancement` = improves one that did.
 - **Never use a label that is not in `.github/labels.yml`.** GitHub drops an unknown label
