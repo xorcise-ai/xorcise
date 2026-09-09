@@ -1,0 +1,85 @@
+# Tells an issue author when the title is missing its `[Bug]:` / `[Feature]:` prefix.
+#
+# The issue forms already set the prefix, so why check at all? Because
+# `blank_issues_enabled: false` only removes the web UI's blank-issue button. `gh issue create`
+# and the REST API bypass the forms entirely, and that is not a hypothetical loophole — it is
+# how the majority of this tracker was filed. When this workflow was written, 8 of 28 issues
+# carried a prefix; the other 20 were opened from a terminal by maintainers and by automation.
+#
+# It comments rather than blocks, because an issue has no status check to gate. And it comments
+# ONCE: the `edited` trigger fires on every subsequent title or body change, so a marker in the
+# comment body is what stops this from becoming a bot that nags on every edit.
+name: Issue contract
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions: {}
+
+concurrency:
+  group: issue-contract-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  title:
+    name: title prefix
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Machine-filed issues are exempt. `.github/workflows/nightly.yml` opens "Nightly CI
+    # failure" with the `ci-nightly` label on a schedule; that title is a deliberate, stable
+    # string that automation and humans both grep for, and prefixing it would serve nobody.
+    # Guarding here rather than inside the step keeps the run out of the log entirely.
+    if: >-
+      !endsWith(github.event.issue.user.login, '[bot]') &&
+      !contains(github.event.issue.labels.*.name, 'ci-nightly')
+    permissions:
+      issues: write # post one advisory comment on the issue; nothing else
+    steps:
+      - name: Comment when the title has no type prefix
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+          # Via `env`, never interpolated: an issue title is attacker-controlled text.
+          TITLE: ${{ github.event.issue.title }}
+        run: |
+          set -euo pipefail
+
+          if printf '%s' "$TITLE" | grep -qE '^\[(Bug|Feature)\]: .+'; then
+            echo "ok  $TITLE"
+            exit 0
+          fi
+
+          # An HTML comment is invisible in the rendered issue and is what makes this
+          # idempotent across the `edited` trigger.
+          marker='<!-- xorcise:issue-contract -->'
+          if gh api --paginate "repos/$REPO/issues/$NUMBER/comments" --jq '.[].body' \
+             | grep -qF "$marker"; then
+            echo "already advised on #$NUMBER — not commenting again"
+            exit 0
+          fi
+
+          echo "no prefix: $TITLE"
+          cat > comment.md <<'BODY'
+          <!-- xorcise:issue-contract -->
+          Thanks for filing this. One housekeeping note: issue titles here carry a type
+          prefix, and this one does not.
+
+          - `[Bug]: …` — something does not work the way it should
+          - `[Feature]: …` — a capability or improvement you would like
+
+          Please edit the title to add one. The prefix is what makes the tracker scannable
+          without opening every issue, and it is set automatically if you file through
+          [the issue forms](https://github.com/xorcise-ai/xorcise/issues/new/choose) — this
+          message usually means the issue was opened with `gh issue create` or the API, which
+          skip them.
+
+          Also worth applying a type label (`bug`, `feature`, `enhancement`, `documentation`,
+          `security`) if you have not. See
+          [CONTRIBUTING.md](https://github.com/xorcise-ai/xorcise/blob/main/CONTRIBUTING.md#issues).
+          BODY
+
+          gh api --silent --method POST "repos/$REPO/issues/$NUMBER/comments" \
+            -F "body=@comment.md"
+          echo "advised on #$NUMBER"

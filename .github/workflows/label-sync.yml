@@ -1,0 +1,118 @@
+# Applies `.github/labels.yml` to the repository's label set.
+#
+# Labels live in GitHub's database; the configuration that references them lives in git. This
+# workflow is the bridge, and it only ever runs from `main` — syncing from a branch would let
+# an unreviewed `labels.yml` rewrite the live label set before anyone approved it.
+#
+# It is deliberately ADDITIVE. A label removed from `labels.yml` is reported, never deleted:
+# deleting a label strips it from every issue and pull request that carried it, with no record
+# of what it was, and no API call brings that back. Retiring a label is therefore a two-step,
+# human decision — remove it here, then delete it by hand once you are sure.
+name: Label sync
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/labels.yml
+      - .github/workflows/label-sync.yml
+  # Manual run for the first sync after this lands, and for re-applying after a hand edit.
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  # Two concurrent syncs would race on create-vs-update for the same label.
+  group: label-sync
+  cancel-in-progress: false
+
+env:
+  # Pinning the action SHA does not pin the tool it installs.
+  UV_VERSION: "0.9.30"
+
+jobs:
+  sync:
+    name: sync (labels.yml -> repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # Labels are administered under the issues scope; nothing else is needed, because this
+      # job reads one file out of the checkout and talks only to the labels API.
+      issues: write # create and update labels — never delete, see the header
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      # YAML is parsed by a YAML parser, not by grep. The output is tab-separated because a
+      # description contains spaces and apostrophes but never a tab.
+      - name: Render labels.yml to a tab-separated table
+        run: |
+          uv run --no-project --with pyyaml==6.0.3 -- python - <<'PY' > labels.tsv
+          import sys
+          import yaml
+
+          with open(".github/labels.yml", encoding="utf-8") as handle:
+              declared = yaml.safe_load(handle)["labels"]
+
+          for entry in declared:
+              name = entry["name"]
+              colour = entry["color"].lower()
+              description = entry["description"]
+              for field, value in (("name", name), ("description", description)):
+                  if "\t" in value:
+                      sys.exit(f"{name}: {field} contains a tab, which breaks this encoding")
+              print(f"{name}\t{colour}\t{description}")
+          PY
+          echo "Declared $(wc -l < labels.tsv) labels."
+
+      - name: Reconcile the repository's labels
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # The live set, so an existing label is PATCHed rather than POSTed (a POST for a
+          # label that exists is a 422, which would fail the run for a no-op).
+          gh api --paginate "repos/$REPO/labels" --jq '.[].name' | sort > live.txt
+          echo "Repository currently has $(wc -l < live.txt) labels."
+
+          created=0
+          updated=0
+          while IFS=$'\t' read -r name colour description; do
+            [ -n "$name" ] || continue
+            if grep -Fxq "$name" live.txt; then
+              # A label name can contain spaces ("good first issue"), so the path segment
+              # must be percent-encoded — gh does not do it.
+              encoded=$(jq -rn --arg s "$name" '$s|@uri')
+              gh api --silent --method PATCH "repos/$REPO/labels/$encoded" \
+                -f "new_name=$name" -f "color=$colour" -f "description=$description"
+              printf 'update   %-20s %s\n' "$name" "$colour"
+              updated=$((updated + 1))
+            else
+              gh api --silent --method POST "repos/$REPO/labels" \
+                -f "name=$name" -f "color=$colour" -f "description=$description"
+              printf 'CREATE   %-20s %s\n' "$name" "$colour"
+              created=$((created + 1))
+            fi
+          done < labels.tsv
+
+          # Anything on the repository but not in the file. Reported, never deleted — see the
+          # header. An extra is usually either a label pending retirement or one somebody added
+          # in the web UI without declaring it, and the fix for each is different.
+          cut -f1 labels.tsv | sort > declared.txt
+          if comm -23 live.txt declared.txt | grep -q .; then
+            echo "::warning::Labels on the repository but not declared in .github/labels.yml:"
+            comm -23 live.txt declared.txt | sed 's/^/  /'
+            echo "::warning::These are left in place. Delete one by hand only when you are"
+            echo "::warning::certain — deletion strips it from every issue that carries it."
+          fi
+
+          echo "Created $created, updated $updated."

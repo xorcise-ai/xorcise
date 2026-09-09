@@ -1,7 +1,7 @@
 # Contributing to XORCISE
 
 Thanks for considering a contribution. This guide covers setting up, running the checks,
-and proposing a change.
+filing an issue, and proposing a change.
 
 **Found a security vulnerability?** Do not open an issue or a pull request —
 see [SECURITY.md](SECURITY.md).
@@ -92,20 +92,28 @@ Every pull request runs:
 | --- | --- |
 | `smoke` | lint, formatting, strict mypy, import walls, the single-distribution guard |
 | `test` | the `unit`, `topology` and `adapters` lanes |
-| `test-heavy` | `integration` and `e2e` — only on `main` or with the `full-ci` label |
+| `test-heavy` | `integration` and `e2e` — on any pull request that changes something other than documentation |
 | `frontend` | Next.js typecheck and vitest |
 | `build-dist` | builds the real wheel and verifies it actually contains the UI, then installs it into a clean environment and runs the CLI |
 | `lint-actions` | audits the workflow files themselves for security problems |
-| **`ci-ok`** | aggregates all of the above — **the single required status check** |
+| **`ci-ok`** | aggregates all of the above — **a required status check** |
+| **`pr-contract`** | the title and the release-note label — **a required status check** |
+
+`pr-contract` is a separate workflow rather than a job under `ci-ok` on purpose: it has to
+re-run when a title is edited or a label changes, and re-running the whole suite on every title
+edit would be wasteful — while skipping the suite on those events would let a label edit
+overwrite a genuine test pass with a skipped one for the same commit.
 
 On a pull request from a fork, CI runs with a read-only token and **no access to any
 repository secret**. A maintainer approves the first workflow run for each new contributor.
 
 ### The `full-ci` label
 
-Ask a maintainer to add the **`full-ci`** label if your change touches the runner, the
-control plane, networking, ports, containers, or `xorcise up`. That re-runs CI with the
-Docker-heavy lanes included, and `ci-ok` then requires them to pass.
+The Docker-heavy lanes run by default on any pull request that changes something other than
+documentation, so you usually do not need this label. Ask a maintainer to add **`full-ci`** for
+a documentation-only change that should still run them anyway — a change to `docs/` that
+documents new runner behaviour, say. Adding it re-runs CI with those lanes included, and
+`ci-ok` then requires them to pass.
 
 ## Architecture ground rules
 
@@ -163,14 +171,77 @@ it does not license letting dependencies rot.
   (`pip index versions <pkg>`, or the "Published" date on npm), and if you must take
   something newer, say so explicitly in the pull request and justify it.
 
+## Issues
+
+**Titles carry a type prefix.** File through
+[the issue forms](https://github.com/xorcise-ai/xorcise/issues/new/choose) and you get one
+automatically:
+
+| Prefix | For |
+| --- | --- |
+| `[Bug]: …` | Something does not work the way it should |
+| `[Feature]: …` | A capability or improvement you would like |
+
+The prefix is what makes the tracker scannable without opening every issue. `gh issue create`
+and the REST API bypass the forms, so if you file from a terminal you have to add it yourself —
+`.github/workflows/issue-contract.yml` will comment on the issue once if you forget. Issues
+opened by automation are exempt.
+
+**Every issue gets a type label**: `bug`, `feature`, `enhancement`, `documentation` or
+`security`. The forms apply one; a maintainer applies it during triage otherwise. `question`,
+`duplicate`, `invalid`, `wontfix`, `good first issue` and `help wanted` are triage labels on
+top of that, not instead of it.
+
+The full label set is declared in [`.github/labels.yml`](.github/labels.yml) and applied to the
+repository by `.github/workflows/label-sync.yml` on merge to `main`. **Add a label there before
+using it anywhere** — GitHub silently drops a label an issue form or a Dependabot config asks
+for if it does not exist, which is a failure with no symptom other than an unlabelled issue.
+`tests/topology/test_label_contract.py` fails if any config references a label the file does
+not declare.
+
 ## Commit messages
 
 Use [Conventional Commits](https://www.conventionalcommits.org/):
-`feat: …`, `fix: …`, `docs: …`, `test: …`, `chore: …`, `ci: …`, `style: …`.
-Keep the subject imperative and under ~72 characters; use the body for the "why".
+`feat: …`, `fix: …`, `docs: …`, `test: …`, `chore: …`, `ci: …`, `style: …`,
+`refactor: …`, `build: …`, `perf: …`, `revert: …`.
+Keep the subject imperative; use the body for the "why".
 
-Pull requests are **squash-merged**, so the PR *title* becomes the commit message on `main` —
-write it as the changelog entry you want.
+## Pull requests
+
+Two things about a pull request are checked by CI, because both are permanent once it merges.
+`pr-contract` is a required status check.
+
+**The title must be a Conventional Commits subject** — `<type>(<optional scope>)!: <subject>`.
+Pull requests here are **squash-merged**, so the title becomes the commit message on `main`;
+a malformed one cannot be corrected afterwards without rewriting history. Write it as the
+changelog entry you want. Length is not enforced — descriptive titles are welcome, and most of
+this project's history runs past the traditional 72 characters.
+
+**Exactly one release-note label must be applied.** `.github/release.yml` files each merged
+pull request into a section of the generated release notes by this label; without one the
+change lands in "Other changes", which is not discovered until release day. A maintainer will
+apply it if you cannot.
+
+| Label | Use for |
+| --- | --- |
+| `breaking-change` | Breaks a public interface — see [Releases and versioning](#releases-and-versioning) |
+| `feature` | A capability that did not exist before |
+| `enhancement` | Improves a capability that already exists |
+| `bug` | A fix for incorrect behaviour |
+| `security` | A security fix or hardening |
+| `documentation` | Documentation only |
+| `dependencies` | Dependency updates (Dependabot applies this itself) |
+| `internal` | Refactors, tooling and CI — no user-visible change |
+| `skip-release-notes` | Deliberately kept out of the notes entirely |
+
+`feature` versus `enhancement` is the one that needs a rule: **`feature` is a capability that
+did not exist, `enhancement` improves one that did.** A new `xorcise mission update` command is
+a feature; making the existing pull show a progress bar is an enhancement. If a change is
+genuinely both, label it `feature` — a reader scanning for what is new should find it there.
+
+Dependabot is exempt from the label check only: its labels come from
+`.github/dependabot.yml` and are applied when the pull request is opened, so one it raised
+before a label existed can never satisfy the gate. The title check applies to everyone.
 
 ## Proposing a change
 
@@ -221,11 +292,9 @@ If your change touches any of those, say so in the pull request and apply the
 
 ### Release-note labels
 
-Maintainers apply one of these to every pull request; it decides which section of the
-generated release notes your change lands in:
-
-`breaking-change` · `feature` · `enhancement` · `bug` · `security` · `documentation` ·
-`dependencies` · `internal` · `skip-release-notes`
+Every pull request carries exactly one, and `pr-contract` enforces it. The labels and the rule
+for choosing between them are under [Pull requests](#pull-requests); the sections they map to
+are defined in [`.github/release.yml`](.github/release.yml).
 
 ---
 

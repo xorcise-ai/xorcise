@@ -53,3 +53,25 @@ uv run lint-imports
   top-level names are reserved for products (guard).
 - **Stubs are filled in place** — do NOT move packages; if one is missing, fix the scaffold,
   never ad-hoc a new location.
+- **Issue and pull-request titles are contracts** — see below. This one is aimed at you
+  specifically: filing from a terminal is what broke it.
+
+## Filing issues and pull requests
+
+The issue forms and `pr-contract` enforce these, but `gh issue create` and the REST API bypass
+the forms — which is exactly how 20 of this tracker's first 28 issues ended up with no prefix.
+If you are opening an issue or a PR from a terminal, you are the reason these rules need
+stating:
+
+- **Issue titles** take a type prefix: `[Bug]: …` or `[Feature]: …`. Apply a type label too
+  (`bug`, `feature`, `enhancement`, `documentation`, `security`).
+- **PR titles** are Conventional Commits — `<type>(<scope>)!: <subject>`, from
+  `feat fix docs test chore ci style refactor build perf revert`. PRs are squash-merged, so
+  the title becomes the permanent commit on `main`. Length is not capped.
+- **Every PR carries exactly one release-note label.** `pr-contract` fails without one.
+  `feature` = a capability that did not exist; `enhancement` = improves one that did.
+- **Never use a label that is not in `.github/labels.yml`.** GitHub drops an unknown label
+  silently — no error — so it looks applied and is not. Add it to that file first;
+  `tests/topology/test_label_contract.py` fails if a config references an undeclared label.
+
+`CONTRIBUTING.md` carries the full taxonomy under "Issues" and "Pull requests".

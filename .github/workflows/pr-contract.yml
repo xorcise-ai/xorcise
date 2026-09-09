@@ -1,0 +1,148 @@
+# The pull-request contract: the title, and exactly one release-note label.
+#
+# Both are load-bearing AFTER the merge, which is what makes a human reviewer a poor place to
+# enforce them:
+#
+#   * Pull requests here are SQUASH-merged, so the title becomes the permanent commit message
+#     on `main`. A malformed one cannot be corrected afterwards without rewriting history.
+#   * `.github/release.yml` files each merged pull request into a section of the generated
+#     release notes by its label. An unlabelled one falls into "Other changes" — and that is
+#     invisible until release day, by which point the notes are already wrong.
+#
+# Why this is NOT a job in ci.yml, where `ci-ok` already gates everything: the checks here must
+# re-run when a title is edited or a label is added, and ci.yml must not. Putting `edited` on
+# ci.yml's triggers would re-run the whole suite — e2e included — on every title or body edit,
+# and Dependabot rewrites bodies on every rebase. The tempting mitigation is worse than the
+# cost: if the expensive jobs were skipped for those events, that run's `ci-ok` would supersede
+# the earlier genuine pass for the same commit, and a label edit could turn a tested green into
+# a skipped green. A five-second check therefore gets its own workflow and its own required
+# status check, rather than sharing a trigger set with a fifteen-minute suite.
+#
+# `pull_request`, never `pull_request_target`: a fork PR gets a read-only token and no secrets.
+# This workflow checks out nothing and runs no repository code at all.
+name: PR contract
+
+on:
+  pull_request:
+    # `opened`/`reopened` catch it up front. `edited` fires on a title change, which is the
+    # only way a failing title check can turn green. `labeled`/`unlabeled` are the same thing
+    # for the label check — including the negative case, so that removing the last
+    # release-note label invalidates the gate instead of leaving a stale pass.
+    # `synchronize` keeps a status attached to the newest commit, which is the one that merges.
+    types: [opened, edited, reopened, labeled, unlabeled, synchronize]
+
+permissions: {}
+
+concurrency:
+  # A rapid sequence of label edits should settle on the last one, not queue nine runs.
+  group: pr-contract-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    name: pr-contract (title, release-note label)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # No checkout, no toolchain, no token. This reads the pull-request event and exits.
+    permissions: {}
+    steps:
+      - name: Verify the title and the release-note label
+        env:
+          # Kept in step with .github/release.yml by tests/topology/test_label_contract.py.
+          # Hard-coded so this job needs no checkout and no YAML parser; that test is what
+          # notices when a release-note category is added or renamed and the gate is not told.
+          RELEASE_NOTE_LABELS: >-
+            breaking-change feature enhancement bug security documentation
+            dependencies internal skip-release-notes
+          # Every value arrives through `env`, never interpolated into the script. A
+          # pull-request title is attacker-controlled text, and `${{ }}` inside `run:` would
+          # paste it straight into the shell.
+          TITLE: ${{ github.event.pull_request.title }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, '|') }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          set -uo pipefail
+          status=0
+
+          # Conventional Commits: <type>(<optional scope>)<optional !>: <subject>. The type
+          # list is the one CONTRIBUTING.md documents, plus the types already in use on `main`
+          # (`refactor`, `build`, `perf`) and `revert`.
+          #
+          # Subject LENGTH is deliberately not checked. CONTRIBUTING.md suggests ~72
+          # characters, but the descriptive titles this project actually merges run longer and
+          # read better for it; enforcing the suggestion would fail most of the history.
+          types='feat|fix|docs|test|chore|ci|style|refactor|build|perf|revert'
+          if printf '%s' "$TITLE" | grep -qE "^($types)(\([a-z0-9._/-]+\))?!?: .+"; then
+            printf 'ok       title    %s\n' "$TITLE"
+          else
+            printf 'FAILED   title    %s\n' "$TITLE"
+            {
+              echo "::error title=Malformed pull-request title::Titles follow Conventional"
+              echo "Commits: <type>(<optional scope>)!: <subject>. Valid types:"
+              printf '%s' "$types" | tr '|' ' '
+              echo ". This title becomes the commit message on main, so it cannot be"
+              echo "corrected after the squash-merge. See CONTRIBUTING.md, 'Pull requests'."
+            } | tr -d '\n'
+            echo
+            status=1
+          fi
+
+          # Bots are exempt from the label half ONLY.
+          #
+          # Dependabot declares its labels in .github/dependabot.yml and they are applied at
+          # creation time, so a pull request it opened before those labels existed can never
+          # satisfy this check — and blocking it on a label nobody can retroactively add would
+          # wedge every dependency update. Its titles (`build(deps): ...`) satisfy the title
+          # half unaided, so that half still applies to everyone.
+          case "$AUTHOR" in
+            *"[bot]")
+              printf 'ok       label    (skipped: %s is a bot)\n' "$AUTHOR"
+              ;;
+            *)
+              # The needle set, space-delimited with sentinel spaces at both ends so a `case`
+              # glob can match a whole name and never a substring. Built BEFORE IFS changes
+              # below: setting IFS='|' would split this on `|` too, collapsing all nine names
+              # into a single token that matches nothing — which is exactly the bug this
+              # shape avoids. `case` globbing ignores IFS, so no inner loop is needed.
+              recognised=" $(printf '%s' "$RELEASE_NOTE_LABELS" | tr -s '[:space:]' ' ') "
+
+              applied=""
+              # `|` separates the applied labels because a name may contain spaces ("good
+              # first issue"); no release-note label contains either character, so splitting
+              # on `|` keeps every name whole and pulls none of them apart.
+              original_ifs="$IFS"
+              IFS='|'
+              for label in $LABELS; do
+                case "$recognised" in
+                  *" $label "*) applied="$applied $label" ;;
+                esac
+              done
+              IFS="$original_ifs"
+
+              count=$(printf '%s' "$applied" | wc -w)
+              if [ "$count" -eq 1 ]; then
+                printf 'ok       label   %s\n' "$applied"
+              elif [ "$count" -eq 0 ]; then
+                printf 'FAILED   label    (none applied)\n'
+                {
+                  echo "::error title=No release-note label::Apply exactly one of:"
+                  echo " $RELEASE_NOTE_LABELS ."
+                  echo " It decides which section of the generated release notes this change"
+                  echo " lands in; without one it falls into 'Other changes'."
+                } | tr -d '\n'
+                echo
+                status=1
+              else
+                printf 'FAILED   label   %s\n' "$applied"
+                {
+                  echo "::error title=More than one release-note label::Applied:$applied."
+                  echo " Exactly one is allowed, or the section this lands in depends on the"
+                  echo " order of .github/release.yml, which no reviewer can reason about."
+                } | tr -d '\n'
+                echo
+                status=1
+              fi
+              ;;
+          esac
+
+          exit "$status"

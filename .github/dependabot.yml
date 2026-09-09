@@ -27,6 +27,15 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
+    # Stated, not inferred. Dependabot guesses a commit style from recent history, and it has
+    # guessed wrong in this repo before — five of its pull requests are titled "Bump x from a
+    # to b", which predate the convention and which `pr-contract` would now reject. Bots are
+    # exempt from that gate's LABEL half, never its title half, so an inferred title is a
+    # wedged dependency update waiting to happen. `include: scope` is what appends `(deps)`.
+    commit-message:
+      prefix: build
+      prefix-development: build
+      include: scope
     labels:
       - dependencies
     groups:
@@ -61,6 +70,15 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
+    # Stated, not inferred. Dependabot guesses a commit style from recent history, and it has
+    # guessed wrong in this repo before — five of its pull requests are titled "Bump x from a
+    # to b", which predate the convention and which `pr-contract` would now reject. Bots are
+    # exempt from that gate's LABEL half, never its title half, so an inferred title is a
+    # wedged dependency update waiting to happen. `include: scope` is what appends `(deps)`.
+    commit-message:
+      prefix: build
+      prefix-development: build
+      include: scope
     labels:
       - dependencies
     groups:
@@ -124,6 +142,12 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
+    # See the note on the uv ecosystem above: the title is stated so `pr-contract` cannot be
+    # surprised by a style Dependabot inferred.
+    commit-message:
+      prefix: build
+      prefix-development: build
+      include: scope
     labels:
       - dependencies
       - internal
