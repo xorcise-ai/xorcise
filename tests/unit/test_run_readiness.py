@@ -178,6 +178,20 @@ def test_the_runners_own_detail_is_what_the_gate_reports_and_records():
     assert rec.details["r1"].startswith(f"not ready within the readiness window — {why}")
 
 
+def test_a_router_that_never_joins_points_the_operator_at_the_control_plane():
+    """#62, the other half. When the mission stack is up but the router never joins, the only
+    symptom used to be "not ready within the readiness window" — nothing named the control plane,
+    so a stale address in config.toml was diagnosed from tailscaled logs inside the fused
+    container. The recorded detail now says where to look."""
+    control, fence = _Control(RunState.READY), _Fence(router_up=False)
+    wd, rec = _gate(control, fence, [("r1", T0 - timedelta(seconds=91))])
+    wd.tick()
+    assert wd.tick() == 1
+    detail = rec.details["r1"]
+    assert "waiting for the run's subnet router to join the tailnet" in detail
+    assert "xorcise doctor" in detail and "xorcise down && xorcise up" in detail
+
+
 def test_an_evidence_read_failure_never_blocks_the_close_out():
     class _NoLogs(_Control):
         def environment_logs(self, run_id: str, *, credential: str) -> str:

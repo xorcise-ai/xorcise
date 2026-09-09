@@ -23,6 +23,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 import httpx
 
@@ -57,6 +58,11 @@ _PLANE_FIX = (
 _EXTERNAL_PLANE_FIX = (
     "start that control plane, or go back to a local one: "
     "xorcise config set-network --headscale-url '' && xorcise down && xorcise up"
+)
+# The control plane is provisioned on the host address `up` detects AT THAT TIME; re-running `up`
+# detects it again and re-provisions, which is the whole fix for a host that moved.
+_ADDRESS_FIX = (
+    "re-provision the control plane on this host's current address: xorcise down && xorcise up"
 )
 
 
@@ -248,10 +254,11 @@ def control_plane(container: str = "headscale", *, timeout: float = 5.0) -> Chec
     """The Headscale control plane every real run needs, probed the way RUN CREATION
     probes it — `docker exec <container> headscale version` (rest/run_create.py).
 
-    Deliberately container-based, not URL-based: control operations shell into this
-    container regardless of `headscale_url`, so a URL probe can pass while every run
-    creation still fails with a 503. Probing anything other than the real dependency
-    just moves the false confidence somewhere new.
+    Container-based on purpose: control operations shell into this container regardless
+    of `headscale_url`, so a URL probe ALONE can pass while every run creation still
+    fails with a 503. It is half the dependency, though — the other half is the address
+    the run's routers dial, which `control_plane_address` checks; a healthy container on
+    an address nothing can reach fails every run just as completely.
 
     Without this check `doctor` reported "No problems found" during a total run
     outage — Docker, disk, tun, ports and the data directory were all genuinely fine.
@@ -389,6 +396,35 @@ def nested_containers_foreign() -> list[Check]:
                 Check(name, True, clip_detail(support.detail), support.remediation, level="warning")
             )
     return checks
+
+
+def control_plane_address(
+    url: str, *, current_ip: str | None = None, timeout: float = 5.0
+) -> Check:
+    """Is the address the run's routers DIAL answering? The container check is not this.
+
+    A locally provisioned control plane is published on the host address `up` detected at the
+    time (the docker bridge gateway on Linux, the LAN IP on macOS, or the operator's override),
+    and every run's subnet router logs in to exactly that URL. When the host's address changes —
+    a laptop moving networks, a new DHCP lease — the container stays perfectly healthy while
+    nothing answers at the recorded address, so every run ends `deploy_failed` at the readiness
+    window with a message that never mentions the control plane. `doctor` said "No problems
+    found" throughout. `current_ip` is what `up` would detect today; when it differs from the
+    recorded host the detail says so, because that IS the diagnosis.
+
+    Any HTTP reply proves something is listening (Headscale answers `/` with a 404), so only a
+    transport failure counts. TLS is not verified (a local plane is self-signed) and the proxy
+    environment is not consulted (this is a host-local address the routers dial directly).
+    """
+    try:
+        httpx.get(url, timeout=timeout, verify=False, trust_env=False)
+    except httpx.HTTPError:
+        recorded = urlparse(url).hostname or url
+        detail = f"routers dial {url}, which is not answering"
+        if current_ip and current_ip != recorded:
+            detail += f" — this host's address is now {current_ip}, not {recorded}"
+        return Check("control plane address", False, detail, _ADDRESS_FIX)
+    return Check("control plane address", True, f"routers dial {url} — answering")
 
 
 def external_control_plane(url: str, *, timeout: float = 5.0) -> Check:
