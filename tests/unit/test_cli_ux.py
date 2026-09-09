@@ -1063,6 +1063,7 @@ def test_doctor_flags_an_unreachable_control_plane(host_probes_ok, monkeypatch, 
     # The suite forces stub mode, which legitimately has NO control plane; this is
     # about the real path, so opt back in (see the _force_stubs fixture).
     monkeypatch.delenv("XORCISE_USE_STUBS", raising=False)
+    _no_nested_probe(monkeypatch)
     (tmp_path / "xorcise.pid").write_text(str(_os.getpid()))
     (tmp_path / "runtime-ports.json").write_text(_json.dumps({"rest": 46410, "otlp": 46412}))
     from xorcise.core.config import get_settings
@@ -1083,6 +1084,130 @@ def test_doctor_flags_an_unreachable_control_plane(host_probes_ok, monkeypatch, 
     assert result.exit_code == 1
     assert "No problems found" not in result.output
     assert "run network" in result.output  # named for what it does, not the component
+
+
+def _no_nested_probe(monkeypatch) -> None:
+    """Off stub mode, doctor boots a privileged DinD to probe nesting (~10 s, and a real daemon
+    call). These tests are about the control plane; keep the probe out of them."""
+    monkeypatch.setattr(
+        lifecycle, "nested_containers", lambda: Check("nested containers", True, "stubbed")
+    )
+    monkeypatch.setattr(lifecycle, "nested_containers_foreign", lambda: [])
+
+
+def _up_with_managed_plane(tmp_path, monkeypatch, url: str) -> None:
+    """A home whose `up` provisioned a local control plane at `url` and is (per its pid file)
+    still running — the shape doctor probes the control plane under."""
+    import json as _json
+    import os as _os
+
+    from xorcise.core.headscale import provision
+
+    monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
+    monkeypatch.delenv("XORCISE_USE_STUBS", raising=False)  # stub mode has no control plane
+    _no_nested_probe(monkeypatch)
+    (tmp_path / "xorcise.pid").write_text(str(_os.getpid()))
+    (tmp_path / "runtime-ports.json").write_text(_json.dumps({"rest": 46410, "otlp": 46412}))
+    host = url.split("//")[1].split(":")[0]
+    provision.write_managed_block(
+        tmp_path / "config.toml",
+        url=url,
+        ca_cert=str(tmp_path / "ca.pem"),
+        host_alias=f"headscale.local:{host}",
+        advertise_host=host,
+    )
+    from xorcise.core.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setattr(lifecycle, "ports_in_use", lambda host, ports: list(ports))
+    monkeypatch.setattr(lifecycle, "_running_server_ports", lambda: {46410, 46412})
+
+
+def test_doctor_flags_a_control_plane_whose_address_moved(host_probes_ok, monkeypatch, tmp_path):
+    """#62. The container check passes — the container IS healthy — while the address `up`
+    recorded (and every run's router dials) no longer belongs to this host. doctor used to say
+    "No problems found" and every run died at the readiness window."""
+    _up_with_managed_plane(tmp_path, monkeypatch, "https://192.168.0.5:443")
+    from xorcise.core.config import get_settings
+
+    seen: list[tuple[str, str | None]] = []
+
+    def _address(url, *, current_ip=None, **_k):
+        seen.append((url, current_ip))
+        return Check(
+            "control plane address",
+            False,
+            f"routers dial {url}, which is not answering — this host's address is now "
+            f"{current_ip}, not 192.168.0.5",
+            "re-provision the control plane on this host's current address: "
+            "xorcise down && xorcise up",
+        )
+
+    monkeypatch.setattr(lifecycle, "control_plane_address", _address)
+    monkeypatch.setattr(lifecycle, "_current_host_ip", lambda: "192.168.1.20")
+    result = runner.invoke(app, ["doctor"])
+    get_settings.cache_clear()
+    assert result.exit_code == 1
+    assert "No problems found" not in result.output
+    # Probed at the RECORDED url, told what the address is NOW.
+    assert seen == [("https://192.168.0.5:443", "192.168.1.20")]
+    assert "now 192.168.1.20" in result.output
+    assert "xorcise down && xorcise up" in result.output
+
+
+def test_doctor_reports_the_address_routers_dial_when_it_answers(
+    host_probes_ok, monkeypatch, tmp_path
+):
+    _up_with_managed_plane(tmp_path, monkeypatch, "https://172.17.0.1:443")
+    from xorcise.core.config import get_settings
+
+    monkeypatch.setattr(
+        lifecycle,
+        "control_plane_address",
+        lambda url, **k: Check("control plane address", True, f"routers dial {url} — answering"),
+    )
+    result = runner.invoke(app, ["doctor"])
+    get_settings.cache_clear()
+    assert result.exit_code == 0
+    assert "routers dial https://172.17.0.1:443" in result.output
+    assert "No problems found" in result.output
+
+
+def test_doctor_probes_an_operator_chosen_remote_the_way_up_verifies_it(
+    host_probes_ok, monkeypatch, tmp_path
+):
+    """A configured remote is not ours to re-provision: it gets `up`'s external probe, never the
+    moved-address diagnosis (which would advise re-provisioning a plane we do not own)."""
+    import json as _json
+    import os as _os
+
+    monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
+    monkeypatch.delenv("XORCISE_USE_STUBS", raising=False)
+    _no_nested_probe(monkeypatch)
+    monkeypatch.setenv("XORCISE_HEADSCALE_URL", "https://hs.example.net:443")  # no managed block
+    (tmp_path / "xorcise.pid").write_text(str(_os.getpid()))
+    (tmp_path / "runtime-ports.json").write_text(_json.dumps({"rest": 46410, "otlp": 46412}))
+    from xorcise.core.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setattr(lifecycle, "ports_in_use", lambda host, ports: list(ports))
+    monkeypatch.setattr(lifecycle, "_running_server_ports", lambda: {46410, 46412})
+    external: list[str] = []
+
+    def _external(url, **_k):
+        external.append(url)
+        return Check("control plane", True, f"{url} answered")
+
+    monkeypatch.setattr(lifecycle, "external_control_plane", _external)
+
+    def _never(*a, **k):
+        raise AssertionError("an operator's remote must not get the managed-address probe")
+
+    monkeypatch.setattr(lifecycle, "control_plane_address", _never)
+    result = runner.invoke(app, ["doctor"])
+    get_settings.cache_clear()
+    assert result.exit_code == 0
+    assert external == ["https://hs.example.net:443"]
 
 
 def test_doctor_skips_the_control_plane_when_xorcise_is_not_running(
