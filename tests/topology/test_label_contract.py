@@ -134,7 +134,11 @@ def referenced_labels() -> dict[str, set[str]]:
         for pattern in (
             # Anchored on `contains(`: `join(...labels.*.name, '|')` in pr-contract.yml
             # matches a bare `labels.*.name,` pattern and would yield `|` as a label name.
-            r"""contains\(\s*github\.event\.pull_request\.labels\.\*\.name,\s*['"]([^'"]+)['"]""",
+            # BOTH event objects: `issue-contract.yml` gates on
+            # `github.event.issue.labels.*.name` ('ci-nightly'), so anchoring this on
+            # pull_request alone left that reference uncaught — `ci-nightly` survived only
+            # via nightly.yml's `gh label create`, and the comment above claimed otherwise.
+            r"""contains\(\s*github\.event\.(?:issue|pull_request)\.labels\.\*\.name,\s*['"]([^'"]+)['"]""",
             r"""gh\s+label\s+create\s+([A-Za-z0-9][\w.-]*)""",
             r"""--label[=\s]+['"]?([A-Za-z0-9][\w.-]*)['"]?""",
         ):
@@ -345,6 +349,71 @@ class TestTheTaxonomyIsDocumentedWhereItIsClaimed:
             f"release-note labels missing from .github/PULL_REQUEST_TEMPLATE.md: {missing}. "
             "The template is where an author reads the list while opening the request."
         )
+
+
+class TestTheCommitTypeListIsBound:
+    """The label list was bound meticulously; the *type* list was copied around unbound."""
+
+    @staticmethod
+    def _gate_types() -> set[str]:
+        run = PR_CONTRACT["jobs"]["contract"]["steps"][0]["run"]
+        match = re.search(r"types='([^']+)'", run)
+        assert match, "pr-contract no longer declares a types='...' list"
+        return set(match.group(1).split("|"))
+
+    def test_dependabots_commit_prefix_is_a_recognised_type(self) -> None:
+        types = self._gate_types()
+        for update in DEPENDABOT["updates"]:
+            prefix = update.get("commit-message", {}).get("prefix")
+            ecosystem = update["package-ecosystem"]
+            # Both configs lean on this: pr-contract exempts bots from the LABEL half only,
+            # so `build(deps): ...` has to satisfy the title half unaided. Rename the prefix
+            # without touching the gate and every Dependabot pull request fails the title.
+            assert prefix in types, (
+                f"the {ecosystem} block commits with prefix {prefix!r}, which is not in the "
+                f"pr-contract type list {sorted(types)}: its pull requests would fail the "
+                "title check, and bots are exempt from the label half only"
+            )
+
+    def test_the_documented_types_match_the_gate(self) -> None:
+        types = self._gate_types()
+        claude = re.search(r"`((?:feat|fix)[a-z ]+revert)`", (ROOT / "CLAUDE.md").read_text())
+        assert claude, "CLAUDE.md no longer lists the commit types in one backticked run"
+        documented = set(claude.group(1).split())
+        # Drift here is invisible: an author reads the list in CLAUDE.md, the gate reads its
+        # own copy, and nothing compares them until a valid-looking title is rejected.
+        assert documented == types, (
+            "CLAUDE.md and the pr-contract gate disagree about the commit types — "
+            f"only in CLAUDE.md: {sorted(documented - types)}, "
+            f"only in the gate: {sorted(types - documented)}"
+        )
+
+    def test_contributing_documents_every_type_the_gate_accepts(self) -> None:
+        text = (ROOT / "CONTRIBUTING.md").read_text()
+        missing = sorted(t for t in self._gate_types() if f"`{t}: " not in text)
+        assert not missing, (
+            f"types the gate accepts but CONTRIBUTING.md does not document: {missing}"
+        )
+
+
+class TestDocumentedSecurityGuaranteesAreReal:
+    """CONTRIBUTING.md states the maturity window as a fact. Nothing checked the value."""
+
+    def test_the_seven_day_cooldown_claim_holds(self) -> None:
+        text = (ROOT / "CONTRIBUTING.md").read_text()
+        claimed = re.search(r"`cooldown\.default-days:\s*(\d+)`", text)
+        assert claimed, "CONTRIBUTING.md no longer states the cooldown value"
+        want = int(claimed.group(1))
+        for update in DEPENDABOT["updates"]:
+            actual = update.get("cooldown", {}).get("default-days")
+            ecosystem = update["package-ecosystem"]
+            # The stated reason is supply-chain maturity: a hijacked release is usually
+            # yanked within days, so the danger window is a version's infancy. Dropping the
+            # value silently would leave the guarantee documented and gone.
+            assert actual == want, (
+                f"CONTRIBUTING.md promises cooldown.default-days: {want}, but the "
+                f"{ecosystem} block has {actual!r}"
+            )
 
 
 class TestBootstrapDefinitionsAgree:

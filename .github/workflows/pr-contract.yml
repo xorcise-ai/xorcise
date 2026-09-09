@@ -101,12 +101,16 @@ jobs:
           else
             printf 'FAILED   title    %s\n' "$TITLE"
             {
+              # `tr -d '\n'` below folds this into one annotation line, so every
+              # continuation must carry its OWN leading space — otherwise the words join at
+              # the seam ("ConventionalCommits", "withoutrewriting"). The two blocks further
+              # down already follow this convention; this one did not.
               echo "::error title=Malformed pull-request title::Titles follow Conventional"
-              echo "Commits: <type>(<optional scope>)!: <subject>. Valid types:"
-              printf '%s' "$types" | tr '|' ' '
+              echo " Commits: <type>(<optional scope>)!: <subject>. Valid types:"
+              printf ' %s' "$types" | tr '|' ' '
               echo ". The type and any scope must be lowercase. This title is normally what"
-              echo "lands on main as the squash subject, where it cannot be corrected without"
-              echo "rewriting history. See CONTRIBUTING.md, 'Commit messages'."
+              echo " lands on main as the squash subject, where it cannot be corrected"
+              echo " without rewriting history. See CONTRIBUTING.md, 'Commit messages'."
             } | tr -d '\n'
             echo
             status=1

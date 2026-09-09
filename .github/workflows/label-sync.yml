@@ -133,9 +133,13 @@ jobs:
           # header. An extra is usually either a label pending retirement or one somebody added
           # in the web UI without declaring it, and the fix for each is different.
           cut -f1 labels.tsv | sort > declared.txt
-          if comm -23 live.txt declared.txt | grep -q .; then
+          # Captured once, not piped into `grep -q` and then recomputed: the same
+          # exits-on-first-match/SIGPIPE shape as the issue-contract guard (harmless at this
+          # data volume, but there is no reason to keep the shape), and it ran `comm` twice.
+          extras=$(comm -23 live.txt declared.txt)
+          if [ -n "$extras" ]; then
             echo "::warning::Labels on the repository but not declared in .github/labels.yml:"
-            comm -23 live.txt declared.txt | sed 's/^/  /'
+            printf '%s\n' "$extras" | sed 's/^/  /'
             echo "::warning::These are left in place. Delete one by hand only when you are"
             echo "::warning::certain — deletion strips it from every issue that carries it."
           fi
