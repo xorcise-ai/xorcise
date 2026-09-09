@@ -37,6 +37,11 @@ class RunEntry(BaseModel):
     created_at: datetime
     budget_seconds: int = 0
     terminal_trigger: str | None = None
+    # Why the run ended, when the trigger alone does not say. Set by the readiness gate on a
+    # `deploy_failed` close-out: the environment's last observed state plus the evidence (the
+    # outer container's log tail, and the inner daemon's where it could still be read), captured
+    # BEFORE the environment was released — once released, those logs are gone for good.
+    terminal_detail: str | None = None
     completed_at: datetime | None = None
     model: str | None = None  # disclosed model (agent's declared model at create time)
     sandbox_ref: str | None = None  # disclosed sandbox (mission image at create time)

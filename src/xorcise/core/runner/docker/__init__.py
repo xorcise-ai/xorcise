@@ -182,13 +182,30 @@ class DockerDriver(ABC):
         driver reports; other drivers degrade to the previous behaviour."""
         return None
 
-    def compose_service_states(self, project: str) -> tuple[ServiceState, ...]:
-        """The INNER mission-stack services for this run's compose project, or () if unknown.
+    def compose_service_states(self, project: str) -> tuple[ServiceState, ...] | None:
+        """The INNER mission-stack services for this run's compose project.
 
         The mission + per-run router come up inside the outer container AFTER deploy returns, so
-        this is how the server tells "still starting" from "up". Empty ⇒ unknown ⇒ the caller must
-        degrade to ready rather than wedge the run at PENDING."""
+        this is how the server tells "still starting" from "up". Three answers, which the caller
+        must keep apart:
+
+          * a non-empty tuple — the services, as the inner daemon reports them;
+          * ()   — this driver has NOTHING to say (stub / non-Docker), or the daemon answered with
+                   something unparseable: degrade to ready rather than wedge a healthy run;
+          * None — the environment was ASKED and could not answer: the outer container is gone, or
+                   the nested `compose ps` failed / exited non-zero (an inner daemon that is not
+                   running). That is not "unknown", it is "not ready" — reading it as ready let a
+                   wedged daemon pass the readiness gate and squat its subnet until the budget
+                   watchdog fired, 30 minutes later, instead of the readiness window."""
         return ()
+
+    def container_logs(self, name: str, *, tail: int = 60) -> str | None:
+        """What the outer lifecycle container wrote (its entrypoint's stdout + stderr: the inner
+        daemon wait, the image load, `compose up`), last `tail` lines, plus the inner daemon's own
+        log tail when the container is still up to read it from. None when this driver keeps no
+        logs or the container is gone. The readiness gate reads it BEFORE releasing a failed
+        environment — the only moment this evidence still exists."""
+        return None
 
     def list_compose_projects(self) -> set[str]:
         """Every compose project still holding a network, so orphaned run environments (whose
@@ -225,7 +242,8 @@ class StubDockerDriver(DockerDriver):
         # ServiceStates. Unset ⇒ a deployed container reads as running and its inner stack as
         # unknown, so existing stub-mode behaviour (a plain READY) is preserved.
         self.container_states: dict[str, ContainerState] = {}
-        self.service_states: dict[str, tuple[ServiceState, ...]] = {}
+        self.service_states: dict[str, tuple[ServiceState, ...] | None] = {}
+        self.logs: dict[str, str] = {}  # name → what container_logs returns (evidence seam)
         self.compose_projects: set[str] = set()  # test-settable projects holding a network
         self.removed_projects: list[str] = []  # projects released by remove_run_resources
         self.specs: list[ContainerSpec] = []  # every run()'s spec, for assertions
@@ -304,8 +322,11 @@ class StubDockerDriver(DockerDriver):
             return None
         return ContainerState(status="running")
 
-    def compose_service_states(self, project: str) -> tuple[ServiceState, ...]:
+    def compose_service_states(self, project: str) -> tuple[ServiceState, ...] | None:
         return self.service_states.get(project, ())
+
+    def container_logs(self, name: str, *, tail: int = 60) -> str | None:
+        return self.logs.get(name)
 
     def list_compose_projects(self) -> set[str]:
         return set(self.compose_projects)

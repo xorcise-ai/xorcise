@@ -8,7 +8,10 @@ flat READY:
   * the outer container is alive but the inner services have not come up yet.
 
 status() now distinguishes them: FAILED (exited), PENDING (still starting), READY (all up).
-Unknown/unreportable state degrades to READY so stub-mode and other drivers are unaffected.
+A driver with NOTHING to report (stub / non-Docker: `()`) degrades to READY so stub mode is
+unaffected — but an environment that was ASKED and could not answer (`None`: the inner daemon is
+not running) is PENDING, because reading it as READY let a wedged daemon pass the readiness gate.
+Each not-ready verdict carries a `detail` saying why, which the gate reports and records.
 """
 
 from __future__ import annotations
@@ -96,6 +99,51 @@ def test_status_is_ready_when_inner_state_is_unreportable():
     svc.deploy(_req())
     assert driver.service_states == {}  # nothing reported
     assert svc.status("run-1").state == RunState.READY
+
+
+def test_status_is_pending_when_the_inner_daemon_cannot_be_asked():
+    """#43 finding 3. `compose ps` failing ("Cannot connect to the Docker daemon") used to parse
+    to () and read as READY — indistinguishable from "all services running". A wedged inner daemon
+    then latched _ever_ready and squatted its subnet until the 30-minute budget watchdog, instead
+    of being closed out at the readiness window."""
+    driver = StubDockerDriver()
+    svc = RunnerControlService(driver)
+    svc.deploy(_req())
+    driver.service_states["run-1"] = None  # asked, no answer
+    result = svc.status("run-1")
+    assert result.state == RunState.PENDING
+    assert result.ready is False
+    assert "inner Docker daemon is not answering" in result.detail
+
+
+def test_pending_names_the_services_still_starting():
+    driver = StubDockerDriver()
+    svc = RunnerControlService(driver)
+    svc.deploy(_req())
+    driver.service_states["run-1"] = (
+        ServiceState(name="web", status="running"),
+        ServiceState(name="db", status="created"),
+    )
+    assert svc.status("run-1").detail == "waiting for mission services: db (created)"
+
+
+def test_failed_carries_the_exit_code():
+    driver = StubDockerDriver()
+    svc = RunnerControlService(driver)
+    svc.deploy(_req())
+    driver.container_states["run-1"] = ContainerState(status="exited", exit_code=137)
+    assert svc.status("run-1").detail == "the mission environment exited with exit code 137"
+    driver.container_states["run-1"] = ContainerState(status="exited", exit_code=None)
+    assert svc.status("run-1").detail == "the mission environment exited"
+
+
+def test_environment_logs_come_from_the_driver_and_are_empty_without_one():
+    driver = StubDockerDriver()
+    svc = RunnerControlService(driver)
+    svc.deploy(_req())
+    assert svc.environment_logs("run-1") == ""  # the stub keeps no logs
+    driver.logs["run-1"] = "compose up: service web exited (1)"
+    assert svc.environment_logs("run-1") == "compose up: service web exited (1)"
 
 
 def test_absent_container_still_raises_not_found():

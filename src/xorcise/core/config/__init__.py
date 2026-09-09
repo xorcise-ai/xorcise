@@ -181,9 +181,13 @@ class Settings(BaseSettings):
     # How long a deployed run may take to bring its environment up (mission stack + subnet
     # router) before it is closed out as `deploy_failed`. deploy() does not block on that bring-up,
     # so without this a run whose environment died sat non-terminal forever with a live agent
-    # working a target that never existed. Generous by default: a cold mission stack is slow, and
-    # an over-eager gate would kill legitimately slow runs. 0 disables the gate.
-    readiness_timeout_seconds: float = Field(default=90.0, ge=0.0)
+    # working a target that never existed. Generous by default: a large mission needs well over a
+    # minute just to load its baked image tarball before `compose up` even starts (measured: >110 s
+    # for breachpoint under parallel load, 66 s for layered-alibi), and the old 90 s closed such
+    # runs out as deploy_failed while they were coming up fine. The window only bounds a bring-up
+    # that never completes — an environment that actually DIES is closed out at once regardless —
+    # so a long window costs nothing on a hard failure. 0 disables the gate.
+    readiness_timeout_seconds: float = Field(default=300.0, ge=0.0)
     readiness_scan_interval_seconds: float = 5.0
     # Keep OTLP ingestion open briefly after the run-control plane becomes terminal. Short-lived
     # harnesses commonly flush their final tool result only after /complete returns; sealing before

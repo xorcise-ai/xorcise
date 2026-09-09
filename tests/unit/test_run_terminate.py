@@ -27,6 +27,19 @@ def test_terminate_run_seals_records_and_stamps_once(migrated_home) -> None:
     assert len(reporting.agent_history("a1")) == 1
 
 
+def test_terminate_run_records_the_detail_beside_the_trigger(migrated_home) -> None:
+    """What the readiness gate hands over on a close-out lands on the run row, so the run list
+    and the run page can say WHY a run ended deploy_failed — not just that it did."""
+    from xorcise.core.rest.run_terminate import terminate_run
+
+    r = runs.create_run(agent_id="a1", mission="c", budget_seconds=600)
+    why = "not ready within the readiness window — waiting for mission services: db (created)"
+    assert terminate_run(r.run_id, "deploy_failed", _now(), why) == "deploy_failed"
+    listed = {e.run_id: e for e in runs.list_runs()}[r.run_id]
+    assert listed.terminal_trigger == "deploy_failed"
+    assert listed.terminal_detail == why
+
+
 def test_seal_terminal_marks_and_seals_without_grading(migrated_home) -> None:
     """Zero-delay mode preserves synchronous sealing while grading remains separate."""
     from xorcise.core.otel.store import SqliteSealStore

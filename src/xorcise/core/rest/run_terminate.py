@@ -38,19 +38,21 @@ _grading_lock = threading.Lock()
 _grading_in_flight: set[str] = set()
 
 
-def seal_terminal(run_id: str, trigger: str, now: datetime) -> str:
+def seal_terminal(run_id: str, trigger: str, now: datetime, detail: str | None = None) -> str:
     """Fast sync phase: transition immediately and begin the telemetry drain window.
 
     The control plane closes immediately, while OTLP remains admissible until grade_and_record
     waits the configured drain interval and seals it. A zero interval seals synchronously, which
-    is useful for tests and operators who explicitly prefer the old behavior.
+    is useful for tests and operators who explicitly prefer the old behavior. `detail` is why the
+    run ended when the trigger alone does not say (the readiness gate's deploy_failed evidence);
+    it is recorded with the first transition and never overwritten.
     """
     is_term, existing, _ = runs.terminal_state(run_id)
     if is_term:
         # Preserve the recorded value; `existing or trigger` would substitute the caller's
         # trigger if existing were an empty string.
         return existing if existing is not None else trigger
-    recorded = runs.mark_terminal(run_id, trigger, now)
+    recorded = runs.mark_terminal(run_id, trigger, now, detail)
     if not recorded:
         return ""  # absent run — do not seal
     from xorcise.core.config import get_settings
@@ -262,16 +264,19 @@ def _grade_run(run_id: str) -> None:
         log.warning("terrain attribution kickoff failed for %s", run_id, exc_info=True)
 
 
-def terminate_run(run_id: str, trigger: str, now: datetime) -> str:
+def terminate_run(run_id: str, trigger: str, now: datetime, detail: str | None = None) -> str:
     """Synchronous composite: seal_terminal then grade_and_record. Returns the recorded trigger.
 
-    Kept synchronous for the budget watchdog (runs in its own thread; no client waits) and for
-    tests. The REST endpoints instead call seal_terminal synchronously and schedule
-    grade_and_record on a BackgroundTask so the caller is not blocked by the judge."""
+    Kept synchronous for the budget watchdog and the readiness gate (each runs in its own thread;
+    no client waits) and for tests. The REST endpoints instead call seal_terminal synchronously
+    and schedule grade_and_record on a BackgroundTask so the caller is not blocked by the judge.
+    grade_and_record is also where the run's environment is released (run_teardown, in a
+    `finally`) — the ONE teardown every terminal path shares, so callers must not release it
+    themselves first."""
     is_term, existing, _ = runs.terminal_state(run_id)
     if is_term:
         return existing if existing is not None else trigger
-    recorded = seal_terminal(run_id, trigger, now)
+    recorded = seal_terminal(run_id, trigger, now, detail)
     if recorded:
         grade_and_record(run_id)
     return recorded
