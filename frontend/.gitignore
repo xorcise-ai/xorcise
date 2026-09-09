@@ -4,3 +4,7 @@ out/
 *.tsbuildinfo
 playwright-report/
 test-results/
+# Generated documentation screenshots. They are an OUTPUT of e2e/docs-screenshots.spec.ts and
+# their home is the docs repository's images/ — committing them here would fork the source of
+# truth and let the two copies drift apart, which is the problem the generator exists to solve.
+docs-screenshots/
