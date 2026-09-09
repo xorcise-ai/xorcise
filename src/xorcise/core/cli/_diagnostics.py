@@ -230,8 +230,14 @@ def home_present() -> Check:
 
 
 def probe_channel(name: str, url: str, ok_statuses: tuple[int, ...] = (200,)) -> Check:
+    """Is one of OUR planes answering at its loopback URL? Rendered by `status` and `ui`.
+
+    Only ever called with a loopback plane URL, so the request must never be routed through
+    HTTP_PROXY/ALL_PROXY: httpx honours them by default and applies no implicit loopback bypass,
+    so a proxied shell (a corporate box, a dev container) read a healthy local server as "down"
+    and then advised starting one that was already running."""
     try:
-        code = httpx.get(url, timeout=1).status_code
+        code = httpx.get(url, timeout=1, trust_env=False).status_code
     except httpx.HTTPError:
         return Check(name, False, "down")
     ok = code in ok_statuses
