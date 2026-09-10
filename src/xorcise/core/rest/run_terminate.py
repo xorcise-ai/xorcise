@@ -156,69 +156,77 @@ def _grade_run(run_id: str) -> None:
         return
     if reporting.get_result(run_id) is not None:
         return  # already graded
-    # The agent's /complete call can emit its tool result only after the HTTP response returns.
-    # Keep OTLP open for a bounded grace period, then freeze the exact input the grader sees.
-    _drain_and_seal_telemetry(run_id)
-    # Lazy: grade_assembly keeps otel off the import path (plane-isolation invariant).
-    # model=None → build_eval_judge reads the BYOM key from settings; returns None when
-    # unconfigured so the judge half degrades cleanly.
-    from xorcise.core.rest import grade_assembly
-
+    # From here the run is terminal and ungraded, and NOTHING below may leave its environment
+    # allocated: seal_terminal has already committed state='terminal', so the readiness gate's
+    # scan (deployed_non_terminal_runs) no longer sees this run — there is no next tick to retry
+    # a teardown, only the boot-time regrade sweep. Everything that can raise before the result
+    # is stored — the drain's SQLite writes ("database is locked" is real: the gate, the budget
+    # watchdog and the REST handlers share one file), the conditions, the result store — sits
+    # inside ONE try whose finally releases the environment. The judge is caught separately so a
+    # grading crash still records a result, but the finally is the guarantee, not that except.
     try:
-        judge = grade_assembly.build_eval_judge()
-        result = judge.grade(grade_assembly.grade_request_for(run_id))
-    except Exception as exc:
-        # Defensive: a grading crash (e.g. a legacy installed manifest whose check op predates
-        # ingest validation) must STILL record a result — otherwise /result 202s "grading"
-        # forever (nothing ever re-schedules this) and the environment leaks. Mirror the judge
-        # half's degrade: zero score, status + reason disclosed on the result.
-        log.exception("grading failed for %s; recording a zero fallback result", run_id)
-        from xorcise.core.contracts.grading import GradeResult, ScoreBreakdown
+        # The agent's /complete call can emit its tool result only after the HTTP response returns.
+        # Keep OTLP open for a bounded grace period, then freeze the exact input the grader sees.
+        _drain_and_seal_telemetry(run_id)
+        # Lazy: grade_assembly keeps otel off the import path (plane-isolation invariant).
+        # model=None → build_eval_judge reads the BYOM key from settings; returns None when
+        # unconfigured so the judge half degrades cleanly.
+        from xorcise.core.rest import grade_assembly
 
-        result = GradeResult(
-            run_id=run_id,
-            overall=0.0,
-            breakdown=ScoreBreakdown(),
-            trace_ref=run_id,
-            judge_status="unavailable",
-            judge_detail=f"grading failed: {exc}",
+        try:
+            judge = grade_assembly.build_eval_judge()
+            result = judge.grade(grade_assembly.grade_request_for(run_id))
+        except Exception as exc:
+            # Defensive: a grading crash (e.g. a legacy installed manifest whose check op predates
+            # ingest validation) must STILL record a result — otherwise /result 202s "grading"
+            # forever (nothing ever re-schedules this) and the environment leaks. Mirror the judge
+            # half's degrade: zero score, status + reason disclosed on the result.
+            log.exception("grading failed for %s; recording a zero fallback result", run_id)
+            from xorcise.core.contracts.grading import GradeResult, ScoreBreakdown
+
+            result = GradeResult(
+                run_id=run_id,
+                overall=0.0,
+                breakdown=ScoreBreakdown(),
+                trace_ref=run_id,
+                judge_status="unavailable",
+                judge_detail=f"grading failed: {exc}",
+            )
+        from xorcise.core.config import get_settings
+        from xorcise.core.contracts.reporting import ResultConditions
+
+        _s = get_settings()
+        conditions = ResultConditions(
+            model=run.model,
+            judge_model=_s.model_name if _s.model_configured() else None,
+            budget_seconds=run.budget_seconds,
+            sandbox_ref=run.sandbox_ref,
+            agent_version=run.agent_version,
+            install_revision=run.install_revision,
+            mission_version=run.mission_version,
+            mission_base_version=run.mission_base_version,
+            platform=run.platform,
         )
-    from xorcise.core.config import get_settings
-    from xorcise.core.contracts.reporting import ResultConditions
+        # a run that did not end on the agent's own terms is "partial" and must not count
+        # as a genuine result against the agent — a budget "timeout" or an operator's manual kill.
+        # Only the agent's own "done" completion is a full result.
+        partial = recorded in ("timeout", "operator")
+        # Per-run telemetry snapshot (run-report): fold the event projection once here and
+        # persist it beside the grade. Agent-self-reported display data — never an observed fact,
+        # never a grading input. Best-effort: a fold/projection failure must never break
+        # finalization, so it logs and records the result with no snapshot (lazy imports keep the
+        # otel display plane off this module's import path — plane-isolation invariant).
+        stats = None
+        try:
+            from xorcise.core.otel.run_stats import fold_run_stats
+            from xorcise.core.rest import events_view
 
-    _s = get_settings()
-    conditions = ResultConditions(
-        model=run.model,
-        judge_model=_s.model_name if _s.model_configured() else None,
-        budget_seconds=run.budget_seconds,
-        sandbox_ref=run.sandbox_ref,
-        agent_version=run.agent_version,
-        install_revision=run.install_revision,
-        mission_version=run.mission_version,
-        mission_base_version=run.mission_base_version,
-        platform=run.platform,
-    )
-    # a run that did not end on the agent's own terms is "partial" and must not count
-    # as a genuine result against the agent — a budget "timeout" or an operator's manual kill.
-    # Only the agent's own "done" completion is a full result.
-    partial = recorded in ("timeout", "operator")
-    # Per-run telemetry snapshot (run-report): fold the event projection once here and
-    # persist it beside the grade. Agent-self-reported display data — never an observed fact, never
-    # a grading input. Best-effort: a fold/projection failure must never break finalization, so it
-    # logs and records the result with no snapshot (lazy imports keep the otel display plane off
-    # this module's import path — plane-isolation invariant).
-    stats = None
-    try:
-        from xorcise.core.otel.run_stats import fold_run_stats
-        from xorcise.core.rest import events_view
-
-        view = events_view._full_view(run_id)
-        stats = fold_run_stats(
-            view.events, created_at=run.created_at, completed_at=run.completed_at
-        )
-    except Exception:  # best-effort — a telemetry snapshot must never break finalization
-        log.warning("run-stats fold failed for %s", run_id, exc_info=True)
-    try:
+            view = events_view._full_view(run_id)
+            stats = fold_run_stats(
+                view.events, created_at=run.created_at, completed_at=run.completed_at
+            )
+        except Exception:  # best-effort — a telemetry snapshot must never break finalization
+            log.warning("run-stats fold failed for %s", run_id, exc_info=True)
         reporting.record_result(
             run_id,
             run.agent_id,
@@ -229,9 +237,11 @@ def _grade_run(run_id: str) -> None:
             stats=stats,
         )
     finally:
-        # release the run's environment (container + tailnet nodes) once graded — in a
-        # finally so even a result-store failure cannot leak it. Idempotent + best-effort; lazy
-        # import keeps the docker/headscale planes off this module's import path.
+        # release the run's environment (container + tailnet nodes) once graded — in a finally
+        # so neither a result-store failure nor anything before it can leak it. Idempotent and
+        # best-effort; the lazy import keeps the docker/headscale planes off this module's import
+        # path. This is the ONE teardown every terminal path shares (the readiness gate relies on
+        # it and no longer releases anything itself).
         from xorcise.core.rest.run_teardown import teardown_run
 
         teardown_run(run_id)

@@ -185,8 +185,11 @@ class Settings(BaseSettings):
     # minute just to load its baked image tarball before `compose up` even starts (measured: >110 s
     # for breachpoint under parallel load, 66 s for layered-alibi), and the old 90 s closed such
     # runs out as deploy_failed while they were coming up fine. The window only bounds a bring-up
-    # that never completes — an environment that actually DIES is closed out at once regardless —
-    # so a long window costs nothing on a hard failure. 0 disables the gate.
+    # that never completes: an environment whose container EXITS is closed out at once regardless,
+    # so the longer default costs nothing there. It does cost on the ambiguous case — an outer
+    # container alive whose inner daemon never answers rides the whole window (plus the strikes)
+    # before it is closed out, ~5 min instead of ~1.5; that is the price of not killing a slow but
+    # healthy bring-up on a probe blip. 0 disables the gate.
     readiness_timeout_seconds: float = Field(default=300.0, ge=0.0)
     readiness_scan_interval_seconds: float = 5.0
     # Keep OTLP ingestion open briefly after the run-control plane becomes terminal. Short-lived
