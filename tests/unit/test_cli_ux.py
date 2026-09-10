@@ -707,7 +707,7 @@ def test_full_length_unknown_run_id_keeps_the_cli_voice(monkeypatch):
     """The 32-hex passthrough must not surface raw HTTP jargon on a 404."""
     import httpx as _httpx
 
-    def fake_get(url, timeout=None):
+    def fake_get(url, timeout=None, **kwargs):
         request = _httpx.Request("GET", url)
         return _httpx.Response(404, request=request, json={"detail": "no run 'ffff…'"})
 
@@ -889,7 +889,7 @@ def test_get_run_result_translates_the_not_terminal_409(monkeypatch, tmp_path):
 
     monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
 
-    def fake_get(url, timeout=None):
+    def fake_get(url, timeout=None, **kwargs):
         req = _httpx.Request("GET", url)
         return _httpx.Response(409, request=req, json={"detail": "run 'x' is not terminal yet"})
 
@@ -935,7 +935,7 @@ def test_client_error_with_detail_reads_in_the_cli_voice(monkeypatch, tmp_path):
 
     monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
 
-    def fake_post(url, json=None, timeout=None):
+    def fake_post(url, json=None, timeout=None, **kwargs):
         req = _httpx.Request("POST", url)
         return _httpx.Response(409, request=req, json={"detail": "run 'x' is already terminal"})
 

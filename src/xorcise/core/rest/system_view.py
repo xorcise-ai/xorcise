@@ -120,9 +120,13 @@ def _probe(name: str, url: str, location: str) -> PlaneStatus:
     There is no `ok_statuses` escape hatch any more — it existed only for the MCP plane, whose
     FastMCP endpoint answered 406 to a plain GET (it wanted SSE headers), so "alive" and
     "healthy" had to be spelled differently for it. Both remaining planes have real health
-    endpoints that answer 200."""
+    endpoints that answer 200.
+
+    trust_env=False: `up` spawns the server without scrubbing its environment, so a proxied shell's
+    HTTP_PROXY is inherited by this process — and httpx applies no implicit loopback bypass. The
+    server then reported its own REST plane as down, in a response it was itself serving (#86)."""
     try:
-        code = httpx.get(url, timeout=1).status_code
+        code = httpx.get(url, timeout=1, trust_env=False).status_code
     except httpx.HTTPError:
         return _plane(name, ok=False, detail="down", location=location)
     good = code == 200
