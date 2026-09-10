@@ -355,11 +355,54 @@ def test_mission_delete_calls_delete_endpoint(monkeypatch):
     assert "deleted mission 'sqli'" in result.stdout
 
 
+def test_rest_client_never_consults_the_proxy_environment(monkeypatch):
+    """#86, the rest of the class. Every RestClient call targets our own loopback service; httpx
+    honours HTTP_PROXY with no loopback bypass, so in a proxied shell every command failed with
+    "cannot reach the XORCISE service" while `status` (already fixed) reported it healthy — and
+    the failure's own remediation said to check `status`."""
+    from pathlib import Path
+
+    from xorcise.core.cli.rest_client import RestClient, _warn_if_foreign_instance
+
+    seen: list[tuple[str, dict[str, object]]] = []
+
+    class _Resp:
+        status_code = 200
+        is_error = False
+        content = b"{}"
+        text = "{}"
+
+        def json(self):
+            return {}
+
+    def _record(verb: str):
+        def _fake(url: str, **kwargs: object) -> _Resp:
+            seen.append((verb, kwargs))
+            return _Resp()
+
+        return _fake
+
+    for verb in ("get", "post", "put", "delete"):
+        monkeypatch.setattr(httpx, verb, _record(verb))
+    client = RestClient("http://127.0.0.1:1/api")
+    client.get("/runs")
+    client.get_run_result("r1")
+    client.get_or_none("/missions")
+    client.get_text("/runs/r1/report")
+    client.post("/runs", json={})
+    client.put("/agents/a", json={})
+    client.delete("/runs/r1")
+    monkeypatch.setattr("xorcise.core.cli.rest_client.pid_file", lambda: Path("/nonexistent/pid"))
+    _warn_if_foreign_instance("http://127.0.0.1:1/api")
+    assert len(seen) == 8
+    assert all(kwargs.get("trust_env") is False for _verb, kwargs in seen), seen
+
+
 def test_rest_client_post_forwards_custom_timeout(monkeypatch):
     # A caller can override the default 5s read timeout for long ops (e.g. a real image pull).
     captured: dict[str, object] = {}
 
-    def fake_post(url, json, timeout):
+    def fake_post(url, json, timeout, **kwargs):
         captured["timeout"] = timeout
         return httpx.Response(200, json={})
 

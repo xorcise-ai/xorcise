@@ -33,6 +33,27 @@ def _by_name(planes: tuple[PlaneStatus, ...]) -> dict[str, PlaneStatus]:
     return {p.name: p for p in planes}
 
 
+def test_plane_probes_never_consult_the_proxy_environment(migrated_home, monkeypatch) -> None:
+    """#86 in the server: `up` does not scrub HTTP_PROXY from the environment it spawns the server
+    with, and httpx applies no loopback bypass, so the System card reported the REST plane down —
+    in a response the same server was serving."""
+    import httpx
+
+    seen: list[dict[str, object]] = []
+
+    class _Resp:
+        status_code = 200
+
+    def _get(url, **kwargs):
+        seen.append(kwargs)
+        return _Resp()
+
+    monkeypatch.setattr(httpx, "get", _get)
+    planes = _by_name(system_view.build_system_info(_settings(role="all")).planes)
+    assert planes["rest"].ok is True and planes["otlp"].ok is True
+    assert len(seen) == 2 and all(k.get("trust_env") is False for k in seen), seen
+
+
 def test_every_module_is_tagged_with_its_owning_role_and_a_human_label(migrated_home) -> None:
     planes = _by_name(system_view.build_system_info(_settings(role="all")).planes)
     assert {p.name: p.role for p in planes.values()} == {
