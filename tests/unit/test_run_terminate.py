@@ -200,6 +200,34 @@ def test_grading_crash_records_fallback_and_still_tears_down(migrated_home, monk
     assert torn == [r.run_id]  # environment released despite the crash
 
 
+def test_drain_failure_still_tears_down_environment(migrated_home, monkeypatch) -> None:
+    """Review of #98. The readiness gate no longer releases a failed environment itself, so this
+    teardown must be unconditional past the early-return guards. A failure BEFORE record_result —
+    the drain's SQLite writes; "database is locked" is not hypothetical, the gate, the budget
+    watchdog and the REST handlers share one file — used to escape the old, narrower finally. And
+    because seal_terminal had already committed state='terminal', the run had left the gate's
+    pending set: no next tick, container and subnet allocated until a server restart."""
+    import xorcise.core.rest.run_teardown as run_teardown
+    import xorcise.core.rest.run_terminate as rt
+
+    torn: list[str] = []
+    monkeypatch.setattr(run_teardown, "teardown_run", lambda rid: torn.append(rid))
+
+    r = runs.create_run(agent_id="a1", mission="c", budget_seconds=600)
+    rt.seal_terminal(r.run_id, "deploy_failed", _now())
+
+    def _boom(*a: object, **k: object) -> None:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(rt, "_drain_and_seal_telemetry", _boom)
+    with pytest.raises(RuntimeError, match="database is locked"):
+        rt.grade_and_record(r.run_id)
+
+    assert runs.terminal_state(r.run_id)[0] is True  # already terminal …
+    assert r.run_id not in {rid for rid, _ in runs.deployed_non_terminal_runs()}  # … not re-scanned
+    assert torn == [r.run_id]  # so the teardown had to happen here, and did
+
+
 def test_record_failure_still_tears_down_environment(migrated_home, monkeypatch) -> None:
     """teardown_run runs in a finally: even a result-store failure must not leak the run's
     environment (container + tailnet nodes)."""
