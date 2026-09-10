@@ -1155,6 +1155,18 @@ def test_doctor_flags_a_control_plane_whose_address_moved(host_probes_ok, monkey
     assert "xorcise down && xorcise up" in result.output
 
 
+def test_current_host_ip_is_none_when_detection_fails(monkeypatch):
+    """A hung or failing lookup degrades to "address unknown" — the address check then reports the
+    recorded URL as not answering without claiming what the address is now."""
+    from xorcise.core.headscale import provision
+
+    def _boom():
+        raise provision.ProvisionError("docker did not answer")
+
+    monkeypatch.setattr(provision, "default_host_ip", _boom)
+    assert lifecycle._current_host_ip() is None
+
+
 def test_doctor_reports_the_address_routers_dial_when_it_answers(
     host_probes_ok, monkeypatch, tmp_path
 ):

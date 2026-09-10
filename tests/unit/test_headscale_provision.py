@@ -86,6 +86,41 @@ def test_default_host_ip_rejects_garbage_override(monkeypatch):
         default_host_ip("not-an-ip")
 
 
+def test_bridge_gateway_lookup_is_bounded_and_a_hung_docker_is_a_typed_error(monkeypatch):
+    """Review of #99. `doctor` now reads the current host address through default_host_ip, and this
+    subprocess had no timeout — a daemon that accepts the connection but never answers hung the
+    whole diagnosis (25 s cap hit, one line of output). Bounded like doctor's other Docker probes;
+    the expiry is a ProvisionError so `up` fails loud and `_current_host_ip` degrades to None."""
+    import subprocess
+
+    seen: list[dict[str, object]] = []
+
+    def _hung(cmd, **kwargs):
+        seen.append(kwargs)
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 0))
+
+    monkeypatch.delenv("XORCISE_HEADSCALE_HOST_IP", raising=False)
+    monkeypatch.setattr(provision, "_host_is_macos", lambda: False)
+    monkeypatch.setattr("xorcise.core.headscale.provision.subprocess.run", _hung)
+    with pytest.raises(ProvisionError, match="did not answer"):
+        default_host_ip()
+    assert seen and seen[0].get("timeout") == provision._PROBE_TIMEOUT
+
+
+def test_macos_address_probes_degrade_on_a_hung_tool(monkeypatch):
+    # networksetup/ipconfig that never return read as "no hardware port / no address", so
+    # _macos_lan_ipv4 falls through to the routing-table probe instead of hanging `up` or `doctor`.
+    import subprocess
+
+    def _hung(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 0))
+
+    monkeypatch.setattr("xorcise.core.headscale.provision.subprocess.run", _hung)
+    assert provision._macos_hardware_devices() == []
+    assert provision._macos_interface_ipv4("en0") == ""
+    assert provision._macos_lan_ipv4() is None
+
+
 def test_default_host_ip_uses_lan_ip_on_macos(monkeypatch):
     # on macOS the docker bridge gateway lives inside the Docker Desktop VM and is not
     # host-bindable — derive the host's primary LAN IPv4 (host-bindable AND container-reachable).
