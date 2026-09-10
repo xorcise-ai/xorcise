@@ -102,3 +102,7 @@ class RunnerControlAdapter(ControlPort):
     def reap_orphan_environments(self, keep: Sequence[RunId], *, credential: ApiKey) -> list[RunId]:
         self._check(credential)
         return self._service.reap_orphan_environments(keep)
+
+    def environment_logs(self, run_id: RunId, *, credential: ApiKey) -> str:
+        self._check(credential)
+        return self._service.environment_logs(run_id)

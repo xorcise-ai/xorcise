@@ -51,6 +51,13 @@ class ControlPort(ABC):
         keep satisfying the ABC."""
         return []
 
+    def environment_logs(self, run_id: RunId, *, credential: ApiKey) -> str:
+        """The run environment's log evidence (outer container tail; inner daemon tail where it
+        can still be read), for a run about to be closed out as deploy_failed. Non-abstract and
+        empty by default — the stub keeps no logs — so existing implementations still satisfy
+        the ABC."""
+        return ""
+
 
 class JudgePort(ABC):
     """Server→evaluator grading contract — synchronous in-process (D12: queue deferred)."""

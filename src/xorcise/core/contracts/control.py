@@ -140,6 +140,10 @@ class StatusResult(_Frozen):
     state: RunState
     targets: tuple[Target, ...] = ()
     ready: bool = False
+    # Why the environment is not (yet) usable, when the runner can say: which inner service is
+    # still starting, that the inner daemon is not answering, the exit code it died with. Empty
+    # when READY, or when the runner has nothing more specific than the state itself.
+    detail: str = ""
 
 
 class CollectTargetsResult(_Frozen):

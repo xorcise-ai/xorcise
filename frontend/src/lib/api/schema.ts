@@ -1744,6 +1744,16 @@ export interface components {
          */
         EnvironmentSpec: {
             /**
+             * Agent Ingress
+             * @default true
+             */
+            agent_ingress: boolean;
+            /**
+             * Allow Egress
+             * @default false
+             */
+            allow_egress: boolean;
+            /**
              * Compose File
              * @default docker-compose.yml
              */
@@ -2493,6 +2503,8 @@ export interface components {
             source_agent: string;
             /** State */
             state: string;
+            /** Terminal Detail */
+            terminal_detail?: string | null;
             /** Terminal Trigger */
             terminal_trigger?: string | null;
         };
@@ -2564,6 +2576,8 @@ export interface components {
             source_agent: string;
             /** State */
             state: string;
+            /** Terminal Detail */
+            terminal_detail?: string | null;
             /** Terminal Trigger */
             terminal_trigger?: string | null;
         };
@@ -2736,6 +2750,8 @@ export interface components {
             /** Host Platform */
             host_platform?: string | null;
             mission_base?: components["schemas"]["MissionBaseView"] | null;
+            /** Pid */
+            pid?: number | null;
             /** Planes */
             planes: components["schemas"]["PlaneStatus"][];
             /**

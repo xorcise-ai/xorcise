@@ -35,6 +35,7 @@ def _to_entry(row: RunRow) -> RunEntry:
         created_at=_utc_required(row.created_at),
         budget_seconds=row.budget_seconds,
         terminal_trigger=row.terminal_trigger,
+        terminal_detail=row.terminal_detail,
         completed_at=_utc(row.completed_at),
         model=row.model,
         sandbox_ref=row.sandbox_ref,
@@ -316,11 +317,12 @@ def get_join_key(run_id: str) -> str | None:
         return row.join_key if row is not None else None
 
 
-def mark_terminal(run_id: str, trigger: str, at: datetime) -> str:
+def mark_terminal(run_id: str, trigger: str, at: datetime, detail: str | None = None) -> str:
     """Transition a run to terminal, first-wins + idempotent. Returns the recorded trigger.
 
-    The first call stamps state='terminal', terminal_trigger, completed_at. Later calls
-    (any trigger) are no-ops and return the trigger that already stuck.
+    The first call stamps state='terminal', terminal_trigger, completed_at and (when given) the
+    terminal_detail — why the run ended, for triggers whose name alone does not say. Later calls
+    (any trigger, any detail) are no-ops and return the trigger that already stuck.
     Returns the recorded trigger, or '' if the run does not exist."""
     with session_scope() as s:
         row = s.scalar(select(RunRow).where(RunRow.id == run_id))
@@ -331,6 +333,7 @@ def mark_terminal(run_id: str, trigger: str, at: datetime) -> str:
         row.state = "terminal"
         row.terminal_trigger = trigger
         row.completed_at = at
+        row.terminal_detail = detail or None
         return trigger
 
 

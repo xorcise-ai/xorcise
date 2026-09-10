@@ -21,6 +21,14 @@ from xorcise.core.runner.docker import (
     ServiceState,
 )
 
+# Where the mission-base entrypoint sends the inner daemon's output. Kept in sync with
+# containers/mission-base/entrypoint.sh (`dockerd-entrypoint.sh dockerd >/var/log/dockerd.log`).
+_INNER_DOCKERD_LOG = "/var/log/dockerd.log"
+
+
+def _text(raw: object) -> str:
+    return raw.decode(errors="replace") if isinstance(raw, bytes) else str(raw or "")
+
 
 def _parse_compose_ps(output: bytes | str) -> tuple[ServiceState, ...]:
     """Parse `docker compose ps --format json` into ServiceStates (tolerant, never raises).
@@ -364,7 +372,7 @@ class DockerSdkDriver(DockerDriver):
             exit_code=code if isinstance(code, int) else None,
         )
 
-    def compose_service_states(self, project: str) -> tuple[ServiceState, ...]:
+    def compose_service_states(self, project: str) -> tuple[ServiceState, ...] | None:
         # The mission stack runs INSIDE the outer container (named == run id == compose project),
         # so enumerate it with a nested `compose ps`. The exec inherits the container's env, and
         # therefore the same inner daemon the entrypoint composed against.
@@ -373,14 +381,47 @@ class DockerSdkDriver(DockerDriver):
         try:
             container = self._client.containers.get(project)
         except NotFound:
-            return ()
+            return None  # the environment is gone — there is nothing to ask
         try:
-            _code, output = container.exec_run(
+            code, output = container.exec_run(
                 ["docker", "compose", "-p", project, "ps", "--format", "json"]
             )
-        except Exception:  # noqa: BLE001 — unknown state must never break the caller's poll
-            return ()
+        except Exception:  # noqa: BLE001 — an unanswerable environment must never break the poll
+            return None
+        if code not in (0, None):
+            # `compose ps` itself failed — typically "Cannot connect to the Docker daemon": the
+            # inner daemon is not running. Its stderr is in `output`, but it is not a service
+            # list, and parsing it as one yielded () — which the caller read as READY.
+            return None
         return _parse_compose_ps(output)
+
+    def container_logs(self, name: str, *, tail: int = 60) -> str | None:
+        # Best-effort evidence for a run being closed out: every read is wrapped, and a partial
+        # answer beats none — the caller is about to destroy the only copy.
+        from docker.errors import NotFound
+
+        try:
+            container = self._client.containers.get(name)
+        except NotFound:
+            return None
+        parts: list[str] = []
+        try:
+            parts.append(
+                f"outer container, last {tail} lines:\n{_text(container.logs(tail=tail)).rstrip()}"
+            )
+        except Exception:  # noqa: BLE001
+            parts.append("outer container: logs could not be read")
+        # The inner daemon's own log lives inside the container; only a still-running one can be
+        # exec'd. When the entrypoint gave up waiting for the daemon it already echoed this tail to
+        # stderr, so the exited case is covered by the outer logs above.
+        if str(getattr(container, "status", "") or "") == "running":
+            try:
+                code, out = container.exec_run(["tail", "-n", "30", _INNER_DOCKERD_LOG])
+                if code == 0 and _text(out).strip():
+                    parts.append(f"inner dockerd, last 30 lines:\n{_text(out).rstrip()}")
+            except Exception:  # noqa: BLE001
+                pass
+        return "\n\n".join(parts)
 
     def list_network_cidrs(self) -> set[str]:
         # Every network's IPAM subnets, so the allocator can avoid a subnet a LEFTOVER run network
