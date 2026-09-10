@@ -157,6 +157,66 @@ def test_control_plane_probes_the_configured_container(monkeypatch):
     assert seen[0][:5] == ["docker", "exec", "hs-custom", "headscale", "version"]
 
 
+# --- Control plane ADDRESS -----------------------------------------------------
+# #62: the container check above verifies the container, not the address routers dial.
+# When the host's address changes after `up` (a laptop moving networks), the container
+# stays healthy, nothing answers at the recorded URL, every run dies at the readiness
+# window — and doctor said "No problems found".
+
+
+def test_control_plane_address_any_http_reply_counts_as_answering(monkeypatch):
+    class Resp:
+        status_code = 404  # Headscale answers / with a 404 — "something is listening"
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: Resp())
+    c = diag.control_plane_address("https://172.17.0.1:443", current_ip="172.17.0.1")
+    assert c.ok is True
+    assert "https://172.17.0.1:443" in c.detail
+
+
+def test_control_plane_address_unreachable_names_the_moved_host_and_the_fix(monkeypatch):
+    def refused(*a, **k):
+        raise httpx.ConnectError("no route to host")
+
+    monkeypatch.setattr(httpx, "get", refused)
+    c = diag.control_plane_address("https://192.168.0.5:443", current_ip="192.168.1.20")
+    assert c.ok is False
+    assert "https://192.168.0.5:443" in c.detail and "not answering" in c.detail
+    # The diagnosis itself: the address `up` recorded is not the host's address any more.
+    assert "now 192.168.1.20" in c.detail and "not 192.168.0.5" in c.detail
+    assert "xorcise down && xorcise up" in c.remediation
+
+
+def test_control_plane_address_unreachable_without_a_current_ip_stays_factual(monkeypatch):
+    def refused(*a, **k):
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(httpx, "get", refused)
+    c = diag.control_plane_address("https://192.168.0.5:443", current_ip=None)
+    assert c.ok is False
+    assert "now" not in c.detail  # no claim about the current address when it is unknown
+    same = diag.control_plane_address("https://192.168.0.5:443", current_ip="192.168.0.5")
+    assert "now" not in same.detail  # the address did not move — say only that it is silent
+
+
+def test_control_plane_address_dials_directly(monkeypatch):
+    """A host-local address the routers dial straight from their containers: no TLS verification
+    (self-signed local CA) and no proxy environment (see #86 for what that does to a probe)."""
+    seen: list[dict[str, object]] = []
+
+    class Resp:
+        status_code = 404
+
+    def _get(url, **kwargs):
+        seen.append(kwargs)
+        return Resp()
+
+    monkeypatch.setattr(httpx, "get", _get)
+    diag.control_plane_address("https://172.17.0.1:443")
+    assert seen[0].get("verify") is False
+    assert seen[0].get("trust_env") is False
+
+
 def test_external_control_plane_unreachable(monkeypatch):
     def refused(*a, **k):
         raise httpx.ConnectError("refused")

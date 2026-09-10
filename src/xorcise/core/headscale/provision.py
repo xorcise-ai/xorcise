@@ -36,6 +36,11 @@ _BEGIN = "# >>> xorcise headscale (managed) >>>"
 _END = "# <<< xorcise headscale (managed) <<<"
 
 
+# Cap on the local address-detection probes (docker network inspect, networksetup, ipconfig): they
+# are asked on `up` AND on `doctor`, and a tool that never returns must not hang either.
+_PROBE_TIMEOUT = 5.0
+
+
 class ProvisionError(RuntimeError):
     pass
 
@@ -76,9 +81,15 @@ def _macos_hardware_devices() -> list[str]:
     (Ethernet before Wi-Fi, …), each with its BSD device name. VPN/tunnel pseudo-interfaces
     (utun*, ppp*, …) are never hardware ports, so they never appear here — which is exactly why
     enumerating these cannot be poisoned by a tunnel that owns the default route."""
-    out = subprocess.run(
-        ["networksetup", "-listnetworkserviceorder"], capture_output=True, text=True
-    )
+    try:
+        out = subprocess.run(
+            ["networksetup", "-listnetworkserviceorder"],
+            capture_output=True,
+            text=True,
+            timeout=_PROBE_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return []  # no answer ⇒ no hardware ports found; the caller falls back to the routing probe
     return re.findall(r"Device:\s*([A-Za-z0-9]+)\)", out.stdout)
 
 
@@ -86,7 +97,15 @@ def _macos_interface_ipv4(device: str) -> str:
     """The IPv4 bound to a macOS hardware *device*, or "" if none. `ipconfig getifaddr` returns an
     address ONLY for a configured hardware port — it is blank for utun/VPN tunnels — so a tunnel's
     tailnet IP can never leak through this path."""
-    out = subprocess.run(["ipconfig", "getifaddr", device], capture_output=True, text=True)
+    try:
+        out = subprocess.run(
+            ["ipconfig", "getifaddr", device],
+            capture_output=True,
+            text=True,
+            timeout=_PROBE_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return ""
     return out.stdout.strip()
 
 
@@ -131,19 +150,33 @@ def _primary_lan_ipv4() -> str | None:
 
 
 def _docker_bridge_gateway() -> str:
-    """The docker bridge network's gateway IP (a real host interface on native Linux)."""
-    out = subprocess.run(
-        [
-            "docker",
-            "network",
-            "inspect",
-            "bridge",
-            "--format",
-            "{{(index .IPAM.Config 0).Gateway}}",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    """The docker bridge network's gateway IP (a real host interface on native Linux).
+
+    Bounded: `doctor` reads the current host address through here to compare it with the one the
+    control plane was provisioned on, and a daemon that accepts the connection but never answers
+    — distinct from one that is down, and exactly the class of fault doctor exists to surface —
+    hung the whole diagnosis with no output. Every other Docker probe doctor runs is bounded the
+    same way; a subprocess that never returns is the one failure `except Exception` cannot catch."""
+    try:
+        out = subprocess.run(
+            [
+                "docker",
+                "network",
+                "inspect",
+                "bridge",
+                "--format",
+                "{{(index .IPAM.Config 0).Gateway}}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=_PROBE_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ProvisionError(
+            f"docker did not answer `network inspect bridge` within {_PROBE_TIMEOUT:.0f}s — the "
+            "daemon accepted the connection but never replied; restart Docker, or set "
+            "XORCISE_HEADSCALE_HOST_IP to skip the lookup"
+        ) from exc
     return out.stdout.strip()
 
 
