@@ -32,10 +32,15 @@ run by hand. Delete any section that genuinely does not apply, and say why.
 - [ ] `e2e` — full `xorcise up` + scripted agent
 - [ ] `frontend` — Next.js typecheck / vitest
 
-> The `integration` and `e2e` lanes do **not** run on pull requests by default — they need a
-> Docker daemon and bind fixed ports. If your change touches the runner, the control plane,
-> networking, or `xorcise up`, ask a maintainer to add the **`full-ci`** label so those lanes
-> run on this PR before it merges.
+> The `integration` and `e2e` lanes run automatically on any pull request that changes more
+> than documentation, so a code change already gets them. For a **documentation-only** change
+> that should run them anyway, ask a maintainer to add the **`full-ci`** label and then push —
+> the label takes effect on the next push.
+>
+> This pull request also needs **exactly one release-note label** (see the list below);
+> `pr-contract` reports a failure without one. If you are contributing from a fork you cannot
+> apply labels yourself — a maintainer will add it during review, and there is nothing for you
+> to do here.
 
 ## User-facing impact
 

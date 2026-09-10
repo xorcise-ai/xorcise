@@ -7,9 +7,22 @@ on:
   push:
     branches: [main]
   pull_request:
-    # `labeled` is required so that ADDING the `full-ci` label re-runs the workflow and lets
-    # the Docker-heavy lanes execute on a PR that needs them (see the `test-heavy` job).
-    types: [opened, synchronize, reopened, labeled]
+    # No `labeled`, deliberately.
+    #
+    # It was here so that adding `full-ci` re-ran the workflow and let the Docker-heavy lanes
+    # execute. Two things removed the case for it. #91 made those lanes run on any pull
+    # request that changes more than documentation, so `full-ci` is now only needed for a
+    # docs-only change that wants them anyway — rare. And `pr-contract` makes a release-note
+    # label mandatory on EVERY pull request, so with `labeled` here every pull request would
+    # get its whole CI run superseded and restarted the moment that label lands, taking the
+    # in-flight run's `ci-ok` down with it (`cancel-in-progress` below) and flipping an
+    # already-green pull request back to not-passing for no reason.
+    #
+    # The cost of dropping it: `full-ci` takes effect on the next push rather than
+    # immediately. That is the cheaper side of the trade, and the alternative fix is worse —
+    # skipping the expensive jobs on label events would leave a SKIPPED `ci-ok` on the same
+    # commit, which a required check counts as passing.
+    types: [opened, synchronize, reopened]
 
 permissions: {}
 
@@ -464,9 +477,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: uv run zizmor --pedantic .github/workflows/
 
-  # THE single required status check. Branch protection names only this, so lanes can change
-  # without touching repo settings — and a renamed leg can't leave a required check that never
-  # reports.
+  # The required status check for everything in THIS workflow. The `main` ruleset names this
+  # one context rather than the individual lanes, so lanes can be added, split or renamed
+  # without touching repository settings — and a renamed leg cannot leave behind a required
+  # check that never reports.
+  #
+  # Not the only required check in the repository: `pr-contract` is a separate workflow with
+  # its own context, for the reasons its header gives. See CONTRIBUTING.md.
   #
   # `if: always()` is load-bearing: without it this job would SKIP when a dependency failed,
   # and a skipped required check does NOT block a merge.

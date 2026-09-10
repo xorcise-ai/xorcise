@@ -27,6 +27,15 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
+    # Stated, not inferred. Dependabot guesses a commit style from recent history, and it has
+    # guessed wrong in this repo before — five of its pull requests are titled "Bump x from a
+    # to b", which predate the convention and which `pr-contract` would now reject. Bots are
+    # exempt from that gate's LABEL half, never its title half, so an inferred title is a
+    # wedged dependency update waiting to happen. `include: scope` is what appends `(deps)`.
+    commit-message:
+      prefix: build
+      prefix-development: build
+      include: scope
     labels:
       - dependencies
     groups:
@@ -61,6 +70,15 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
+    # Stated, not inferred. Dependabot guesses a commit style from recent history, and it has
+    # guessed wrong in this repo before — five of its pull requests are titled "Bump x from a
+    # to b", which predate the convention and which `pr-contract` would now reject. Bots are
+    # exempt from that gate's LABEL half, never its title half, so an inferred title is a
+    # wedged dependency update waiting to happen. `include: scope` is what appends `(deps)`.
+    commit-message:
+      prefix: build
+      prefix-development: build
+      include: scope
     labels:
       - dependencies
     groups:
@@ -124,9 +142,20 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
+    # See the note on the uv ecosystem above: the title is stated so `pr-contract` cannot be
+    # surprised by a style Dependabot inferred.
+    commit-message:
+      prefix: build
+      prefix-development: build
+      include: scope
+    # ONE release-note label, like every other ecosystem here. `internal` used to be applied
+    # alongside `dependencies`, which was two — the exact state `pr-contract` rejects for a
+    # human author, and only the blanket bot exemption stopped it failing. It was also dead
+    # weight: `.github/release.yml` files a pull request under the FIRST category that matches
+    # it, and `📦 Dependencies` is listed before `🔧 Internal`, so `internal` never fired.
+    # tests/topology/test_label_contract.py binds this to exactly one.
     labels:
       - dependencies
-      - internal
     groups:
       github-actions:
         patterns:

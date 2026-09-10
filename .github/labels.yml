@@ -1,0 +1,111 @@
+# The repository's label set, declared in git.
+#
+# NOT a workflow. `.github/workflows/label-sync.yml` applies this file to the repository on
+# every merge to `main`, and `tests/topology/test_label_contract.py` asserts that every label
+# named anywhere in `.github/` is declared here.
+#
+# Why a file at all, when GitHub has a label editor? Because labels live in GitHub's database
+# and configuration lives in git, and nothing reconciled the two. GitHub drops a label an issue
+# form or a Dependabot config asks for **silently** if it does not exist — no error, no warning
+# — so five labels were referenced by this repo's own configuration and none of them existed.
+# Feature requests arrived unlabelled, Dependabot's `dependencies` label never applied to a
+# single pull request, and four of the nine generated release-note sections were unreachable,
+# including ⚠️ Breaking changes. Declaring the set here is what makes that drift a test failure
+# rather than something nobody can see.
+#
+# Editing rules:
+#   * Adding a label here creates it on the next merge to `main`.
+#   * Changing a colour or description here updates it.
+#   * REMOVING a label here does NOT delete it. The sync is deliberately additive: deleting a
+#     label strips it from every issue and pull request that carried it, with no record of what
+#     it was, and that cannot be undone. To retire a label, remove it here (the sync will report
+#     it as an extra) and then delete it by hand once you are sure.
+#
+# Colours are bare six-digit hex, no leading `#` — GitHub's API rejects it.
+# The human-facing taxonomy, and the rule for choosing between these, is in CONTRIBUTING.md
+# under "Issues" and "Pull requests".
+
+labels:
+  # ---------------------------------------------------------------------------------------
+  # Release-note labels. `.github/release.yml` routes a merged pull request into a section of
+  # the generated notes by these, in this order. Every pull request carries exactly one; the
+  # `pr-contract` workflow enforces that (its own workflow, not a job in ci.yml — see the
+  # header of .github/workflows/pr-contract.yml for why), because an unlabelled request lands
+  # "Other changes" and the notes stop being readable.
+  # ---------------------------------------------------------------------------------------
+
+  - name: breaking-change
+    color: "e11d21"
+    description: "Breaks a public interface — CLI, config, schema, REST, adapter contract"
+
+  - name: feature
+    color: "1d76db"
+    description: "A capability that did not exist before"
+
+  - name: enhancement
+    color: "a2eeef"
+    description: "Improves a capability that already exists"
+
+  - name: bug
+    color: "d73a4a"
+    description: "Something isn't working"
+
+  - name: security
+    color: "d93f0b"
+    description: "Security fix or hardening"
+
+  - name: documentation
+    color: "0075ca"
+    description: "Improvements or additions to documentation"
+
+  - name: dependencies
+    color: "0366d6"
+    description: "Dependency updates — applied automatically by Dependabot"
+
+  - name: internal
+    color: "bfd4f2"
+    description: "Refactors, tooling and CI — no user-visible change"
+
+  - name: skip-release-notes
+    color: "ededed"
+    description: "Excluded from the generated release notes entirely"
+
+  # ---------------------------------------------------------------------------------------
+  # Triage. Applied by maintainers to issues; these route nothing and gate nothing.
+  # ---------------------------------------------------------------------------------------
+
+  - name: question
+    color: "d876e3"
+    description: "Further information is requested"
+
+  - name: duplicate
+    color: "cfd3d7"
+    description: "This issue or pull request already exists"
+
+  - name: invalid
+    color: "e4e669"
+    description: "This doesn't seem right"
+
+  - name: wontfix
+    color: "ffffff"
+    description: "This will not be worked on"
+
+  - name: good first issue
+    color: "7057ff"
+    description: "Good for newcomers"
+
+  - name: help wanted
+    color: "008672"
+    description: "Extra attention is needed"
+
+  # ---------------------------------------------------------------------------------------
+  # Machine-readable. These change what CI does, or record what it found. Not for triage.
+  # ---------------------------------------------------------------------------------------
+
+  - name: full-ci
+    color: "0e8a16"
+    description: "Run the Docker-heavy test lanes (test-heavy) on this PR"
+
+  - name: ci-nightly
+    color: "b60205"
+    description: "Automated nightly validation failure"
