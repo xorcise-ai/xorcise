@@ -384,6 +384,10 @@ def test_rest_client_never_consults_the_proxy_environment(monkeypatch):
 
     for verb in ("get", "post", "put", "delete"):
         monkeypatch.setattr(httpx, verb, _record(verb))
+    # `_FOREIGN_CHECKED` is process-global and never reset, so an earlier test in the same xdist
+    # worker that made a successful RestClient call for this home short-circuits the eighth call
+    # before it reaches httpx — 7, not 8. test_cli_ux resets it for the same reason.
+    monkeypatch.setattr("xorcise.core.cli.rest_client._FOREIGN_CHECKED", set())
     client = RestClient("http://127.0.0.1:1/api")
     client.get("/runs")
     client.get_run_result("r1")
