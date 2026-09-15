@@ -51,6 +51,9 @@ class RunRow(Base):
     # terminal state machine. trigger ∈ {done, timeout, flag}; first-wins.
     terminal_trigger: Mapped[str | None] = mapped_column(String(16), default=None)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # why the run ended, when the trigger alone does not say (the readiness gate's deploy_failed
+    # evidence). Nullable: the ordinary triggers carry no detail, and rows predate the column.
+    terminal_detail: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     # disclosed conditions: captured at run-create time, never mutated.
     model: Mapped[str | None] = mapped_column(
         String(255), nullable=True, default=None

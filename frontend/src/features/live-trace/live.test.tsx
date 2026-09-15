@@ -171,6 +171,37 @@ describe("RunLive", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("shows why a deploy failed, from the evidence the gate recorded", async () => {
+    // A deploy_failed run used to land the operator on this page with nothing but the badge: the
+    // gate had already destroyed the container whose logs said why. The recorded terminal_detail
+    // (verdict + log tail, captured before release) is now rendered verbatim.
+    const detail =
+      "the environment failed — the mission environment exited with exit code 1\n\n" +
+      "outer container, last 60 lines:\ncompose up: service web exited (1)";
+    server.use(
+      http.get("*/api/runs", () =>
+        HttpResponse.json([
+          runFixture({
+            run_id: "rdf",
+            state: "terminal",
+            terminal_trigger: "deploy_failed",
+            terminal_detail: detail,
+          }),
+        ]),
+      ),
+      http.get("*/api/runs/rdf/events", () =>
+        HttpResponse.json(eventsView("rdf", [])),
+      ),
+    );
+    renderWithProviders(<RunLive runId="rdf" />);
+    await screen.findByText("The mission environment never became ready");
+    const evidence = await screen.findByTestId("deploy-failure-detail");
+    expect(evidence.textContent).toContain("service web exited (1)");
+    expect(evidence.textContent).toContain("exit code 1");
+    // No partial result to open — the agent never worked against anything.
+    expect(screen.queryByText(/View partial result/i)).not.toBeInTheDocument();
+  });
+
   it("auto-updates to the terminal state without a manual refresh", async () => {
     let gets = 0;
     server.use(

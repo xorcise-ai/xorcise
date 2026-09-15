@@ -17,6 +17,13 @@ no route to any target. A run whose environment is FAILED is closed out at once;
 still starting is left alone until its window expires. Either way the run is terminated as
 `deploy_failed` and its environment released, rather than sitting in limbo.
 
+Closing out captures the evidence FIRST: the outer container's log tail (what the inner daemon wait,
+the image load and `compose up` said) and the inner daemon's own, recorded on the run row as
+`terminal_detail` together with the state the gate last observed. Release comes after, and happens
+ONCE — through terminate_run → grade_and_record → run_teardown, the single teardown every terminal
+path shares. The gate used to tear down first and terminate second, which destroyed the only
+explanation of a failed deploy and then tore the same environment down a second time.
+
 Stateless per tick and driven off persisted state, so it self-heals across a server restart: no
 in-memory bookkeeping to lose, and a replay of the same tick is a no-op (terminate is idempotent).
 """
@@ -48,6 +55,7 @@ class _ControlLike(Protocol):
 
     def status(self, run_id: str, *, credential: str) -> StatusResult: ...
     def teardown(self, run_id: str, *, credential: str) -> TeardownResult: ...
+    def environment_logs(self, run_id: str, *, credential: str) -> str: ...
 
 
 class _FenceLike(Protocol):
@@ -84,13 +92,16 @@ def classify_environment(deps: _ReadinessDeps, run_id: str) -> tuple[str, str]:
     Never raises: a missing container reads as still-starting, since the gate's window (not a single
     probe) decides when absence becomes a failure."""
     try:
-        state = deps.control.status(run_id, credential=deps.api_key).state
+        status = deps.control.status(run_id, credential=deps.api_key)
     except NotFoundError:
         return "starting", "waiting for the mission environment to start"
-    if state == RunState.FAILED:
-        return "failed", "the mission environment exited"
-    if state != RunState.READY:
-        return "starting", "mission services are still coming up"
+    # The runner's own detail wins when it has one (which service is still starting, that the
+    # inner daemon is not answering, the exit code): it is what the operator needs to read, and
+    # it is what gets recorded if the gate ends up closing the run out.
+    if status.state == RunState.FAILED:
+        return "failed", status.detail or "the mission environment exited"
+    if status.state != RunState.READY:
+        return "starting", status.detail or "mission services are still coming up"
     if not deps.fence.router_online(run_id):
         # Services up but no route: the agent would join the tailnet and reach nothing.
         return "starting", "waiting for the run's subnet router to join the tailnet"
@@ -109,6 +120,29 @@ def environment_ready(deps: _ReadinessDeps, run_id: str) -> bool:
     return deps.fence.router_online(run_id)
 
 
+#: Cap on the evidence recorded with a deploy_failed run: room for a `compose up` error and a
+#: daemon log tail, small enough for a run row (and every run-list response carrying it).
+_EVIDENCE_LIMIT = 8_000
+
+
+def closeout_detail(summary: str, evidence: str) -> str:
+    """The terminal_detail for a closed-out run: the gate's one-line verdict, then the evidence.
+
+    Truncation drops the OLDEST evidence, never the summary or the newest lines — the error that
+    explains a failed `compose up` is at the end of the log, not the start."""
+    evidence = evidence.strip()
+    if not evidence:
+        return summary
+    marker = "… (older lines dropped)\n"
+    room = _EVIDENCE_LIMIT - len(summary) - 2 - len(marker)  # 2: the "\n\n" joining them
+    if len(evidence) > room:
+        kept = evidence[-room:] if room > 0 else ""
+        # Start on a whole line — a torn first line reads as if the log itself were corrupt.
+        cut = kept.find("\n")
+        evidence = marker + (kept[cut + 1 :] if cut >= 0 else kept)
+    return f"{summary}\n\n{evidence}"
+
+
 class ReadinessWatchdog:
     """Periodic scan closing out runs whose environment failed or never became ready."""
 
@@ -116,7 +150,7 @@ class ReadinessWatchdog:
         self,
         deps: _ReadinessDeps,
         list_pending: Callable[[], list[tuple[str, datetime]]],
-        terminate: Callable[[str, str, datetime], object],
+        terminate: Callable[[str, str, datetime, str], object],
         now_fn: Callable[[], datetime],
         timeout_seconds: float,
         interval: float = 5.0,
@@ -184,23 +218,27 @@ class ReadinessWatchdog:
             self._misses[run_id] = misses
             if misses < self._strikes:
                 return False  # sustained failure only — one bad sample is not a verdict
-        reason = "environment failed" if failed else "not ready within the readiness window"
-        log.warning("readiness: closing out %s — %s", run_id, reason)
-        self._release(run_id)
-        self._terminate(run_id, DEPLOY_FAILED, now)
+        reason = "the environment failed" if failed else "not ready within the readiness window"
+        summary = f"{reason} — {detail}" if detail else reason
+        # Evidence FIRST, release after. The outer container's logs are the only record of why
+        # `compose up` (or the inner daemon) failed, and teardown destroys them — diagnosing a
+        # deploy failure used to mean disabling the gate and reproducing by hand.
+        evidence = self._evidence(run_id)
+        log.warning("readiness: closing out %s — %s", run_id, summary)
+        # ONE teardown, owned by the terminator: terminate_run → grade_and_record → run_teardown
+        # releases the container and the tailnet nodes in a `finally`. Releasing here as well tore
+        # the same environment down twice on every close-out (the "removal already in progress"
+        # 409s in the log) and doubled close-out latency for nothing.
+        self._terminate(run_id, DEPLOY_FAILED, now, closeout_detail(summary, evidence))
         return True
 
-    def _release(self, run_id: str) -> None:
-        """Best-effort teardown of the run's environment. Failures are logged, never raised —
-        the run must still be marked terminal so it cannot sit in limbo."""
+    def _evidence(self, run_id: str) -> str:
+        """Best-effort: the close-out must proceed whether or not the logs could be read."""
         try:
-            self._deps.control.teardown(run_id, credential=self._deps.api_key)
-        except Exception:
-            log.warning("readiness: control.teardown failed for %s", run_id, exc_info=True)
-        try:
-            self._deps.fence.teardown_run_network(run_id)
-        except Exception:
-            log.warning("readiness: fence teardown failed for %s", run_id, exc_info=True)
+            return self._deps.control.environment_logs(run_id, credential=self._deps.api_key)
+        except Exception:  # noqa: BLE001 — evidence is a bonus; a stuck run is the problem
+            log.warning("readiness: could not read %s's environment logs", run_id, exc_info=True)
+            return ""
 
     async def run(self) -> None:
         while True:
