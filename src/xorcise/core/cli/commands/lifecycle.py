@@ -22,6 +22,7 @@ from xorcise import __version__
 from xorcise.core.cli._diagnostics import (
     Check,
     control_plane,
+    control_plane_address,
     daemon_platform,
     disk_space,
     docker_compose_v2,
@@ -164,6 +165,15 @@ def _headscale_workdir() -> Path:
 
 def _config_path() -> Path:
     return Path(xorcise_home()) / "config.toml"
+
+
+def _current_host_ip() -> str | None:
+    """The address `up` would provision the control plane on TODAY (a read; provisions nothing).
+    None when it cannot be determined — a doctor probe must never be the thing that fails."""
+    try:
+        return provision.default_host_ip()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _maybe_provision_headscale(
@@ -1051,6 +1061,19 @@ def doctor(
     # host would fail its own diagnosis. Stub mode has no control plane by design.
     if expected_up and not s.use_stubs:
         port_checks.append(control_plane(s.headscale_container))
+        # The container answering is half the dependency. Every run's subnet router dials the
+        # URL `up` recorded, bound to the host address `up` detected AT THAT TIME; a laptop that
+        # moved networks keeps a healthy container nothing can reach, and every run then dies at
+        # the readiness window with a message that never names the control plane — the outage
+        # this check used to call "No problems found". Our own plane is probed at the recorded
+        # address (and told what the address is now); an operator's remote one the way `up`
+        # verifies it.
+        url = getattr(s, "headscale_url", "")
+        if url:
+            if url == provision.managed_url(_config_path()):
+                port_checks.append(control_plane_address(url, current_ip=_current_host_ip()))
+            else:
+                port_checks.append(external_control_plane(url))
     checks = [*env_checks, *port_checks]
 
     # Warnings are reported but never fail the verdict — advisory prerequisites

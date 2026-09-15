@@ -49,6 +49,18 @@ log = logging.getLogger(__name__)
 #: agent ran out of BUDGET, which is a legitimate result) — this one is an environment failure.
 DEPLOY_FAILED = "deploy_failed"
 
+#: The fence's "services up, router not on the tailnet" reading — and what to check when a run
+#: times out on exactly that. The router logs in to the control plane at the address `xorcise up`
+#: recorded; a host whose address changed since (a laptop on a new network) keeps a healthy
+#: Headscale container that no router can reach, and nothing else in this failure names the
+#: control plane — the operator was left reading tailscaled logs inside the fused container.
+ROUTER_WAIT = "waiting for the run's subnet router to join the tailnet"
+_ROUTER_HINT = (
+    "The router logs in to the control plane (Headscale) at the address `xorcise up` recorded; "
+    "if this host's address has changed since, `xorcise doctor` will say so, and "
+    "`xorcise down && xorcise up` re-provisions it."
+)
+
 
 class _ControlLike(Protocol):
     """The slice of ControlPort the gate uses (kept narrow so test fakes satisfy it too)."""
@@ -104,7 +116,7 @@ def classify_environment(deps: _ReadinessDeps, run_id: str) -> tuple[str, str]:
         return "starting", status.detail or "mission services are still coming up"
     if not deps.fence.router_online(run_id):
         # Services up but no route: the agent would join the tailnet and reach nothing.
-        return "starting", "waiting for the run's subnet router to join the tailnet"
+        return "starting", ROUTER_WAIT
     return "ready", ""
 
 
@@ -220,6 +232,8 @@ class ReadinessWatchdog:
                 return False  # sustained failure only — one bad sample is not a verdict
         reason = "the environment failed" if failed else "not ready within the readiness window"
         summary = f"{reason} — {detail}" if detail else reason
+        if detail == ROUTER_WAIT:
+            summary = f"{summary}. {_ROUTER_HINT}"
         # Evidence FIRST, release after. The outer container's logs are the only record of why
         # `compose up` (or the inner daemon) failed, and teardown destroys them — diagnosing a
         # deploy failure used to mean disabling the gate and reproducing by hand.
