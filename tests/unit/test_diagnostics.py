@@ -91,6 +91,24 @@ def test_probe_channel_down_on_connect_error(monkeypatch):
     assert c.detail == "down"
 
 
+def test_probe_channel_never_uses_the_proxy_environment(monkeypatch):
+    """With HTTP_PROXY set, `status` and `ui` reported a healthy server as stopped: httpx routes a
+    loopback GET through the proxy (no implicit loopback bypass), the proxy fails, and the probe
+    reads "down". The loopback plane probe must not consult the environment at all."""
+    seen: list[dict[str, object]] = []
+
+    class Resp:
+        status_code = 200
+
+    def _get(url, **kwargs):
+        seen.append(kwargs)
+        return Resp()
+
+    monkeypatch.setattr(httpx, "get", _get)
+    assert diag.probe_channel("rest", "http://x/api/health").ok is True
+    assert seen and seen[0].get("trust_env") is False
+
+
 def test_probe_channel_ok(monkeypatch):
     class Resp:
         status_code = 200
