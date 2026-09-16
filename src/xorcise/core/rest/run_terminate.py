@@ -207,12 +207,17 @@ def _grade_run(run_id: str) -> None:
     # this module's import path — plane-isolation invariant).
     stats = None
     try:
-        from xorcise.core.otel.run_stats import fold_run_stats
+        from xorcise.core.otel.run_stats import fold_run_stats, projection_key
         from xorcise.core.rest import events_view
 
         view = events_view._full_view(run_id)
         stats = fold_run_stats(
-            view.events, created_at=run.created_at, completed_at=run.completed_at
+            view.events,
+            created_at=run.created_at,
+            completed_at=run.completed_at,
+            # Which adapter + normalizer rendered these events: a later classifier change makes
+            # this snapshot stale, and current_run_stats re-folds it on read.
+            projection=projection_key(view.adapter_name, view.adapter_version),
         )
     except Exception:  # best-effort — a telemetry snapshot must never break finalization
         log.warning("run-stats fold failed for %s", run_id, exc_info=True)

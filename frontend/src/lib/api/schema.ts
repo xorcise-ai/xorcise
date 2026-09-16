@@ -1063,10 +1063,13 @@ export interface paths {
          * Run Stats
          * @description Per-run telemetry snapshot (tokens / counts / timing) for the run report.
          *
-         *     Prefers the snapshot recorded at grade time; for a run graded before the snapshot column
-         *     existed (empty stats_json) it folds the event projection LIVE as a read-only fallback (no
-         *     back-write). Mirrors /result's states otherwise: unknown run → 404; terminal-but-ungraded →
-         *     202 {"status": "grading"}; still-active run → 409.
+         *     Serves the snapshot recorded at grade time when it was folded under the run's CURRENT event
+         *     projection. When it predates the renderer (a classifier changed since the run was graded), or
+         *     was never recorded (a run graded before the snapshot column existed), the projection is folded
+         *     live and the refreshed snapshot persisted — the derived stats column only, never the grade — so
+         *     this page, the report and the replay agree (report_assembly.current_run_stats). Mirrors
+         *     /result's states otherwise: unknown run → 404; terminal-but-ungraded → 202
+         *     {"status": "grading"}; still-active run → 409.
          */
         get: operations["run_stats_api_runs__run_id__stats_get"];
         put?: never;
@@ -2703,6 +2706,8 @@ export interface components {
              *     }
              */
             counts: components["schemas"]["CountStats"];
+            /** Projection */
+            projection?: string | null;
             /** @default {} */
             timing: components["schemas"]["TimingStats"];
             /**

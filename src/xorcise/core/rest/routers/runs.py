@@ -768,14 +768,14 @@ def run_report(run_id: str, background: BackgroundTasks, format: str = "md") -> 
 def run_stats(run_id: str, background: BackgroundTasks) -> RunStats | JSONResponse:
     """Per-run telemetry snapshot (tokens / counts / timing) for the run report.
 
-    Prefers the snapshot recorded at grade time; for a run graded before the snapshot column
-    existed (empty stats_json) it folds the event projection LIVE as a read-only fallback (no
-    back-write). Mirrors /result's states otherwise: unknown run → 404; terminal-but-ungraded →
-    202 {"status": "grading"}; still-active run → 409.
+    Serves the snapshot recorded at grade time when it was folded under the run's CURRENT event
+    projection. When it predates the renderer (a classifier changed since the run was graded), or
+    was never recorded (a run graded before the snapshot column existed), the projection is folded
+    live and the refreshed snapshot persisted — the derived stats column only, never the grade — so
+    this page, the report and the replay agree (report_assembly.current_run_stats). Mirrors
+    /result's states otherwise: unknown run → 404; terminal-but-ungraded → 202
+    {"status": "grading"}; still-active run → 409.
     """
-    stored = reporting.get_stats(run_id)
-    if stored is not None:
-        return stored
     run = runs.get(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"no run '{run_id}'")
@@ -788,10 +788,9 @@ def run_stats(run_id: str, background: BackgroundTasks) -> RunStats | JSONRespon
         raise HTTPException(
             status_code=409, detail=f"run '{run_id}' is not terminal yet — no stats"
         )
-    # A graded run with no stored snapshot (pre-migration): fold live, read-only. Lazy imports keep
-    # the otel display plane off this module's import path (plane-isolation invariant).
-    from xorcise.core.otel.run_stats import fold_run_stats
-    from xorcise.core.rest import events_view
+    # Lazy import keeps the otel display plane off this module's import path (plane isolation).
+    from xorcise.core.rest.report_assembly import current_run_stats
 
-    view = events_view._full_view(run_id)
-    return fold_run_stats(view.events, created_at=run.created_at, completed_at=run.completed_at)
+    stats = current_run_stats(run)
+    # A graded run with nothing captured still answers with a zeroed snapshot, never a 404.
+    return stats if stats is not None else RunStats()

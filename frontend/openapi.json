@@ -3523,6 +3523,17 @@
               "tool_calls": 0
             }
           },
+          "projection": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Projection"
+          },
           "timing": {
             "$ref": "#/components/schemas/TimingStats",
             "default": {}
@@ -6574,7 +6585,7 @@
     },
     "/api/runs/{run_id}/stats": {
       "get": {
-        "description": "Per-run telemetry snapshot (tokens / counts / timing) for the run report.\n\nPrefers the snapshot recorded at grade time; for a run graded before the snapshot column\nexisted (empty stats_json) it folds the event projection LIVE as a read-only fallback (no\nback-write). Mirrors /result's states otherwise: unknown run \u2192 404; terminal-but-ungraded \u2192\n202 {\"status\": \"grading\"}; still-active run \u2192 409.",
+        "description": "Per-run telemetry snapshot (tokens / counts / timing) for the run report.\n\nServes the snapshot recorded at grade time when it was folded under the run's CURRENT event\nprojection. When it predates the renderer (a classifier changed since the run was graded), or\nwas never recorded (a run graded before the snapshot column existed), the projection is folded\nlive and the refreshed snapshot persisted \u2014 the derived stats column only, never the grade \u2014 so\nthis page, the report and the replay agree (report_assembly.current_run_stats). Mirrors\n/result's states otherwise: unknown run \u2192 404; terminal-but-ungraded \u2192 202\n{\"status\": \"grading\"}; still-active run \u2192 409.",
         "operationId": "run_stats_api_runs__run_id__stats_get",
         "parameters": [
           {

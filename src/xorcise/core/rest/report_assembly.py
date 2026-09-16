@@ -50,27 +50,49 @@ def _artifacts_for(run_id: str) -> tuple[ReportArtifact, ...]:
     )
 
 
-def _stats_for(run: RunEntry) -> RunStats | None:
-    """The run's telemetry snapshot, with the SAME live fallback the /stats endpoint uses.
+def current_run_stats(run: RunEntry) -> RunStats | None:
+    """The run's telemetry snapshot, re-folded when the stored one predates the current projection.
+    Shared by the report and `GET /runs/{id}/stats`, so the offline twin and the Results page
+    cannot drift from each other.
 
-    A run graded before the stats column existed has no stored snapshot; /stats folds the event
-    projection live (read-only) so the Results page still shows tokens/tool calls. The report is
-    that page's offline twin, so it has to fold too — otherwise the browser shows 178.7k tokens
-    and the downloaded report claims no telemetry was recorded."""
+    The snapshot is folded ONCE at terminate, under whatever adapter + normalizer version rendered
+    the run that day, and persisted beside the grade. The projection it was folded from is
+    versioned and rebuilt from RAW whenever a classifier changes (events_view._ensure_fresh). Left
+    alone the two drift, and #129/#130 made that visible: a run graded under the old generic
+    classifier reported "Tool calls 37 / Unclassified spans 0" from its frozen snapshot directly
+    above a live warning that 37 spans were unclassified — same table, same run.
+
+    So the snapshot carries the projection it was folded under (`RunStats.projection`) and is
+    treated as the cache it is. A stored snapshot whose key matches the run's current projection is
+    served as-is. Otherwise — an older renderer, a snapshot from before the field existed, or no
+    snapshot at all (a run graded before the column) — the projection is folded live and the
+    refreshed snapshot written back (the derived stats column only, never the grade), so the
+    report, the Results page and the replay agree, and the fold runs once per renderer change.
+
+    Display-only throughout: never a grading input. Best-effort: a projection failure yields the
+    stored snapshot (or None) — a report must still render."""
     stored = reporting.get_stats(run.run_id)
-    if stored is not None:
-        return stored
     # Lazy: keep the otel display plane off this module's import path (plane-isolation invariant).
-    from xorcise.core.otel.run_stats import fold_run_stats
+    from xorcise.core.otel.run_stats import fold_run_stats, projection_key
     from xorcise.core.rest import events_view
 
     try:
+        summary = events_view.telemetry_summary(run.run_id)
+        key = projection_key(summary.adapter_name, summary.adapter_version)
+        if stored is not None and stored.projection == key:
+            return stored
         view = events_view._full_view(run.run_id)
     except Exception:  # pragma: no cover — telemetry is display-only; a report must still render
-        return None
+        return stored
     if not view.events:
-        return None
-    return fold_run_stats(view.events, created_at=run.created_at, completed_at=run.completed_at)
+        # Nothing to fold: None when nothing was ever captured; a stale snapshot still beats a
+        # zeroed re-fold should the RAW somehow be gone.
+        return stored
+    fresh = fold_run_stats(
+        view.events, created_at=run.created_at, completed_at=run.completed_at, projection=key
+    )
+    reporting.put_stats(run.run_id, fresh)  # no-op when the run has no recorded result yet
+    return fresh
 
 
 def _fold_terrain(base: ResolvedTerrainV2, changes: list[_Fold]) -> ResolvedTerrainV2:
@@ -219,7 +241,7 @@ def assemble_report(run_id: str) -> RunReportContext | None:
         conditions=conditions,
         partial=partial,
         partial_trigger=partial_trigger,
-        stats=_stats_for(run),
+        stats=current_run_stats(run),
         telemetry=_telemetry_for(run_id),
         artifacts=_artifacts_for(run_id),
         terrain=_terrain_for(run_id, run.mission),
