@@ -338,9 +338,7 @@ def test_a_late_batch_for_a_sealed_run_is_spooled_and_still_never_persisted(tmp_
     recorder = DropRecorder(spool=DropSpool(tmp_path / "dropped", cap=5))
     client = TestClient(create_otel_app(store, seal_store, drops=recorder))
 
-    resp = client.post(
-        "/v1/traces", content=json.dumps(_trace("run-sealed", ["late-1", "late-2"]))
-    )
+    resp = client.post("/v1/traces", content=json.dumps(_trace("run-sealed", ["late-1", "late-2"])))
     assert resp.status_code == 200
     assert resp.json()["partialSuccess"]["rejectedSpans"] == 2
     assert store.read("run-sealed") == []  # the seal held: nothing re-entered evidence
