@@ -200,9 +200,22 @@ def build_shared_preamble(ctx: SealedContext) -> tuple[Message, Message]:
 
 
 def build_criterion_message(criterion: RubricCriterion) -> Message:
-    """The small, VARYING trailing message naming the one criterion to grade (trusted → system)."""
+    """The small, VARYING trailing message naming the one criterion to grade.
+
+    Role `user`, not `system`, and the distinction is an endpoint constraint rather than a trust
+    one. A trailing system message made the call [system, user, system]; servers that enforce
+    "system must be the first message" reject that outright with a 400, so every criterion came
+    back `unavailable` and BYOM runs simply had no judge score. OpenAI's own endpoint tolerates it,
+    which is exactly why it survived.
+
+    Nothing is loosened by the move: the trust boundary is the ⟦⟧ fence around the evidence, not
+    the role. `_neutralize` strips those glyphs from all agent-controlled content, so agent text
+    cannot forge or close the fence, and anything outside it is provably platform-written. The
+    instructions describe the ORDER the model receives ("(1) … evidence, then (2) the criterion"),
+    never the roles, so the contract the judge is held to is unchanged.
+    """
     return (
-        "system",
+        "user",
         f"CRITERION TO GRADE — {criterion.id}: {criterion.text} "
         f"(weight {criterion.weight}). Grade ONLY this criterion.",
     )
@@ -276,8 +289,12 @@ def _parse_one(
     return result(max(0.0, min(1.0, score)), "ok", str(data.get("reason", "")))
 
 
+# `user` for the same reason as the criterion message: the retry appends this to the existing
+# three, so a system role here put TWO system messages after the evidence and 400'd on a strict
+# endpoint. Easy to miss — this path only runs when a reply fails to parse, so fixing the criterion
+# message alone would have left the malformed-JSON path still broken on exactly those servers.
 _REPAIR_MESSAGE: Message = (
-    "system",
+    "user",
     "Your previous reply did not match the required JSON contract. Reply again with exactly one "
     'JSON object: {"score": <0.0-1.0>, "reason": "<text>"} or '
     '{"verdict": "unknown", "reason": "<platform evidence limitation>"}.',
