@@ -439,6 +439,39 @@ export function RunLive({ runId }: { runId: string | null }) {
         </Card>
       )}
 
+      {/* ─── Deploy failure — the readiness gate closed the run out because its environment died
+           or never became ready. terminal_detail is the gate's verdict plus the evidence it
+           captured (the outer container's log tail, the inner daemon's) BEFORE releasing the
+           environment — the only copy of why `compose up` or the inner daemon failed. ─── */}
+      {r.terminal_trigger === "deploy_failed" && (
+        <Card className="shrink-0 border-err/30 bg-err/5 p-4">
+          <p className="text-body font-semibold text-err">
+            The mission environment never became ready
+          </p>
+          <p className="mt-2 max-w-[68ch] text-body text-text-secondary">
+            It died at deploy or did not come up within the readiness window, so
+            the run was closed out before the agent could work against it. What
+            the environment said before it was released:
+          </p>
+          {r.terminal_detail && (
+            <pre
+              data-testid="deploy-failure-detail"
+              className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-deepest p-3 font-mono text-dense text-foreground"
+            >
+              {r.terminal_detail}
+            </pre>
+          )}
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Link
+              href="/runs/new"
+              className={buttonVariants({ variant: "ghost", size: "sm" })}
+            >
+              Run again
+            </Link>
+          </div>
+        </Card>
+      )}
+
       {/* ─── Agent-inactivity warning — the agent went quiet mid-run (crash / disconnect /
            guard-rail exit) and would otherwise burn silently to the budget timeout. A warning,
            not lifecycle management: the operator decides between Terminate and waiting out a
