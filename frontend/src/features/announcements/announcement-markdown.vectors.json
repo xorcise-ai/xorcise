@@ -1,0 +1,626 @@
+{
+  "fixture_version": 1,
+  "grammar": "xorcise-announcement-md/1",
+  "_comment": "Byte-identical copies live in xorcise-ai (apps/console/src/lib/) and xorcise (frontend/src/features/announcements/). Bump fixture_version, update ANNOUNCEMENT_VECTORS_SHA256 in all three tests, and copy the file to the other repo in the same change.",
+  "reason_codes": [
+    "bidi_control",
+    "blockquote",
+    "bullet_marker",
+    "code_block",
+    "control_char",
+    "empty",
+    "entity",
+    "footnote",
+    "heading",
+    "html",
+    "image",
+    "indented",
+    "link_text_empty",
+    "list_item_empty",
+    "list_mixed",
+    "list_too_long",
+    "multiple_lists",
+    "ordered_list",
+    "reference_link",
+    "rule",
+    "table",
+    "too_long",
+    "too_many_lines",
+    "url_invalid",
+    "url_scheme",
+    "url_too_long"
+  ],
+  "vectors": [
+    {
+      "id": "plain",
+      "input": "Maintenance tonight.",
+      "expect": "ok",
+      "tokens": [
+        [
+          "p",
+          [
+            [
+              "t",
+              "Maintenance tonight."
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "id": "strong",
+      "input": "Deploy is **frozen** until 18:00 UTC.",
+      "expect": "ok",
+      "tokens": [
+        [
+          "p",
+          [
+            [
+              "t",
+              "Deploy is "
+            ],
+            [
+              "b",
+              "frozen"
+            ],
+            [
+              "t",
+              " until 18:00 UTC."
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "id": "em",
+      "input": "This is *not* a drill.",
+      "expect": "ok",
+      "tokens": [
+        [
+          "p",
+          [
+            [
+              "t",
+              "This is "
+            ],
+            [
+              "i",
+              "not"
+            ],
+            [
+              "t",
+              " a drill."
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "id": "code",
+      "input": "Run `xorcise doctor` first.",
+      "expect": "ok",
+      "tokens": [
+        [
+          "p",
+          [
+            [
+              "t",
+              "Run "
+            ],
+            [
+              "c",
+              "xorcise doctor"
+            ],
+            [
+              "t",
+              " first."
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "id": "code_wins",
+      "input": "`**not bold**`",
+      "expect": "ok",
+      "tokens": [
+        [
+          "p",
+          [
+            [
+              "c",
+              "**not bold**"
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "id": "link_ext",
+      "input": "See [the runbook](https://docs.xorcise.ai/operate/pulls).",
+      "expect": "ok",
+      "tokens": [
+        [
+          "p",
+          [
+            [
+              "t",
+              "See "
+            ],
+            [
+              "a",
+              "the runbook",
+              "https://docs.xorcise.ai/operate/pulls",
+              "ext"
+            ],
+            [
+              "t",
+              "."
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "id": "link_int",
+      "input": "Open [Settings](/settings).",
+      "expect": "ok",
+      "tokens": [
+        [
+          "p",
+          [
+            [
+              "t",
+              "Open "
+            ],
+            [
+              "a",
+              "Settings",
+              "/settings",
+              "int"
+            ],
+            [
+              "t",
+              "."
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "id": "two_paragraphs",
+      "input": "First.\n\nSecond.",
+      "expect": "ok",
+      "tokens": [
+        [
+          "p",
+          [
+            [
+              "t",
+              "First."
+            ]
+          ]
+        ],
+        [
+          "p",
+          [
+            [
+              "t",
+              "Second."
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "id": "crlf_and_extra_blanks",
+      "input": "A\r\n\r\n\r\nB",
+      "expect": "ok",
+      "tokens": [
+        [
+          "p",
+          [
+            [
+              "t",
+              "A"
+            ]
+          ]
+        ],
+        [
+          "p",
+          [
+            [
+              "t",
+              "B"
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "id": "hard_break",
+      "input": "Line one\nLine two",
+      "expect": "ok",
+      "tokens": [
+        [
+          "p",
+          [
+            [
+              "t",
+              "Line one"
+            ],
+            [
+              "br"
+            ],
+            [
+              "t",
+              "Line two"
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "id": "list",
+      "input": "Affected:\n\n- Pulls\n- **Runs**",
+      "expect": "ok",
+      "tokens": [
+        [
+          "p",
+          [
+            [
+              "t",
+              "Affected:"
+            ]
+          ]
+        ],
+        [
+          "ul",
+          [
+            [
+              [
+                "t",
+                "Pulls"
+              ]
+            ],
+            [
+              [
+                "b",
+                "Runs"
+              ]
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "id": "unmatched_star_literal",
+      "input": "5 * 3 = 15 and 2*x",
+      "expect": "ok",
+      "tokens": [
+        [
+          "p",
+          [
+            [
+              "t",
+              "5 * 3 = 15 and 2*x"
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "id": "double_then_single",
+      "input": "**a*",
+      "expect": "ok",
+      "tokens": [
+        [
+          "p",
+          [
+            [
+              "t",
+              "*"
+            ],
+            [
+              "i",
+              "a"
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "id": "underscore_literal",
+      "input": "Check mission_id and _config_ values",
+      "expect": "ok",
+      "tokens": [
+        [
+          "p",
+          [
+            [
+              "t",
+              "Check mission_id and _config_ values"
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "id": "backslash_literal",
+      "input": "Escape \\* stays literal",
+      "expect": "ok",
+      "tokens": [
+        [
+          "p",
+          [
+            [
+              "t",
+              "Escape \\* stays literal"
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "id": "nested_is_literal",
+      "input": "**See [docs](/d)**",
+      "expect": "ok",
+      "tokens": [
+        [
+          "p",
+          [
+            [
+              "b",
+              "See [docs](/d)"
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "id": "bare_bracket_literal",
+      "input": "[DRAFT] not a link",
+      "expect": "ok",
+      "tokens": [
+        [
+          "p",
+          [
+            [
+              "t",
+              "[DRAFT] not a link"
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "id": "lt_literal",
+      "input": "a < b and <3",
+      "expect": "ok",
+      "tokens": [
+        [
+          "p",
+          [
+            [
+              "t",
+              "a < b and <3"
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "id": "link_text_empty",
+      "input": "[](https://x.y)",
+      "expect": "ok",
+      "tokens": [
+        [
+          "p",
+          [
+            [
+              "t",
+              "[](https://x.y)"
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "id": "js_url",
+      "input": "[x](javascript:alert(1))",
+      "expect": "ok",
+      "tokens": [
+        [
+          "p",
+          [
+            [
+              "t",
+              "[x](javascript:alert(1))"
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "id": "html",
+      "input": "Click <b>here</b>",
+      "expect": "reject",
+      "code": "html"
+    },
+    {
+      "id": "autolink_is_html",
+      "input": "<https://x.y>",
+      "expect": "reject",
+      "code": "html"
+    },
+    {
+      "id": "image",
+      "input": "![logo](https://x.y/z.png)",
+      "expect": "reject",
+      "code": "image"
+    },
+    {
+      "id": "heading",
+      "input": "# Outage",
+      "expect": "reject",
+      "code": "heading"
+    },
+    {
+      "id": "blockquote",
+      "input": "> quoted",
+      "expect": "reject",
+      "code": "blockquote"
+    },
+    {
+      "id": "fence",
+      "input": "```\ncode\n```",
+      "expect": "reject",
+      "code": "code_block"
+    },
+    {
+      "id": "table",
+      "input": "| a | b |\n|---|---|",
+      "expect": "reject",
+      "code": "table"
+    },
+    {
+      "id": "setext_rule",
+      "input": "Title\n===",
+      "expect": "reject",
+      "code": "rule"
+    },
+    {
+      "id": "ordered_list",
+      "input": "1. First",
+      "expect": "reject",
+      "code": "ordered_list"
+    },
+    {
+      "id": "bullet_marker",
+      "input": "* Item",
+      "expect": "reject",
+      "code": "bullet_marker"
+    },
+    {
+      "id": "list_item_empty",
+      "input": "- Item\n-",
+      "expect": "reject",
+      "code": "list_item_empty"
+    },
+    {
+      "id": "nested_list",
+      "input": "- a\n  - b",
+      "expect": "reject",
+      "code": "indented"
+    },
+    {
+      "id": "list_mixed",
+      "input": "Affected:\n- Pulls",
+      "expect": "reject",
+      "code": "list_mixed"
+    },
+    {
+      "id": "multiple_lists",
+      "input": "- a\n\n- b",
+      "expect": "reject",
+      "code": "multiple_lists"
+    },
+    {
+      "id": "list_too_long",
+      "input": "- 1\n- 2\n- 3\n- 4\n- 5\n- 6",
+      "expect": "reject",
+      "code": "list_too_long"
+    },
+    {
+      "id": "entity",
+      "input": "Fish &amp; chips",
+      "expect": "reject",
+      "code": "entity"
+    },
+    {
+      "id": "footnote",
+      "input": "See the note[^1]",
+      "expect": "reject",
+      "code": "footnote"
+    },
+    {
+      "id": "reference_link",
+      "input": "See [the docs][docs]",
+      "expect": "reject",
+      "code": "reference_link"
+    },
+    {
+      "id": "control_char",
+      "input": "Tab\there",
+      "expect": "reject",
+      "code": "control_char"
+    },
+    {
+      "id": "bidi",
+      "input": "Login \u202emoc.elpmaxe",
+      "expect": "reject",
+      "code": "bidi_control"
+    },
+    {
+      "id": "too_long",
+      "input": "x",
+      "repeat": 601,
+      "expect": "reject",
+      "code": "too_long"
+    },
+    {
+      "id": "too_many_lines",
+      "input": "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm",
+      "expect": "reject",
+      "code": "too_many_lines"
+    },
+    {
+      "id": "empty",
+      "input": "  \n\n ",
+      "expect": "reject",
+      "code": "empty"
+    },
+    {
+      "id": "link_text_blank",
+      "input": "[ ](https://x.y)",
+      "expect": "reject",
+      "code": "link_text_empty"
+    },
+    {
+      "id": "url_too_long",
+      "input": "[x](https://a.b/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
+      "expect": "reject",
+      "code": "url_too_long"
+    },
+    {
+      "id": "js_url_bare",
+      "input": "[x](javascript:alert)",
+      "expect": "reject",
+      "code": "url_scheme"
+    },
+    {
+      "id": "http_url",
+      "input": "[x](http://example.com)",
+      "expect": "reject",
+      "code": "url_scheme"
+    },
+    {
+      "id": "proto_relative",
+      "input": "[x](//evil.example)",
+      "expect": "reject",
+      "code": "url_scheme"
+    },
+    {
+      "id": "mailto",
+      "input": "[mail](mailto:ops@x.y)",
+      "expect": "reject",
+      "code": "url_scheme"
+    },
+    {
+      "id": "url_quote",
+      "input": "[x](https://a.b/c\"d)",
+      "expect": "reject",
+      "code": "url_invalid"
+    }
+  ]
+}
