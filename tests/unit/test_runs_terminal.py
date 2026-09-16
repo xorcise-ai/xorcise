@@ -20,6 +20,30 @@ def test_mark_terminal_first_trigger_wins_and_is_idempotent(migrated_home) -> No
     assert is_term is True and trigger == "done" and completed == _now()
 
 
+def test_mark_terminal_records_the_detail_with_the_first_transition_only(migrated_home) -> None:
+    """The readiness gate's evidence rides on the same first-wins transition as the trigger: a
+    later call — any trigger, any detail — changes neither."""
+    r = runs.create_run(agent_id="a1", mission="c", budget_seconds=600)
+    why = "the environment failed — the mission environment exited with exit code 1\n\nlogs…"
+    assert runs.mark_terminal(r.run_id, "deploy_failed", _now(), why) == "deploy_failed"
+    entry = runs.get(r.run_id)
+    assert entry is not None and entry.terminal_detail == why
+    assert runs.mark_terminal(r.run_id, "timeout", _now(), "later") == "deploy_failed"
+    entry = runs.get(r.run_id)
+    assert entry is not None and entry.terminal_detail == why
+
+
+def test_mark_terminal_without_a_detail_leaves_it_null(migrated_home) -> None:
+    # The ordinary triggers carry no detail; an empty string is stored as the same nothing.
+    a = runs.create_run(agent_id="a1", mission="c", budget_seconds=600)
+    b = runs.create_run(agent_id="a1", mission="c", budget_seconds=600)
+    runs.mark_terminal(a.run_id, "done", _now())
+    runs.mark_terminal(b.run_id, "done", _now(), "")
+    for run_id in (a.run_id, b.run_id):
+        entry = runs.get(run_id)
+        assert entry is not None and entry.terminal_detail is None
+
+
 def test_terminal_state_for_live_and_absent_run(migrated_home) -> None:
     r = runs.create_run(agent_id="a1", mission="c", budget_seconds=600)
     assert runs.terminal_state(r.run_id) == (False, None, None)

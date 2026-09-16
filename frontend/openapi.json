@@ -1348,6 +1348,16 @@
         "additionalProperties": false,
         "description": "Authored container/network SOURCE. Ingestion fuses this into the run-ready\nimage (MissionRef.image). No file reading here \u2014 pure shape.",
         "properties": {
+          "agent_ingress": {
+            "default": true,
+            "title": "Agent Ingress",
+            "type": "boolean"
+          },
+          "allow_egress": {
+            "default": false,
+            "title": "Allow Egress",
+            "type": "boolean"
+          },
           "compose_file": {
             "default": "docker-compose.yml",
             "title": "Compose File",
@@ -3130,6 +3140,17 @@
             "title": "State",
             "type": "string"
           },
+          "terminal_detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Detail"
+          },
           "terminal_trigger": {
             "anyOf": [
               {
@@ -3318,6 +3339,17 @@
           "state": {
             "title": "State",
             "type": "string"
+          },
+          "terminal_detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Detail"
           },
           "terminal_trigger": {
             "anyOf": [
@@ -3620,6 +3652,17 @@
                 "type": "null"
               }
             ]
+          },
+          "pid": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pid"
           },
           "planes": {
             "items": {
