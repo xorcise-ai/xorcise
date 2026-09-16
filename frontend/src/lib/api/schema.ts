@@ -64,6 +64,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/announcements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Active
+         * @description Active announcements for this install; an empty list whenever there are none.
+         */
+        get: operations["active_api_announcements_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/catalog/status": {
         parameters: {
             query?: never;
@@ -1387,6 +1407,43 @@ export interface components {
             run_id: string;
             /** Trace Ref */
             trace_ref?: string | null;
+        };
+        /**
+         * Announcement
+         * @description One active banner. `revision` increments when a published announcement is edited,
+         *     so the browser can re-show a banner the reader had already dismissed.
+         */
+        Announcement: {
+            /** Body Md */
+            body_md: string;
+            /** Dismissible */
+            dismissible: boolean;
+            /** Id */
+            id: string;
+            /**
+             * Placement
+             * @enum {string}
+             */
+            placement: "application" | "catalog";
+            /** Revision */
+            revision: number;
+            /**
+             * Tone
+             * @enum {string}
+             */
+            tone: "information" | "maintenance" | "incident" | "resolved";
+        };
+        /**
+         * AnnouncementsResponse
+         * @description GET /api/announcements. Empty is the normal answer — nothing published, the remote
+         *     catalog switched off, an older deployment that 404s, or any failure at all.
+         */
+        AnnouncementsResponse: {
+            /**
+             * Announcements
+             * @default []
+             */
+            announcements: components["schemas"]["Announcement"][];
         };
         /**
          * ArtifactSpec
@@ -3188,6 +3245,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    active_api_announcements_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnnouncementsResponse"];
                 };
             };
         };

@@ -17,6 +17,7 @@ from xorcise.core.config import LOOPBACK, LOOPBACK_HOSTS, get_settings
 from xorcise.core.rest.app import create_app, mount_ui
 from xorcise.core.rest.routers import (
     agents,
+    announcements,
     catalog,
     config,
     fs,
@@ -45,6 +46,7 @@ def build_rest_app() -> FastAPI:
     app.include_router(runcontrol.router, prefix="/api")
     app.include_router(missions.router, prefix="/api")
     app.include_router(catalog.router, prefix="/api")
+    app.include_router(announcements.router, prefix="/api")
     app.include_router(config.router, prefix="/api")
     app.include_router(system.router, prefix="/api")
     app.include_router(fs.router, prefix="/api")

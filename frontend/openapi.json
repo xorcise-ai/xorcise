@@ -571,6 +571,72 @@
         "title": "AgentHistoryEntry",
         "type": "object"
       },
+      "Announcement": {
+        "additionalProperties": false,
+        "description": "One active banner. `revision` increments when a published announcement is edited,\nso the browser can re-show a banner the reader had already dismissed.",
+        "properties": {
+          "body_md": {
+            "title": "Body Md",
+            "type": "string"
+          },
+          "dismissible": {
+            "title": "Dismissible",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "placement": {
+            "enum": [
+              "application",
+              "catalog"
+            ],
+            "title": "Placement",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "tone": {
+            "enum": [
+              "information",
+              "maintenance",
+              "incident",
+              "resolved"
+            ],
+            "title": "Tone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "revision",
+          "placement",
+          "tone",
+          "body_md",
+          "dismissible"
+        ],
+        "title": "Announcement",
+        "type": "object"
+      },
+      "AnnouncementsResponse": {
+        "additionalProperties": false,
+        "description": "GET /api/announcements. Empty is the normal answer \u2014 nothing published, the remote\ncatalog switched off, an older deployment that 404s, or any failure at all.",
+        "properties": {
+          "announcements": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/Announcement"
+            },
+            "title": "Announcements",
+            "type": "array"
+          }
+        },
+        "title": "AnnouncementsResponse",
+        "type": "object"
+      },
       "ArtifactSpec": {
         "additionalProperties": false,
         "description": "An artifact the agent is expected to submit (run-control collects it).",
@@ -4508,6 +4574,28 @@
         "summary": "Agent History",
         "tags": [
           "agents"
+        ]
+      }
+    },
+    "/api/announcements": {
+      "get": {
+        "description": "Active announcements for this install; an empty list whenever there are none.",
+        "operationId": "active_api_announcements_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnnouncementsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Active",
+        "tags": [
+          "announcements"
         ]
       }
     },
