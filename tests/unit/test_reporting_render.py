@@ -523,3 +523,25 @@ def test_report_filename_is_slugged_and_extension_correct():
     assert report_filename(ctx, "html") == "xorcise-run-run-abcd-sqli-login.html"
     weird = _ctx(run=_run(mission="Chrono Canary / v2!"))
     assert report_filename(weird, "md") == "xorcise-run-run-abcd-chrono-canary-v2.md"
+
+
+# ── the report states the evidence seal (#116) ───────────────────────────────────────────────
+
+
+def test_the_report_states_the_evidence_is_unchanged_since_sealing() -> None:
+    md = render_markdown(_ctx(evidence_digest="a" * 64, evidence_verified=True))
+    assert "Evidence seal" in md and "verified" in md
+
+
+def test_the_report_says_plainly_when_the_evidence_no_longer_matches() -> None:
+    """The one line that tells a reader the rest of the report may not be trustworthy — so it has
+    to be unmissable rather than a quiet status word."""
+    md = render_markdown(_ctx(evidence_digest="b" * 64, evidence_verified=False))
+    assert "MISMATCH" in md
+
+
+def test_the_report_is_silent_about_sealing_when_no_digest_was_recorded() -> None:
+    """Runs sealed before digests existed. A permanent "unknown" row on every old report would
+    train readers to skip the line, which defeats it."""
+    md = render_markdown(_ctx(evidence_digest=None, evidence_verified=None))
+    assert "Evidence seal" not in md

@@ -37,6 +37,17 @@ def _agent_name(agent_id: str) -> str:
     return agent_id
 
 
+def _evidence_digest_for(run_id: str) -> str | None:
+    """The digest recorded when the run was sealed; None for a run sealed before digests existed.
+
+    Lazy import keeps the otel plane off this module's import path, like every other store read
+    here (plane-isolation invariant).
+    """
+    from xorcise.core.otel.store import SqliteSealStore
+
+    return SqliteSealStore().evidence_digest(run_id)
+
+
 def _artifacts_for(run_id: str) -> tuple[ReportArtifact, ...]:
     """The agent's submitted work artifacts, in submission order (intel/complete excluded)."""
     # Lazy: keep the runcontrol store off this module's import path (plane-isolation invariant).
@@ -194,6 +205,7 @@ def assemble_report(run_id: str) -> RunReportContext | None:
     partial, partial_trigger = reporting.result_partial(run_id)
     # Disclosure provenance: fill intel_disclosed from the run-control submission store (delivery
     # layer owns the cross-module join; lazy import matches _artifacts_for above).
+    from xorcise.core.rest.evidence_seal import verify_evidence
     from xorcise.core.runcontrol.store import disclosed_intel_count
 
     conditions = (reporting.result_conditions(run_id) or ResultConditions()).model_copy(
@@ -209,4 +221,9 @@ def assemble_report(run_id: str) -> RunReportContext | None:
         stats=_stats_for(run),
         artifacts=_artifacts_for(run_id),
         terrain=_terrain_for(run_id, run.mission),
+        # Verification is done HERE, at render time, not read from a stored verdict: a verdict
+        # recorded at seal time would only ever say "matched when we wrote it", which is the one
+        # thing never in doubt. Re-hashing now is what makes a later edit visible.
+        evidence_digest=_evidence_digest_for(run_id),
+        evidence_verified=verify_evidence(run_id),
     )

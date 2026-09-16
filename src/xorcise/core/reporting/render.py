@@ -80,6 +80,12 @@ class RunReportContext:
     # mission declared no terrain or the map could not be resolved; the section is then omitted
     # rather than drawn empty.
     terrain: ResolvedTerrainV2 | None = None
+    # The digest recorded when the run's evidence was sealed, and whether the evidence still
+    # matches it. `verified` is a TRISTATE: True/False/None, where None means no digest was
+    # recorded (unsealed, or sealed before digests existed) — reporting that as "altered" would be
+    # a false accusation, so the report says nothing at all in that case.
+    evidence_digest: str | None = None
+    evidence_verified: bool | None = None
     # Injected so a report is reproducible in tests; defaults to render time.
     generated_at: datetime | None = None
     version: str = field(default="")
@@ -201,7 +207,25 @@ def _condition_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
         ("Judge model", c.judge_model or "not configured"),
         ("Budget", f"{c.budget_seconds}s"),
         ("Sandbox image", c.sandbox_ref or _DASH),
+        # Only when a digest exists. A report that said "Evidence: unknown" on every pre-#116 run
+        # would train readers to ignore the line, which is the opposite of the point.
+        *([("Evidence seal", _evidence_seal_line(ctx))] if ctx.evidence_digest else []),
     ]
+
+
+def _evidence_seal_line(ctx: RunReportContext) -> str:
+    """The seal's digest and whether the evidence still matches it.
+
+    Short-form digest: enough to compare two reports of the same run by eye, while the full value
+    stays available from the seal store for an actual verification. A mismatch is stated plainly —
+    this is the one line in the report that says the rest of it may not be trustworthy.
+    """
+    digest = (ctx.evidence_digest or "")[:16]
+    if ctx.evidence_verified is True:
+        return f"`{digest}…` verified — evidence unchanged since sealing"
+    if ctx.evidence_verified is False:
+        return f"`{digest}…` **MISMATCH — the evidence has changed since it was sealed**"
+    return f"`{digest}…` (not verified)"
 
 
 def _telemetry_rows(ctx: RunReportContext) -> list[tuple[str, str]]:

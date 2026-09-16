@@ -44,6 +44,16 @@ def test_upgrade_adds_run_terminal_detail_column(tmp_path, monkeypatch):
     assert "terminal_detail" in cols
 
 
+def test_upgrade_adds_trace_seal_evidence_digest_column(tmp_path, monkeypatch):
+    # trace_seals.evidence_digest makes the seal tamper-evident rather than a timestamp (0004).
+    monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
+    config.get_settings.cache_clear()
+    db.get_engine.cache_clear()
+    db.upgrade()
+    cols = {c["name"] for c in inspect(db.get_engine()).get_columns("trace_seals")}
+    assert "evidence_digest" in cols
+
+
 def test_upgrade_is_idempotent(tmp_path, monkeypatch):
     monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
     config.get_settings.cache_clear()
@@ -72,7 +82,7 @@ def test_head_revision_is_the_latest_migration(tmp_path, monkeypatch):
     monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
     config.get_settings.cache_clear()
     db.get_engine.cache_clear()
-    assert db.head_revision() == "0003_run_terminal_detail"
+    assert db.head_revision() == "0004_trace_seal_evidence_digest"
 
 
 def test_boot_state_fresh_on_empty_db(tmp_path, monkeypatch):
