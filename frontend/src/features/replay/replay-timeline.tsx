@@ -225,10 +225,18 @@ export function ReplayTimeline({
   attributing = false,
   infraRows,
   fill = false,
+  live = false,
 }: {
   runId: string;
   events: AgentEvent[];
   meta?: RunEventsMeta | null;
+  /** True while the run is still going (polled every 1.5 s over PARTIAL RAW). Normalization
+   *  warnings such as `no_content` state a fact about the FINAL judge transcript, so they are
+   *  withheld while live — a healthy run whose first batch is lifecycle markers must not read
+   *  as "the judge transcript for this run is empty". Mirrors the CLI, which fetches the
+   *  telemetry block only once a grade exists. The unclassified banner is a present-tense count
+   *  and stays. */
+  live?: boolean;
   /** Fill the parent's height with a SINGLE internal scroller (side-by-side split), instead of the
    *  self-bounded `max-h-[70vh]` used in the stacked layout — avoids nesting two scrollbars when the
    *  parent is already a bounded, filling container. The Debug toggle stays pinned above the scroll. */
@@ -452,19 +460,22 @@ export function ReplayTimeline({
             </span>
           )}
           {/* Every other normalization warning, verbatim (the unclassified one has its own
-              banner above). The same sentences the CLI and the report show. */}
-          {(meta?.warnings ?? [])
-            .filter((w) => w.code !== "unclassified_spans")
-            .map((w) => (
-              <span
-                key={w.code}
-                data-testid="adapter-warning"
-                className="text-caption text-warning"
-                title={w.code}
-              >
-                {w.message}
-              </span>
-            ))}
+              banner above). The same sentences the CLI and the report show — and, like the
+              CLI, only once the run is over: mid-run they would be predictions from partial
+              data, not facts. */}
+          {!live &&
+            (meta?.warnings ?? [])
+              .filter((w) => w.code !== "unclassified_spans")
+              .map((w) => (
+                <span
+                  key={w.code}
+                  data-testid="adapter-warning"
+                  className="text-caption text-warning"
+                  title={w.code}
+                >
+                  {w.message}
+                </span>
+              ))}
         </div>
         <Bug className="size-3 text-text-tertiary" />
         <span className="text-label uppercase text-text-tertiary">Debug</span>

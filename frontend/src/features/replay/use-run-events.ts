@@ -10,7 +10,9 @@ export interface RunEventsMeta {
   adapterVersion: string;
   fallback: boolean;
   /** Normalization warnings from the latest page (run-level: the server recomputes them over the
-   * whole run on every page, so the latest page is the truth). */
+   * whole run on every page, so the latest page is the truth — for what has been INGESTED so far.
+   * A presence/absence warning like `no_content` is therefore only final once the run is; the
+   * timeline withholds warnings while `live`). */
   warnings: AdapterWarning[];
 }
 
