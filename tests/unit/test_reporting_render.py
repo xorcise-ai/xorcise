@@ -571,3 +571,41 @@ def test_the_report_shows_both_when_the_declared_model_is_not_the_one_that_ran()
         )
     )
     assert "claude-opus-4" in md and "gpt-5.5" in md
+
+
+# ── Duration must not read as 30 minutes of work (#112) ──────────────────────────────────────
+#
+# A run whose agent crashed a second in is not closed out until its budget expires, so the report
+# showed `Duration | 30m 0s` for ~1s of activity. Wall clock is not wrong — the run really did hold
+# a slot for half an hour — but presented alone it reads as "the agent worked for 30 minutes".
+#
+# Both facts are kept, because each answers a different question: wall clock is what the run COST,
+# the telemetry span is what the agent DID. Collapsing them either hides the wasted slot or
+# overstates the work.
+
+
+def test_the_report_separates_time_spent_working_from_time_held(capsys=None) -> None:
+    md = render_markdown(
+        _ctx(
+            stats=RunStats(
+                timing=TimingStats(
+                    elapsed_seconds=1800.0,
+                    first_event_ts=datetime(2026, 7, 1, 10, 0, 0, tzinfo=UTC),
+                    last_event_ts=datetime(2026, 7, 1, 10, 0, 1, tzinfo=UTC),
+                )
+            )
+        )
+    )
+
+    assert "| Duration | 30m 0s |" in md, "wall clock must still be reported — the slot was held"
+    # Asserted as a row rather than a bare digit: the point is that the ~1s of real work appears
+    # BESIDE the 30 minutes, not how many decimal places the formatter happens to use.
+    assert "| Agent activity | 1.0s |" in md, f"the agent's real activity is missing:\n{md[:700]}"
+
+
+def test_the_report_omits_the_activity_span_when_there_is_no_telemetry() -> None:
+    """No events means no span to report — a zero would read as 'the agent did nothing', which is
+    a different claim from 'nothing was recorded'."""
+    md = render_markdown(_ctx(stats=RunStats(timing=TimingStats(elapsed_seconds=42.0))))
+
+    assert "Agent activity" not in md

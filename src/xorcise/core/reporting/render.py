@@ -123,6 +123,26 @@ def _elapsed_seconds(ctx: RunReportContext) -> float | None:
     return (ctx.run.completed_at - ctx.run.created_at).total_seconds()
 
 
+def _activity_seconds(ctx: RunReportContext) -> float | None:
+    """How long the agent was actually emitting telemetry: first event → last event.
+
+    Distinct from `_elapsed_seconds`, which is wall clock. A run whose agent dies early is not
+    closed out until its budget expires, so the two diverge hard: a crash one second in still
+    reports a 30-minute Duration, and read alone that says "the agent worked for 30 minutes".
+
+    Both are kept rather than one replacing the other. Wall clock is what the run COST — it really
+    did hold a slot and a subnet for half an hour — and this is what the agent DID. Neither answers
+    the other's question. None when the run produced no telemetry: a 0 would claim the agent did
+    nothing, which is a different statement from nothing having been recorded.
+    """
+    if ctx.stats is None:
+        return None
+    first, last = ctx.stats.timing.first_event_ts, ctx.stats.timing.last_event_ts
+    if first is None or last is None:
+        return None
+    return max(0.0, (last - first).total_seconds())
+
+
 def _duration(seconds: float | None) -> str:
     if seconds is None:
         return _DASH
@@ -186,6 +206,13 @@ def _metadata_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
         *([("Platform", ctx.conditions.platform)] if ctx.conditions.platform else []),
         ("Started", _ts(ctx.run.created_at)),
         ("Duration", _duration(_elapsed_seconds(ctx))),
+        # Only when telemetry actually bounds a span. Sits beside Duration because the pair is the
+        # point: they agree on a healthy run and diverge loudly on a crashed one.
+        *(
+            [("Agent activity", _duration(_activity_seconds(ctx)))]
+            if _activity_seconds(ctx) is not None
+            else []
+        ),
         ("Run ID", ctx.run.run_id),
         ("Status", _status_line(ctx)),
         ("Budget", f"{ctx.run.budget_seconds}s" if ctx.run.budget_seconds else _DASH),
