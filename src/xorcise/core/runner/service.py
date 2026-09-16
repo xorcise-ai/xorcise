@@ -205,13 +205,42 @@ class RunnerControlService:
             # The environment died at/after deploy (a failed `compose up` kills the `set -eu`
             # entrypoint). Read from the LIVE container, so this process's deploy cache cannot mask
             # it — the server closes the run out instead of leaving an agent on a dead target.
-            return StatusResult(run_id=run_id, state=RunState.FAILED, ready=False)
+            code = "" if state.exit_code is None else f" with exit code {state.exit_code}"
+            return StatusResult(
+                run_id=run_id,
+                state=RunState.FAILED,
+                ready=False,
+                detail=f"the mission environment exited{code}",
+            )
         services = self.driver.compose_service_states(run_id)
+        if services is None:
+            # Asked, and no answer: the outer container is gone, or its inner daemon is not
+            # running. That is NOT the "driver cannot report" case below — an environment that
+            # cannot list its own services is not ready, and reading it as READY let a wedged
+            # inner daemon pass the readiness gate and squat its subnet for the whole budget.
+            return StatusResult(
+                run_id=run_id,
+                state=RunState.PENDING,
+                ready=False,
+                detail="the mission environment's inner Docker daemon is not answering",
+            )
         if services and not all(s.running for s in services):
-            return StatusResult(run_id=run_id, state=RunState.PENDING, ready=False)
-        # Every inner service is up — or the driver cannot report them (stub / non-Docker), which
-        # degrades to READY so an unreportable environment is never wedged at PENDING forever.
+            waiting = ", ".join(f"{s.name} ({s.status})" for s in services if not s.running)
+            return StatusResult(
+                run_id=run_id,
+                state=RunState.PENDING,
+                ready=False,
+                detail=f"waiting for mission services: {waiting}",
+            )
+        # Every inner service is up — or the driver has nothing to report (stub / non-Docker),
+        # which degrades to READY so an unreportable environment is never wedged at PENDING.
         return StatusResult(run_id=run_id, state=RunState.READY, ready=True)
+
+    def environment_logs(self, run_id: RunId) -> str:
+        """Evidence for a run whose environment failed or never came up: the outer container's
+        log tail, and the inner daemon's where it can still be read. Empty when the driver keeps
+        none. Read it BEFORE teardown — afterwards the container, and the reason, are gone."""
+        return self.driver.container_logs(run_id) or ""
 
     def collect_targets(self, run_id: RunId) -> CollectTargetsResult:
         # Cache miss falls back to the live container by name, as status() does.

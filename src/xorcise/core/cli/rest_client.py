@@ -29,6 +29,16 @@ _SERVICE_DOWN = (
 # value per-call so the CLI waits instead of falsely reporting a timeout.
 _DEFAULT_TIMEOUT_SECONDS = 5.0
 
+# Every request this client sends goes to OUR OWN service on the loopback (default_base_url is
+# built from settings.host, a bind address, not a way to aim the CLI at another machine — the
+# `xorcise remote` stub is the only place a remote would ever come from, and it registers none).
+# httpx honours HTTP_PROXY/ALL_PROXY by default with no implicit loopback bypass, so in a proxied
+# shell every command here failed with "cannot reach the XORCISE service" while `status` (fixed
+# for #86) cheerfully reported the same service healthy. Never consult the proxy environment. If a
+# remote CLI ever lands, THAT path must decide about proxies explicitly; this one must not.
+# (Spelled out at each call site rather than via a shared kwargs dict: httpx's overloads do not
+# type-check a **dict.)
+
 # Homes we've already checked for a foreign-instance answer this process (warn once).
 _FOREIGN_CHECKED: set[str] = set()
 
@@ -60,7 +70,7 @@ def _warn_if_foreign_instance(base_url: str) -> None:
         return
     _FOREIGN_CHECKED.add(home)
     try:
-        info = httpx.get(f"{base_url}/system", timeout=1).json()
+        info = httpx.get(f"{base_url}/system", timeout=1, trust_env=False).json()
     except (httpx.HTTPError, ValueError):
         return
     their_home = str(info.get("home") or "") if isinstance(info, dict) else ""
@@ -77,7 +87,11 @@ class RestClient:
 
     def get(self, path: str, timeout: float | None = None) -> Any:
         t = timeout or _DEFAULT_TIMEOUT_SECONDS
-        return self._call(lambda: httpx.get(f"{self.base_url}{path}", timeout=t), t, self.base_url)
+        return self._call(
+            lambda: httpx.get(f"{self.base_url}{path}", timeout=t, trust_env=False),
+            t,
+            self.base_url,
+        )
 
     def get_run_result(self, run_id: str) -> Any:
         """A run's result envelope; a still-active run (the server 409s 'not terminal
@@ -87,11 +101,11 @@ class RestClient:
         t = _DEFAULT_TIMEOUT_SECONDS
         url = f"{self.base_url}/runs/{run_id}/result"
         try:
-            resp = httpx.get(url, timeout=t)
+            resp = httpx.get(url, timeout=t, trust_env=False)
         except httpx.HTTPError:
             # Re-issue through the shared handler so a connection/timeout error gets
             # the same clean, operation-aware message + exit (rare double request).
-            return self._call(lambda: httpx.get(url, timeout=t), t, self.base_url)
+            return self._call(lambda: httpx.get(url, timeout=t, trust_env=False), t, self.base_url)
         if resp.status_code == 409:
             detail = ""
             try:
@@ -108,7 +122,7 @@ class RestClient:
         exiting (e.g. the mission-library live status)."""
         t = timeout or _DEFAULT_TIMEOUT_SECONDS
         try:
-            resp = httpx.get(f"{self.base_url}{path}", timeout=t)
+            resp = httpx.get(f"{self.base_url}{path}", timeout=t, trust_env=False)
             if resp.is_error or not resp.content:
                 return None
             return resp.json()
@@ -123,25 +137,33 @@ class RestClient:
         only the success path differs (resp.text, not resp.json())."""
         t = timeout or _DEFAULT_TIMEOUT_SECONDS
         return self._call_text(
-            lambda: httpx.get(f"{self.base_url}{path}", timeout=t), t, self.base_url
+            lambda: httpx.get(f"{self.base_url}{path}", timeout=t, trust_env=False),
+            t,
+            self.base_url,
         )
 
     def post(self, path: str, json: dict[str, Any], timeout: float | None = None) -> Any:
         t = timeout or _DEFAULT_TIMEOUT_SECONDS
         return self._call(
-            lambda: httpx.post(f"{self.base_url}{path}", json=json, timeout=t), t, self.base_url
+            lambda: httpx.post(f"{self.base_url}{path}", json=json, timeout=t, trust_env=False),
+            t,
+            self.base_url,
         )
 
     def put(self, path: str, json: dict[str, Any], timeout: float | None = None) -> Any:
         t = timeout or _DEFAULT_TIMEOUT_SECONDS
         return self._call(
-            lambda: httpx.put(f"{self.base_url}{path}", json=json, timeout=t), t, self.base_url
+            lambda: httpx.put(f"{self.base_url}{path}", json=json, timeout=t, trust_env=False),
+            t,
+            self.base_url,
         )
 
     def delete(self, path: str, timeout: float | None = None) -> Any:
         t = timeout or _DEFAULT_TIMEOUT_SECONDS
         return self._call(
-            lambda: httpx.delete(f"{self.base_url}{path}", timeout=t), t, self.base_url
+            lambda: httpx.delete(f"{self.base_url}{path}", timeout=t, trust_env=False),
+            t,
+            self.base_url,
         )
 
     @classmethod

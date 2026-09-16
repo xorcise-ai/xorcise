@@ -3141,6 +3141,17 @@
             "title": "State",
             "type": "string"
           },
+          "terminal_detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Detail"
+          },
           "terminal_trigger": {
             "anyOf": [
               {
@@ -3329,6 +3340,17 @@
           "state": {
             "title": "State",
             "type": "string"
+          },
+          "terminal_detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Detail"
           },
           "terminal_trigger": {
             "anyOf": [

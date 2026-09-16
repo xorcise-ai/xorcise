@@ -93,6 +93,23 @@ dev = [
 
 [tool.hatch.version]
 source = "vcs"
+# Describe against the PACKAGE release tags only. This repository publishes a second, unrelated
+# tag series from the same history — `mission-base-v*`, the mission base image's container
+# releases — and setuptools_scm's default match (`*[0-9]*`) accepts both, so an untagged build
+# took its version from whichever series was tagged last. When that was a container tag the
+# package reported the image's generation (`2.0.1.dev14`) while PyPI was at 0.1.2, and
+# `_update.py` then compared installed > latest and reported a source install as up to date
+# forever. Tagged releases were never affected (a tag at HEAD wins on distance), which is why
+# this went unnoticed. Everything but `--match` is setuptools_scm's own default.
+raw-options = { git_describe_command = [
+  "git",
+  "describe",
+  "--dirty",
+  "--tags",
+  "--long",
+  "--match",
+  "v*",
+] }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/xorcise"]

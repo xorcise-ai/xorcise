@@ -2503,6 +2503,8 @@ export interface components {
             source_agent: string;
             /** State */
             state: string;
+            /** Terminal Detail */
+            terminal_detail?: string | null;
             /** Terminal Trigger */
             terminal_trigger?: string | null;
         };
@@ -2574,6 +2576,8 @@ export interface components {
             source_agent: string;
             /** State */
             state: string;
+            /** Terminal Detail */
+            terminal_detail?: string | null;
             /** Terminal Trigger */
             terminal_trigger?: string | null;
         };
