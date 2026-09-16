@@ -1348,7 +1348,7 @@ export interface components {
          * @description Closed render set. Framework-specific meaning rides `subkind`/`data`, never a new kind.
          * @enum {string}
          */
-        AgentEventKind: "message" | "thinking" | "terminal_command" | "terminal_output" | "file_edit" | "file_read" | "browser_action" | "browser_observation" | "tool_call" | "tool_result" | "mcp_call" | "mcp_result" | "finding" | "flag" | "error" | "status" | "metric" | "unknown";
+        AgentEventKind: "message" | "thinking" | "terminal_command" | "terminal_output" | "file_edit" | "file_read" | "browser_action" | "browser_observation" | "tool_call" | "tool_result" | "mcp_call" | "mcp_result" | "finding" | "flag" | "error" | "status" | "metric" | "unclassified" | "unknown";
         /**
          * AgentHistoryEntry
          * @description One recorded result in an agent's track record (the 50/50 breakdown).
@@ -1743,6 +1743,16 @@ export interface components {
          *     image (MissionRef.image). No file reading here — pure shape.
          */
         EnvironmentSpec: {
+            /**
+             * Agent Ingress
+             * @default true
+             */
+            agent_ingress: boolean;
+            /**
+             * Allow Egress
+             * @default false
+             */
+            allow_egress: boolean;
             /**
              * Compose File
              * @default docker-compose.yml
@@ -2736,6 +2746,8 @@ export interface components {
             /** Host Platform */
             host_platform?: string | null;
             mission_base?: components["schemas"]["MissionBaseView"] | null;
+            /** Pid */
+            pid?: number | null;
             /** Planes */
             planes: components["schemas"]["PlaneStatus"][];
             /**

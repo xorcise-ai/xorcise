@@ -294,6 +294,12 @@ export function ReplayTimeline({
         : events.filter((e) => (KIND_META[e.kind] ?? KIND_META.unknown).group !== "debug"),
     [events, debug],
   );
+  // Honesty banner: how much of this trace no adapter rule could classify. Counted over the
+  // accumulated events (the server page's `counts` covers one page, not the whole run).
+  const unclassifiedCount = useMemo(
+    () => events.filter((e) => e.kind === "unclassified").length,
+    [events],
+  );
   // Fix the agent narrative in producer order, then merge infra using receipt as one-way evidence.
   // This preserves infra's server-clock interleaving without mistaking a delayed export for a late
   // event. Merge before visual grouping so infra can still split Claude's whole-session group.
@@ -432,11 +438,20 @@ export function ReplayTimeline({
   return (
     <div className={fill ? "flex min-h-0 flex-1 flex-col" : "space-y-3"}>
       <div className={`flex items-center justify-end gap-2 ${fill ? "mb-3 shrink-0" : ""}`}>
-        {meta?.fallback && (
-          <span className="mr-auto text-label uppercase text-text-tertiary">
-            generic renderer
-          </span>
-        )}
+        <div className="mr-auto flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+          {meta?.fallback && (
+            <span className="text-label uppercase text-text-tertiary">generic renderer</span>
+          )}
+          {unclassifiedCount > 0 && (
+            <span
+              data-testid="unclassified-banner"
+              className="text-caption text-muted-foreground"
+              title="These spans carry names XORCISE does not recognise. They are shown as-is, with their raw attributes; nothing was dropped."
+            >
+              {unclassifiedCount} of {events.length} spans unclassified — shown as-is
+            </span>
+          )}
+        </div>
         <Bug className="size-3 text-text-tertiary" />
         <span className="text-label uppercase text-text-tertiary">Debug</span>
         <Switch checked={debug} onChange={setDebug} label="Show debug events (metric, unknown)" />

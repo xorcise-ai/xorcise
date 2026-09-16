@@ -66,6 +66,7 @@ const ALL_KINDS: AgentEventKind[] = [
   "error",
   "status",
   "metric",
+  "unclassified",
   "unknown",
 ];
 
@@ -186,6 +187,31 @@ describe("ReplayTimeline", () => {
     fireEvent.click(screen.getByRole("switch"));
     expect(screen.getByText("cpu-metric")).toBeInTheDocument();
     expect(screen.getByText("mystery-span")).toBeInTheDocument();
+  });
+
+  it("shows unclassified spans by default, with a count banner and no attribution dot", () => {
+    const events = [
+      agentEvent({ kind: "unclassified", title: "agent.ActionEvent", body: "" }),
+      agentEvent({ kind: "unclassified", title: "agent.ObservationEvent", body: "" }),
+      agentEvent({ kind: "terminal_command", title: "terminal", body: "ls" }),
+    ];
+    render(
+      <ReplayTimeline
+        runId="r1"
+        events={events}
+        meta={null}
+        attributedActionIds={new Set()}
+        consideredIds={new Set()}
+      />,
+    );
+    // Visible WITHOUT the Debug toggle (unlike metric/unknown).
+    expect(screen.getByText("agent.ActionEvent")).toBeInTheDocument();
+    expect(screen.getByText("agent.ObservationEvent")).toBeInTheDocument();
+    expect(screen.getByTestId("unclassified-banner")).toHaveTextContent(
+      "2 of 3 spans unclassified",
+    );
+    // Only the real action carries an attribution dot; unclassified spans are not attributable.
+    expect(screen.getAllByTestId("attr-status")).toHaveLength(1);
   });
 
   it("renders a flag event as a Flag Claim with the agent-claimed label", () => {
