@@ -1100,6 +1100,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/telemetry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Run Telemetry
+         * @description The run's telemetry summary: which adapter rendered it (and whether that was the generic
+         *     fallback), how many spans / log records arrived and how many carry content the judge can
+         *     read, plus the normalization warnings. The events header without the events — one cache row,
+         *     so `run status` and the report can show it cheaply. Unknown run → 404.
+         */
+        get: operations["run_telemetry_api_runs__run_id__telemetry_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/terminate": {
         parameters: {
             query?: never;
@@ -1876,6 +1899,8 @@ export interface components {
             spans_truncated: number;
             /** Trace Ref */
             trace_ref?: string | null;
+            /** Transcript Items */
+            transcript_items?: number | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -2691,6 +2716,36 @@ export interface components {
              *     }
              */
             tokens: components["schemas"]["TokenStats"];
+        };
+        /**
+         * RunTelemetryView
+         * @description The `GET /runs/{id}/telemetry` summary — the events header WITHOUT the events.
+         *
+         *     Which adapter rendered the run and whether that was a fallback, the run-level counts (spans
+         *     and log records, and how many of each carry content the judge can read) and the normalization
+         *     warnings. One cache row to read, so the CLI and the report can show it without paging the
+         *     whole projection. Derived and rebuildable from RAW; never a grading input.
+         */
+        RunTelemetryView: {
+            /** Adapter Name */
+            adapter_name: string;
+            /** Adapter Version */
+            adapter_version: string;
+            /** Counts */
+            counts?: {
+                [key: string]: number;
+            };
+            /** Fallback */
+            fallback: boolean;
+            /** Run Id */
+            run_id: string;
+            /** Source Agent */
+            source_agent: string;
+            /**
+             * Warnings
+             * @default []
+             */
+            warnings: components["schemas"]["AdapterWarning"][];
         };
         /** ScoreBreakdown */
         ScoreBreakdown: {
@@ -4589,6 +4644,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_telemetry_api_runs__run_id__telemetry_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunTelemetryView"];
                 };
             };
             /** @description Validation Error */

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api/client";
-import type { AgentEvent, RunEventsView } from "@/lib/api/types";
+import type { AdapterWarning, AgentEvent, RunEventsView } from "@/lib/api/types";
 import { sortAgentEvents } from "./replay-order";
 
 export interface RunEventsMeta {
@@ -9,6 +9,9 @@ export interface RunEventsMeta {
   adapterName: string;
   adapterVersion: string;
   fallback: boolean;
+  /** Normalization warnings from the latest page (run-level: the server recomputes them over the
+   * whole run on every page, so the latest page is the truth). */
+  warnings: AdapterWarning[];
 }
 
 type EventCursor = { trace_seq: number; log_seq: number };
@@ -63,6 +66,7 @@ export function useRunEvents(runId: string, active: boolean) {
       adapterName: view.adapter_name,
       adapterVersion: view.adapter_version,
       fallback: view.fallback,
+      warnings: view.warnings ?? [],
     });
     const fresh = (view.events ?? []).filter((e) => !seenRef.current.has(e.id));
     if (fresh.length === 0) return;

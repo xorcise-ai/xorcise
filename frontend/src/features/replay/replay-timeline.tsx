@@ -451,6 +451,20 @@ export function ReplayTimeline({
               {unclassifiedCount} of {events.length} spans unclassified — shown as-is
             </span>
           )}
+          {/* Every other normalization warning, verbatim (the unclassified one has its own
+              banner above). The same sentences the CLI and the report show. */}
+          {(meta?.warnings ?? [])
+            .filter((w) => w.code !== "unclassified_spans")
+            .map((w) => (
+              <span
+                key={w.code}
+                data-testid="adapter-warning"
+                className="text-caption text-warning"
+                title={w.code}
+              >
+                {w.message}
+              </span>
+            ))}
         </div>
         <Bug className="size-3 text-text-tertiary" />
         <span className="text-label uppercase text-text-tertiary">Debug</span>
