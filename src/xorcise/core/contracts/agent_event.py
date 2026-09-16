@@ -37,6 +37,12 @@ class AgentEventKind(StrEnum):
     error = "error"
     status = "status"
     metric = "metric"
+    # A real event the harness emitted that no adapter rule could classify. Shown as-is, by
+    # default, so a harness with unrecognised span names is never rendered as tool calls. Distinct
+    # from `unknown`, the adapters' escape hatch for plumbing spans they deliberately suppress
+    # (hidden unless Debug is on). Universal rather than framework-specific, so it stays inside
+    # the closed render set.
+    unclassified = "unclassified"
     unknown = "unknown"
 
 

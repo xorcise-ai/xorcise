@@ -1,5 +1,6 @@
 # tests/unit/test_otel_adapters.py
-"""GenericOtelAdapter (parse-trace.ts parity) + registry selection + normalize_run."""
+"""GenericOtelAdapter (keyword classification + the unclassified honesty rule) + registry
+selection + normalize_run."""
 
 from __future__ import annotations
 
@@ -59,7 +60,7 @@ def _ctx(**over: Any) -> AdapterContext:
     return AdapterContext(**base)
 
 
-# ── classify() — 1:1 port of parse-trace.ts classify(), first-match-wins ────────────
+# ── classify() — keyword rules, first-match-wins; no match → unclassified ───────────
 
 
 @pytest.mark.parametrize(
@@ -69,7 +70,13 @@ def _ctx(**over: Any) -> AdapterContext:
         ("_execute_action_event", {}, 0, AgentEventKind.terminal_command),  # matches "exec"
         ("TerminalAction", {}, 0, AgentEventKind.terminal_command),
         ("FileEditorAction", {}, 0, AgentEventKind.tool_call),  # matches "edit"
-        ("agent.step", {}, 0, AgentEventKind.tool_call),  # default
+        ("agent.step", {}, 0, AgentEventKind.unclassified),  # no rule matched
+        # Marker-only spans from a harness's own OTel layer (class + id + source): the exact
+        # shape that used to render as 113 confident "tool calls" (#120).
+        ("agent.ActionEvent", {"event.class": "ActionEvent"}, 0, AgentEventKind.unclassified),
+        ("agent.ObservationEvent", {}, 0, AgentEventKind.unclassified),
+        ("agent.SystemPromptEvent", {}, 0, AgentEventKind.unclassified),
+        ("agent.MessageEvent", {}, 0, AgentEventKind.message),  # matches "message"
         ("conversation.send_message", {}, 0, AgentEventKind.message),
         ("something_error_happened", {}, 0, AgentEventKind.error),
         ("capture_the_flag", {}, 0, AgentEventKind.flag),
@@ -79,7 +86,7 @@ def _ctx(**over: Any) -> AdapterContext:
         ("think_step", {}, 0, AgentEventKind.thinking),
     ],
 )
-def test_classify_matches_parse_trace_ts_order(
+def test_classify_first_match_wins_and_unmatched_is_unclassified(
     name: str, attrs: dict[str, str], status_code: int, expected: AgentEventKind
 ) -> None:
     assert classify(name, attrs, status_code) == expected
@@ -88,8 +95,14 @@ def test_classify_matches_parse_trace_ts_order(
 def test_pick_body_prefers_known_keys_in_declared_order() -> None:
     assert pick_body({"path": "/x", "command": "ls -la"}) == "ls -la"
     assert pick_body({"path": "/x"}) == "/x"
-    assert pick_body({"only": "one"}) == "only: one"
     assert pick_body({}) == ""
+
+
+def test_pick_body_never_fabricates_a_body_from_an_arbitrary_attribute() -> None:
+    """A marker-only span must not grow a body like `event.class: ActionEvent` — the attributes
+    stay in `data`, the body stays empty, and the card says so."""
+    assert pick_body({"event.class": "ActionEvent", "event.id": "1"}) == ""
+    assert pick_body({"only": "one"}) == ""
 
 
 # ── GenericOtelAdapter.normalize() — AgentEvent construction ────────────────────────
@@ -188,7 +201,29 @@ def test_normalize_no_parent_span_id_yields_none() -> None:
 def test_adapter_name_and_version() -> None:
     adapter = GenericOtelAdapter()
     assert adapter.name == "generic"
-    assert adapter.version == "1"
+    assert adapter.version == "2"  # v2: unclassified default + no fabricated body
+
+
+def test_unclassified_span_keeps_attributes_in_data_with_empty_body() -> None:
+    span = _span(
+        span_id="m1",
+        name="agent.ActionEvent",
+        attrs={"event.class": "ActionEvent", "event.id": "e-1", "event.source": "agent"},
+    )
+    [event] = GenericOtelAdapter().normalize([span], _ctx())
+    assert event.kind == AgentEventKind.unclassified
+    assert event.title == "agent.ActionEvent"
+    assert event.body == ""
+    assert dict(event.data) == {
+        "event.class": "ActionEvent",
+        "event.id": "e-1",
+        "event.source": "agent",
+    }
+    assert event.severity == "info" and event.status is None
+
+
+def test_generic_profile_declares_unclassified_supported() -> None:
+    assert GenericOtelAdapter().capabilities.kinds["unclassified"].value == "supported"
 
 
 # ── registry.select() ────────────────────────────────────────────────────────────────
@@ -280,7 +315,13 @@ def test_normalize_run_real_fixture_yields_all_events_sorted_by_seq_no_adapter_y
     assert view.next_since == 9
     assert view.next_cursor.trace_seq == 9
     assert view.next_cursor.log_seq == -1
-    assert view.warnings == ()
+    # The generic renderer is honest about what it could not classify: the fixture's 8
+    # `agent.step` spans match no keyword rule, so the header says so instead of silently
+    # rendering them as tool calls.
+    [warning] = view.warnings
+    assert warning.code == "unclassified_spans"
+    assert warning.count == 8
+    assert "agent.step" in warning.message
     assert view.run_id == ctx.run_id
     assert view.source_agent == "unknown-agent"
 
@@ -467,3 +508,66 @@ def test_normalize_run_uses_producer_time_within_one_receipt_batch() -> None:
 
     assert [event.id for event in view.events] == ["earlier", "later"]
     assert all(event.received_at == received for event in view.events)
+
+
+# ── normalize_run — the unclassified_spans honesty warning ──────────────────────────
+
+
+def _marker_batch(seq: int, names: list[str]) -> Mapping[str, Any]:
+    """One RAW OTLP batch of marker-only spans (class/id/source, no payload), as a harness's own
+    OTel layer wrapping an agent SDK emits them."""
+    spans = [
+        {
+            "traceId": "t",
+            "spanId": f"s{seq}-{i}",
+            "name": n,
+            "startTimeUnixNano": str(1_751_500_000_000_000_000 + i),
+            "endTimeUnixNano": str(1_751_500_000_000_000_000 + i + 40_000),
+            "attributes": [
+                {"key": "event.class", "value": {"stringValue": n.split(".")[-1]}},
+                {"key": "event.id", "value": {"stringValue": f"id-{seq}-{i}"}},
+                {"key": "event.source", "value": {"stringValue": "agent"}},
+            ],
+        }
+        for i, n in enumerate(names)
+    ]
+    return {
+        "seq": seq,
+        "payload": json.dumps(
+            {"resourceSpans": [{"resource": {}, "scopeSpans": [{"scope": {}, "spans": spans}]}]}
+        ),
+    }
+
+
+def test_normalize_run_warns_about_unclassified_spans_with_names_and_count() -> None:
+    records = [
+        _marker_batch(0, ["agent.ActionEvent", "agent.ObservationEvent"]),
+        _marker_batch(1, ["agent.ActionEvent", "agent.SystemPromptEvent", "agent.MessageEvent"]),
+    ]
+    view = normalize_run(records, _ctx(source_agent="custom"))
+
+    kinds = [e.kind for e in view.events]
+    assert kinds.count(AgentEventKind.unclassified) == 4
+    assert kinds.count(AgentEventKind.message) == 1  # "message" keyword still classifies
+    assert view.counts["by_kind.unclassified"] == 4
+    [warning] = [w for w in view.warnings if w.code == "unclassified_spans"]
+    assert warning.count == 4
+    assert "4 span(s)" in warning.message
+    # names are deduplicated + sorted, so the operator can see WHICH span names are unknown
+    assert "agent.ActionEvent, agent.ObservationEvent, agent.SystemPromptEvent" in warning.message
+    assert "agent.MessageEvent" not in warning.message
+    # every unclassified event carries an empty body and its raw attributes
+    for e in view.events:
+        if e.kind == AgentEventKind.unclassified:
+            assert e.body == "" and e.data["event.class"]
+
+
+def test_normalize_run_emits_no_unclassified_warning_when_every_span_classifies() -> None:
+    # Every name here hits a keyword rule (exec / message), so the honesty warning stays silent.
+    records = [_marker_batch(0, ["TerminalAction", "conversation.send_message"])]
+    view = normalize_run(records, _ctx(source_agent="custom"))
+    assert {e.kind for e in view.events} == {
+        AgentEventKind.terminal_command,
+        AgentEventKind.message,
+    }
+    assert view.warnings == ()
