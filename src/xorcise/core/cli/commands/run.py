@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Sequence
 from enum import StrEnum
 from typing import Any
 
@@ -74,6 +75,29 @@ def _resolve_id(client: RestClient, given: str) -> str:
     return resolve_run_id(client, given)
 
 
+def _agent_model_line(cond: dict[str, Any], observed: Sequence[str]) -> str:
+    """Which model produced this result — declared, observed, or honestly unknown.
+
+    `conditions.model` is what an operator typed at `agent register --model`; `models_observed` is
+    what the harness reported actually running. This line read "model not disclosed" on
+    essentially every run because almost nobody passes the flag, while the telemetry had named the
+    model all along.
+
+    A declared model that DISAGREES with the observed one shows both: preferring either silently
+    would misattribute the result, and the disagreement is the fact worth seeing. Mirrors
+    reporting.render._agent_model so the CLI and report.md never tell different stories.
+    """
+    declared = str(cond.get("model") or "").strip()
+    seen = [str(m) for m in observed if str(m).strip()]
+    if declared and seen and declared not in seen:
+        return f"{declared} (disclosed); telemetry reported {', '.join(seen)}"
+    if declared:
+        return declared
+    if seen:
+        return f"{', '.join(seen)} (reported by the harness)"
+    return "model not disclosed"
+
+
 def _render_result(r: dict[str, Any], *, verbose: bool = False) -> None:
     """Render a graded result envelope; shared by run status + run terminate."""
     grade, cond = r["grade"], r["conditions"]
@@ -113,7 +137,7 @@ def _render_result(r: dict[str, Any], *, verbose: bool = False) -> None:
     if grade.get("trace_ref"):
         console.print(f"trace: {escape(str(grade['trace_ref']))}")
     # Disclosed conditions travel with the result.
-    console.print(f"model: {escape(str(cond.get('model') or 'model not disclosed'))}")
+    console.print(f"model: {escape(_agent_model_line(cond, r.get('models_observed') or []))}")
     console.print(
         f"judge model: {escape(str(cond.get('judge_model') or 'judge model not configured'))}"
     )

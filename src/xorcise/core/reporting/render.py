@@ -192,12 +192,34 @@ def _metadata_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
     ]
 
 
+def _agent_model(ctx: RunReportContext) -> str:
+    """Which model produced this result — declared, observed, or honestly unknown.
+
+    Two independent sources, kept distinguishable rather than collapsed. `conditions.model` is what
+    an operator typed at `agent register --model`; `stats.models` is what the harness reported
+    actually running. Almost nobody declares one, which is why this row read "not disclosed" on
+    essentially every report while the telemetry had the answer all along.
+
+    When both exist and DISAGREE, both are shown. Silently preferring either would misattribute the
+    result, and the disagreement is itself the interesting fact.
+    """
+    declared = (ctx.conditions.model or "").strip()
+    observed = [m for m in (ctx.stats.models if ctx.stats else ()) if m]
+    if declared and observed and declared not in observed:
+        return f"{declared} (disclosed); telemetry reported {', '.join(observed)}"
+    if declared:
+        return f"{declared} (disclosed)"
+    if observed:
+        return f"{', '.join(observed)} (reported by the harness)"
+    return "not disclosed"
+
+
 def _condition_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
     # Agent/mission versions are folded into the Overview names above, so they are not repeated
     # here — Conditions carries only what the run was *evaluated under*.
     c = ctx.conditions
     return [
-        ("Agent model (disclosed)", c.model or "not disclosed"),
+        ("Agent model", _agent_model(ctx)),
         ("Judge model", c.judge_model or "not configured"),
         ("Budget", f"{c.budget_seconds}s"),
         ("Sandbox image", c.sandbox_ref or _DASH),

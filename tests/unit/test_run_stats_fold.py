@@ -141,3 +141,86 @@ def test_each_real_harness_yields_nonzero_tokens(name: str) -> None:
     assert s.tokens.output > 0, f"{name}: output tokens folded to zero"
     assert s.tokens.total == s.tokens.input + s.tokens.output
     assert s.counts.model_calls > 0
+
+
+# ── which model actually ran (#113) ──────────────────────────────────────────────────────────
+#
+# `runs.model` is the model the OPERATOR declared at `agent register --model`. Almost nobody passes
+# it, so every run reported "model not disclosed" and a result could not be attributed to a model
+# after the fact — fatal for a leaderboard.
+#
+# The telemetry knew all along. Every harness adapter already lands the model on its usage metric
+# as `data["model"]` (claude-code and openhands via gen_ai.request/response.model, codex via its
+# own `model` attribute); the fold just never collected it. Observed-from-telemetry is also the
+# better provenance than a declaration: it is what the harness reported actually running, not what
+# somebody typed at registration.
+
+
+def test_the_observed_model_is_folded_from_usage_metrics() -> None:
+    s = fold_run_stats(
+        [_metric({"model": "gpt-5.5", "input_tokens": "10", "output_tokens": "2"})],
+        created_at=_T0,
+        completed_at=None,
+    )
+    assert s.models == ("gpt-5.5",)
+
+
+def test_repeated_and_multiple_models_are_deduped_in_first_seen_order() -> None:
+    """A run makes many calls; a router or a fallback can change model mid-run.
+
+    Order is first-seen rather than sorted so the primary model — the one that did the early work —
+    reads first wherever this is rendered.
+    """
+    s = fold_run_stats(
+        [
+            _metric({"model": "gpt-5.5", "input_tokens": "1"}, ts=_T0),
+            _metric(
+                {"model": "gpt-5.5", "input_tokens": "1"}, ts=datetime(2026, 1, 1, 0, 1, tzinfo=UTC)
+            ),
+            _metric(
+                {"model": "claude-fable-5", "input_tokens": "1"},
+                ts=datetime(2026, 1, 1, 0, 2, tzinfo=UTC),
+            ),
+        ],
+        created_at=_T0,
+        completed_at=None,
+    )
+    assert s.models == ("gpt-5.5", "claude-fable-5")
+
+
+def test_a_run_with_no_model_telemetry_reports_none_rather_than_guessing() -> None:
+    """Empty, not a placeholder: "unknown" is a real answer and must not be mistaken for a name."""
+    s = fold_run_stats([_metric({"input_tokens": "5"})], created_at=_T0, completed_at=None)
+    assert s.models == ()
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("openhands", "bedrock/au.anthropic.claude-sonnet-4-5-20250929-v1:0"),
+        ("claude_code", "claude-fable-5"),
+        ("codex", "gpt-5.5"),
+    ],
+)
+def test_each_real_harness_capture_reveals_the_model_that_ran(name: str, expected: str) -> None:
+    """Against the real captures, because this is a provenance claim and it has to be true of the
+    actual harnesses rather than of a synthetic event this test built for itself.
+
+    Codex is the case that proves the fold must not special-case `gen_ai.*`: it carries the model
+    on its own `model` attribute, and its adapter already normalises that onto the metric.
+    """
+    from xorcise.core.harness_adapters import load_adapters
+
+    load_adapters()
+    doc = json.loads((_FIXTURES / f"{name}_real_run.json").read_text())
+    ctx = AdapterContext(
+        run_id=doc.get("run_id", "r1"),
+        source_agent=name if name != "claude_code" else "claude-code",
+        mission_id="fixture",
+        created_at=_T0,
+    )
+    view = normalize_run(doc["records"], ctx, log_records=doc.get("log_records"))
+
+    s = fold_run_stats(view.events, created_at=_T0, completed_at=None)
+
+    assert s.models == (expected,), f"{name}: folded {s.models}, expected ({expected!r},)"

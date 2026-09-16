@@ -90,3 +90,10 @@ class RunStats(BaseModel):
     counts: CountStats = CountStats()
     timing: TimingStats = TimingStats()
     cost_estimated_usd: float | None = None  # deferred — no price map today
+    # The model(s) the HARNESS reported running, in first-seen order — distinct from
+    # ResultConditions.model, which is what the operator DECLARED at `agent register --model`.
+    # Almost nobody declares one, so that field is null in practice and a result could not be
+    # attributed to a model afterwards; the telemetry carried it the whole time. Empty when the
+    # run's telemetry never named a model — an honest unknown, never a placeholder name. Still
+    # harness-self-reported, so it stays display/comparison provenance like the rest of RunStats.
+    models: tuple[str, ...] = ()

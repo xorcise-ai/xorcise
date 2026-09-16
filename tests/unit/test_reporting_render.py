@@ -523,3 +523,51 @@ def test_report_filename_is_slugged_and_extension_correct():
     assert report_filename(ctx, "html") == "xorcise-run-run-abcd-sqli-login.html"
     weird = _ctx(run=_run(mission="Chrono Canary / v2!"))
     assert report_filename(weird, "md") == "xorcise-run-run-abcd-chrono-canary-v2.md"
+
+
+# ── which model ran, on the report (#113) ────────────────────────────────────────────────────
+#
+# The Conditions table showed "Agent model (disclosed)" and, because almost nobody passes
+# `agent register --model`, printed "not disclosed" on essentially every report. The harness
+# telemetry named the model all along (RunStats.models); the report just never asked.
+#
+# Disclosed and observed stay distinguishable rather than being collapsed into one field: one is
+# what an operator typed, the other is what the harness reported running, and a disagreement
+# between them is provenance worth seeing, not noise worth hiding.
+
+
+def test_the_report_names_the_model_the_harness_reported_when_none_was_disclosed() -> None:
+    md = render_markdown(
+        _ctx(
+            conditions=ResultConditions(model=None, judge_model="gpt-4o", budget_seconds=600),
+            stats=RunStats(models=("gpt-5.5",)),
+        )
+    )
+    assert "gpt-5.5" in md
+    assert "not disclosed" not in md
+
+
+def test_the_report_says_so_when_neither_source_names_a_model() -> None:
+    """An honest unknown. The point of the fix is provenance, not inventing a plausible name."""
+    md = render_markdown(
+        _ctx(
+            conditions=ResultConditions(model=None, judge_model="gpt-4o", budget_seconds=600),
+            stats=RunStats(models=()),
+        )
+    )
+    assert "not disclosed" in md
+
+
+def test_the_report_shows_both_when_the_declared_model_is_not_the_one_that_ran() -> None:
+    """The case that matters most and is easiest to lose by collapsing the two into one field:
+    the operator declared one model and the harness reported another. Silently preferring either
+    would misattribute the result."""
+    md = render_markdown(
+        _ctx(
+            conditions=ResultConditions(
+                model="claude-opus-4", judge_model="gpt-4o", budget_seconds=600
+            ),
+            stats=RunStats(models=("gpt-5.5",)),
+        )
+    )
+    assert "claude-opus-4" in md and "gpt-5.5" in md

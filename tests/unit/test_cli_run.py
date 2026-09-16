@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from typer.testing import CliRunner
 
 import xorcise.core.cli.app  # noqa: F401  -- importing registers the command groups
@@ -806,3 +808,52 @@ def test_run_report_reports_a_still_grading_run_instead_of_writing_json(monkeypa
     assert result.exit_code == 3  # in progress — a CI gate must not read this as done
     assert "grading in progress" in result.output
     assert list(tmp_path.iterdir()) == []
+
+
+# ── run status names the model that ran (#113) ───────────────────────────────────────────────
+
+
+def _graded(**over: object) -> dict[str, Any]:
+    """A minimal graded result envelope, as GET /runs/{id}/result returns it."""
+    base: dict[str, Any] = {
+        "grade": {"overall": 0.5, "breakdown": {"deterministic": 1.0, "judge": 0.0}},
+        "conditions": {"model": None, "judge_model": "gpt-4o", "budget_seconds": 600},
+        "models_observed": [],
+    }
+    base.update(over)
+    return base
+
+
+def test_run_status_names_the_model_the_harness_reported(capsys):
+    """The issue's headline symptom: `model: model not disclosed` on every run, because the
+    disclosed field is set only by `agent register --model` and almost nobody passes it."""
+    from xorcise.core.cli.commands import run as run_cmd
+
+    run_cmd._render_result(_graded(models_observed=["gpt-5.5"]))
+
+    out = capsys.readouterr().out
+    assert "gpt-5.5" in out
+    assert "not disclosed" not in out
+
+
+def test_run_status_still_says_not_disclosed_when_nothing_named_a_model(capsys):
+    from xorcise.core.cli.commands import run as run_cmd
+
+    run_cmd._render_result(_graded())
+
+    assert "not disclosed" in capsys.readouterr().out
+
+
+def test_run_status_shows_both_when_the_declared_model_is_not_the_one_that_ran(capsys):
+    """Never silently prefer one: a mismatch misattributes the result, and is worth surfacing."""
+    from xorcise.core.cli.commands import run as run_cmd
+
+    run_cmd._render_result(
+        _graded(
+            conditions={"model": "claude-opus-4", "judge_model": "gpt-4o", "budget_seconds": 600},
+            models_observed=["gpt-5.5"],
+        )
+    )
+
+    out = capsys.readouterr().out
+    assert "claude-opus-4" in out and "gpt-5.5" in out
