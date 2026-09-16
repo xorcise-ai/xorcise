@@ -258,7 +258,7 @@ def test_telemetry_summary_is_the_events_header_without_the_events(migrated_home
     body = client.get("/api/runs/r7/telemetry").json()
     assert body["run_id"] == "r7"
     assert body["adapter_name"] == "generic"
-    assert body["fallback"] is False  # source_agent "generic" is an exact registry match
+    assert body["fallback"] is True  # the generic renderer did the work, however it was named
     assert body["counts"]["spans"] == 2
     assert body["counts"]["content_spans"] == 2  # both carry a `command` attribute
     assert body["counts"]["by_kind.unclassified"] == 1

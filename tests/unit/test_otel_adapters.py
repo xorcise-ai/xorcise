@@ -229,10 +229,12 @@ def test_generic_profile_declares_unclassified_supported() -> None:
 # ── registry.select() ────────────────────────────────────────────────────────────────
 
 
-def test_select_registered_source_agent_returns_exact_adapter_no_fallback() -> None:
+def test_select_generic_by_name_is_still_the_fallback() -> None:
+    """`fallback` means "the generic renderer did the work", not "the name missed the registry":
+    a blank kind (→ "generic") and a mistyped one must carry the same flag (#119)."""
     adapter, fallback = registry.select("generic", [])
     assert adapter.name == "generic"
-    assert fallback is False
+    assert fallback is True
 
 
 def test_select_unknown_source_agent_falls_back_to_generic() -> None:

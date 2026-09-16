@@ -348,6 +348,27 @@ def confirm_or_abort(question: str, *, assume_yes: bool) -> None:
         raise typer.Exit(1)
 
 
+def confirm_gate(question: str, *, assume_yes: bool, what: str, example: str) -> None:
+    """A HARD confirmation gate for a choice that silently degrades every later run.
+
+    `confirm_or_abort` skips the prompt without a TTY because destructive commands were already
+    scripted before the prompt existed. This gate is the opposite: it exists to STOP a script
+    from making the choice unnoticed, so without a TTY and without --yes it fails closed — exit
+    2, naming the flag — the same posture as `down --purge`. Interactively the default answer
+    is No; `n` prints "aborted" and exits 1."""
+    if assume_yes:
+        return
+    if not _stdin_is_interactive():
+        fail(
+            f"{what} needs confirmation — pass --yes in non-interactive use",
+            example=example,
+            code=2,
+        )
+    if not typer.confirm(question, default=False):
+        console.print("aborted")
+        raise typer.Exit(1)
+
+
 def next_step(command: str, label: str | None = None) -> None:
     """The single next action after a successful command, copy-pasteable."""
     prefix = f"{label} → " if label else "next: "
