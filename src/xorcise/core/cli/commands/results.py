@@ -15,7 +15,8 @@ from typing import Any
 import typer
 
 from xorcise.core.cli._shared import app, console, emit_json
-from xorcise.core.cli._ux import humanize_when, print_table, ux_table
+from xorcise.core.cli._ux import DASH, humanize_when, print_table, ux_table
+from xorcise.core.cli.commands.run import judge_degraded
 from xorcise.core.cli.rest_client import RestClient
 
 # How a terminal run ended, per the run-control vocabulary (mirrors the GUI's run-state map).
@@ -41,6 +42,10 @@ def _flatten(run: dict[str, Any], result: dict[str, Any] | None) -> dict[str, An
         "agent_id": run.get("agent_id"),
         "overall": grade.get("overall"),
         "partial": bool(partial),
+        # A judge that never ran still produces a real number (0.5 * deterministic) which averages
+        # in as though it were graded. The roll-up keeps that number — the math is intentional —
+        # but carries the condition so the ranking can disclose what it is made of.
+        "judge_degraded": judge_degraded(grade),
         "completed": trigger in _COMPLETED_TRIGGERS,
         "when": run.get("completed_at") or run.get("created_at") or "",
     }
@@ -67,6 +72,10 @@ def summarize_by_agent(rows: list[dict[str, Any]], names: dict[str, str]) -> lis
                 "scored": len(scored),
                 "avg_overall": sum(scored) / len(scored) if scored else None,
                 "best_overall": max(scored) if scored else None,
+                # How many of this agent's runs scored WITHOUT a judge. Those scores are in the
+                # average above (deliberately — the 50/50 math is documented), so the count is the
+                # only thing that tells a reader an agent is being ranked partly on unjudged runs.
+                "judge_degraded": sum(1 for r in agent_rows if r.get("judge_degraded")),
                 "completion_rate": (
                     sum(1 for r in agent_rows if r["completed"]) / total if total else None
                 ),
@@ -131,10 +140,12 @@ aggregates but still counted in the totals.
         "Best",
         "Completed",
         "Partial",
+        "No judge",
         "Last run",
         title="Leaderboard",
     )
     for s in summaries:
+        degraded = int(s.get("judge_degraded") or 0)
         table.add_row(
             s["agent_name"],
             str(s["runs"]),
@@ -143,6 +154,14 @@ aggregates but still counted in the totals.
             _score(s["best_overall"]),
             _rate(s["completion_rate"]),
             _rate(s["partial_rate"]),
+            f"[warn]{degraded}[/warn]" if degraded else DASH,
             humanize_when(s["last_run"]),
         )
     print_table(table)
+    if any(s.get("judge_degraded") for s in summaries):
+        # The scores stay in the averages above, so without this line an agent ranked partly on
+        # unjudged runs is indistinguishable from one graded end to end.
+        console.print(
+            "[dim]'No judge' counts runs scored with the judge half unavailable — those runs "
+            "score at most 0.50 and ARE included in Avg/Best.[/dim]"
+        )
