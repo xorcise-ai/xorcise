@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from typing import Any
+
 from typer.testing import CliRunner
 
 import xorcise.core.cli.app  # noqa: F401  -- importing registers the command groups
 from xorcise.core.cli._shared import app
+from xorcise.core.cli.commands.run import ReportFormat
 
 runner = CliRunner()
 
@@ -806,3 +809,148 @@ def test_run_report_reports_a_still_grading_run_instead_of_writing_json(monkeypa
     assert result.exit_code == 3  # in progress — a CI gate must not read this as done
     assert "grading in progress" in result.output
     assert list(tmp_path.iterdir()) == []
+
+
+# ── bulk export across a set of runs (#114) ──────────────────────────────────────────────────
+#
+# `run report`, `run traces --export` and `run events export` are per-run, so exporting a mission's
+# worth of runs meant scripting a loop over run ids — manual glue every user had to write. Analysis
+# and hand-off almost always operate on a GROUP: a mission, an agent, a date range.
+#
+# The selection is a pure function so the filtering rules can be tested without touching a disk or
+# a server; the command is then just I/O around it.
+
+
+def _run_row(
+    rid: str,
+    *,
+    state: str = "terminal",
+    trigger: str | None = "done",
+    mission: str = "m1",
+    agent: str = "a1",
+    created: str = "2026-07-01T10:00:00+00:00",
+) -> dict[str, Any]:
+    return {
+        "run_id": rid,
+        "state": state,
+        "terminal_trigger": trigger,
+        "mission": mission,
+        "agent_id": agent,
+        "created_at": created,
+    }
+
+
+def test_export_selects_only_finished_runs():
+    """An active run has no report, no sealed trace and no final event stream — including it would
+    write three misleading files rather than fail honestly."""
+    from xorcise.core.cli.commands.run import select_runs_for_export
+
+    rows = [_run_row("r1"), _run_row("r2", state="active", trigger=None)]
+
+    assert [r["run_id"] for r in select_runs_for_export(rows)] == ["r1"]
+
+
+def test_export_filters_by_mission_and_agent():
+    from xorcise.core.cli.commands.run import select_runs_for_export
+
+    rows = [
+        _run_row("r1", mission="sqli", agent="a1"),
+        _run_row("r2", mission="sqli", agent="a2"),
+        _run_row("r3", mission="xss", agent="a1"),
+    ]
+
+    assert [r["run_id"] for r in select_runs_for_export(rows, mission="sqli")] == ["r1", "r2"]
+    picked = select_runs_for_export(rows, mission="sqli", agent_id="a1")
+    assert [r["run_id"] for r in picked] == ["r1"]
+
+
+def test_export_since_is_inclusive_of_its_boundary():
+    """A half-open boundary silently drops the run created exactly at the timestamp someone pasted
+    from a previous export — the one case they are most likely to be re-running."""
+    from xorcise.core.cli.commands.run import select_runs_for_export
+
+    rows = [
+        _run_row("old", created="2026-07-01T09:59:59+00:00"),
+        _run_row("edge", created="2026-07-01T10:00:00+00:00"),
+        _run_row("new", created="2026-07-01T10:00:01+00:00"),
+    ]
+
+    picked = [r["run_id"] for r in select_runs_for_export(rows, since="2026-07-01T10:00:00+00:00")]
+
+    assert picked == ["edge", "new"]
+
+
+def test_genuine_only_drops_runs_the_agent_never_finished():
+    """Infra failures are not agent performance. `deploy_failed` never reached the agent at all,
+    and a budget kill is an unfinished attempt — exporting them into an analysis set pollutes it."""
+    from xorcise.core.cli.commands.run import select_runs_for_export
+
+    rows = [
+        _run_row("done", trigger="done"),
+        _run_row("deploy", trigger="deploy_failed"),
+        _run_row("timeout", trigger="timeout"),
+    ]
+
+    assert [r["run_id"] for r in select_runs_for_export(rows, genuine_only=True)] == ["done"]
+    # Without the flag nothing is hidden: the default export is everything that finished.
+    assert len(select_runs_for_export(rows)) == 3
+
+
+def test_export_writes_all_three_artefacts_per_run(tmp_path, monkeypatch, capsys):
+    """The command's contract: one directory per run holding the same bytes the three single-run
+    commands produce, so there is no second export format to keep in sync."""
+    from xorcise.core.cli.commands import run as run_cmd
+
+    class _C:
+        def get(self, path):
+            return [_run_row("r1" * 16), _run_row("r2" * 16)]
+
+        def get_text(self, path):
+            return f"body-of:{path}"
+
+    monkeypatch.setattr(run_cmd, "RestClient", lambda: _C())
+    monkeypatch.setattr(run_cmd, "agent_names_by_id", lambda c: {})
+
+    run_cmd.run_export(
+        out=str(tmp_path),
+        mission=None,
+        agent=None,
+        since=None,
+        format=ReportFormat.md,
+        genuine_only=False,
+    )
+
+    for rid in ("r1r1r1r1", "r2r2r2r2"):
+        assert (tmp_path / rid / "report.md").read_text().startswith("body-of:")
+        assert (tmp_path / rid / "traces.otlp.jsonl").exists()
+        assert (tmp_path / rid / "events.jsonl").exists()
+    assert "exported 2 run(s)" in capsys.readouterr().out
+
+
+def test_export_skips_a_failing_run_instead_of_abandoning_the_batch(tmp_path, monkeypatch, capsys):
+    """One unreadable run must not cost the other ninety-nine — the whole reason to batch."""
+    from xorcise.core.cli.commands import run as run_cmd
+
+    class _C:
+        def get(self, path):
+            return [_run_row("good" * 8), _run_row("bad!" * 8)]
+
+        def get_text(self, path):
+            if "bad" in path:
+                raise RuntimeError("500 from server")
+            return "ok"
+
+    monkeypatch.setattr(run_cmd, "RestClient", lambda: _C())
+    monkeypatch.setattr(run_cmd, "agent_names_by_id", lambda c: {})
+
+    run_cmd.run_export(
+        out=str(tmp_path),
+        mission=None,
+        agent=None,
+        since=None,
+        format=ReportFormat.md,
+        genuine_only=False,
+    )
+
+    assert (tmp_path / "goodgood" / "report.md").exists()
+    assert "exported 1 run(s)" in capsys.readouterr().out

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Sequence
 from enum import StrEnum
 from typing import Any
 
@@ -419,6 +420,140 @@ deleted — stop it first with `xorcise run terminate`.
     confirm_or_abort(f"Delete run {short_id(run_id)} and its recorded result?", assume_yes=yes)
     client.delete(f"/runs/{run_id}")
     console.print(f"deleted run '{run_id}'")
+
+
+#: How a terminal run ended when the AGENT finished it, as opposed to the platform stopping it.
+#: Mirrors `results._COMPLETED_TRIGGERS` — the leaderboard already draws this line, and a second,
+#: subtly different definition of "a real run" is how two surfaces start disagreeing.
+_GENUINE_TRIGGERS = frozenset({"done", "completed"})
+
+
+def select_runs_for_export(
+    runs: Sequence[dict[str, Any]],
+    *,
+    mission: str | None = None,
+    agent_id: str | None = None,
+    since: str | None = None,
+    genuine_only: bool = False,
+) -> list[dict[str, Any]]:
+    """Which runs a bulk export should write, in the order the server returned them.
+
+    Pure, so the filtering rules are testable without a disk or a server.
+
+    Only terminal runs qualify, always: an active run has no report, no sealed trace and no final
+    event stream, so including it would write three misleading files instead of failing honestly.
+
+    `since` compares ISO timestamps and is INCLUSIVE of its boundary — a half-open one silently
+    drops the run created exactly at a timestamp pasted from a previous export, which is the run
+    someone re-running a range is most likely to want. Unparseable timestamps on either side sort
+    the run out rather than crashing the export.
+    """
+    from datetime import datetime
+
+    def created(row: dict[str, Any]) -> datetime | None:
+        try:
+            return datetime.fromisoformat(str(row.get("created_at") or ""))
+        except ValueError:
+            return None
+
+    floor = None
+    if since:
+        try:
+            floor = datetime.fromisoformat(since)
+        except ValueError as exc:
+            raise typer.BadParameter(
+                f"--since must be an ISO timestamp (e.g. 2026-07-01T10:00:00+00:00), got {since!r}"
+            ) from exc
+
+    picked = []
+    for row in runs:
+        if row.get("state") != "terminal":
+            continue
+        if mission and str(row.get("mission") or row.get("mission_id") or "") != mission:
+            continue
+        if agent_id and str(row.get("agent_id") or "") != agent_id:
+            continue
+        if genuine_only and str(row.get("terminal_trigger") or "") not in _GENUINE_TRIGGERS:
+            continue
+        if floor is not None:
+            at = created(row)
+            if at is None or at < floor:
+                continue
+        picked.append(row)
+    return picked
+
+
+@run_app.command("export")
+def run_export(
+    out: str = typer.Option(..., "--out", help="Directory to write the export tree into."),
+    mission: str | None = typer.Option(None, "--mission", help="Only runs of this mission."),
+    agent: str | None = typer.Option(None, "--agent", help="Only runs by this agent (name or id)."),
+    since: str | None = typer.Option(
+        None, "--since", help="Only runs created at or after this ISO timestamp (inclusive)."
+    ),
+    format: ReportFormat = _FORMAT_OPTION,
+    genuine_only: bool = typer.Option(
+        False,
+        "--genuine-only",
+        help="Skip runs the agent did not finish itself (deploy failures, budget kills).",
+    ),
+) -> None:
+    """Export a SET of runs — report, raw OTLP and normalized events — into one directory tree.
+
+    Analysis and hand-off operate on a group of runs, not one: a mission, an agent, a date range. \
+Each selected run becomes `<out>/<run-id8>/` holding `report.md` (or .html), \
+`traces.otlp.jsonl` and `events.jsonl` — the same bytes the three single-run commands \
+produce, so nothing here is a second format to keep in sync.
+
+    Only finished runs are exported; an active one has no sealed record yet. \
+A run whose files cannot be fetched is reported and skipped rather than \
+aborting the batch, so one bad run never costs you the other ninety-nine.
+    """
+    from pathlib import Path
+
+    client = RestClient()
+    agent_id = None
+    if agent:
+        # Accept a name (what people have) or an id (what the run rows carry).
+        names = agent_names_by_id(client)
+        agent_id = next((aid for aid, name in names.items() if name == agent), agent)
+
+    runs: list[dict[str, Any]] = client.get("/runs")
+    selected = select_runs_for_export(
+        runs, mission=mission, agent_id=agent_id, since=since, genuine_only=genuine_only
+    )
+    if not selected:
+        console.print(
+            "no finished runs matched — check the filters with: xorcise run list", markup=False
+        )
+        raise typer.Exit(3)
+
+    fmt = format.value if isinstance(format, ReportFormat) else str(format)
+    root = Path(out)
+    written, skipped = 0, []
+    for row in selected:
+        rid = str(row["run_id"])
+        target = root / rid[:8]
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            for name, path in (
+                (f"report.{fmt}", f"/runs/{rid}/report?format={fmt}"),
+                ("traces.otlp.jsonl", f"/runs/{rid}/otlp.jsonl"),
+                ("events.jsonl", f"/runs/{rid}/events.jsonl"),
+            ):
+                (target / name).write_text(client.get_text(path), encoding="utf-8")
+        except (OSError, Exception) as exc:  # noqa: BLE001 — one bad run must not end the batch
+            skipped.append((short_id(rid), str(exc)))
+            continue
+        written += 1
+        err_console.print(f"  {short_id(rid)} → {target}", markup=False)
+
+    console.print(f"exported {written} run(s) to {root}")
+    for rid, why in skipped:
+        err_console.print(f"[warn]skipped[/] {rid}: {escape(why)}")
+    if skipped and not written:
+        # Nothing landed: that is a failed export, not a quiet partial success.
+        raise typer.Exit(1)
 
 
 @run_app.command("report")
