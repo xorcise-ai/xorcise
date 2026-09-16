@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from xorcise.core.otel.ingest.drops import (
+    DEFAULT_SPOOL_MAX_BYTES,
     DropCounters,
     DropRecorder,
     DropSpool,
@@ -59,6 +60,44 @@ def test_spool_writes_an_envelope_and_keeps_only_the_newest_cap_files(tmp_path: 
     assert "received_at" in envelope
 
 
+def test_spool_evicts_oldest_until_the_byte_budget_holds_even_under_the_file_cap(
+    tmp_path: Path,
+) -> None:
+    """The file cap alone left disk use at cap × max_payload. With a generous cap and a budget
+    sized for two envelopes, the third write must evict the oldest on BYTES."""
+    probe = DropSpool(tmp_path / "probe").write(
+        signal="traces", reason="unroutable", run_id="", payload=_BATCH
+    )
+    assert probe is not None
+    one = probe.stat().st_size
+    spool = DropSpool(tmp_path / "dropped", cap=100, max_bytes=one * 2 + one // 2)
+    paths = [
+        spool.write(signal="traces", reason="unroutable", run_id="", payload=_BATCH)
+        for _ in range(3)
+    ]
+    assert all(p is not None for p in paths)
+    remaining = sorted((tmp_path / "dropped").glob("*.json"))
+    assert len(remaining) == 2  # far under cap=100; the byte budget did the evicting
+    assert paths[0] is not None and paths[0] not in remaining  # oldest went first
+    assert paths[2] is not None and paths[2] in remaining  # newest kept
+    assert sum(p.stat().st_size for p in remaining) <= spool.max_bytes
+
+
+def test_spool_refuses_a_single_batch_larger_than_the_whole_budget(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """One oversized batch must not be written and then immediately evict everything else —
+    it is refused up front, logged, and reported as not spooled (the counters still see it)."""
+    spool = DropSpool(tmp_path / "dropped", cap=10, max_bytes=32)
+    with caplog.at_level(logging.WARNING):
+        assert spool.write(signal="logs", reason="sealed", run_id="r", payload=_BATCH) is None
+    assert "exceeds the 32-byte budget" in caplog.text
+    assert not list((tmp_path / "dropped").glob("*.json"))  # nothing landed
+    rec = DropRecorder(spool=spool)
+    rec.record(signal="logs", reason="sealed", n=1, run_id="r", payload=_BATCH)
+    assert rec.counters.sealed_log_records == 1 and rec.counters.spooled_batches == 0
+
+
 def test_spool_never_raises_on_a_bad_payload(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -93,3 +132,13 @@ def test_factory_spools_only_when_the_operator_opted_in(tmp_path: Path) -> None:
         )
     )
     assert on.spool is not None and on.spool.root == tmp_path and on.spool.cap == 7
+    assert on.spool.max_bytes == DEFAULT_SPOOL_MAX_BYTES  # absent on an older Settings → default
+    sized = drop_recorder_from_settings(
+        SimpleNamespace(
+            otel_drop_spool_enabled=True,
+            otel_drop_spool_dir=str(tmp_path),
+            otel_drop_spool_cap=7,
+            otel_drop_spool_max_bytes=4096,
+        )
+    )
+    assert sized.spool is not None and sized.spool.max_bytes == 4096

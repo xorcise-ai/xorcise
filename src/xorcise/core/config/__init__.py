@@ -170,13 +170,18 @@ class Settings(BaseSettings):
     otel_mirror_endpoint: str = ""
     # Dropped-batch spool for the OTLP receiver (#121). A batch the receiver cannot route to a
     # run, or that arrives after its run is sealed, is ALWAYS counted (collector /healthz) and
-    # logged; with this on it is also written, bounded, under `otel_drop_spool_dir` (default
-    # <home>/otel-dropped, filled in get_settings()) so the batch itself can be inspected. Off
-    # by default: it is a diagnostic, not a record — the RAW `traces`/`logs` tables stay the
-    # canonical evidence.
+    # logged; with this on it is also written under `otel_drop_spool_dir` (default
+    # <home>/otel-dropped, filled in get_settings()) so the batch itself can be inspected. The
+    # spool is bounded twice over — at most `otel_drop_spool_cap` files AND at most
+    # `otel_drop_spool_max_bytes` in total, oldest evicted first; a single batch over the byte
+    # budget is refused, never written — because an unroutable batch carries no valid run id by
+    # definition, so its size is attacker-influenced and a file cap alone would leave disk use at
+    # cap × max_payload. Off by default: it is a diagnostic, not a record — the RAW
+    # `traces`/`logs` tables stay the canonical evidence.
     otel_drop_spool_enabled: bool = False
     otel_drop_spool_dir: str = ""
     otel_drop_spool_cap: int = Field(default=200, ge=1)
+    otel_drop_spool_max_bytes: int = Field(default=64 * 1024 * 1024, ge=1)
     # HMAC secret for short-lived attachment download URLs + their TTL.
     # Empty default: get_settings() fills it with a fresh random secret per process rather than
     # shipping a known key that would let anyone forge an attachment download URL. Set

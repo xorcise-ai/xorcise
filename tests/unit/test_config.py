@@ -184,5 +184,6 @@ def test_otel_drop_spool_defaults_off_with_dir_under_home(monkeypatch, tmp_path)
         assert s.otel_drop_spool_enabled is False
         assert s.otel_drop_spool_dir == str(tmp_path / "otel-dropped")
         assert s.otel_drop_spool_cap == 200
+        assert s.otel_drop_spool_max_bytes == 64 * 1024 * 1024
     finally:
         get_settings.cache_clear()

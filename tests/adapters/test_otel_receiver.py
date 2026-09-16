@@ -325,6 +325,66 @@ def test_unroutable_log_records_are_counted_on_the_logs_signal() -> None:
     assert drops["unroutable_log_records"] == 2 and drops["unroutable_batches"] == 1
 
 
+def test_a_late_batch_for_a_sealed_run_is_spooled_and_still_never_persisted(tmp_path) -> None:
+    """The seal invariant at the one intersection the tests above leave open: post-seal + spool
+    enabled + the real HTTP handler. The late batch must land in the spool (inspectable) AND must
+    not reach the trace store — the `sealed` branch still `continue`s before any append."""
+    from xorcise.core.otel.ingest.drops import DropRecorder, DropSpool
+    from xorcise.core.otel.store import InMemorySealStore
+
+    store = InMemoryTraceStore()
+    seal_store = InMemorySealStore()
+    seal_store.seal("run-sealed")
+    recorder = DropRecorder(spool=DropSpool(tmp_path / "dropped", cap=5))
+    client = TestClient(create_otel_app(store, seal_store, drops=recorder))
+
+    resp = client.post(
+        "/v1/traces", content=json.dumps(_trace("run-sealed", ["late-1", "late-2"]))
+    )
+    assert resp.status_code == 200
+    assert resp.json()["partialSuccess"]["rejectedSpans"] == 2
+    assert store.read("run-sealed") == []  # the seal held: nothing re-entered evidence
+    files = list((tmp_path / "dropped").glob("*.json"))
+    assert len(files) == 1
+    envelope = json.loads(files[0].read_text())
+    assert envelope["reason"] == "sealed" and envelope["signal"] == "traces"
+    assert envelope["run_id"] == "run-sealed"
+    spans = envelope["payload"]["resourceSpans"][0]["scopeSpans"][0]["spans"]
+    assert [s["name"] for s in spans] == ["late-1", "late-2"]
+    drops = client.get("/healthz").json()["drops"]
+    assert drops["sealed_spans"] == 2 and drops["sealed_batches"] == 1
+    assert drops["spooled_batches"] == 1
+
+
+def test_a_late_logs_batch_for_a_sealed_run_is_spooled_and_still_never_persisted(
+    tmp_path,
+) -> None:
+    """The logs-signal twin: the only sealed-logs coverage above never asserted the counters or
+    a spool, so the `signal="logs", reason="sealed"` call site was unproven at the HTTP boundary."""
+    from xorcise.core.otel.ingest.drops import DropRecorder, DropSpool
+    from xorcise.core.otel.store import InMemorySealStore
+
+    logs = InMemoryTraceStore()
+    seal_store = InMemorySealStore()
+    seal_store.seal("run-sealed")
+    recorder = DropRecorder(spool=DropSpool(tmp_path / "dropped", cap=5))
+    client = TestClient(
+        create_otel_app(InMemoryTraceStore(), seal_store, log_store=logs, drops=recorder)
+    )
+
+    resp = client.post("/v1/logs", content=json.dumps(_logs("run-sealed", ["l1", "l2", "l3"])))
+    assert resp.status_code == 200
+    assert logs.read("run-sealed") == []
+    files = list((tmp_path / "dropped").glob("*.json"))
+    assert len(files) == 1
+    envelope = json.loads(files[0].read_text())
+    assert envelope["reason"] == "sealed" and envelope["signal"] == "logs"
+    assert envelope["run_id"] == "run-sealed"
+    drops = client.get("/healthz").json()["drops"]
+    assert drops["sealed_log_records"] == 3 and drops["sealed_batches"] == 1
+    assert drops["sealed_spans"] == 0 and drops["spooled_batches"] == 1
+
+
 def test_dropped_batches_are_spooled_when_a_spool_is_configured(tmp_path) -> None:
     from xorcise.core.otel.ingest.drops import DropRecorder, DropSpool
 
