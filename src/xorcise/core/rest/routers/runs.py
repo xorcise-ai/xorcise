@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from xorcise.core import agents, reporting, runs
 from xorcise.core.config import get_settings
-from xorcise.core.contracts.agent_event import EventCursor, RunEventsView
+from xorcise.core.contracts.agent_event import EventCursor, RunEventsView, RunTelemetryView
 from xorcise.core.contracts.errors import (
     BaseImageIncompatibleError,
     EnvironmentConfigError,
@@ -569,6 +569,20 @@ def run_events(
             log_seq=since if log_since is None else log_since,
         ),
     )
+
+
+@router.get("/{run_id}/telemetry", response_model=RunTelemetryView)
+def run_telemetry(run_id: str) -> RunTelemetryView:
+    """The run's telemetry summary: which adapter rendered it (and whether that was the generic
+    fallback), how many spans / log records arrived and how many carry content the judge can
+    read, plus the normalization warnings. The events header without the events — one cache row,
+    so `run status` and the report can show it cheaply. Unknown run → 404."""
+    if runs.get(run_id) is None:
+        raise HTTPException(status_code=404, detail=f"no run '{run_id}'")
+    # Lazy: keep the otel display plane off the module-import path (plane-isolation invariant).
+    from xorcise.core.rest.events_view import telemetry_summary
+
+    return telemetry_summary(run_id)
 
 
 @router.get("/{run_id}/otlp.jsonl")

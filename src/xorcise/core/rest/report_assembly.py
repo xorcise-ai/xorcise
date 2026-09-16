@@ -12,6 +12,7 @@ evidence stores.
 from __future__ import annotations
 
 from xorcise.core import agents, reporting, runs
+from xorcise.core.contracts.agent_event import RunTelemetryView
 from xorcise.core.contracts.reporting import ResultConditions, RunStats
 from xorcise.core.contracts.run import RunEntry
 from xorcise.core.contracts.terrain import ResolvedTerrainV2
@@ -179,6 +180,18 @@ def _terrain_for(run_id: str, mission: str) -> ResolvedTerrainV2 | None:
         return None
 
 
+def _telemetry_for(run_id: str) -> RunTelemetryView | None:
+    """The events header (adapter, fallback, content counts, warnings) — the replay header's
+    honesty signals, so the offline report discloses them too. Best-effort: display-only."""
+    # Lazy: keep the otel display plane off this module's import path (plane-isolation invariant).
+    from xorcise.core.rest import events_view
+
+    try:
+        return events_view.telemetry_summary(run_id)
+    except Exception:  # pragma: no cover — telemetry is display-only; a report must still render
+        return None
+
+
 def assemble_report(run_id: str) -> RunReportContext | None:
     """Join run + agent name + grade + conditions + stats + artifacts into a report context.
 
@@ -207,6 +220,7 @@ def assemble_report(run_id: str) -> RunReportContext | None:
         partial=partial,
         partial_trigger=partial_trigger,
         stats=_stats_for(run),
+        telemetry=_telemetry_for(run_id),
         artifacts=_artifacts_for(run_id),
         terrain=_terrain_for(run_id, run.mission),
     )

@@ -187,3 +187,20 @@ class RunEventsView(_Frozen):
     counts: Mapping[str, int] = Field(default_factory=dict)
     warnings: tuple[AdapterWarning, ...] = ()
     events: tuple[AgentEvent, ...] = ()
+
+
+class RunTelemetryView(_Frozen):
+    """The `GET /runs/{id}/telemetry` summary — the events header WITHOUT the events.
+
+    Which adapter rendered the run and whether that was a fallback, the run-level counts (spans
+    and log records, and how many of each carry content the judge can read) and the normalization
+    warnings. One cache row to read, so the CLI and the report can show it without paging the
+    whole projection. Derived and rebuildable from RAW; never a grading input."""
+
+    run_id: str
+    source_agent: str
+    adapter_name: str
+    adapter_version: str
+    fallback: bool
+    counts: Mapping[str, int] = Field(default_factory=dict)
+    warnings: tuple[AdapterWarning, ...] = ()

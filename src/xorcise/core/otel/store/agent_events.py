@@ -145,6 +145,15 @@ class SqliteAgentEventStore:
             )
             return self._view(h, [_row_to_event(r) for r in rows], counts=json.loads(h.counts_json))
 
+    def read_header(self, run_id: str) -> RunEventsView | None:
+        """The run-level header alone — adapter, fallback, counts, warnings — with `events=()`.
+        One row; what `GET /runs/{id}/telemetry` serves. None if uncached."""
+        with session_scope() as s:
+            h = s.get(AgentEventRunRow, run_id)
+            if h is None:
+                return None
+            return self._view(h, [], counts=json.loads(h.counts_json))
+
     def read_page(
         self, run_id: str, trace_since: int, log_since: int | None = None
     ) -> RunEventsView | None:

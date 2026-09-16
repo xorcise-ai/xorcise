@@ -58,5 +58,6 @@ def grade(
         judge_coverage=judge.coverage,
         judge_prompt=judge.prompt,
         spans_truncated=judge.spans_truncated,
+        transcript_items=len(ctx.transcript),
         check_breakdown=det.verdicts,
     )
