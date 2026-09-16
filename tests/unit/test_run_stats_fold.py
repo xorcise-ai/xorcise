@@ -141,3 +141,15 @@ def test_each_real_harness_yields_nonzero_tokens(name: str) -> None:
     assert s.tokens.output > 0, f"{name}: output tokens folded to zero"
     assert s.tokens.total == s.tokens.input + s.tokens.output
     assert s.counts.model_calls > 0
+
+
+def test_unclassified_spans_are_counted_but_are_not_tool_calls() -> None:
+    """The #120 shape: 113 marker-only spans must not read as 113 tool calls in the report. They
+    are still events (events_total / by_kind), so the report can show them on their own row."""
+    events = [_kind(AgentEventKind.unclassified) for _ in range(3)] + [
+        _kind(AgentEventKind.tool_call)
+    ]
+    stats = fold_run_stats(events, created_at=_T0, completed_at=None)
+    assert stats.counts.tool_calls == 1
+    assert stats.counts.events_total == 4
+    assert stats.counts.by_kind["unclassified"] == 3

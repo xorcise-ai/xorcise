@@ -188,6 +188,24 @@ def normalize_run(
         ]
         events = sorted(events + log_events, key=order_key)
 
+    # Honesty signal: spans the adapter could not classify are rendered as-is, and the header
+    # says so — a harness whose span names XORCISE does not recognise must never look like a
+    # clean run of tool calls. Names are deduplicated and capped so the warning stays readable.
+    unclassified = [e for e in events if e.kind == AgentEventKind.unclassified]
+    if unclassified:
+        names = sorted({e.title for e in unclassified if e.title})
+        shown = ", ".join(names[:10]) + (", …" if len(names) > 10 else "")
+        warnings.append(
+            AdapterWarning(
+                code="unclassified_spans",
+                message=(
+                    f"{len(unclassified)} span(s) matched no classification rule and are shown "
+                    f"as unclassified: {shown}"
+                ),
+                count=len(unclassified),
+            )
+        )
+
     counts: dict[str, int] = {
         "total": len(events),
         "unknown": sum(1 for e in events if e.kind == AgentEventKind.unknown),

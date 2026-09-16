@@ -490,6 +490,7 @@
           "error",
           "status",
           "metric",
+          "unclassified",
           "unknown"
         ],
         "title": "AgentEventKind",

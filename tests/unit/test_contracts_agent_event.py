@@ -30,9 +30,10 @@ def _event(**over: object) -> AgentEvent:
     return AgentEvent(**base)  # type: ignore[arg-type]
 
 
-def test_kind_is_closed_18_value_enum():
-    assert len(list(AgentEventKind)) == 18
+def test_kind_is_closed_19_value_enum():
+    assert len(list(AgentEventKind)) == 19
     assert AgentEventKind.message == "message"
+    assert AgentEventKind.unclassified == "unclassified"
     assert AgentEventKind.unknown == "unknown"
 
 

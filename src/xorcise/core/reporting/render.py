@@ -217,6 +217,9 @@ def _telemetry_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
         ("Total tokens", f"{s.tokens.total:,}"),
         ("Model calls", f"{s.counts.model_calls:,}"),
         ("Tool calls", f"{s.counts.tool_calls:,}"),
+        # Spans no adapter rule could classify — rendered as-is in the replay. Non-zero here
+        # means the harness's span names are unknown to XORCISE; read it next to "Tool calls".
+        ("Unclassified spans", f"{s.counts.by_kind.get('unclassified', 0):,}"),
         ("Findings", f"{s.counts.findings:,}"),
         ("Errors", f"{s.counts.errors:,}"),
         ("Events", f"{s.counts.events_total:,}"),

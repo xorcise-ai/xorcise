@@ -73,6 +73,26 @@ describe("EventCard", () => {
     expect(screen.getByRole("button", { name: /view raw/i })).toBeInTheDocument();
   });
 
+  it("renders an unclassified span honestly: raw name, attribute chips, a note, no fabricated body", () => {
+    render(
+      <EventCard
+        event={agentEvent({
+          kind: "unclassified",
+          title: "agent.ActionEvent",
+          body: "",
+          data: { "event.class": "ActionEvent", "event.source": "agent" },
+        })}
+        onViewRaw={() => {}}
+      />,
+    );
+    expect(screen.getByText("agent.ActionEvent")).toBeInTheDocument();
+    expect(screen.getByText("event.class: ActionEvent")).toBeInTheDocument();
+    expect(screen.getByText("event.source: agent")).toBeInTheDocument();
+    expect(screen.getByTestId("unclassified-note")).toHaveTextContent(/Unclassified span/);
+    expect(screen.queryByText(/Agent agent\.ActionEvent/)).not.toBeInTheDocument(); // not a tool
+    expect(screen.getByRole("button", { name: /view raw/i })).toBeInTheDocument();
+  });
+
   it("calls onViewRaw(event) from the view-raw control", () => {
     const onViewRaw = vi.fn();
     const event = agentEvent({ id: "evt-42" });
