@@ -470,7 +470,7 @@ def test_run_regrade_409_surfaces_server_detail(monkeypatch, tmp_path):
 
     monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
 
-    def fake_post(url, json=None, timeout=None):
+    def fake_post(url, json=None, timeout=None, **kwargs):
         req = httpx.Request("POST", url)
         return httpx.Response(
             409,
