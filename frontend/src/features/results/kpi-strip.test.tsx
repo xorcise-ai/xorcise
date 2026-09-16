@@ -25,6 +25,7 @@ function grade(over: Partial<GradeResult> = {}): GradeResult {
 
 function stats(over: Partial<RunStats> = {}): RunStats {
   return {
+    models: [],
     tokens: {
       input: 12000,
       output: 1300,
