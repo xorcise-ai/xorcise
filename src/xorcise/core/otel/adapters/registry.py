@@ -3,8 +3,9 @@
 `register()` files an `AgentTraceAdapter` by `.name`; `GenericOtelAdapter` is registered
 under `"generic"` at import so there is always a safe fallback. `select()` walks a trusted
 hierarchy — exact `source_agent` match, then `resource_kind`, then a best-effort span
-fingerprint, then `generic` — and reports whether the pick was a fallback (`True`) or an
-exact match (`False`) so callers/telemetry can tell the two apart.
+fingerprint, then `generic` — and reports `fallback`: True whenever the GENERIC renderer ended
+up doing the work (no harness-specific adapter, however the walk got there — a blank kind and
+a mistyped one read the same), False when a harness-specific adapter was chosen.
 
 Imports stdlib + xorcise.core.otel.flatten + xorcise.core.otel.adapters.base +
 xorcise.core.otel.adapters.generic only (all within the otel part-island).
@@ -53,15 +54,17 @@ def select(
     resource_kind: str | None = None,
 ) -> tuple[AgentTraceAdapter, bool]:
     """Pick the adapter for a trace: exact `source_agent` > `resource_kind` > fingerprint >
-    `generic`. Returns `(adapter, fallback)` — `fallback=False` only for the exact match."""
+    `generic`. Returns `(adapter, fallback)` — `fallback` is True iff the pick is the generic
+    renderer, so a blank kind and an unrecognised kind carry the same flag (#119)."""
     if source_agent in _REGISTRY:
-        return _REGISTRY[source_agent], False
-    if resource_kind and resource_kind in _REGISTRY:
-        return _REGISTRY[resource_kind], True
-    fingerprint = _fingerprint(spans)
-    if fingerprint is not None:
-        return _REGISTRY[fingerprint], True
-    return _REGISTRY["generic"], True
+        adapter = _REGISTRY[source_agent]
+    elif resource_kind and resource_kind in _REGISTRY:
+        adapter = _REGISTRY[resource_kind]
+    elif (fingerprint := _fingerprint(spans)) is not None:
+        adapter = _REGISTRY[fingerprint]
+    else:
+        adapter = _REGISTRY["generic"]
+    return adapter, adapter.name == "generic"
 
 
 register(GenericOtelAdapter())

@@ -49,3 +49,15 @@ def test_openhands_mission_preamble_is_nonempty():
     provider, _ = select("openhands")
     pre = provider.mission_preamble(LaunchContext("r1", "openhands", "host"))
     assert pre and isinstance(pre, tuple)
+
+
+def test_openhands_tips_warn_sdk_drivers_to_set_otel_env_before_import():
+    # A driver wrapping the SDK in its own Python loses the SDK's content-bearing tracing if the
+    # OTel env is set after `import openhands.sdk` (Laminar initialises once, at import).
+    from xorcise.core.harness_adapters import load_launch_providers
+    from xorcise.core.runs.launch.registry import select
+
+    load_launch_providers()
+    provider, _ = select("openhands")
+    blob = "\n".join(provider.tips(LaunchContext("r1", "openhands", "host")))
+    assert "BEFORE importing `openhands.sdk`" in blob

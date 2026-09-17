@@ -29,6 +29,7 @@ def test_attributable_event_ids_excludes_conversation_and_debug_kinds():
         _ev("e-think", AgentEventKind.thinking),  # conversation -> not attributable
         _ev("e-metric", AgentEventKind.metric),  # debug -> not attributable
         _ev("e-unknown", AgentEventKind.unknown),  # debug -> not attributable
+        _ev("e-unclassified", AgentEventKind.unclassified),  # no recognised content
         _ev("e-cmd", AgentEventKind.terminal_command),  # action -> attributable
     ]
     assert attributable_event_ids(events) == {"e-cmd"}

@@ -66,6 +66,7 @@ const ALL_KINDS: AgentEventKind[] = [
   "error",
   "status",
   "metric",
+  "unclassified",
   "unknown",
 ];
 
@@ -186,6 +187,83 @@ describe("ReplayTimeline", () => {
     fireEvent.click(screen.getByRole("switch"));
     expect(screen.getByText("cpu-metric")).toBeInTheDocument();
     expect(screen.getByText("mystery-span")).toBeInTheDocument();
+  });
+
+  it("shows unclassified spans by default, with a count banner and no attribution dot", () => {
+    const events = [
+      agentEvent({ kind: "unclassified", title: "agent.ActionEvent", body: "" }),
+      agentEvent({ kind: "unclassified", title: "agent.ObservationEvent", body: "" }),
+      agentEvent({ kind: "terminal_command", title: "terminal", body: "ls" }),
+    ];
+    render(
+      <ReplayTimeline
+        runId="r1"
+        events={events}
+        meta={null}
+        attributedActionIds={new Set()}
+        consideredIds={new Set()}
+      />,
+    );
+    // Visible WITHOUT the Debug toggle (unlike metric/unknown).
+    expect(screen.getByText("agent.ActionEvent")).toBeInTheDocument();
+    expect(screen.getByText("agent.ObservationEvent")).toBeInTheDocument();
+    expect(screen.getByTestId("unclassified-banner")).toHaveTextContent(
+      "2 of 3 spans unclassified",
+    );
+    // Only the real action carries an attribution dot; unclassified spans are not attributable.
+    expect(screen.getAllByTestId("attr-status")).toHaveLength(1);
+  });
+
+  it("renders normalization warnings verbatim, except the unclassified one which has its own banner", () => {
+    const events = [agentEvent({ kind: "unclassified", title: "agent.ActionEvent", body: "" })];
+    render(
+      <ReplayTimeline
+        runId="r1"
+        events={events}
+        meta={{
+          sourceAgent: "custom",
+          adapterName: "generic",
+          adapterVersion: "2+normalizer.3",
+          fallback: true,
+          warnings: [
+            { code: "unclassified_spans", message: "1 span(s) matched no rule", count: 1 },
+            { code: "no_content", message: "none of the 1 span(s) carries content", count: 1 },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByText("generic renderer")).toBeInTheDocument();
+    expect(screen.getByTestId("unclassified-banner")).toBeInTheDocument();
+    const warnings = screen.getAllByTestId("adapter-warning");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toHaveTextContent("none of the 1 span(s) carries content");
+  });
+
+  it("withholds normalization warnings while the run is live, but keeps the unclassified banner", () => {
+    // A healthy run's first export is often lifecycle/marker spans with no content yet. The
+    // `no_content` sentence claims the FINAL judge transcript is empty, so mid-run it would be a
+    // prediction from partial data — the CLI waits for a grade, and so does the live replay.
+    const events = [
+      agentEvent({ kind: "unclassified", title: "agent.SystemPromptEvent", body: "" }),
+    ];
+    const meta = {
+      sourceAgent: "custom",
+      adapterName: "generic",
+      adapterVersion: "2+normalizer.3",
+      fallback: true,
+      warnings: [
+        { code: "unclassified_spans", message: "1 span(s) matched no rule", count: 1 },
+        { code: "no_content", message: "none of the 1 span(s) carries content", count: 1 },
+      ],
+    };
+    const { rerender } = render(<ReplayTimeline runId="r1" events={events} meta={meta} live />);
+    expect(screen.getByTestId("unclassified-banner")).toBeInTheDocument();
+    expect(screen.queryByTestId("adapter-warning")).not.toBeInTheDocument();
+    // Once terminal, the same meta shows the warning — nothing was lost, only deferred.
+    rerender(<ReplayTimeline runId="r1" events={events} meta={meta} live={false} />);
+    expect(screen.getByTestId("adapter-warning")).toHaveTextContent(
+      "none of the 1 span(s) carries content",
+    );
   });
 
   it("renders a flag event as a Flag Claim with the agent-claimed label", () => {

@@ -19,12 +19,14 @@ from xorcise.core.contracts.agent_event import (
 from xorcise.core.contracts.telemetry import TraceRecord
 from xorcise.core.otel.adapters.base import AdapterContext
 from xorcise.core.otel.adapters.registry import select
+from xorcise.core.otel.distill import log_has_content, span_has_content
 from xorcise.core.otel.flatten import FlatLogRecord, FlatSpan, flatten, flatten_logs
 
 # Normalization is a versioned projection independently of each harness adapter's mapping version.
 # Including it in RunEventsView.adapter_version makes persisted caches rebuild when shared assembly
 # semantics (such as cross-batch ordering) change, even if the selected adapter itself did not.
-NORMALIZER_VERSION = "2"
+# v3: run-level content counts (spans/logs and how many carry content) + the `no_content` warning.
+NORMALIZER_VERSION = "3"
 
 
 def projection_version(adapter_version: str) -> str:
@@ -188,9 +190,51 @@ def normalize_run(
         ]
         events = sorted(events + log_events, key=order_key)
 
+    # Honesty signal: spans the adapter could not classify are rendered as-is, and the header
+    # says so — a harness whose span names XORCISE does not recognise must never look like a
+    # clean run of tool calls. Names are deduplicated and capped so the warning stays readable.
+    unclassified = [e for e in events if e.kind == AgentEventKind.unclassified]
+    if unclassified:
+        names = sorted({e.title for e in unclassified if e.title})
+        shown = ", ".join(names[:10]) + (", …" if len(names) > 10 else "")
+        warnings.append(
+            AdapterWarning(
+                code="unclassified_spans",
+                message=(
+                    f"{len(unclassified)} span(s) matched no classification rule and are shown "
+                    f"as unclassified: {shown}"
+                ),
+                count=len(unclassified),
+            )
+        )
+
+    # Honesty signal #2: content. The judge's distiller keeps a span or log record only when it
+    # carries a content-bearing attribute; count with that SAME predicate so the replay header,
+    # the report and the judge agree on what "content" means. When NOTHING carries content the
+    # replay can show only span names and the judge transcript for this run is empty — say so
+    # once, loudly, instead of letting a run of bare markers pass for a clean trace.
+    content_spans = sum(1 for s in spans if span_has_content(s))
+    content_logs = sum(1 for r in log_flats if log_has_content(r))
+    if (spans or log_flats) and content_spans + content_logs == 0:
+        warnings.append(
+            AdapterWarning(
+                code="no_content",
+                message=(
+                    f"none of the {len(spans)} span(s) and {len(log_flats)} log record(s) "
+                    "carries a content-bearing attribute — the replay shows only span names and "
+                    "the judge transcript for this run is empty"
+                ),
+                count=len(spans) + len(log_flats),
+            )
+        )
+
     counts: dict[str, int] = {
         "total": len(events),
         "unknown": sum(1 for e in events if e.kind == AgentEventKind.unknown),
+        "spans": len(spans),
+        "logs": len(log_flats),
+        "content_spans": content_spans,
+        "content_logs": content_logs,
     }
     for event in events:
         key = f"by_kind.{event.kind.value}"
