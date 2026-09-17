@@ -90,9 +90,22 @@ def _shared(ctx: SealedContext) -> tuple[str, str]:
 
 
 @pytest.mark.unit
-def test_criterion_message_names_the_single_criterion_in_the_trusted_role():
+def test_criterion_message_names_the_single_criterion_last_in_a_role_every_endpoint_accepts():
+    # This asserted role == "system" ("trusted — author content, not agent evidence") until #111.
+    # Three constraints meet here and only two can hold at once:
+    #   1. the criterion must come LAST, so the [instructions, evidence] prefix stays byte-identical
+    #      and cacheable across a run's criteria (the test directly below);
+    #   2. strict OpenAI-compatible servers reject any system message that is not in the leading
+    #      block — [system, user, system] is a 400, and every criterion came back `unavailable`;
+    #   3. the criterion travels in the trusted `system` role.
+    # Keeping (3) means [system, system(criterion), user(evidence)], which satisfies (2) but puts
+    # the EVIDENCE — by far the largest part — behind a message that changes per criterion, so it
+    # can never be cached. (3) is the one that costs least to give up: the trust boundary here is
+    # the ⟦⟧ fence, not the role. `_neutralize` strips those glyphs from agent content, so agent
+    # text cannot forge or close the fence, and the instructions describe the ORDER the model sees
+    # rather than the roles. What the judge is told is unchanged.
     role, content = build_criterion_message(RUBRIC[0])
-    assert role == "system"  # trusted (the criterion is author content, not agent evidence)
+    assert role == "user"
     assert "auth-bypass" in content and "Bypassed auth via SQLi" in content
 
 
@@ -567,3 +580,86 @@ def test_source_agent_generic_renders_as_unidentified_harness() -> None:
     body = evidence[1]
     assert 'produced by "an unidentified harness"' in body
     assert '"generic"' not in body
+
+
+# ── strict OpenAI-compatible endpoints (#111) ────────────────────────────────────────────────
+#
+# The per-criterion call was [system, user, system]: the varying criterion rode as a trailing
+# SYSTEM message after the user-role evidence. OpenAI's own endpoint tolerates that, which is why
+# it shipped — but servers that enforce "system must be the first message" reject the whole call
+# with a 400, so every criterion came back `unavailable` and the run simply had no judge score.
+#
+# The trust boundary does not depend on the role: untrusted evidence is delimited by the ⟦⟧ fence
+# and `_neutralize` strips those glyphs from agent content, so agent text cannot forge or close it.
+# The instructions describe the ORDER and the fence, never the roles — so the criterion can move to
+# `user` without loosening anything the judge relies on.
+
+
+class _StrictEndpoint:
+    """An OpenAI-compatible server that enforces 'system messages must come first'.
+
+    Records the roles of every call so a test can assert on the retry as well as the first attempt.
+    `replies` are returned in order; exhausted, it returns a valid single-criterion score.
+    """
+
+    def __init__(self, replies: Sequence[str] = ()) -> None:
+        self.seen: list[list[str]] = []
+        self._replies = list(replies)
+
+    def score(self, messages: Msg) -> str:
+        roles = [role for role, _ in messages]
+        self.seen.append(roles)
+        for i, role in enumerate(roles):
+            if role == "system" and i > 0 and roles[i - 1] != "system":
+                raise JudgeError(
+                    f"400 from model 'strict': System message must be at the beginning. "
+                    f"(message {i} of {roles} is system)"
+                )
+        if self._replies:
+            return self._replies.pop(0)
+        return json.dumps({"score": 1.0, "reason": "ok"})
+
+
+def test_no_system_message_ever_follows_a_non_system_one() -> None:
+    """The ordering rule itself, stated once: system messages form a leading block or none."""
+    ctx = SealedContext(run_id="r", trace_ref="t", transcript=("did a thing",))
+
+    roles = [role for role, _ in build_judge_messages(RUBRIC[0], ctx)]
+
+    offenders = [
+        i for i, r in enumerate(roles) if r == "system" and i > 0 and roles[i - 1] != "system"
+    ]
+    assert offenders == [], (
+        f"a system message at {offenders} follows a non-system one in {roles} — strict "
+        "OpenAI-compatible endpoints reject the whole call with a 400"
+    )
+
+
+def test_a_strict_endpoint_can_grade_a_run() -> None:
+    """The reported symptom: every criterion came back unavailable, so a run had no judge score."""
+    ctx = SealedContext(run_id="r", trace_ref="t", transcript=("did a thing",))
+    endpoint = _StrictEndpoint()
+
+    out = grade_judge(RUBRIC, ctx, endpoint)
+
+    assert out.status == "ok", f"strict endpoint rejected the prompt: {out.detail}"
+    assert out.sub_score == pytest.approx(1.0)
+
+
+def test_the_repair_retry_also_satisfies_a_strict_endpoint() -> None:
+    """The retry appended a SECOND trailing system message — [system, user, system, system].
+
+    Easy to miss: it only runs when the model's first reply is unparseable, so a fix applied to
+    the happy path alone would leave the strict-endpoint 400 waiting on the malformed-JSON path.
+    """
+    one = (RubricCriterion(id="c1", text="did the thing", weight=1.0),)
+    endpoint = _StrictEndpoint(replies=["not json at all"])
+
+    out = grade_judge(one, SealedContext(run_id="r", trace_ref="t"), endpoint)
+
+    assert out.status == "ok", f"strict endpoint rejected the repair retry: {out.detail}"
+    assert len(endpoint.seen) == 2, "the unparseable first reply should have triggered one retry"
+    repair_roles = endpoint.seen[1]
+    assert repair_roles.count("system") == 1 and repair_roles[0] == "system", (
+        f"the repair call must keep system first and single: {repair_roles}"
+    )
