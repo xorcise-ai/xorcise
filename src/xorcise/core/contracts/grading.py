@@ -100,5 +100,9 @@ class GradeResult(_Frozen):
     # How many distilled transcript spans had their body capped (Lever 1) in the evidence the judge
     # saw — surfaced so the results page can disclose that some span bodies were truncated.
     spans_truncated: int = 0
+    # How many distilled transcript items the judge was handed. 0 means the judge saw NO telemetry
+    # content at all and graded from artifacts alone — disclosed so an empty-telemetry run cannot
+    # pass for a well-evidenced one. None on grades persisted before this field existed.
+    transcript_items: int | None = None
     # the deterministic half's per-check verdicts (the structured "why" behind the score)
     check_breakdown: tuple[CheckVerdict, ...] = ()

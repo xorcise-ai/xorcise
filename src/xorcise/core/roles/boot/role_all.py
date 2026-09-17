@@ -244,12 +244,15 @@ def build_rest_app() -> FastAPI:
 
 def build_otel_app() -> FastAPI:
     """Compose the OTLP receiver app."""
+    from xorcise.core.otel.ingest.drops import drop_recorder_from_settings
     from xorcise.core.otel.ingest.embedded import create_otel_app
     from xorcise.core.otel.mirror import resolve_mirror
     from xorcise.core.otel.store import SqliteSealStore
 
     resolve_mirror(get_settings())  # fail fast if the reserved mirror is enabled
-    return create_otel_app(seal_store=SqliteSealStore())
+    return create_otel_app(
+        seal_store=SqliteSealStore(), drops=drop_recorder_from_settings(get_settings())
+    )
 
 
 def _system() -> str:
