@@ -1409,3 +1409,118 @@ def test_mission_ingest_is_disabled_and_never_calls_the_server(monkeypatch, tmp_
     missing = runner.invoke(app, ["mission", "ingest", str(tmp_path / "nope")])
     assert missing.exit_code == 0
     assert "coming soon" in missing.output.lower()
+
+
+# ── `--kind` honesty gate (#119) ─────────────────────────────────────────────────────
+
+_HARNESSES = [{"kind": "claude-code"}, {"kind": "codex"}, {"kind": "openhands"}]
+
+
+def _recorder(sink: list[dict[str, object]]) -> object:
+    """A RestClient.post/put stand-in that records the JSON body and echoes it back."""
+
+    def _call(self: object, path: str, json: dict[str, object]) -> dict[str, object]:
+        sink.append(json)
+        return json
+
+    return _call
+
+
+def _stub_register(monkeypatch, *, interactive: bool, harnesses=_HARNESSES):
+    posted: list[dict[str, object]] = []
+    monkeypatch.setattr(RestClient, "get", lambda self, path: [])  # duplicate pre-check
+    monkeypatch.setattr(RestClient, "get_or_none", lambda self, path: harnesses)
+    monkeypatch.setattr(RestClient, "post", _recorder(posted))
+    monkeypatch.setattr("xorcise.core.cli._ux._stdin_is_interactive", lambda: interactive)
+    return posted
+
+
+def test_register_unrecognised_kind_warns_and_asks_interactively_default_no(monkeypatch):
+    posted = _stub_register(monkeypatch, interactive=True)
+    result = runner.invoke(
+        app, ["agent", "register", "--name", "re", "--kind", "Custom"], input="\n"
+    )
+    assert result.exit_code == 1
+    assert "'Custom' is not a registered harness" in result.stderr
+    assert "known: claude-code, codex, openhands" in result.stderr
+    assert "generic renderer" in result.stderr
+    assert "aborted" in result.stdout
+    assert posted == []  # nothing written on the default (No)
+
+
+def test_register_unrecognised_kind_proceeds_on_explicit_yes(monkeypatch):
+    posted = _stub_register(monkeypatch, interactive=True)
+    result = runner.invoke(
+        app, ["agent", "register", "--name", "re", "--kind", "Custom"], input="y\n"
+    )
+    assert result.exit_code == 0
+    assert "'Custom' is not a registered harness" in result.stderr  # the warning still lands
+    assert posted and posted[0]["kind"] == "Custom"
+
+
+def test_register_unrecognised_kind_fails_closed_without_a_tty(monkeypatch):
+    """The gate exists to stop a SCRIPT from making the choice unnoticed — so no TTY and no
+    --yes is exit 2 naming the flag, not a silent pass (unlike confirm_or_abort)."""
+    posted = _stub_register(monkeypatch, interactive=False)
+    result = runner.invoke(app, ["agent", "register", "--name", "re", "--kind", "Custom"])
+    assert result.exit_code == 2
+    assert "needs confirmation — pass --yes" in result.stderr
+    assert "--kind Custom --yes" in result.stderr
+    assert posted == []
+
+
+def test_register_unrecognised_kind_yes_flag_skips_the_prompt_but_keeps_the_warning(monkeypatch):
+    posted = _stub_register(monkeypatch, interactive=False)
+    result = runner.invoke(app, ["agent", "register", "--name", "re", "--kind", "Custom", "--yes"])
+    assert result.exit_code == 0
+    assert "'Custom' is not a registered harness" in result.stderr
+    assert posted[0]["kind"] == "Custom"
+
+
+def test_register_near_miss_kind_suggests_the_closest_harness(monkeypatch):
+    _stub_register(monkeypatch, interactive=False)
+    result = runner.invoke(app, ["agent", "register", "--name", "re", "--kind", "Claude-Code"])
+    assert result.exit_code == 2
+    assert "did you mean 'claude-code'?" in result.stderr
+
+
+def test_register_known_or_blank_kind_never_prompts(monkeypatch):
+    posted = _stub_register(monkeypatch, interactive=False)
+    assert (
+        runner.invoke(app, ["agent", "register", "--name", "a", "--kind", "openhands"]).exit_code
+        == 0
+    )
+    assert runner.invoke(app, ["agent", "register", "--name", "b"]).exit_code == 0
+    assert [p["kind"] for p in posted] == ["openhands", None]
+
+
+def test_register_gate_stays_out_of_the_way_when_the_server_has_no_harness_list(monkeypatch):
+    # An older server without /harnesses: the CLI cannot judge, so it must not block on a guess.
+    posted = _stub_register(monkeypatch, interactive=False, harnesses=None)
+    result = runner.invoke(app, ["agent", "register", "--name", "re", "--kind", "Custom"])
+    assert result.exit_code == 0
+    assert posted[0]["kind"] == "Custom"
+
+
+def test_update_gates_only_a_changed_unrecognised_kind(monkeypatch):
+    puts: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        RestClient, "get", lambda self, path: [{"name": "re", "kind": "Custom", "model": None}]
+    )
+    monkeypatch.setattr(RestClient, "get_or_none", lambda self, path: _HARNESSES)
+    monkeypatch.setattr(RestClient, "put", _recorder(puts))
+    monkeypatch.setattr("xorcise.core.cli._ux._stdin_is_interactive", lambda: False)
+    # Same unrecognised kind as stored: not a new choice, no gate.
+    assert (
+        runner.invoke(app, ["agent", "update", "--name", "re", "--kind", "Custom"]).exit_code == 0
+    )
+    # A NEW unrecognised kind: gated (fails closed here, no TTY).
+    result = runner.invoke(app, ["agent", "update", "--name", "re", "--kind", "openhand"])
+    assert result.exit_code == 2
+    assert "did you mean 'openhands'?" in result.stderr
+    # Switching to a real harness: no gate.
+    assert (
+        runner.invoke(app, ["agent", "update", "--name", "re", "--kind", "openhands"]).exit_code
+        == 0
+    )
+    assert [p["kind"] for p in puts] == ["Custom", "openhands"]

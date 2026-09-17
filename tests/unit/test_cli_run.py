@@ -806,3 +806,106 @@ def test_run_report_reports_a_still_grading_run_instead_of_writing_json(monkeypa
     assert result.exit_code == 3  # in progress — a CI gate must not read this as done
     assert "grading in progress" in result.output
     assert list(tmp_path.iterdir()) == []
+
+
+def test_run_status_renders_the_telemetry_honesty_block(monkeypatch):
+    payload = _grade_payload(overall=0.9, deterministic=0.9, judge=0.9)
+    telemetry = {
+        "run_id": RID,
+        "source_agent": "custom",
+        "adapter_name": "generic",
+        "adapter_version": "2+normalizer.3",
+        "fallback": True,
+        "counts": {"spans": 114, "content_spans": 0, "logs": 0, "content_logs": 0},
+        "warnings": [
+            {
+                "code": "no_content",
+                "message": "none of the 114 span(s) carries content",
+                "count": 114,
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.get_run_result", lambda self, p: payload
+    )
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.get_or_none", lambda self, p: telemetry
+    )
+    res = runner.invoke(app, ["run", "status", RID])
+    assert res.exit_code == 0
+    assert "renderer generic (generic renderer" in res.stdout
+    assert "spans 114 (0 with content)" in res.stdout
+    assert "warning: none of the 114 span(s) carries content" in res.stdout
+
+
+def test_run_status_json_carries_telemetry_additively(monkeypatch):
+    import json as _json
+
+    payload = _grade_payload(overall=0.9, deterministic=0.9, judge=0.9)
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.get_run_result", lambda self, p: payload
+    )
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.get_or_none",
+        lambda self, p: {"adapter_name": "generic", "fallback": True, "counts": {}, "warnings": []},
+    )
+    res = runner.invoke(app, ["run", "status", RID, "--json"])
+    assert res.exit_code == 0
+    parsed = _json.loads(res.stdout)
+    assert parsed["grade"]["overall"] == 0.9
+    assert parsed["telemetry"]["adapter_name"] == "generic"
+
+
+def test_run_status_is_silent_about_telemetry_when_the_server_has_none(monkeypatch):
+    payload = _grade_payload(overall=0.9, deterministic=0.9, judge=0.9)
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.get_run_result", lambda self, p: payload
+    )
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.get_or_none", lambda self, p: None
+    )
+    res = runner.invoke(app, ["run", "status", RID])
+    assert res.exit_code == 0
+    assert "telemetry:" not in res.stdout
+
+
+def test_run_list_shows_the_harness_column(monkeypatch):
+    rows = [
+        {
+            "run_id": "a" * 32,
+            "agent_id": "ag1",
+            "mission": "m1",
+            "state": "done",
+            "terminal_trigger": "complete",
+            "created_at": "2026-09-07T06:38:00Z",
+            "source_agent": "openhands",
+        },
+        {
+            "run_id": "b" * 32,
+            "agent_id": "ag1",
+            "mission": "m1",
+            "state": "done",
+            "terminal_trigger": "complete",
+            "created_at": "2026-09-07T06:39:00Z",
+            "source_agent": "Custom",
+        },
+    ]
+
+    def fake_get(self, path):
+        if path == "/runs":
+            return rows
+        if path == "/agents":
+            return [{"id": "ag1", "name": "leapfrog"}]
+        if path.startswith("/missions"):
+            return []
+        return None
+
+    monkeypatch.setattr("xorcise.core.cli.commands.run.RestClient.get", fake_get)
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.get_or_none", lambda self, p: None
+    )
+    res = runner.invoke(app, ["run", "list"])
+    assert res.exit_code == 0, res.stderr
+    assert "Harness" in res.stdout
+    assert "OpenHands" in res.stdout
+    assert "Custom" in res.stdout

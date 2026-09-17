@@ -64,11 +64,19 @@ export function TranscriptSummary({ stats }: { stats: RunStats | undefined }) {
     );
   }
   const c = stats.counts;
-  const items: { label: string; value: number; tone?: "err" }[] = [
+  // Spans no adapter rule could classify — shown as-is in the replay, never counted as tool
+  // calls. Present only when non-zero: for a recognised harness a quiet absence is the healthy
+  // reading, and a standing "0" would read as a verdict. Non-zero means this harness's span
+  // names are unknown to XORCISE (the replay header names them), so it takes the warn tone.
+  const unclassified = c.by_kind["unclassified"] ?? 0;
+  const items: { label: string; value: number; tone?: "err" | "warn" }[] = [
     { label: "Model calls", value: c.model_calls },
     { label: "Tool calls", value: c.tool_calls },
     { label: "Findings", value: c.findings },
     { label: "Errors", value: c.errors, tone: "err" },
+    ...(unclassified > 0
+      ? [{ label: "Unclassified spans", value: unclassified, tone: "warn" as const }]
+      : []),
   ];
   return (
     <Card className="bg-card">
@@ -80,8 +88,8 @@ export function TranscriptSummary({ stats }: { stats: RunStats | undefined }) {
               key={it.label}
               label={it.label}
               value={it.value}
-              // Only a NON-ZERO error count earns the err tone — a quiet 0 is not a verdict.
-              tone={it.tone === "err" && it.value > 0 ? "err" : undefined}
+              // Only a NON-ZERO count earns a status tone — a quiet 0 is not a verdict.
+              tone={it.tone && it.value > 0 ? it.tone : undefined}
             />
           ))}
         </StatTileRow>
