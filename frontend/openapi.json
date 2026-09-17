@@ -3496,6 +3496,14 @@
           "grade": {
             "$ref": "#/components/schemas/GradeResult"
           },
+          "models_observed": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Models Observed",
+            "type": "array"
+          },
           "partial": {
             "default": false,
             "title": "Partial",
@@ -3544,6 +3552,14 @@
               "model_calls": 0,
               "tool_calls": 0
             }
+          },
+          "models": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Models",
+            "type": "array"
           },
           "projection": {
             "anyOf": [

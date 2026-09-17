@@ -17,9 +17,12 @@ from xorcise.core.otel.store.models import TraceSealRow
 class InMemorySealStore(SealStore):
     def __init__(self) -> None:
         self._sealed: dict[str, datetime] = {}
+        self._digests: dict[str, str] = {}
 
-    def seal(self, run_id: str) -> None:
+    def seal(self, run_id: str, digest: str | None = None) -> None:
         self._sealed.setdefault(run_id, datetime.now(UTC))
+        if digest is not None:
+            self._digests.setdefault(run_id, digest)
 
     def is_sealed(self, run_id: str) -> bool:
         return run_id in self._sealed
@@ -27,12 +30,17 @@ class InMemorySealStore(SealStore):
     def sealed_at(self, run_id: str) -> datetime | None:
         return self._sealed.get(run_id)
 
+    def evidence_digest(self, run_id: str) -> str | None:
+        return self._digests.get(run_id)
+
 
 class SqliteSealStore(SealStore):
-    def seal(self, run_id: str) -> None:
+    def seal(self, run_id: str, digest: str | None = None) -> None:
         with session_scope() as s:
-            if s.get(TraceSealRow, run_id) is None:  # idempotent: first seal wins
-                s.add(TraceSealRow(run_id=run_id))
+            # First seal wins, digest included. A later seal must NOT overwrite it: whoever can
+            # re-seal could otherwise launder edited evidence into a clean verification.
+            if s.get(TraceSealRow, run_id) is None:
+                s.add(TraceSealRow(run_id=run_id, evidence_digest=digest))
 
     def is_sealed(self, run_id: str) -> bool:
         with session_scope() as s:
@@ -42,3 +50,8 @@ class SqliteSealStore(SealStore):
         with session_scope() as s:
             row = s.get(TraceSealRow, run_id)
             return row.sealed_at if row is not None else None
+
+    def evidence_digest(self, run_id: str) -> str | None:
+        with session_scope() as s:
+            row = s.get(TraceSealRow, run_id)
+            return row.evidence_digest if row is not None else None

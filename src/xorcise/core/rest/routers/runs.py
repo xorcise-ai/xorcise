@@ -48,6 +48,12 @@ class RunResultView(BaseModel):
     conditions: ResultConditions
     partial: bool = False  # True when graded on incomplete data (timeout trigger)
     partial_trigger: str | None = None  # the terminal trigger when partial
+    # The model(s) the harness reported running, lifted off the run's stats snapshot. Distinct
+    # from conditions.model, which is what the operator DECLARED — that is set only by
+    # `agent register --model` and is null on essentially every run, which is why the result
+    # could not be attributed to a model after the fact. Carried here rather than fetched from
+    # /stats so `run status` stays one request, and empty when the telemetry named none.
+    models_observed: tuple[str, ...] = ()
 
 
 class RunArtifactView(BaseModel):
@@ -716,8 +722,16 @@ def run_result(run_id: str, background: BackgroundTasks) -> RunResultView | JSON
     base = reporting.result_conditions(run_id) or ResultConditions()
     conditions = base.model_copy(update={"intel_disclosed": disclosed_intel_count(run_id)})
     partial, partial_trigger = reporting.result_partial(run_id)
+    # The stats snapshot is persisted beside the grade, so this is a local read rather than a
+    # re-fold. Absent for pre-existing results recorded before stats were captured — an empty
+    # tuple then, which renders as the same honest "not disclosed" as having no telemetry at all.
+    stats = reporting.get_stats(run_id)
     return RunResultView(
-        grade=grade, conditions=conditions, partial=partial, partial_trigger=partial_trigger
+        grade=grade,
+        conditions=conditions,
+        partial=partial,
+        partial_trigger=partial_trigger,
+        models_observed=tuple(stats.models) if stats else (),
     )
 
 

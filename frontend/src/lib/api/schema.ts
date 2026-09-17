@@ -2684,6 +2684,11 @@ export interface components {
             conditions: components["schemas"]["ResultConditions"];
             grade: components["schemas"]["GradeResult"];
             /**
+             * Models Observed
+             * @default []
+             */
+            models_observed: string[];
+            /**
              * Partial
              * @default false
              */
@@ -2710,6 +2715,11 @@ export interface components {
              *     }
              */
             counts: components["schemas"]["CountStats"];
+            /**
+             * Models
+             * @default []
+             */
+            models: string[];
             /** Projection */
             projection?: string | null;
             /** @default {} */

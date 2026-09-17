@@ -81,6 +81,12 @@ class RunReportContext:
     # mission declared no terrain or the map could not be resolved; the section is then omitted
     # rather than drawn empty.
     terrain: ResolvedTerrainV2 | None = None
+    # The digest recorded when the run's evidence was sealed, and whether the evidence still
+    # matches it. `verified` is a TRISTATE: True/False/None, where None means no digest was
+    # recorded (unsealed, or sealed before digests existed) — reporting that as "altered" would be
+    # a false accusation, so the report says nothing at all in that case.
+    evidence_digest: str | None = None
+    evidence_verified: bool | None = None
     # The events header (adapter, fallback, content counts, warnings) — what the replay header
     # shows, so the offline report discloses the same honesty signals. None when unavailable.
     telemetry: RunTelemetryView | None = None
@@ -125,6 +131,26 @@ def _elapsed_seconds(ctx: RunReportContext) -> float | None:
     if ctx.run.completed_at is None:
         return None
     return (ctx.run.completed_at - ctx.run.created_at).total_seconds()
+
+
+def _activity_seconds(ctx: RunReportContext) -> float | None:
+    """How long the agent was actually emitting telemetry: first event → last event.
+
+    Distinct from `_elapsed_seconds`, which is wall clock. A run whose agent dies early is not
+    closed out until its budget expires, so the two diverge hard: a crash one second in still
+    reports a 30-minute Duration, and read alone that says "the agent worked for 30 minutes".
+
+    Both are kept rather than one replacing the other. Wall clock is what the run COST — it really
+    did hold a slot and a subnet for half an hour — and this is what the agent DID. Neither answers
+    the other's question. None when the run produced no telemetry: a 0 would claim the agent did
+    nothing, which is a different statement from nothing having been recorded.
+    """
+    if ctx.stats is None:
+        return None
+    first, last = ctx.stats.timing.first_event_ts, ctx.stats.timing.last_event_ts
+    if first is None or last is None:
+        return None
+    return max(0.0, (last - first).total_seconds())
 
 
 def _duration(seconds: float | None) -> str:
@@ -190,10 +216,39 @@ def _metadata_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
         *([("Platform", ctx.conditions.platform)] if ctx.conditions.platform else []),
         ("Started", _ts(ctx.run.created_at)),
         ("Duration", _duration(_elapsed_seconds(ctx))),
+        # Only when telemetry actually bounds a span. Sits beside Duration because the pair is the
+        # point: they agree on a healthy run and diverge loudly on a crashed one.
+        *(
+            [("Agent activity", _duration(_activity_seconds(ctx)))]
+            if _activity_seconds(ctx) is not None
+            else []
+        ),
         ("Run ID", ctx.run.run_id),
         ("Status", _status_line(ctx)),
         ("Budget", f"{ctx.run.budget_seconds}s" if ctx.run.budget_seconds else _DASH),
     ]
+
+
+def _agent_model(ctx: RunReportContext) -> str:
+    """Which model produced this result — declared, observed, or honestly unknown.
+
+    Two independent sources, kept distinguishable rather than collapsed. `conditions.model` is what
+    an operator typed at `agent register --model`; `stats.models` is what the harness reported
+    actually running. Almost nobody declares one, which is why this row read "not disclosed" on
+    essentially every report while the telemetry had the answer all along.
+
+    When both exist and DISAGREE, both are shown. Silently preferring either would misattribute the
+    result, and the disagreement is itself the interesting fact.
+    """
+    declared = (ctx.conditions.model or "").strip()
+    observed = [m for m in (ctx.stats.models if ctx.stats else ()) if m]
+    if declared and observed and declared not in observed:
+        return f"{declared} (disclosed); telemetry reported {', '.join(observed)}"
+    if declared:
+        return f"{declared} (disclosed)"
+    if observed:
+        return f"{', '.join(observed)} (reported by the harness)"
+    return "not disclosed"
 
 
 def _condition_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
@@ -201,11 +256,29 @@ def _condition_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
     # here — Conditions carries only what the run was *evaluated under*.
     c = ctx.conditions
     return [
-        ("Agent model (disclosed)", c.model or "not disclosed"),
+        ("Agent model", _agent_model(ctx)),
         ("Judge model", c.judge_model or "not configured"),
         ("Budget", f"{c.budget_seconds}s"),
         ("Sandbox image", c.sandbox_ref or _DASH),
+        # Only when a digest exists. A report that said "Evidence: unknown" on every pre-#116 run
+        # would train readers to ignore the line, which is the opposite of the point.
+        *([("Evidence seal", _evidence_seal_line(ctx))] if ctx.evidence_digest else []),
     ]
+
+
+def _evidence_seal_line(ctx: RunReportContext) -> str:
+    """The seal's digest and whether the evidence still matches it.
+
+    Short-form digest: enough to compare two reports of the same run by eye, while the full value
+    stays available from the seal store for an actual verification. A mismatch is stated plainly —
+    this is the one line in the report that says the rest of it may not be trustworthy.
+    """
+    digest = (ctx.evidence_digest or "")[:16]
+    if ctx.evidence_verified is True:
+        return f"`{digest}…` verified — evidence unchanged since sealing"
+    if ctx.evidence_verified is False:
+        return f"`{digest}…` **MISMATCH — the evidence has changed since it was sealed**"
+    return f"`{digest}…` (not verified)"
 
 
 def _telemetry_rows(ctx: RunReportContext) -> list[tuple[str, str]]:

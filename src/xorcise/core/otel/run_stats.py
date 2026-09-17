@@ -72,6 +72,10 @@ def fold_run_stats(
     reader can tell a snapshot that predates the current renderer and re-fold it."""
     tok = TokenStats()
     by_kind: Counter[str] = Counter()
+    # dict, not set: insertion order is the answer. A run that switches model mid-way (a router, a
+    # fallback) should read primary-first, and sorting would put whichever name happens to sort
+    # lower in front of the one that did the early work.
+    models: dict[str, None] = {}
     model_calls = tool_calls = findings = errors = 0
     longest_tool_ms: int | None = None
     first_ts: datetime | None = None
@@ -79,6 +83,15 @@ def fold_run_stats(
 
     for e in events:
         by_kind[e.kind.value] += 1
+        # Read the model off ANY event that names one, not just usage metrics. Every adapter
+        # normalises its own spelling onto `model`, but they disagree about WHERE it belongs:
+        # claude-code and openhands put it on each usage metric (from gen_ai.request/response
+        # .model), while codex reports it once on its "session started" status event — arguably
+        # the more correct place, since the model is a property of the session, not of a call.
+        # Folding metrics alone silently dropped codex entirely.
+        named_model = str((e.data or {}).get("model") or "").strip()
+        if named_model:
+            models.setdefault(named_model, None)
         if e.kind is AgentEventKind.metric:
             data = e.data or {}
             inp = _pick_int(data, _INPUT)
@@ -107,6 +120,7 @@ def fold_run_stats(
     tok.total = tok.input + tok.output
     elapsed = (completed_at - created_at).total_seconds() if completed_at else None
     return RunStats(
+        models=tuple(models),
         tokens=tok,
         counts=CountStats(
             model_calls=model_calls,

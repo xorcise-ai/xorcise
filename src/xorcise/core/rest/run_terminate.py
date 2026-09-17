@@ -63,10 +63,15 @@ def seal_terminal(run_id: str, trigger: str, now: datetime, detail: str | None =
 
 
 def _seal_telemetry(run_id: str) -> None:
-    """Idempotently freeze the RAW OTLP record, keeping the OTel import lazy."""
-    from xorcise.core.otel.store import SqliteSealStore
+    """Idempotently freeze the RAW OTLP record, keeping the OTel import lazy.
 
-    SqliteSealStore().seal(run_id)
+    Both seal paths (zero-drain and post-drain) funnel through here, so recording the evidence
+    digest in one place covers them together. Sealing must happen even if hashing does not — see
+    evidence_seal.seal_with_digest.
+    """
+    from xorcise.core.rest.evidence_seal import seal_with_digest
+
+    seal_with_digest(run_id)
 
 
 def _drain_and_seal_telemetry(run_id: str) -> None:
