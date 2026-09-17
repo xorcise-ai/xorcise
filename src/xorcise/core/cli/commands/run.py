@@ -79,7 +79,7 @@ def _resolve_id(client: RestClient, given: str) -> str:
 def _agent_model_line(cond: dict[str, Any], observed: Sequence[str]) -> str:
     """Which model produced this result — declared, observed, or honestly unknown.
 
-    `conditions.model` is what an operator typed at `agent register --model`; `models_observed` is
+    `conditions.model` is what an operator typed at `agent register --model`; `models_reported` is
     what the harness reported actually running. This line read "model not disclosed" on
     essentially every run because almost nobody passes the flag, while the telemetry had named the
     model all along.
@@ -168,7 +168,7 @@ def _render_result(
     if grade.get("trace_ref"):
         console.print(f"trace: {escape(str(grade['trace_ref']))}")
     # Disclosed conditions travel with the result.
-    console.print(f"model: {escape(_agent_model_line(cond, r.get('models_observed') or []))}")
+    console.print(f"model: {escape(_agent_model_line(cond, r.get('models_reported') or []))}")
     console.print(
         f"judge model: {escape(str(cond.get('judge_model') or 'judge model not configured'))}"
     )
