@@ -818,7 +818,7 @@ def _graded(**over: object) -> dict[str, Any]:
     base: dict[str, Any] = {
         "grade": {"overall": 0.5, "breakdown": {"deterministic": 1.0, "judge": 0.0}},
         "conditions": {"model": None, "judge_model": "gpt-4o", "budget_seconds": 600},
-        "models_observed": [],
+        "models_reported": [],
     }
     base.update(over)
     return base
@@ -829,7 +829,7 @@ def test_run_status_names_the_model_the_harness_reported(capsys):
     disclosed field is set only by `agent register --model` and almost nobody passes it."""
     from xorcise.core.cli.commands import run as run_cmd
 
-    run_cmd._render_result(_graded(models_observed=["gpt-5.5"]))
+    run_cmd._render_result(_graded(models_reported=["gpt-5.5"]))
 
     out = capsys.readouterr().out
     assert "gpt-5.5" in out
@@ -851,7 +851,7 @@ def test_run_status_shows_both_when_the_declared_model_is_not_the_one_that_ran(c
     run_cmd._render_result(
         _graded(
             conditions={"model": "claude-opus-4", "judge_model": "gpt-4o", "budget_seconds": 600},
-            models_observed=["gpt-5.5"],
+            models_reported=["gpt-5.5"],
         )
     )
 

@@ -239,12 +239,44 @@ def test_unclassified_spans_are_counted_but_are_not_tool_calls() -> None:
 
 
 def test_fold_stamps_the_projection_it_was_folded_under() -> None:
-    """`projection` is the renderer's identity — adapter@version — which is what lets a reader
-    tell a snapshot that predates the current classifier apart from a fresh one. Absent unless
-    the caller supplies it, so older call sites keep working."""
-    assert projection_key("generic", "2+normalizer.3") == "generic@2+normalizer.3"
+    """`projection` is what lets a reader tell a snapshot that predates the current renderer apart
+    from a fresh one. Absent unless the caller supplies it, so older call sites keep working.
+
+    It carries the fold's OWN version as well as the renderer's. Originally it was just
+    `adapter@version`, which missed the case where the fold starts emitting a NEW field: neither
+    component changes then, so every existing snapshot kept looking current and was served stale
+    (#128 review).
+    """
+    assert projection_key("generic", "2+normalizer.3") == "generic@2+normalizer.3+stats.2"
     stamped = fold_run_stats(
         [], created_at=_T0, completed_at=None, projection="generic@2+normalizer.3"
     )
     assert stamped.projection == "generic@2+normalizer.3"
     assert fold_run_stats([], created_at=_T0, completed_at=None).projection is None
+
+
+# ── a snapshot folded before `models` existed must not read as current (#128 review) ─────────
+#
+# The stamp was `<adapter>@<version>` only. Adding a FIELD to the fold changes neither component,
+# so a snapshot folded before `models` existed still matched the current stamp and was served
+# as-is — an already-graded run kept saying "model not disclosed" even though its retained
+# telemetry named the model. The stamp has to version the fold's own output shape too.
+
+
+def test_the_stamp_changes_when_the_fold_output_changes() -> None:
+    from xorcise.core.otel.run_stats import STATS_FOLD_VERSION, projection_key
+
+    key = projection_key("generic", "2+normalizer.3")
+
+    assert key.startswith("generic@2+normalizer.3")
+    assert STATS_FOLD_VERSION in key, (
+        "the stamp must carry the fold version, or adding a field to RunStats leaves every "
+        "existing snapshot looking current"
+    )
+
+
+def test_a_snapshot_stamped_before_the_models_fold_is_stale() -> None:
+    """The exact pre-change stamp — adapter and version current, fold version absent."""
+    from xorcise.core.otel.run_stats import projection_key
+
+    assert projection_key("generic", "2+normalizer.3") != "generic@2+normalizer.3"

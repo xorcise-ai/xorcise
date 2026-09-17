@@ -595,3 +595,44 @@ def test_summarize_counts_the_runs_whose_judge_never_ran():
     assert summary["judge_degraded"] == 1
     # The average is unchanged: this is a disclosure gap, not a math bug.
     assert summary["avg_overall"] == pytest.approx(0.7)
+
+
+def test_a_partial_degraded_run_is_not_counted_against_the_aggregates_it_never_entered():
+    """#133 review. `scored` excludes partial runs, but `judge_degraded` counted every row — so a
+    timed-out run with an unavailable judge showed `avg=None, No judge=1` under a footer saying
+    those runs ARE included in Avg/Best. The column now counts the same cohort the footer
+    describes: runs that actually reached the aggregates."""
+    rows: list[dict[str, Any]] = [
+        {
+            "agent_id": "a1",
+            "overall": 0.5,
+            "partial": True,  # excluded from scored/avg/best …
+            "completed": False,
+            "when": "2026-07-01T10:00:00",
+            "judge_degraded": True,  # … so it must not be counted here either
+        },
+    ]
+
+    (summary,) = summarize_by_agent(rows, {"a1": "alpha"})
+
+    assert summary["avg_overall"] is None and summary["scored"] == 0
+    assert summary["judge_degraded"] == 0
+
+
+def test_a_scored_degraded_run_is_still_counted():
+    """The case the column exists for — in the aggregates, and judged by nothing."""
+    rows: list[dict[str, Any]] = [
+        {
+            "agent_id": "a1",
+            "overall": 0.5,
+            "partial": False,
+            "completed": True,
+            "when": "2026-07-01T10:00:00",
+            "judge_degraded": True,
+        },
+    ]
+
+    (summary,) = summarize_by_agent(rows, {"a1": "alpha"})
+
+    assert summary["avg_overall"] == pytest.approx(0.5)
+    assert summary["judge_degraded"] == 1
