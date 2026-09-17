@@ -208,11 +208,18 @@ def build_criterion_message(criterion: RubricCriterion) -> Message:
     back `unavailable` and BYOM runs simply had no judge score. OpenAI's own endpoint tolerates it,
     which is exactly why it survived.
 
-    Nothing is loosened by the move: the trust boundary is the ⟦⟧ fence around the evidence, not
-    the role. `_neutralize` strips those glyphs from all agent-controlled content, so agent text
-    cannot forge or close the fence, and anything outside it is provably platform-written. The
-    instructions describe the ORDER the model receives ("(1) … evidence, then (2) the criterion"),
-    never the roles, so the contract the judge is held to is unchanged.
+    Nothing is loosened by the move, because the trust boundary was never the role — it is the ⟦⟧
+    fence. `_neutralize` strips those glyphs from all agent-controlled content, so artifact and
+    transcript text cannot forge or close the fence: the BOUNDARY holds. The instructions describe
+    the ORDER the model receives ("(1) … evidence, then (2) the criterion"), never the roles, so
+    the contract the judge is held to is unchanged.
+
+    What that does NOT establish is authorship of everything outside the fence. The pre-fence
+    HARNESS TELEMETRY DISCLOSURE interpolates `ctx.source_agent`, which comes from agent
+    registration — neutralising its glyphs, collapsing its whitespace and truncating it to 64
+    characters keeps it from breaking the structure, but does not make it platform-written. The
+    platform authors the disclosure's CLAIMS (which evidence classes are unavailable); the harness
+    NAME inside it is registrant-supplied and should be read as a label, not as an attestation.
     """
     return (
         "user",
