@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 from typer.testing import CliRunner
 
 import xorcise.core.cli.app  # noqa: F401  -- importing registers the command groups
@@ -806,6 +808,124 @@ def test_run_report_reports_a_still_grading_run_instead_of_writing_json(monkeypa
     assert result.exit_code == 3  # in progress — a CI gate must not read this as done
     assert "grading in progress" in result.output
     assert list(tmp_path.iterdir()) == []
+
+
+# ── run status names the model that ran (#113) ───────────────────────────────────────────────
+
+
+def _graded(**over: object) -> dict[str, Any]:
+    """A minimal graded result envelope, as GET /runs/{id}/result returns it."""
+    base: dict[str, Any] = {
+        "grade": {"overall": 0.5, "breakdown": {"deterministic": 1.0, "judge": 0.0}},
+        "conditions": {"model": None, "judge_model": "gpt-4o", "budget_seconds": 600},
+        "models_observed": [],
+    }
+    base.update(over)
+    return base
+
+
+def test_run_status_names_the_model_the_harness_reported(capsys):
+    """The issue's headline symptom: `model: model not disclosed` on every run, because the
+    disclosed field is set only by `agent register --model` and almost nobody passes it."""
+    from xorcise.core.cli.commands import run as run_cmd
+
+    run_cmd._render_result(_graded(models_observed=["gpt-5.5"]))
+
+    out = capsys.readouterr().out
+    assert "gpt-5.5" in out
+    assert "not disclosed" not in out
+
+
+def test_run_status_still_says_not_disclosed_when_nothing_named_a_model(capsys):
+    from xorcise.core.cli.commands import run as run_cmd
+
+    run_cmd._render_result(_graded())
+
+    assert "not disclosed" in capsys.readouterr().out
+
+
+def test_run_status_shows_both_when_the_declared_model_is_not_the_one_that_ran(capsys):
+    """Never silently prefer one: a mismatch misattributes the result, and is worth surfacing."""
+    from xorcise.core.cli.commands import run as run_cmd
+
+    run_cmd._render_result(
+        _graded(
+            conditions={"model": "claude-opus-4", "judge_model": "gpt-4o", "budget_seconds": 600},
+            models_observed=["gpt-5.5"],
+        )
+    )
+
+    out = capsys.readouterr().out
+    assert "claude-opus-4" in out and "gpt-5.5" in out
+
+
+# ── a degraded judge must say so wherever the score is shown (#110) ──────────────────────────
+#
+# When the judge half degrades it contributes 0.0 to `overall` BY DESIGN, and report.md discloses
+# that ("Judge half degraded: unavailable"). `run status` and `run list` did not — so a run whose
+# objective checks passed completely reads as a flat 0.50, which looks like "half solved" rather
+# than "checks fully passed, judge never ran".
+#
+# Disclosure only. The 50/50 math is intentional and documented, so nothing here changes a score.
+
+
+def test_run_status_discloses_a_degraded_judge_beside_the_score(capsys):
+    from xorcise.core.cli.commands import run as run_cmd
+
+    run_cmd._render_result(
+        _graded(
+            grade={
+                "overall": 0.5,
+                "breakdown": {"deterministic": 1.0, "judge": 0.0},
+                "judge_status": "unavailable",
+                "judge_detail": "400 from model 'x': System message must be at the beginning.",
+            }
+        )
+    )
+
+    out = capsys.readouterr().out
+    assert "unavailable" in out, f"a degraded judge was not disclosed: {out!r}"
+
+
+def test_run_status_says_nothing_extra_when_the_judge_ran(capsys):
+    """The banner must be the exception, not decoration on every healthy run."""
+    from xorcise.core.cli.commands import run as run_cmd
+
+    run_cmd._render_result(
+        _graded(
+            grade={
+                "overall": 0.9,
+                "breakdown": {"deterministic": 1.0, "judge": 0.8},
+                "judge_status": "ok",
+            }
+        )
+    )
+
+    assert "degraded" not in capsys.readouterr().out.lower()
+
+
+def test_the_list_score_is_marked_when_the_judge_never_ran():
+    """`run list` showed a bare 0.50 — indistinguishable from a genuine half score.
+
+    `_run_score` already fetches the whole result to read `overall`, so the judge's status is in
+    hand and marking it costs no extra request.
+    """
+    from xorcise.core.cli.commands import run as run_cmd
+
+    class _C:
+        def get(self, path):
+            return {
+                "grade": {
+                    "overall": 0.5,
+                    "breakdown": {"deterministic": 1.0, "judge": 0.0},
+                    "judge_status": "unavailable",
+                }
+            }
+
+    rendered = run_cmd._run_score(cast("Any", _C()), {"state": "terminal", "run_id": "r1"})
+
+    assert "0.50" in rendered
+    assert rendered != "0.50", "a judge-degraded score must be distinguishable from a real one"
 
 
 def test_run_status_renders_the_telemetry_honesty_block(monkeypatch):

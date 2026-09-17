@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Sequence
 from enum import StrEnum
 from typing import Any
 
@@ -75,6 +76,29 @@ def _resolve_id(client: RestClient, given: str) -> str:
     return resolve_run_id(client, given)
 
 
+def _agent_model_line(cond: dict[str, Any], observed: Sequence[str]) -> str:
+    """Which model produced this result — declared, observed, or honestly unknown.
+
+    `conditions.model` is what an operator typed at `agent register --model`; `models_observed` is
+    what the harness reported actually running. This line read "model not disclosed" on
+    essentially every run because almost nobody passes the flag, while the telemetry had named the
+    model all along.
+
+    A declared model that DISAGREES with the observed one shows both: preferring either silently
+    would misattribute the result, and the disagreement is the fact worth seeing. Mirrors
+    reporting.render._agent_model so the CLI and report.md never tell different stories.
+    """
+    declared = str(cond.get("model") or "").strip()
+    seen = [str(m) for m in observed if str(m).strip()]
+    if declared and seen and declared not in seen:
+        return f"{declared} (disclosed); telemetry reported {', '.join(seen)}"
+    if declared:
+        return declared
+    if seen:
+        return f"{', '.join(seen)} (reported by the harness)"
+    return "model not disclosed"
+
+
 def _render_telemetry(telemetry: dict[str, Any] | None) -> None:
     """The run's telemetry honesty block: which renderer, how much content, and every warning.
     Silent when the server has no telemetry summary (older server, or no trace at all)."""
@@ -121,6 +145,16 @@ def _render_result(
             f"[yellow]PARTIAL JUDGE[/] — {coverage:.0%} of rubric weight scored; "
             "shown ranges include unscored criteria"
         )
+    elif judge_degraded(grade):
+        # The judge never ran, so its half contributed 0.0 — by design, but a full deterministic
+        # solve then reads as a flat 0.50 and looks like "half solved" rather than "checks passed,
+        # judge unavailable". report.md always said so; this is the same sentence, here.
+        detail = str(grade.get("judge_detail") or "").strip()
+        console.print(
+            f"[yellow]JUDGE DEGRADED[/] — {escape(str(grade['judge_status']))}: the judge half "
+            "did not run and contributed 0.00 to overall"
+            + (f" ({escape(detail)})" if detail else "")
+        )
     # Interpolated evidence/deduction text is server/LLM-authored — escape it so a
     # stray `[...]` never gets interpreted as Rich markup.
     if grade.get("hard_fails"):
@@ -134,7 +168,7 @@ def _render_result(
     if grade.get("trace_ref"):
         console.print(f"trace: {escape(str(grade['trace_ref']))}")
     # Disclosed conditions travel with the result.
-    console.print(f"model: {escape(str(cond.get('model') or 'model not disclosed'))}")
+    console.print(f"model: {escape(_agent_model_line(cond, r.get('models_observed') or []))}")
     console.print(
         f"judge model: {escape(str(cond.get('judge_model') or 'judge model not configured'))}"
     )
@@ -183,13 +217,33 @@ def _poll_for_grade(run_id: str) -> dict[str, Any] | None:
         time.sleep(_GRADE_POLL_SECONDS)
 
 
+def judge_degraded(grade: dict[str, Any]) -> bool:
+    """Did the judge half fail to run at all?
+
+    `unavailable` / `model-not-configured` mean the judge contributed 0.0 to `overall` without
+    ever grading — by design, and documented, but invisible outside report.md. `partial` is NOT
+    this: it means the judge ran and scored some of the rubric, and it carries its own coverage
+    disclosure. An absent status is an ungraded run, not a degraded one.
+    """
+    status = grade.get("judge_status")
+    return bool(status) and status not in ("ok", "partial")
+
+
 def _run_score(client: RestClient, run: dict[str, Any]) -> str:
-    """A terminal run's overall score for the list view; DASH when absent/ungraded."""
+    """A terminal run's overall score for the list view; DASH when absent/ungraded.
+
+    A judge-degraded score is marked. `0.50` from a full deterministic solve with no judge is
+    indistinguishable from a genuine half-score otherwise, and the list is exactly where someone
+    compares runs at a glance. The whole result is fetched here already, so the status is in hand.
+    """
     if run.get("state") != "terminal":
         return DASH
     result = client.get(f"/runs/{run['run_id']}/result")
-    overall = ((result or {}).get("grade") or {}).get("overall")
-    return f"{overall:.2f}" if isinstance(overall, int | float) else DASH
+    grade = (result or {}).get("grade") or {}
+    overall = grade.get("overall")
+    if not isinstance(overall, int | float):
+        return DASH
+    return f"{overall:.2f}[warn]*[/warn]" if judge_degraded(grade) else f"{overall:.2f}"
 
 
 @run_app.command("list")
@@ -219,6 +273,7 @@ def list_runs(
     table = ux_table(
         id_col, "Result", "Agent", "Harness", "Mission", "Score", "Started", title="Runs"
     )
+    any_degraded = False
     for r in runs:
         rid = str(r.get("run_id") or DASH)
         agent = agent_names.get(str(r.get("agent_id")), str(r.get("agent_id") or DASH)[:8])
@@ -230,16 +285,23 @@ def list_runs(
         state = run_state_markup(r.get("state"), r.get("terminal_trigger"))
         if verbose is True:
             state += f" [dim]({r.get('state')}/{r.get('terminal_trigger') or '—'})[/dim]"
+        score = _run_score(client, r)
+        any_degraded = any_degraded or "*" in score
         table.add_row(
             rid if verbose is True else short_id(rid),
             state,
             agent,
             harness,
             mission,
-            _run_score(client, r),
+            score,
             humanize_when(r.get("created_at")),
         )
     print_table(table)
+    if any_degraded:
+        # A bare marker is worse than none — say what it means, once, only when one is on screen.
+        console.print(
+            "[dim]* the judge half did not run for this score — see xorcise run status <id>[/dim]"
+        )
 
 
 def _auto_pull(client: RestClient, entry: dict[str, Any], mission: str) -> None:

@@ -535,3 +535,63 @@ def test_summarize_by_agent_sinks_unscored_agents_and_falls_back_to_the_id():
     assert scored["agent_name"] == "a2deadbe"  # no registered name → short id (GUI parity)
     assert scored["avg_overall"] == 0.3
     assert unscored["agent_name"] == "alpha" and unscored["avg_overall"] is None
+
+
+# ── the leaderboard must not pool judge-degraded scores silently (#110) ──────────────────────
+#
+# A judge-degraded run scores `0.5 * deterministic`, which is a real number that averages in as
+# though a judge had graded it. The math is intentional and stays — but an agent whose average is
+# dragged down by runs the judge never reached should say so, or the ranking misleads.
+
+
+def test_flatten_carries_whether_the_judge_actually_ran():
+    from xorcise.core.cli.commands.results import _flatten
+
+    row = _flatten(
+        {"agent_id": "a1", "terminal_trigger": "done", "created_at": "2026-07-01T10:00:00"},
+        {"grade": {"overall": 0.5, "judge_status": "unavailable"}, "partial": False},
+    )
+
+    assert row["judge_degraded"] is True
+
+
+def test_flatten_does_not_call_a_healthy_or_partial_judge_degraded():
+    """`partial` already has its own disclosure (coverage); it is not the same condition."""
+    from xorcise.core.cli.commands.results import _flatten
+
+    base_run = {"agent_id": "a1", "terminal_trigger": "done", "created_at": "2026-07-01T10:00:00"}
+    ok = _flatten(base_run, {"grade": {"overall": 0.9, "judge_status": "ok"}, "partial": False})
+    part = _flatten(
+        base_run, {"grade": {"overall": 0.7, "judge_status": "partial"}, "partial": False}
+    )
+
+    assert ok["judge_degraded"] is False and part["judge_degraded"] is False
+
+
+def test_summarize_counts_the_runs_whose_judge_never_ran():
+    from xorcise.core.cli.commands.results import summarize_by_agent
+
+    rows: list[dict[str, Any]] = [
+        {
+            "agent_id": "a1",
+            "overall": 0.5,
+            "partial": False,
+            "completed": True,
+            "when": "2026-07-01T10:00:00",
+            "judge_degraded": True,
+        },
+        {
+            "agent_id": "a1",
+            "overall": 0.9,
+            "partial": False,
+            "completed": True,
+            "when": "2026-07-02T10:00:00",
+            "judge_degraded": False,
+        },
+    ]
+
+    (summary,) = summarize_by_agent(rows, {"a1": "alpha"})
+
+    assert summary["judge_degraded"] == 1
+    # The average is unchanged: this is a disclosure gap, not a math bug.
+    assert summary["avg_overall"] == pytest.approx(0.7)
