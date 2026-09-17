@@ -1063,10 +1063,13 @@ export interface paths {
          * Run Stats
          * @description Per-run telemetry snapshot (tokens / counts / timing) for the run report.
          *
-         *     Prefers the snapshot recorded at grade time; for a run graded before the snapshot column
-         *     existed (empty stats_json) it folds the event projection LIVE as a read-only fallback (no
-         *     back-write). Mirrors /result's states otherwise: unknown run → 404; terminal-but-ungraded →
-         *     202 {"status": "grading"}; still-active run → 409.
+         *     Serves the snapshot recorded at grade time when it was folded under the run's CURRENT event
+         *     projection. When it predates the renderer (a classifier changed since the run was graded), or
+         *     was never recorded (a run graded before the snapshot column existed), the projection is folded
+         *     live and the refreshed snapshot persisted — the derived stats column only, never the grade — so
+         *     this page, the report and the replay agree (report_assembly.current_run_stats). Mirrors
+         *     /result's states otherwise: unknown run → 404; terminal-but-ungraded → 202
+         *     {"status": "grading"}; still-active run → 409.
          */
         get: operations["run_stats_api_runs__run_id__stats_get"];
         put?: never;
@@ -1092,6 +1095,29 @@ export interface paths {
          *     it — the served join.sh treats 502 as its cue to fall back to the public CDN.
          */
         get: operations["get_tailscale_tarball_api_runs__run_id__tailscale_tgz_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/telemetry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Run Telemetry
+         * @description The run's telemetry summary: which adapter rendered it (and whether that was the generic
+         *     fallback), how many spans / log records arrived and how many carry content the judge can
+         *     read, plus the normalization warnings. The events header without the events — one cache row,
+         *     so `run status` and the report can show it cheaply. Unknown run → 404.
+         */
+        get: operations["run_telemetry_api_runs__run_id__telemetry_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1348,7 +1374,7 @@ export interface components {
          * @description Closed render set. Framework-specific meaning rides `subkind`/`data`, never a new kind.
          * @enum {string}
          */
-        AgentEventKind: "message" | "thinking" | "terminal_command" | "terminal_output" | "file_edit" | "file_read" | "browser_action" | "browser_observation" | "tool_call" | "tool_result" | "mcp_call" | "mcp_result" | "finding" | "flag" | "error" | "status" | "metric" | "unknown";
+        AgentEventKind: "message" | "thinking" | "terminal_command" | "terminal_output" | "file_edit" | "file_read" | "browser_action" | "browser_observation" | "tool_call" | "tool_result" | "mcp_call" | "mcp_result" | "finding" | "flag" | "error" | "status" | "metric" | "unclassified" | "unknown";
         /**
          * AgentHistoryEntry
          * @description One recorded result in an agent's track record (the 50/50 breakdown).
@@ -1876,6 +1902,8 @@ export interface components {
             spans_truncated: number;
             /** Trace Ref */
             trace_ref?: string | null;
+            /** Transcript Items */
+            transcript_items?: number | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -2692,6 +2720,8 @@ export interface components {
              * @default []
              */
             models: string[];
+            /** Projection */
+            projection?: string | null;
             /** @default {} */
             timing: components["schemas"]["TimingStats"];
             /**
@@ -2705,6 +2735,36 @@ export interface components {
              *     }
              */
             tokens: components["schemas"]["TokenStats"];
+        };
+        /**
+         * RunTelemetryView
+         * @description The `GET /runs/{id}/telemetry` summary — the events header WITHOUT the events.
+         *
+         *     Which adapter rendered the run and whether that was a fallback, the run-level counts (spans
+         *     and log records, and how many of each carry content the judge can read) and the normalization
+         *     warnings. One cache row to read, so the CLI and the report can show it without paging the
+         *     whole projection. Derived and rebuildable from RAW; never a grading input.
+         */
+        RunTelemetryView: {
+            /** Adapter Name */
+            adapter_name: string;
+            /** Adapter Version */
+            adapter_version: string;
+            /** Counts */
+            counts?: {
+                [key: string]: number;
+            };
+            /** Fallback */
+            fallback: boolean;
+            /** Run Id */
+            run_id: string;
+            /** Source Agent */
+            source_agent: string;
+            /**
+             * Warnings
+             * @default []
+             */
+            warnings: components["schemas"]["AdapterWarning"][];
         };
         /** ScoreBreakdown */
         ScoreBreakdown: {
@@ -4603,6 +4663,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_telemetry_api_runs__run_id__telemetry_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunTelemetryView"];
                 };
             };
             /** @description Validation Error */

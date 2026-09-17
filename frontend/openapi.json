@@ -490,6 +490,7 @@
           "error",
           "status",
           "metric",
+          "unclassified",
           "unknown"
         ],
         "title": "AgentEventKind",
@@ -1605,6 +1606,17 @@
               }
             ],
             "title": "Trace Ref"
+          },
+          "transcript_items": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transcript Items"
           }
         },
         "required": [
@@ -3549,6 +3561,17 @@
             "title": "Models",
             "type": "array"
           },
+          "projection": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Projection"
+          },
           "timing": {
             "$ref": "#/components/schemas/TimingStats",
             "default": {}
@@ -3566,6 +3589,56 @@
           }
         },
         "title": "RunStats",
+        "type": "object"
+      },
+      "RunTelemetryView": {
+        "additionalProperties": false,
+        "description": "The `GET /runs/{id}/telemetry` summary \u2014 the events header WITHOUT the events.\n\nWhich adapter rendered the run and whether that was a fallback, the run-level counts (spans\nand log records, and how many of each carry content the judge can read) and the normalization\nwarnings. One cache row to read, so the CLI and the report can show it without paging the\nwhole projection. Derived and rebuildable from RAW; never a grading input.",
+        "properties": {
+          "adapter_name": {
+            "title": "Adapter Name",
+            "type": "string"
+          },
+          "adapter_version": {
+            "title": "Adapter Version",
+            "type": "string"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "fallback": {
+            "title": "Fallback",
+            "type": "boolean"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "source_agent": {
+            "title": "Source Agent",
+            "type": "string"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/AdapterWarning"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "run_id",
+          "source_agent",
+          "adapter_name",
+          "adapter_version",
+          "fallback"
+        ],
+        "title": "RunTelemetryView",
         "type": "object"
       },
       "ScoreBreakdown": {
@@ -6550,7 +6623,7 @@
     },
     "/api/runs/{run_id}/stats": {
       "get": {
-        "description": "Per-run telemetry snapshot (tokens / counts / timing) for the run report.\n\nPrefers the snapshot recorded at grade time; for a run graded before the snapshot column\nexisted (empty stats_json) it folds the event projection LIVE as a read-only fallback (no\nback-write). Mirrors /result's states otherwise: unknown run \u2192 404; terminal-but-ungraded \u2192\n202 {\"status\": \"grading\"}; still-active run \u2192 409.",
+        "description": "Per-run telemetry snapshot (tokens / counts / timing) for the run report.\n\nServes the snapshot recorded at grade time when it was folded under the run's CURRENT event\nprojection. When it predates the renderer (a classifier changed since the run was graded), or\nwas never recorded (a run graded before the snapshot column existed), the projection is folded\nlive and the refreshed snapshot persisted \u2014 the derived stats column only, never the grade \u2014 so\nthis page, the report and the replay agree (report_assembly.current_run_stats). Mirrors\n/result's states otherwise: unknown run \u2192 404; terminal-but-ungraded \u2192 202\n{\"status\": \"grading\"}; still-active run \u2192 409.",
         "operationId": "run_stats_api_runs__run_id__stats_get",
         "parameters": [
           {
@@ -6655,6 +6728,49 @@
         "summary": "Get Tailscale Tarball",
         "tags": [
           "run-control"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/telemetry": {
+      "get": {
+        "description": "The run's telemetry summary: which adapter rendered it (and whether that was the generic\nfallback), how many spans / log records arrived and how many carry content the judge can\nread, plus the normalization warnings. The events header without the events \u2014 one cache row,\nso `run status` and the report can show it cheaply. Unknown run \u2192 404.",
+        "operationId": "run_telemetry_api_runs__run_id__telemetry_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunTelemetryView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Telemetry",
+        "tags": [
+          "runs"
         ]
       }
     },

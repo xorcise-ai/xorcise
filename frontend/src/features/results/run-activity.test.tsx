@@ -53,6 +53,19 @@ describe("TranscriptSummary", () => {
     render(<TranscriptSummary stats={stats({ events_total: 0 })} />);
     expect(screen.getByText(/No transcript telemetry/i)).toBeInTheDocument();
   });
+
+  it("adds an Unclassified spans tile only when the fold counted some", () => {
+    // The re-folded snapshot carries `by_kind.unclassified` for spans no adapter rule matched
+    // (#129). The Results page must say so next to Tool calls, not hide it in the replay only.
+    render(<TranscriptSummary stats={stats({ by_kind: { unclassified: 5, tool_call: 9 } })} />);
+    expect(screen.getByText("Unclassified spans")).toBeInTheDocument();
+    expect(screen.getByText("5")).toBeInTheDocument();
+  });
+
+  it("omits the Unclassified spans tile for a fully classified run", () => {
+    render(<TranscriptSummary stats={stats({ by_kind: { tool_call: 9 } })} />);
+    expect(screen.queryByText("Unclassified spans")).not.toBeInTheDocument();
+  });
 });
 
 describe("RunActivity", () => {

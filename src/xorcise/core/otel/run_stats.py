@@ -50,11 +50,26 @@ def _pick_int(data: Mapping[str, str], keys: tuple[str, ...]) -> int:
     return 0
 
 
+def projection_key(adapter_name: str, adapter_version: str) -> str:
+    """The `RunStats.projection` stamp: which adapter, at which projection version (the adapter's
+    own version + the shared normalizer version, exactly as `RunEventsView.adapter_version`
+    carries it), folded a snapshot. It is the agent_events cache staleness key minus the RAW
+    sequence numbers: after terminate the RAW is sealed, so only a renderer change can make a
+    snapshot stale."""
+    return f"{adapter_name}@{adapter_version}"
+
+
 def fold_run_stats(
-    events: Sequence[AgentEvent], *, created_at: datetime, completed_at: datetime | None
+    events: Sequence[AgentEvent],
+    *,
+    created_at: datetime,
+    completed_at: datetime | None,
+    projection: str | None = None,
 ) -> RunStats:
     """Fold a run's normalized event projection into a RunStats snapshot. `total` is computed
-    (input+output); token keys are alias-normalized across the three harness schemas."""
+    (input+output); token keys are alias-normalized across the three harness schemas.
+    `projection` (see `projection_key`) records what rendered the events being folded, so a
+    reader can tell a snapshot that predates the current renderer and re-fold it."""
     tok = TokenStats()
     by_kind: Counter[str] = Counter()
     # dict, not set: insertion order is the answer. A run that switches model mid-way (a router, a
@@ -121,4 +136,5 @@ def fold_run_stats(
             last_event_ts=last_ts,
             longest_tool_ms=longest_tool_ms,
         ),
+        projection=projection,
     )

@@ -250,3 +250,29 @@ def test_runs_list_last_telemetry_null_before_first_export(migrated_home):
     client = TestClient(build_rest_app())
     entry = next(e for e in client.get("/api/runs").json() if e["run_id"] == "r-quiet")
     assert entry["last_telemetry_at"] is None
+
+
+def test_telemetry_summary_is_the_events_header_without_the_events(migrated_home):
+    _seed("r7", [(0, "s0", "TerminalAction"), (1, "s1", "agent.ActionEvent")])
+    client = TestClient(build_rest_app())
+    body = client.get("/api/runs/r7/telemetry").json()
+    assert body["run_id"] == "r7"
+    assert body["adapter_name"] == "generic"
+    assert body["fallback"] is True  # the generic renderer did the work, however it was named
+    assert body["counts"]["spans"] == 2
+    assert body["counts"]["content_spans"] == 2  # both carry a `command` attribute
+    assert body["counts"]["by_kind.unclassified"] == 1
+    assert [w["code"] for w in body["warnings"]] == ["unclassified_spans"]
+    assert "events" not in body
+    # Exactly the whole-run header (a /events PAGE carries per-page counts, so compare with the
+    # run-level view the cache stores, not with a page).
+    from xorcise.core.rest import events_view
+
+    full = events_view._full_view("r7")
+    assert dict(full.counts) == body["counts"]
+    assert [w.code for w in full.warnings] == [w["code"] for w in body["warnings"]]
+
+
+def test_telemetry_summary_unknown_run_404(migrated_home):
+    client = TestClient(build_rest_app())
+    assert client.get("/api/runs/nope/telemetry").status_code == 404
