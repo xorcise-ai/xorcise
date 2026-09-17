@@ -3496,12 +3496,12 @@
           "grade": {
             "$ref": "#/components/schemas/GradeResult"
           },
-          "models_observed": {
+          "models_reported": {
             "default": [],
             "items": {
               "type": "string"
             },
-            "title": "Models Observed",
+            "title": "Models Reported",
             "type": "array"
           },
           "partial": {

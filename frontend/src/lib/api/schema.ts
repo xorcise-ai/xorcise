@@ -2684,10 +2684,10 @@ export interface components {
             conditions: components["schemas"]["ResultConditions"];
             grade: components["schemas"]["GradeResult"];
             /**
-             * Models Observed
+             * Models Reported
              * @default []
              */
-            models_observed: string[];
+            models_reported: string[];
             /**
              * Partial
              * @default false
