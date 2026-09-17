@@ -26,6 +26,7 @@ from xorcise.core.cli._ux import (
     fail,
     fmt_score,
     humanize_when,
+    kind_label,
     next_step,
     print_table,
     run_state_markup,
@@ -98,7 +99,27 @@ def _agent_model_line(cond: dict[str, Any], observed: Sequence[str]) -> str:
     return "model not disclosed"
 
 
-def _render_result(r: dict[str, Any], *, verbose: bool = False) -> None:
+def _render_telemetry(telemetry: dict[str, Any] | None) -> None:
+    """The run's telemetry honesty block: which renderer, how much content, and every warning.
+    Silent when the server has no telemetry summary (older server, or no trace at all)."""
+    if not telemetry:
+        return
+    counts = telemetry.get("counts") or {}
+    renderer = str(telemetry.get("adapter_name") or "generic")
+    if telemetry.get("fallback"):
+        renderer += " (generic renderer — no harness-specific adapter)"
+    console.print(
+        f"telemetry: renderer {escape(renderer)} · "
+        f"spans {counts.get('spans', 0)} ({counts.get('content_spans', 0)} with content) · "
+        f"logs {counts.get('logs', 0)} ({counts.get('content_logs', 0)} with content)"
+    )
+    for w in telemetry.get("warnings") or []:
+        console.print(f"[warn]warning[/]: {escape(str(w.get('message', '')))}")
+
+
+def _render_result(
+    r: dict[str, Any], *, verbose: bool = False, telemetry: dict[str, Any] | None = None
+) -> None:
     """Render a graded result envelope; shared by run status + run terminate."""
     grade, cond = r["grade"], r["conditions"]
     judge_lower = float(grade["breakdown"]["judge"])
@@ -143,6 +164,7 @@ def _render_result(r: dict[str, Any], *, verbose: bool = False) -> None:
     )
     console.print(f"budget: {cond.get('budget_seconds', 0)}s")
     console.print(f"sandbox: {escape(str(cond.get('sandbox_ref') or '—'))}")
+    _render_telemetry(telemetry)
     # Partial banner — only shown when the result was graded on incomplete data.
     if r.get("partial"):
         trig = r.get("partial_trigger") or "partial"
@@ -218,10 +240,15 @@ def list_runs(
     agent_names = agent_names_by_id(client)
     mission_names = mission_names_by_id(client)
     id_col = "Run id" if verbose is True else "Run"
-    table = ux_table(id_col, "Result", "Agent", "Mission", "Score", "Started", title="Runs")
+    table = ux_table(
+        id_col, "Result", "Agent", "Harness", "Mission", "Score", "Started", title="Runs"
+    )
     for r in runs:
         rid = str(r.get("run_id") or DASH)
         agent = agent_names.get(str(r.get("agent_id")), str(r.get("agent_id") or DASH)[:8])
+        # The harness the run was RENDERED as (its source_agent at create time). "Custom" =
+        # no harness-specific adapter: the replay is the generic renderer (#119).
+        harness = kind_label(r.get("source_agent") or None)
         mission_id = str(r.get("mission") or r.get("mission_id") or DASH)
         mission = mission_names.get(mission_id, mission_id)
         state = run_state_markup(r.get("state"), r.get("terminal_trigger"))
@@ -231,6 +258,7 @@ def list_runs(
             rid if verbose is True else short_id(rid),
             state,
             agent,
+            harness,
             mission,
             _run_score(client, r),
             humanize_when(r.get("created_at")),
@@ -331,10 +359,14 @@ def run_status(
     # status check right after `run create` (the golden-path hint) reads as progress,
     # not a red 409 that looks like a crash.
     r = client.get_run_result(run_id)
+    # The telemetry summary (renderer, content counts, warnings) rides along with a graded
+    # result. Tolerant read: an older server without the endpoint simply yields nothing.
+    telemetry = client.get_or_none(f"/runs/{run_id}/telemetry") if "grade" in r else None
     if as_json is True:
         # JSON first, ALWAYS parseable — the envelope itself carries status:"grading"
-        # / "active", so a polling script never receives prose on the JSON path.
-        emit_json(r)
+        # / "active", so a polling script never receives prose on the JSON path. The telemetry
+        # block is additive so existing consumers keep working.
+        emit_json({**r, "telemetry": telemetry} if telemetry is not None else r)
         return
     if r.get("status") == "grading":
         # Terminal but not graded yet — grading is async after /complete.
@@ -351,7 +383,7 @@ def run_status(
             f"re-run [value]xorcise run status {short_id(run_id)}[/value] when it finishes"
         )
         raise typer.Exit(3)
-    _render_result(r, verbose=verbose)
+    _render_result(r, verbose=verbose, telemetry=telemetry)
 
 
 @run_app.command("terminate")

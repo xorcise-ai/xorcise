@@ -39,6 +39,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from xorcise.core.contracts.agent_event import RunTelemetryView
 from xorcise.core.contracts.grading import GradeResult
 from xorcise.core.contracts.reporting import ResultConditions, RunStats
 from xorcise.core.contracts.run import RunEntry
@@ -80,6 +81,9 @@ class RunReportContext:
     # mission declared no terrain or the map could not be resolved; the section is then omitted
     # rather than drawn empty.
     terrain: ResolvedTerrainV2 | None = None
+    # The events header (adapter, fallback, content counts, warnings) — what the replay header
+    # shows, so the offline report discloses the same honesty signals. None when unavailable.
+    telemetry: RunTelemetryView | None = None
     # Injected so a report is reproducible in tests; defaults to render time.
     generated_at: datetime | None = None
     version: str = field(default="")
@@ -227,9 +231,37 @@ def _condition_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
 
 
 def _telemetry_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
     s = ctx.stats
-    if s is None:
-        return []
+    if s is not None:
+        rows += _stats_rows(s)
+    t = ctx.telemetry
+    if t is not None:
+        c = t.counts
+        renderer = t.adapter_name + (
+            " (generic renderer — no harness-specific adapter)" if t.fallback else ""
+        )
+        rows += [
+            ("Renderer", renderer),
+            # "content" = what the judge's distiller keeps; 0 / N here means the judge transcript
+            # was empty for that signal, whatever the event counts above say.
+            ("Content-bearing spans", f"{c.get('content_spans', 0):,} / {c.get('spans', 0):,}"),
+            (
+                "Content-bearing log records",
+                f"{c.get('content_logs', 0):,} / {c.get('logs', 0):,}",
+            ),
+        ]
+    if ctx.grade.transcript_items is not None:
+        rows.append(("Judge transcript items", f"{ctx.grade.transcript_items:,}"))
+    return rows
+
+
+def _telemetry_warnings(ctx: RunReportContext) -> list[str]:
+    """The normalization warnings, verbatim — the same sentences the replay header shows."""
+    return [w.message for w in ctx.telemetry.warnings] if ctx.telemetry is not None else []
+
+
+def _stats_rows(s: RunStats) -> list[tuple[str, str]]:
     return [
         ("Input tokens", f"{s.tokens.input:,}"),
         ("Output tokens", f"{s.tokens.output:,}"),
@@ -239,6 +271,9 @@ def _telemetry_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
         ("Total tokens", f"{s.tokens.total:,}"),
         ("Model calls", f"{s.counts.model_calls:,}"),
         ("Tool calls", f"{s.counts.tool_calls:,}"),
+        # Spans no adapter rule could classify — rendered as-is in the replay. Non-zero here
+        # means the harness's span names are unknown to XORCISE; read it next to "Tool calls".
+        ("Unclassified spans", f"{s.counts.by_kind.get('unclassified', 0):,}"),
         ("Findings", f"{s.counts.findings:,}"),
         ("Errors", f"{s.counts.errors:,}"),
         ("Events", f"{s.counts.events_total:,}"),
@@ -426,6 +461,9 @@ def render_markdown(ctx: RunReportContext) -> str:
         lines += [*_md_kv_table(telemetry), ""]
     else:
         lines += ["_No telemetry snapshot was recorded for this run._", ""]
+    warnings = _telemetry_warnings(ctx)
+    if warnings:
+        lines += [*_md_bullets("Telemetry warnings", warnings), ""]
 
     lines += ["## Conditions", "", *_md_kv_table(_condition_rows(ctx)), ""]
     lines += [
@@ -1001,6 +1039,9 @@ def render_html(ctx: RunReportContext) -> str:
         if telemetry
         else "<p class='empty'>No telemetry snapshot was recorded for this run.</p>"
     )
+    warnings = _telemetry_warnings(ctx)
+    if warnings:
+        parts.append(_html_list("Telemetry warnings", warnings))
 
     parts += ["<h2>Overview</h2>", _html_kv_table(_metadata_rows(ctx))]
     parts += ["<h2>Conditions</h2>", _html_kv_table(_condition_rows(ctx))]

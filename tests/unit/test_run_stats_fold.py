@@ -14,7 +14,7 @@ import pytest
 from xorcise.core.contracts.agent_event import AgentEvent, AgentEventKind, RawTraceRef
 from xorcise.core.otel.adapters import normalize_run
 from xorcise.core.otel.adapters.base import AdapterContext
-from xorcise.core.otel.run_stats import fold_run_stats
+from xorcise.core.otel.run_stats import fold_run_stats, projection_key
 
 pytestmark = pytest.mark.unit
 
@@ -224,3 +224,27 @@ def test_each_real_harness_capture_reveals_the_model_that_ran(name: str, expecte
     s = fold_run_stats(view.events, created_at=_T0, completed_at=None)
 
     assert s.models == (expected,), f"{name}: folded {s.models}, expected ({expected!r},)"
+
+
+def test_unclassified_spans_are_counted_but_are_not_tool_calls() -> None:
+    """The #120 shape: 113 marker-only spans must not read as 113 tool calls in the report. They
+    are still events (events_total / by_kind), so the report can show them on their own row."""
+    events = [_kind(AgentEventKind.unclassified) for _ in range(3)] + [
+        _kind(AgentEventKind.tool_call)
+    ]
+    stats = fold_run_stats(events, created_at=_T0, completed_at=None)
+    assert stats.counts.tool_calls == 1
+    assert stats.counts.events_total == 4
+    assert stats.counts.by_kind["unclassified"] == 3
+
+
+def test_fold_stamps_the_projection_it_was_folded_under() -> None:
+    """`projection` is the renderer's identity — adapter@version — which is what lets a reader
+    tell a snapshot that predates the current classifier apart from a fresh one. Absent unless
+    the caller supplies it, so older call sites keep working."""
+    assert projection_key("generic", "2+normalizer.3") == "generic@2+normalizer.3"
+    stamped = fold_run_stats(
+        [], created_at=_T0, completed_at=None, projection="generic@2+normalizer.3"
+    )
+    assert stamped.projection == "generic@2+normalizer.3"
+    assert fold_run_stats([], created_at=_T0, completed_at=None).projection is None

@@ -97,3 +97,10 @@ class RunStats(BaseModel):
     # run's telemetry never named a model — an honest unknown, never a placeholder name. Still
     # harness-self-reported, so it stays display/comparison provenance like the rest of RunStats.
     models: tuple[str, ...] = ()
+    # The event projection this snapshot was folded under — "<adapter_name>@<adapter_version>",
+    # e.g. "generic@2+normalizer.3" (otel.run_stats.projection_key). The projection is versioned
+    # and rebuilt from RAW whenever a classifier changes; a stored snapshot whose key no longer
+    # matches is re-folded on read (rest.report_assembly.current_run_stats) so the report, the
+    # Results page and the replay never disagree about the same run. None on snapshots persisted
+    # before this field existed — treated as stale.
+    projection: str | None = None

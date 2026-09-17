@@ -156,7 +156,15 @@ def test_grade_and_record_persists_stats_snapshot(migrated_home) -> None:
     r = runs.create_run(agent_id="a1", mission="c", budget_seconds=600)
     terminate_run(r.run_id, "done", _now())
     assert reporting.get_result(r.run_id) is not None
-    assert reporting.get_stats(r.run_id) is not None  # snapshot recorded alongside the grade
+    stats = reporting.get_stats(r.run_id)
+    assert stats is not None  # snapshot recorded alongside the grade
+    # ...stamped with the projection that rendered it, so a later classifier change is
+    # detectable and the snapshot re-folded rather than served stale (current_run_stats).
+    from xorcise.core.otel.run_stats import projection_key
+    from xorcise.core.rest.events_view import telemetry_summary
+
+    summary = telemetry_summary(r.run_id)
+    assert stats.projection == projection_key(summary.adapter_name, summary.adapter_version)
 
 
 def test_stats_fold_failure_never_breaks_finalization(migrated_home, monkeypatch) -> None:
