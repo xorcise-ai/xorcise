@@ -25,6 +25,7 @@ from xorcise.core.cli._ux import (
     fail,
     fmt_score,
     humanize_when,
+    kind_label,
     next_step,
     print_table,
     run_state_markup,
@@ -215,10 +216,15 @@ def list_runs(
     agent_names = agent_names_by_id(client)
     mission_names = mission_names_by_id(client)
     id_col = "Run id" if verbose is True else "Run"
-    table = ux_table(id_col, "Result", "Agent", "Mission", "Score", "Started", title="Runs")
+    table = ux_table(
+        id_col, "Result", "Agent", "Harness", "Mission", "Score", "Started", title="Runs"
+    )
     for r in runs:
         rid = str(r.get("run_id") or DASH)
         agent = agent_names.get(str(r.get("agent_id")), str(r.get("agent_id") or DASH)[:8])
+        # The harness the run was RENDERED as (its source_agent at create time). "Custom" =
+        # no harness-specific adapter: the replay is the generic renderer (#119).
+        harness = kind_label(r.get("source_agent") or None)
         mission_id = str(r.get("mission") or r.get("mission_id") or DASH)
         mission = mission_names.get(mission_id, mission_id)
         state = run_state_markup(r.get("state"), r.get("terminal_trigger"))
@@ -228,6 +234,7 @@ def list_runs(
             rid if verbose is True else short_id(rid),
             state,
             agent,
+            harness,
             mission,
             _run_score(client, r),
             humanize_when(r.get("created_at")),

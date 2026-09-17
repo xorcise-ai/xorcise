@@ -867,3 +867,45 @@ def test_run_status_is_silent_about_telemetry_when_the_server_has_none(monkeypat
     res = runner.invoke(app, ["run", "status", RID])
     assert res.exit_code == 0
     assert "telemetry:" not in res.stdout
+
+
+def test_run_list_shows_the_harness_column(monkeypatch):
+    rows = [
+        {
+            "run_id": "a" * 32,
+            "agent_id": "ag1",
+            "mission": "m1",
+            "state": "done",
+            "terminal_trigger": "complete",
+            "created_at": "2026-09-07T06:38:00Z",
+            "source_agent": "openhands",
+        },
+        {
+            "run_id": "b" * 32,
+            "agent_id": "ag1",
+            "mission": "m1",
+            "state": "done",
+            "terminal_trigger": "complete",
+            "created_at": "2026-09-07T06:39:00Z",
+            "source_agent": "Custom",
+        },
+    ]
+
+    def fake_get(self, path):
+        if path == "/runs":
+            return rows
+        if path == "/agents":
+            return [{"id": "ag1", "name": "leapfrog"}]
+        if path.startswith("/missions"):
+            return []
+        return None
+
+    monkeypatch.setattr("xorcise.core.cli.commands.run.RestClient.get", fake_get)
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.get_or_none", lambda self, p: None
+    )
+    res = runner.invoke(app, ["run", "list"])
+    assert res.exit_code == 0, res.stderr
+    assert "Harness" in res.stdout
+    assert "OpenHands" in res.stdout
+    assert "Custom" in res.stdout
