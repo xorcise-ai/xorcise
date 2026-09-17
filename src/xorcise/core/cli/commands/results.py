@@ -72,10 +72,16 @@ def summarize_by_agent(rows: list[dict[str, Any]], names: dict[str, str]) -> lis
                 "scored": len(scored),
                 "avg_overall": sum(scored) / len(scored) if scored else None,
                 "best_overall": max(scored) if scored else None,
-                # How many of this agent's runs scored WITHOUT a judge. Those scores are in the
-                # average above (deliberately — the 50/50 math is documented), so the count is the
-                # only thing that tells a reader an agent is being ranked partly on unjudged runs.
-                "judge_degraded": sum(1 for r in agent_rows if r.get("judge_degraded")),
+                # How many of the runs IN the aggregates above scored without a judge. Counted
+                # over the same cohort as `scored` — not over every row — because the footer
+                # tells the reader these are included in Avg/Best, and a partial run is excluded
+                # from those. Counting all rows made a timed-out run show as "No judge 1" beside
+                # "Avg —", which is the opposite of what the column is for.
+                "judge_degraded": sum(
+                    1
+                    for r in agent_rows
+                    if r.get("judge_degraded") and not r["partial"] and r["overall"] is not None
+                ),
                 "completion_rate": (
                     sum(1 for r in agent_rows if r["completed"]) / total if total else None
                 ),
