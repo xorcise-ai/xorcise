@@ -33,6 +33,9 @@ class InMemorySealStore(SealStore):
     def evidence_digest(self, run_id: str) -> str | None:
         return self._digests.get(run_id)
 
+    def attach_digest(self, run_id: str, digest: str) -> None:
+        self._digests.setdefault(run_id, digest)
+
 
 class SqliteSealStore(SealStore):
     def seal(self, run_id: str, digest: str | None = None) -> None:
@@ -55,3 +58,15 @@ class SqliteSealStore(SealStore):
         with session_scope() as s:
             row = s.get(TraceSealRow, run_id)
             return row.evidence_digest if row is not None else None
+
+    def attach_digest(self, run_id: str, digest: str) -> None:
+        """Record the digest for an ALREADY-sealed run, first-wins.
+
+        Separate from `seal()` so admission can be closed before the evidence is hashed. Never
+        overwrites: whoever could replace a digest could launder edited evidence into a clean
+        verification, which is the one thing the seal exists to prevent.
+        """
+        with session_scope() as s:
+            row = s.get(TraceSealRow, run_id)
+            if row is not None and not row.evidence_digest:
+                row.evidence_digest = digest

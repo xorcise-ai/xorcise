@@ -60,6 +60,14 @@ class SealStore(ABC):
     def sealed_at(self, run_id: str) -> datetime | None: ...
 
     @abstractmethod
+    def attach_digest(self, run_id: str, digest: str) -> None:
+        """Record the digest for an already-sealed run, first-wins.
+
+        Separate from seal() so the caller can close admission BEFORE hashing the evidence —
+        hashing first means anything admitted meanwhile is hashed out of existence.
+        """
+
+    @abstractmethod
     def evidence_digest(self, run_id: str) -> str | None:
         """The digest recorded at seal time; None when unsealed OR sealed before digests existed.
 

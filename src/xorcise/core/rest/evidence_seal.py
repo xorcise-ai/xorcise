@@ -56,6 +56,7 @@ def compute_evidence_digest(run_id: str) -> str:
     """
     from xorcise.core.otel.store import SqliteLogStore, SqliteTraceStore
     from xorcise.core.runcontrol.store import SqliteSubmissionStore
+    from xorcise.core.runs.observed import SqliteObservedFactsStore
 
     h = hashlib.sha256()
     _feed(h, _DIGEST_VERSION, run_id)
@@ -71,6 +72,14 @@ def compute_evidence_digest(run_id: str) -> str:
     for sub in submissions:
         _feed(h, sub.kind, sub.name, sub.payload)
 
+    # Observed facts are GRADED — grade_assembly feeds them into SealedContext and deterministic
+    # checks resolve against them — so evidence that decides a score has to be inside the seal.
+    # Sorted by name: the store's order is not a guarantee, and the digest must be reproducible.
+    facts = sorted(SqliteObservedFactsStore().list_for_run(run_id), key=lambda f: (f.kind, f.name))
+    _feed(h, "observed", str(len(facts)))
+    for fact in facts:
+        _feed(h, fact.kind, fact.name, str(fact.value))
+
     return h.hexdigest()
 
 
@@ -85,14 +94,27 @@ def seal_with_digest(run_id: str) -> None:
 
     from xorcise.core.otel.store import SqliteSealStore
 
-    digest: str | None = None
+    seals = SqliteSealStore()
+    # Close admission BEFORE hashing. Hashing first meant anything the receiver admitted while the
+    # digest was being computed was hashed out of existence, and the freshly sealed run verified
+    # False immediately — the seal accusing itself. `seal()` is first-wins and idempotent, so this
+    # is safe to reach twice.
+    #
+    # This narrows the window rather than closing it completely: a request that already passed
+    # `is_sealed()` can still land while we hash. That is a receiver-level race needing a barrier,
+    # not something ordering alone can fix — but it is now bounded by requests genuinely in flight
+    # at the moment of sealing, instead of by however long hashing takes.
+    seals.seal(run_id)
     try:
         digest = compute_evidence_digest(run_id)
     except Exception:  # noqa: BLE001 — sealing must not depend on hashing succeeding
         logging.getLogger(__name__).warning(
-            "evidence digest failed for %s; sealing without one", run_id, exc_info=True
+            "evidence digest failed for %s; sealed without one", run_id, exc_info=True
         )
-    SqliteSealStore().seal(run_id, digest)
+        return
+    # Tagged with the construction that produced it, so a future change to what is covered reads
+    # as a different scheme rather than as tampering.
+    seals.attach_digest(run_id, f"{_DIGEST_VERSION}:{digest}")
 
 
 def verify_evidence(run_id: str) -> bool | None:
@@ -108,4 +130,10 @@ def verify_evidence(run_id: str) -> bool | None:
     recorded = SqliteSealStore().evidence_digest(run_id)
     if not recorded:
         return None
-    return compute_evidence_digest(run_id) == recorded
+    scheme, _, digest = recorded.partition(":")
+    if not digest or scheme != _DIGEST_VERSION:
+        # Written by a construction this build does not implement. Unknown — never False: an old
+        # seal we cannot re-derive is not evidence of tampering, and saying so would be the
+        # loudest possible false accusation.
+        return None
+    return compute_evidence_digest(run_id) == digest
