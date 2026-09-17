@@ -8,6 +8,10 @@ tests/integration/test_config_live_update.py cover that)."""
 from __future__ import annotations
 
 import pytest
+from typer.testing import CliRunner
+
+import xorcise.core.cli.app  # noqa: F401  -- registers the command groups
+from xorcise.core.cli._shared import app
 
 pytestmark = pytest.mark.unit
 
@@ -345,3 +349,98 @@ def test_set_terrain_model_reads_the_key_from_a_pipe(monkeypatch, capsys):
     cfg_cmd.set_terrain_model(key=None, name="m", key_stdin=True)
 
     assert rec.json["key"] == "sk-terrain"
+
+
+# ── an empty --key-stdin must not clear the key (#125 review) ────────────────────────────────
+#
+# `_key_from_stdin()` strips its input, and an empty result was forwarded as key="" — which the
+# server reads as an explicit CLEAR. So `printf %s "$KEY" | xorcise config set-model --key-stdin`
+# silently unconfigured the judge whenever $KEY was unset in CI: the command that exists to set a
+# key deleted one instead, and exited 0.
+#
+# `--key ''` stays the way to clear deliberately. Driven through CliRunner rather than by calling
+# the command function, because the parser is where the empty value actually arrives.
+
+_RUNNER = CliRunner()
+
+
+class _NoServer:
+    """Any request here is a failure: the guard must trip before the network."""
+
+    def put(self, path, json):  # pragma: no cover - reaching this IS the failure
+        raise AssertionError(f"request made despite empty key: {path} {json}")
+
+
+@pytest.mark.parametrize("piped", ["", "   ", "\n", "  \n  "])
+def test_an_empty_key_stdin_is_refused_before_any_request(monkeypatch, piped):
+    from xorcise.core.cli.commands import config as cfg_cmd
+
+    monkeypatch.setattr(cfg_cmd, "RestClient", lambda: _NoServer())
+    monkeypatch.setattr(cfg_cmd, "_stdin_is_interactive", lambda: False)
+
+    result = _RUNNER.invoke(app, ["config", "set-model", "--key-stdin", "--name", "m"], input=piped)
+
+    # Exit 2 is the usage-error contract; _NoServer guarantees nothing was sent, so the existing
+    # key is untouched. Asserted on behaviour rather than on the wording of the message.
+    assert result.exit_code == 2, result.output
+    assert "stdin" in result.output.lower()
+
+
+def test_an_empty_key_stdin_is_refused_for_the_terrain_setter_too(monkeypatch):
+    from xorcise.core.cli.commands import config as cfg_cmd
+
+    monkeypatch.setattr(cfg_cmd, "RestClient", lambda: _NoServer())
+    monkeypatch.setattr(cfg_cmd, "_stdin_is_interactive", lambda: False)
+
+    result = _RUNNER.invoke(app, ["config", "set-terrain-model", "--key-stdin"], input="")
+
+    assert result.exit_code == 2, result.output
+
+
+def test_clearing_the_key_still_works_through_the_explicit_flag(monkeypatch):
+    """`--key ''` is the deliberate clear and must keep working — it is the whole reason an empty
+    pipe cannot be allowed to mean the same thing."""
+    from xorcise.core.cli.commands import config as cfg_cmd
+
+    sent: dict[str, object] = {}
+
+    class _C:
+        def put(self, path, json):
+            sent.update(json)
+            return {
+                "judge": {"configured": False, "model_name": None, "key_hint": None},
+                "default_budget_seconds": 3600,
+            }
+
+    monkeypatch.setattr(cfg_cmd, "RestClient", lambda: _C())
+
+    result = _RUNNER.invoke(app, ["config", "set-model", "--key", ""])
+
+    assert result.exit_code == 0, result.output
+    assert sent["key"] == ""
+
+
+def test_setting_only_the_name_never_touches_the_key(monkeypatch):
+    """The ordinary path: no key flag at all means key=None, i.e. 'leave it alone'."""
+    from xorcise.core.cli.commands import config as cfg_cmd
+
+    sent: dict[str, object] = {}
+
+    class _C:
+        def put(self, path, json):
+            sent.update(json)
+            return {
+                "judge": {
+                    "configured": True,
+                    "model_name": json.get("model_name"),
+                    "key_hint": "…cdef",
+                },
+                "default_budget_seconds": 3600,
+            }
+
+    monkeypatch.setattr(cfg_cmd, "RestClient", lambda: _C())
+
+    result = _RUNNER.invoke(app, ["config", "set-model", "--name", "gpt-4o-mini"])
+
+    assert result.exit_code == 0, result.output
+    assert sent["key"] is None
