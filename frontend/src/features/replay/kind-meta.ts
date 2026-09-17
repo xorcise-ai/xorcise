@@ -14,11 +14,14 @@ import {
   Info,
   Gauge,
   HelpCircle,
+  CircleDashed,
   type LucideIcon,
 } from "lucide-react";
 import type { AgentEvent, AgentEventKind } from "@/lib/api/types";
 
-export type KindGroup = "conversation" | "action" | "debug";
+/** "unclassified" is its own group: shown by default like an action, but it carries no
+ * recognised content, so it never gets an attribution status dot and never counts as a tool. */
+export type KindGroup = "conversation" | "action" | "unclassified" | "debug";
 
 export interface KindMeta {
   icon: LucideIcon;
@@ -35,10 +38,11 @@ export interface KindMeta {
   group: KindGroup;
 }
 
-/** Kind → render metadata for all 18 AgentEventKind values (closed enum). `group`
+/** Kind → render metadata for all 19 AgentEventKind values (closed enum). `group`
  * drives fold/Debug-toggle behavior in `ReplayTimeline`: "debug" (metric, unknown) is
  * hidden unless Debug is on; "conversation" (message, thinking) is the narrative thread;
- * everything else is an "action".
+ * "unclassified" is a span no adapter rule could classify — visible by default, rendered
+ * as-is, never attributed; everything else is an "action".
  *
  * COLORS are assigned ONLY for kinds the real harness adapters (Claude Code, OpenHands, the
  * shared gen-ai extractor) actually emit, with high contrast between them: assistant `message`
@@ -46,7 +50,8 @@ export interface KindMeta {
  * = rose. The USER prompt is gold — but user vs assistant are the same `message` kind, so that
  * split lives in `eventColor()` (role-aware), not here. Kinds NO harness emits (mcp_*, finding,
  * flag, browser_*) fold onto the `toolcall` (rose) family rather than reserving a distinct
- * color. `metric`/`unknown` are the muted "debug" group. */
+ * color. `metric`/`unknown` are the muted "debug" group; `unclassified` is muted too, but on
+ * its own token so the legend can name it. */
 export const KIND_META: Record<AgentEventKind, KindMeta> = {
   message: {
     icon: MessageSquare,
@@ -184,6 +189,14 @@ export const KIND_META: Record<AgentEventKind, KindMeta> = {
     label: "metric",
     group: "debug",
   },
+  unclassified: {
+    icon: CircleDashed,
+    colorClass: "text-muted-foreground",
+    accentClass: "border-l-muted-foreground",
+    dotClass: "bg-muted-foreground",
+    label: "unclassified",
+    group: "unclassified",
+  },
   unknown: {
     icon: HelpCircle,
     colorClass: "text-text-tertiary",
@@ -230,6 +243,7 @@ export const COLOR_FAMILIES: ColorFamily[] = [
   { label: "Tool", dotClass: "bg-toolcall" },
   { label: "Error", dotClass: "bg-err" },
   { label: "Status", dotClass: "bg-text-secondary" },
+  { label: "Unclassified", dotClass: "bg-muted-foreground" },
   { label: "Debug", dotClass: "bg-text-tertiary" },
 ];
 
@@ -271,6 +285,9 @@ export function displayLabel(
       return { title: "Agent Finding", badge: meta.label };
     case "flag":
       return { title: "Flag Claim", badge: meta.label };
+    case "unclassified":
+      // The raw span name IS the only honest description — no "Agent …" vocabulary is earned.
+      return { title: event.title || "Unclassified span", badge: meta.label };
     // error / status / metric / unknown: the raw title is already the best description.
     default:
       return { title: event.title || meta.label, badge: meta.label };

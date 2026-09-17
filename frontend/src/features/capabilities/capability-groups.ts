@@ -2,7 +2,8 @@
 // TOTAL over every kind (see HarnessCapabilityProfile), but a per-kind matrix is too dense to
 // read at a glance — these groups are the unit the capability matrix renders one row/dot per.
 // `unknown` is deliberately excluded: it is the adapter's escape hatch, not a declared capability,
-// so it never earns its own row.
+// so it never earns its own row. `unclassified` is excluded for the same reason: it is what the
+// generic renderer emits when NO capability matched, not something a harness declares.
 import type { HarnessCapabilityProfile } from "@/lib/api/types";
 
 export type GroupLevel = "supported" | "partial" | "unsupported";

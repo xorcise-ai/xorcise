@@ -197,3 +197,26 @@ def test_route_otlp_logs_unroutable_is_dropped() -> None:
     res = route_otlp_logs_json(_logs_payload([], ["no id here"]))
     assert res.routed == ()
     assert res.dropped_spans == 1
+
+
+def test_route_result_carries_the_unroutable_payloads_for_recording() -> None:
+    """A batch that fails correlation used to survive only as a count; now its RAW payload rides
+    `unrouted` so the receiver can log/spool it (#121)."""
+    from xorcise.core.otel.decode import route_otlp_logs_json
+
+    body = {"resourceSpans": [_rs("run-1", ["kept"]), _rs(None, ["lost"])]}
+    result = route_otlp_json(json.dumps(body))
+    assert [rid for rid, _ in result.routed] == ["run-1"]
+    assert result.dropped_spans == 1
+    [(raw, n)] = result.unrouted
+    assert n == 1
+    assert json.loads(raw) == {"resourceSpans": [_rs(None, ["lost"])]}
+    # logs signal: same contract
+    logs = {
+        "resourceLogs": [
+            {"resource": {"attributes": []}, "scopeLogs": [{"logRecords": [{}, {}]}]},
+        ]
+    }
+    res = route_otlp_logs_json(json.dumps(logs))
+    assert res.routed == () and res.dropped_spans == 2
+    assert [n for _, n in res.unrouted] == [2]

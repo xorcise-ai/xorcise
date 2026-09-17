@@ -59,6 +59,15 @@ describe("displayLabel", () => {
     expect(ev("unknown", "agent", "mystery span").title).toBe("mystery span");
   });
 
+  it("shows an unclassified span under its raw name with an honest badge, never as a tool", () => {
+    expect(ev("unclassified", "agent", "agent.ActionEvent")).toEqual({
+      title: "agent.ActionEvent",
+      badge: "unclassified",
+    });
+    expect(ev("unclassified", "agent", "").title).toBe("Unclassified span");
+    expect(eventColor("unclassified", "agent").colorClass).not.toBe("text-toolcall");
+  });
+
   it("gives the user prompt its own badge, distinct from the COT badge", () => {
     expect(ev("message", "user").badge).toBe("prompt");
     expect(ev("message", "agent").badge).toBe("CoT");

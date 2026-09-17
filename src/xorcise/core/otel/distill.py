@@ -184,6 +184,19 @@ def _render_log(rec: FlatLogRecord) -> str | None:
     return " | ".join([rec.event_name or "(log)", " · ".join(parts)])
 
 
+def span_has_content(span: FlatSpan) -> bool:
+    """True when the judge's distiller would KEEP this span — it carries at least one
+    content-bearing attribute on the span or one of its events. The display plane counts with
+    this same predicate, so "content-less" means one thing in the replay header, the report and
+    the judge transcript."""
+    return _render_span(span) is not None
+
+
+def log_has_content(rec: FlatLogRecord) -> bool:
+    """The logs-signal twin of `span_has_content`."""
+    return _render_log(rec) is not None
+
+
 def distill_transcript(
     records: Sequence[TraceRecord], log_records: Sequence[TraceRecord] = ()
 ) -> tuple[str, ...]:

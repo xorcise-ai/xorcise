@@ -36,10 +36,11 @@ def test_select_unknown_falls_back_to_generic():
     assert fallback is True
 
 
-def test_select_generic_is_not_a_fallback():
+def test_select_generic_by_name_is_still_the_fallback():
+    # Same rule as the adapter registry: fallback = the generic floor was picked, however named.
     provider, fallback = select("generic")
     assert provider.name == "generic"
-    assert fallback is False
+    assert fallback is True
 
 
 def test_generic_profile_is_run_agnostic_three_vars_prompt_sentinel():

@@ -23,10 +23,10 @@ def registered_names() -> set[str]:
 
 
 def select(source_agent: str) -> tuple[HarnessLaunchProvider, bool]:
-    """Pick provider: exact match or generic. Returns (provider, fallback)."""
-    if source_agent in _REGISTRY:
-        return _REGISTRY[source_agent], False
-    return _REGISTRY["generic"], True
+    """Pick provider: exact match or generic. Returns (provider, fallback) — fallback is True iff
+    the generic floor was picked, mirroring the adapter + telemetry registries."""
+    provider = _REGISTRY.get(source_agent, _REGISTRY["generic"])
+    return provider, provider.name == "generic"
 
 
 register(GenericLaunchProvider())
