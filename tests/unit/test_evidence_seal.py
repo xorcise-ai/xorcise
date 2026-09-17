@@ -139,3 +139,82 @@ def test_sealing_twice_keeps_the_first_digest(migrated_home) -> None:
     seal_with_digest("r1")
 
     assert SqliteSealStore().evidence_digest("r1") == first
+
+
+# ── review findings (#139) ───────────────────────────────────────────────────────────────────
+
+
+def test_editing_an_observed_fact_breaks_verification(migrated_home) -> None:
+    """Observed facts are GRADED — `grade_assembly` feeds them into SealedContext and deterministic
+    checks resolve against them — but the digest never covered them, so altering one left the run
+    verifying clean. Evidence that decides a score has to be inside the seal."""
+    from xorcise.core.contracts.telemetry import ObservedFact
+    from xorcise.core.db import session_scope
+    from xorcise.core.rest.evidence_seal import seal_with_digest, verify_evidence
+    from xorcise.core.runs.observed import SqliteObservedFactsStore
+
+    _seed("r1")
+    SqliteObservedFactsStore().record(
+        ObservedFact(run_id="r1", kind="run-control", name="flag_seen", value="no")
+    )
+    seal_with_digest("r1")
+    assert verify_evidence("r1") is True
+
+    from xorcise.core.runs.models import RunObservedFactRow
+
+    with session_scope() as s:
+        s.query(RunObservedFactRow).filter_by(run_id="r1", name="flag_seen").one().value = "yes"
+
+    assert verify_evidence("r1") is False
+
+
+def test_admission_is_closed_before_the_evidence_is_hashed(migrated_home, monkeypatch) -> None:
+    """The digest was taken BEFORE `seal()`, so anything admitted in between was hashed out of
+    existence and the freshly sealed run verified False immediately. Sealing must close the door
+    first, then hash what is behind it."""
+    from xorcise.core.otel.store import SqliteSealStore
+    from xorcise.core.rest import evidence_seal
+
+    _seed("r1")
+    order: list[str] = []
+    real_compute = evidence_seal.compute_evidence_digest
+    real_seal = SqliteSealStore.seal
+
+    def spy_compute(run_id: str) -> str:
+        order.append("hash")
+        return real_compute(run_id)
+
+    def spy_seal(self: SqliteSealStore, run_id: str, digest: str | None = None) -> None:
+        order.append("seal")
+        real_seal(self, run_id, digest)
+
+    monkeypatch.setattr(evidence_seal, "compute_evidence_digest", spy_compute)
+    monkeypatch.setattr(SqliteSealStore, "seal", spy_seal)
+
+    evidence_seal.seal_with_digest("r1")
+
+    assert order[0] == "seal", f"hashed before closing admission: {order}"
+
+
+def test_a_digest_from_an_unknown_scheme_reads_unknown_not_tampered(migrated_home) -> None:
+    """Only the hex was stored, so verification always recomputed with the CURRENT construction,
+    and bumping the version would report every untouched older run as modified. The stored value
+    has to say which scheme produced it; an unrecognised one is unknown, never an accusation."""
+    from xorcise.core.otel.store import SqliteSealStore
+    from xorcise.core.rest.evidence_seal import verify_evidence
+
+    _seed("r1")
+    SqliteSealStore().seal("r1", "xorcise-evidence-v99:" + "a" * 64)
+
+    assert verify_evidence("r1") is None
+
+
+def test_the_stored_digest_records_its_scheme(migrated_home) -> None:
+    from xorcise.core.otel.store import SqliteSealStore
+    from xorcise.core.rest.evidence_seal import _DIGEST_VERSION, seal_with_digest
+
+    _seed("r1")
+    seal_with_digest("r1")
+
+    stored = SqliteSealStore().evidence_digest("r1") or ""
+    assert stored.startswith(f"{_DIGEST_VERSION}:")

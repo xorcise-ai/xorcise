@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from xorcise.core.contracts.agent_event import AgentEvent, AgentEventKind
 from xorcise.core.contracts.reporting import CountStats, RunStats, TimingStats, TokenStats
@@ -50,13 +50,21 @@ def _pick_int(data: Mapping[str, str], keys: tuple[str, ...]) -> int:
     return 0
 
 
+# The fold's OWN output shape, versioned independently of the adapter that produced the events.
+# Bump whenever fold_run_stats starts emitting a field it did not emit before: the adapter name
+# and version do not change when a field is ADDED here, so without this a snapshot folded before
+# the new field existed keeps matching the current stamp and is served as-is — stale, and
+# indistinguishable from fresh. v2: RunStats.models. v3: TimingStats.last_event_end_ts.
+STATS_FOLD_VERSION = "stats.3"
+
+
 def projection_key(adapter_name: str, adapter_version: str) -> str:
     """The `RunStats.projection` stamp: which adapter, at which projection version (the adapter's
     own version + the shared normalizer version, exactly as `RunEventsView.adapter_version`
     carries it), folded a snapshot. It is the agent_events cache staleness key minus the RAW
     sequence numbers: after terminate the RAW is sealed, so only a renderer change can make a
     snapshot stale."""
-    return f"{adapter_name}@{adapter_version}"
+    return f"{adapter_name}@{adapter_version}+{STATS_FOLD_VERSION}"
 
 
 def fold_run_stats(
@@ -80,6 +88,7 @@ def fold_run_stats(
     longest_tool_ms: int | None = None
     first_ts: datetime | None = None
     last_ts: datetime | None = None
+    last_end: datetime | None = None
 
     for e in events:
         by_kind[e.kind.value] += 1
@@ -116,6 +125,10 @@ def fold_run_stats(
         if e.ts is not None:
             first_ts = e.ts if first_ts is None or e.ts < first_ts else first_ts
             last_ts = e.ts if last_ts is None or e.ts > last_ts else last_ts
+            # The window has to reach the END of the last event that reported one, or a single
+            # long span reads as zero-length and a multi-span run loses its final span's extent.
+            end = e.ts + timedelta(milliseconds=e.duration_ms) if e.duration_ms else e.ts
+            last_end = end if last_end is None or end > last_end else last_end
 
     tok.total = tok.input + tok.output
     elapsed = (completed_at - created_at).total_seconds() if completed_at else None
@@ -134,6 +147,7 @@ def fold_run_stats(
             elapsed_seconds=elapsed,
             first_event_ts=first_ts,
             last_event_ts=last_ts,
+            last_event_end_ts=last_end,
             longest_tool_ms=longest_tool_ms,
         ),
         projection=projection,

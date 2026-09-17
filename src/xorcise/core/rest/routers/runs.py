@@ -53,7 +53,7 @@ class RunResultView(BaseModel):
     # `agent register --model` and is null on essentially every run, which is why the result
     # could not be attributed to a model after the fact. Carried here rather than fetched from
     # /stats so `run status` stays one request, and empty when the telemetry named none.
-    models_observed: tuple[str, ...] = ()
+    models_reported: tuple[str, ...] = ()
 
 
 class RunArtifactView(BaseModel):
@@ -722,16 +722,21 @@ def run_result(run_id: str, background: BackgroundTasks) -> RunResultView | JSON
     base = reporting.result_conditions(run_id) or ResultConditions()
     conditions = base.model_copy(update={"intel_disclosed": disclosed_intel_count(run_id)})
     partial, partial_trigger = reporting.result_partial(run_id)
-    # The stats snapshot is persisted beside the grade, so this is a local read rather than a
-    # re-fold. Absent for pre-existing results recorded before stats were captured — an empty
-    # tuple then, which renders as the same honest "not disclosed" as having no telemetry at all.
-    stats = reporting.get_stats(run_id)
+    # The freshness-aware read — the same one /stats and the report use. Reading the stored
+    # snapshot directly (as this did) served it whenever its stamp matched, and a snapshot folded
+    # before a field existed still matched; `run status` then disagreed with the report about the
+    # same run. Absent snapshot ⇒ empty tuple, which renders as the same honest "not disclosed"
+    # as having no telemetry at all.
+    from xorcise.core.rest.report_assembly import current_run_stats
+
+    run_entry = runs.get(run_id)
+    stats = current_run_stats(run_entry) if run_entry is not None else None
     return RunResultView(
         grade=grade,
         conditions=conditions,
         partial=partial,
         partial_trigger=partial_trigger,
-        models_observed=tuple(stats.models) if stats else (),
+        models_reported=tuple(stats.models) if stats else (),
     )
 
 
