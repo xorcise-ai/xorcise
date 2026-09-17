@@ -3050,6 +3050,8 @@ export interface components {
             elapsed_seconds?: number | null;
             /** First Event Ts */
             first_event_ts?: string | null;
+            /** Last Event End Ts */
+            last_event_end_ts?: string | null;
             /** Last Event Ts */
             last_event_ts?: string | null;
             /** Longest Tool Ms */

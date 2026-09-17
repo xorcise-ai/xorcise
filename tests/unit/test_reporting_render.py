@@ -600,7 +600,7 @@ def test_the_report_separates_time_spent_working_from_time_held(capsys=None) -> 
     assert "| Duration | 30m 0s |" in md, "wall clock must still be reported — the slot was held"
     # Asserted as a row rather than a bare digit: the point is that the ~1s of real work appears
     # BESIDE the 30 minutes, not how many decimal places the formatter happens to use.
-    assert "| Agent activity | 1.0s |" in md, f"the agent's real activity is missing:\n{md[:700]}"
+    assert "| Telemetry window | 1.0s |" in md, f"the agent's real activity is missing:\n{md[:700]}"
 
 
 def test_the_report_omits_the_activity_span_when_there_is_no_telemetry() -> None:
@@ -608,7 +608,7 @@ def test_the_report_omits_the_activity_span_when_there_is_no_telemetry() -> None
     a different claim from 'nothing was recorded'."""
     md = render_markdown(_ctx(stats=RunStats(timing=TimingStats(elapsed_seconds=42.0))))
 
-    assert "Agent activity" not in md
+    assert "Telemetry window" not in md
 
 
 def _telemetry(**over: object):

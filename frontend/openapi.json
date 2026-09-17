@@ -4291,6 +4291,18 @@
             ],
             "title": "First Event Ts"
           },
+          "last_event_end_ts": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Event End Ts"
+          },
           "last_event_ts": {
             "anyOf": [
               {

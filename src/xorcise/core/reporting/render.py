@@ -127,21 +127,27 @@ def _elapsed_seconds(ctx: RunReportContext) -> float | None:
     return (ctx.run.completed_at - ctx.run.created_at).total_seconds()
 
 
-def _activity_seconds(ctx: RunReportContext) -> float | None:
-    """How long the agent was actually emitting telemetry: first event → last event.
+def _telemetry_window_seconds(ctx: RunReportContext) -> float | None:
+    """How long the run's telemetry SPANS: first event start → end of the last event that
+    reported a duration.
 
-    Distinct from `_elapsed_seconds`, which is wall clock. A run whose agent dies early is not
-    closed out until its budget expires, so the two diverge hard: a crash one second in still
-    reports a 30-minute Duration, and read alone that says "the agent worked for 30 minutes".
+    Not "how long the agent worked", and deliberately not named that any more. It is built from
+    producer timestamps, so it inherits their clock; it includes any silent gap between events;
+    and an event that reports no duration contributes only its start. What it does bound is the
+    stretch of wall clock the run's own telemetry covers.
 
-    Both are kept rather than one replacing the other. Wall clock is what the run COST — it really
-    did hold a slot and a subnet for half an hour — and this is what the agent DID. Neither answers
-    the other's question. None when the run produced no telemetry: a 0 would claim the agent did
-    nothing, which is a different statement from nothing having been recorded.
+    It is still worth reporting beside Duration, because the two diverge exactly when something
+    went wrong: a run reaped at its budget half an hour after its agent died shows thirty minutes
+    of Duration against seconds of telemetry. Reading Duration alone says the agent worked for
+    thirty minutes.
+
+    Earlier this used the last event's START, which reported a run whose telemetry is one
+    60-second span as `0.0s` — a minute of work rendered as none.
     """
     if ctx.stats is None:
         return None
-    first, last = ctx.stats.timing.first_event_ts, ctx.stats.timing.last_event_ts
+    first = ctx.stats.timing.first_event_ts
+    last = ctx.stats.timing.last_event_end_ts or ctx.stats.timing.last_event_ts
     if first is None or last is None:
         return None
     return max(0.0, (last - first).total_seconds())
@@ -213,8 +219,8 @@ def _metadata_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
         # Only when telemetry actually bounds a span. Sits beside Duration because the pair is the
         # point: they agree on a healthy run and diverge loudly on a crashed one.
         *(
-            [("Agent activity", _duration(_activity_seconds(ctx)))]
-            if _activity_seconds(ctx) is not None
+            [("Telemetry window", _duration(_telemetry_window_seconds(ctx)))]
+            if _telemetry_window_seconds(ctx) is not None
             else []
         ),
         ("Run ID", ctx.run.run_id),

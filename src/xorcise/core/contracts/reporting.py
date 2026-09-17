@@ -79,6 +79,11 @@ class TimingStats(BaseModel):
     elapsed_seconds: float | None = None
     first_event_ts: datetime | None = None
     last_event_ts: datetime | None = None
+    # The end of the LAST event that reported a duration, i.e. `ts + duration_ms`. Span-backed
+    # events carry the producer's START time, so a run whose telemetry is one 60-second span has
+    # first == last and looks zero-length without this. Falls back to `last_event_ts` when no
+    # event reported a duration — unknown extent is not zero extent.
+    last_event_end_ts: datetime | None = None
     longest_tool_ms: int | None = None
 
 
