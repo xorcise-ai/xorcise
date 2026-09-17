@@ -79,7 +79,18 @@ def _resolve_key(key: str | None, key_stdin: object, *, command: str) -> str | N
             example=f'printf %s "$KEY" | xorcise config {command} --key-stdin',
             code=2,
         )
-    return _key_from_stdin()
+    from_stdin = _key_from_stdin()
+    if not from_stdin:
+        # An empty read is almost always an unset variable — `printf %s "$KEY"` with no $KEY, or a
+        # prompt answered with Enter. The server reads an empty key as an explicit CLEAR, so
+        # forwarding it would DELETE a working key while reporting success, which is the opposite
+        # of what the command was asked to do. Clearing stays available, but only by saying so.
+        fail(
+            "no key on stdin — nothing was read, so the key was left unchanged",
+            example=f"xorcise config {command} --key ''   # to clear it deliberately",
+            code=2,
+        )
+    return from_stdin
 
 
 def _section(title: str, state: str = "") -> None:
