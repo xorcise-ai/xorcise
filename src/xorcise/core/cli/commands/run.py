@@ -74,7 +74,27 @@ def _resolve_id(client: RestClient, given: str) -> str:
     return resolve_run_id(client, given)
 
 
-def _render_result(r: dict[str, Any], *, verbose: bool = False) -> None:
+def _render_telemetry(telemetry: dict[str, Any] | None) -> None:
+    """The run's telemetry honesty block: which renderer, how much content, and every warning.
+    Silent when the server has no telemetry summary (older server, or no trace at all)."""
+    if not telemetry:
+        return
+    counts = telemetry.get("counts") or {}
+    renderer = str(telemetry.get("adapter_name") or "generic")
+    if telemetry.get("fallback"):
+        renderer += " (generic renderer — no harness-specific adapter)"
+    console.print(
+        f"telemetry: renderer {escape(renderer)} · "
+        f"spans {counts.get('spans', 0)} ({counts.get('content_spans', 0)} with content) · "
+        f"logs {counts.get('logs', 0)} ({counts.get('content_logs', 0)} with content)"
+    )
+    for w in telemetry.get("warnings") or []:
+        console.print(f"[warn]warning[/]: {escape(str(w.get('message', '')))}")
+
+
+def _render_result(
+    r: dict[str, Any], *, verbose: bool = False, telemetry: dict[str, Any] | None = None
+) -> None:
     """Render a graded result envelope; shared by run status + run terminate."""
     grade, cond = r["grade"], r["conditions"]
     judge_lower = float(grade["breakdown"]["judge"])
@@ -119,6 +139,7 @@ def _render_result(r: dict[str, Any], *, verbose: bool = False) -> None:
     )
     console.print(f"budget: {cond.get('budget_seconds', 0)}s")
     console.print(f"sandbox: {escape(str(cond.get('sandbox_ref') or '—'))}")
+    _render_telemetry(telemetry)
     # Partial banner — only shown when the result was graded on incomplete data.
     if r.get("partial"):
         trig = r.get("partial_trigger") or "partial"
@@ -307,10 +328,14 @@ def run_status(
     # status check right after `run create` (the golden-path hint) reads as progress,
     # not a red 409 that looks like a crash.
     r = client.get_run_result(run_id)
+    # The telemetry summary (renderer, content counts, warnings) rides along with a graded
+    # result. Tolerant read: an older server without the endpoint simply yields nothing.
+    telemetry = client.get_or_none(f"/runs/{run_id}/telemetry") if "grade" in r else None
     if as_json is True:
         # JSON first, ALWAYS parseable — the envelope itself carries status:"grading"
-        # / "active", so a polling script never receives prose on the JSON path.
-        emit_json(r)
+        # / "active", so a polling script never receives prose on the JSON path. The telemetry
+        # block is additive so existing consumers keep working.
+        emit_json({**r, "telemetry": telemetry} if telemetry is not None else r)
         return
     if r.get("status") == "grading":
         # Terminal but not graded yet — grading is async after /complete.
@@ -327,7 +352,7 @@ def run_status(
             f"re-run [value]xorcise run status {short_id(run_id)}[/value] when it finishes"
         )
         raise typer.Exit(3)
-    _render_result(r, verbose=verbose)
+    _render_result(r, verbose=verbose, telemetry=telemetry)
 
 
 @run_app.command("terminate")

@@ -570,4 +570,35 @@ def test_normalize_run_emits_no_unclassified_warning_when_every_span_classifies(
         AgentEventKind.terminal_command,
         AgentEventKind.message,
     }
-    assert view.warnings == ()
+    assert not [w for w in view.warnings if w.code == "unclassified_spans"]
+
+
+# ── normalize_run — the no_content honesty warning + content counts ─────────────────
+
+
+def test_normalize_run_warns_when_no_span_carries_content() -> None:
+    """Marker-only spans (class/id/source, sub-ms, no payload): the replay can show only names
+    and the judge transcript is empty — the header must say so, once."""
+    records = [_marker_batch(0, ["agent.ActionEvent", "agent.ObservationEvent"])]
+    view = normalize_run(records, _ctx(source_agent="custom"))
+    [warning] = [w for w in view.warnings if w.code == "no_content"]
+    assert warning.count == 2
+    assert "none of the 2 span(s) and 0 log record(s)" in warning.message
+    assert "judge transcript" in warning.message
+    assert view.counts["spans"] == 2 and view.counts["content_spans"] == 0
+    assert view.counts["logs"] == 0 and view.counts["content_logs"] == 0
+
+
+def test_normalize_run_content_counts_and_no_warning_when_content_exists() -> None:
+    """The real OpenHands capture: every span carries content (lmnr.span.input etc.), so the
+    counts say so and the warning stays silent — even under the generic renderer."""
+    view = normalize_run(_fixture_records(), _ctx(source_agent="custom"))
+    assert view.counts["spans"] == 35
+    assert view.counts["content_spans"] == 35
+    assert not [w for w in view.warnings if w.code == "no_content"]
+
+
+def test_normalize_run_no_content_warning_is_silent_for_an_empty_run() -> None:
+    view = normalize_run([], _ctx())
+    assert view.counts["spans"] == 0
+    assert not [w for w in view.warnings if w.code == "no_content"]
