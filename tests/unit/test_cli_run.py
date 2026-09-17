@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+import pytest
 from typer.testing import CliRunner
 
 import xorcise.core.cli.app  # noqa: F401  -- importing registers the command groups
@@ -1175,3 +1176,108 @@ def test_run_list_shows_the_harness_column(monkeypatch):
     assert "Harness" in res.stdout
     assert "OpenHands" in res.stdout
     assert "Custom" in res.stdout
+
+
+# ── review findings on bulk export (#140) ────────────────────────────────────────────────────
+
+
+def test_a_date_only_since_is_accepted_and_treated_as_utc():
+    """`--since 2026-07-01` is the obvious thing to type and it crashed: fromisoformat returns a
+    NAIVE datetime, and comparing it with an offset-aware created_at raises TypeError. A date is a
+    legitimate input, so it is assumed UTC rather than rejected."""
+    from xorcise.core.cli.commands.run import select_runs_for_export
+
+    rows = [
+        _run_row("old", created="2026-06-30T23:59:59+00:00"),
+        _run_row("new", created="2026-07-01T00:00:01+00:00"),
+    ]
+
+    picked = select_runs_for_export(rows, since="2026-07-01")
+
+    assert [r["run_id"] for r in picked] == ["new"]
+
+
+def test_a_naive_timestamp_is_also_treated_as_utc():
+    from xorcise.core.cli.commands.run import select_runs_for_export
+
+    rows = [_run_row("r", created="2026-07-01T10:00:00+00:00")]
+
+    assert len(select_runs_for_export(rows, since="2026-07-01T09:00:00")) == 1
+
+
+def test_a_still_grading_report_is_not_written_as_if_it_were_one(tmp_path, monkeypatch, capsys):
+    import typer
+
+    """Terminal does not mean graded. /report answers 202 with a JSON envelope while grading is
+    still running; `get_text` returns that body happily, so it landed in report.md as though it
+    were a report — a file that looks like an export but contains `{"status":"grading"}`."""
+
+    from xorcise.core.cli.commands import run as run_cmd
+
+    class _C:
+        def get(self, path):
+            return [_run_row("gradinggrading" * 2)]
+
+        def get_text(self, path):
+            if "report" in path:
+                return '{"run_id": "x", "status": "grading"}'
+            return "payload"
+
+    monkeypatch.setattr(run_cmd, "RestClient", lambda: _C())
+    monkeypatch.setattr(run_cmd, "agent_names_by_id", lambda c: {})
+
+    # Nothing was ready, so the command reports IN PROGRESS (exit 3) rather than failure — the
+    # same code `run report` and `run status` return for a run that is still grading. Exit 1
+    # would tell a scripted caller the export broke, when the right move is to try again shortly.
+    with pytest.raises(typer.Exit) as exc:
+        run_cmd.run_export(
+            out=str(tmp_path),
+            mission=None,
+            agent=None,
+            since=None,
+            format=ReportFormat.md,
+            genuine_only=False,
+        )
+    assert exc.value.exit_code == 3
+
+    written = list(tmp_path.rglob("report.md"))
+    assert written == [], f"a grading envelope was written as a report: {written}"
+    captured = capsys.readouterr()
+    # The notice goes to stderr, beside the other per-run progress lines.
+    assert "graded" in (captured.out + captured.err).lower()
+
+
+def test_a_service_wide_failure_stops_the_export_instead_of_becoming_a_skip(tmp_path, monkeypatch):
+    """If the service goes down mid-export, RestClient raises typer.Exit(1). The broad catch
+    swallowed it, retried every remaining run and reported `skipped <id>: 1` — turning an exit
+    code into a per-run skip reason and hiding that nothing was reachable."""
+    import typer
+
+    from xorcise.core.cli.commands import run as run_cmd
+
+    attempts: list[str] = []
+
+    class _C:
+        def get(self, path):
+            return [_run_row("a" * 32), _run_row("b" * 32)]
+
+        def get_text(self, path):
+            attempts.append(path)
+            raise typer.Exit(1)
+
+    monkeypatch.setattr(run_cmd, "RestClient", lambda: _C())
+    monkeypatch.setattr(run_cmd, "agent_names_by_id", lambda c: {})
+
+    with pytest.raises(typer.Exit) as exc:
+        run_cmd.run_export(
+            out=str(tmp_path),
+            mission=None,
+            agent=None,
+            since=None,
+            format=ReportFormat.md,
+            genuine_only=False,
+        )
+
+    assert exc.value.exit_code == 1
+    # Stopped at the first run rather than retrying the outage for every selected run.
+    assert len(attempts) == 1, f"retried a service-wide failure per run: {attempts}"

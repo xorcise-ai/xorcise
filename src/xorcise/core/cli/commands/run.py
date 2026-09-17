@@ -521,6 +521,16 @@ deleted — stop it first with `xorcise run terminate`.
 _GENUINE_TRIGGERS = frozenset({"done", "completed"})
 
 
+def _is_grading_envelope(body: str) -> bool:
+    """Is this the 202 "still grading" JSON envelope rather than a rendered report?
+
+    Checked by shape, not by status code, because `get_text` does not surface one — the same
+    check `run report` makes before writing a file.
+    """
+    head = body.lstrip()[:200]
+    return head.startswith("{") and '"grading"' in head
+
+
 def select_runs_for_export(
     runs: Sequence[dict[str, Any]],
     *,
@@ -541,13 +551,16 @@ def select_runs_for_export(
     someone re-running a range is most likely to want. Unparseable timestamps on either side sort
     the run out rather than crashing the export.
     """
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     def created(row: dict[str, Any]) -> datetime | None:
         try:
-            return datetime.fromisoformat(str(row.get("created_at") or ""))
+            at = datetime.fromisoformat(str(row.get("created_at") or ""))
         except ValueError:
             return None
+        # A stored timestamp without an offset gets the same treatment, so the comparison is
+        # always aware-vs-aware whichever side is missing its zone.
+        return at.replace(tzinfo=UTC) if at.tzinfo is None else at
 
     floor = None
     if since:
@@ -557,6 +570,11 @@ def select_runs_for_export(
             raise typer.BadParameter(
                 f"--since must be an ISO timestamp (e.g. 2026-07-01T10:00:00+00:00), got {since!r}"
             ) from exc
+        # `--since 2026-07-01` is the obvious thing to type, and fromisoformat returns it NAIVE —
+        # comparing that with an offset-aware created_at raises TypeError. A bare date is a
+        # legitimate input, so it is read as UTC (run timestamps are UTC) rather than rejected.
+        if floor.tzinfo is None:
+            floor = floor.replace(tzinfo=UTC)
 
     picked = []
     for row in runs:
@@ -623,30 +641,49 @@ aborting the batch, so one bad run never costs you the other ninety-nine.
 
     fmt = format.value if isinstance(format, ReportFormat) else str(format)
     root = Path(out)
-    written, skipped = 0, []
+    written = 0
+    skipped: list[tuple[str, str]] = []
+    pending: list[str] = []  # terminal but not yet graded — a retry, not a failure
     for row in selected:
         rid = str(row["run_id"])
         target = root / rid[:8]
         try:
+            report = client.get_text(f"/runs/{rid}/report?format={fmt}")
+            # Terminal does not mean graded. /report answers 202 with a JSON envelope while
+            # grading is still running, and get_text hands that body back like any other — so it
+            # used to land in report.md as a file that looks like an export and contains
+            # {"status":"grading"}. Skip the run instead; it exports cleanly once graded.
+            if _is_grading_envelope(report):
+                pending.append(short_id(rid))
+                continue
             target.mkdir(parents=True, exist_ok=True)
+            (target / f"report.{fmt}").write_text(report, encoding="utf-8")
             for name, path in (
-                (f"report.{fmt}", f"/runs/{rid}/report?format={fmt}"),
                 ("traces.otlp.jsonl", f"/runs/{rid}/otlp.jsonl"),
                 ("events.jsonl", f"/runs/{rid}/events.jsonl"),
             ):
                 (target / name).write_text(client.get_text(path), encoding="utf-8")
-        except (OSError, Exception) as exc:  # noqa: BLE001 — one bad run must not end the batch
+        except typer.Exit:
+            # RestClient exits on a service-wide failure (unreachable, auth). That is not a
+            # per-run problem: retrying it for every remaining run turns one outage into N
+            # identical "skipped: 1" lines and loses the diagnostic it already printed.
+            raise
+        except Exception as exc:  # noqa: BLE001 — one bad run must not end the batch
             skipped.append((short_id(rid), str(exc)))
             continue
         written += 1
         err_console.print(f"  {short_id(rid)} → {target}", markup=False)
 
     console.print(f"exported {written} run(s) to {root}")
+    for rid in pending:
+        err_console.print(f"[warn]not yet graded[/] {rid}: re-run the export once grading finishes")
     for rid, why in skipped:
         err_console.print(f"[warn]skipped[/] {rid}: {escape(why)}")
-    if skipped and not written:
-        # Nothing landed: that is a failed export, not a quiet partial success.
-        raise typer.Exit(1)
+    if not written:
+        # Nothing landed. Distinguish the two reasons, because they want different next actions:
+        # everything still grading is "come back shortly" (exit 3, the in-progress code `run
+        # status` and `run report` already use), while genuine failures are a failed export.
+        raise typer.Exit(3 if pending and not skipped else 1)
 
 
 @run_app.command("report")
