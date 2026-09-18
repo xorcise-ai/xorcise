@@ -584,7 +584,7 @@ def test_the_report_shows_both_when_the_declared_model_is_not_the_one_that_ran()
 # overstates the work.
 
 
-def test_the_report_separates_time_spent_working_from_time_held(capsys=None) -> None:
+def test_the_report_separates_time_spent_working_from_time_held() -> None:
     md = render_markdown(
         _ctx(
             stats=RunStats(
@@ -600,12 +600,18 @@ def test_the_report_separates_time_spent_working_from_time_held(capsys=None) -> 
     assert "| Duration | 30m 0s |" in md, "wall clock must still be reported — the slot was held"
     # Asserted as a row rather than a bare digit: the point is that the ~1s of real work appears
     # BESIDE the 30 minutes, not how many decimal places the formatter happens to use.
-    assert "| Telemetry window | 1.0s |" in md, f"the agent's real activity is missing:\n{md[:700]}"
+    assert "| Telemetry window | 1.0s (reported by the harness) |" in md, (
+        f"the agent's real activity is missing:\n{md[:700]}"
+    )
 
 
 def test_the_report_omits_the_activity_span_when_there_is_no_telemetry() -> None:
     """No events means no span to report — a zero would read as 'the agent did nothing', which is
-    a different claim from 'nothing was recorded'."""
+    a different claim from 'nothing was recorded'.
+
+    Names the rendered label, so it fails if the row ever appears unconditionally; before the row
+    existed this asserted the absence of a string nothing emitted, and was vacuous (#134 review).
+    """
     md = render_markdown(_ctx(stats=RunStats(timing=TimingStats(elapsed_seconds=42.0))))
 
     assert "Telemetry window" not in md
@@ -689,3 +695,72 @@ def test_a_capped_model_list_says_how_many_it_is_not_showing() -> None:
         stats=RunStats(models=("m0", "m1"), models_truncated=6),
     )
     assert _agent_model(ctx) == "m0, m1 (+6 more) (reported by the harness)"
+
+
+# ── the window is the HARNESS's clock, and must not be printed as a platform fact (#134 review) ──
+#
+# The row sits between Started and Duration, both of which are the server's own clock, with nothing
+# to mark that this one is not. A harness whose clock is skewed renders "Duration 1m 0s /
+# Telemetry window 1h 0m 0s" with no signal, and milliseconds mistaken for nanoseconds put the
+# first event in 1970 and render a window of half a million hours in the headline table.
+
+
+def _timing_window(first: datetime, last: datetime, elapsed: float | None = 1800.0) -> RunStats:
+    return RunStats(
+        timing=TimingStats(elapsed_seconds=elapsed, first_event_ts=first, last_event_ts=last)
+    )
+
+
+def test_the_telemetry_window_says_whose_clock_it_came_from() -> None:
+    md = render_markdown(
+        _ctx(
+            stats=_timing_window(
+                datetime(2026, 7, 1, 10, 0, 0, tzinfo=UTC),
+                datetime(2026, 7, 1, 10, 0, 1, tzinfo=UTC),
+            )
+        )
+    )
+    assert "| Telemetry window | 1.0s (reported by the harness) |" in md
+
+
+def test_a_window_longer_than_the_run_itself_is_withheld_rather_than_shown() -> None:
+    """A skewed producer clock: one minute of run, an hour of "telemetry". The window cannot
+    exceed the wall clock the run actually occupied, so the excess is the clock, not the work."""
+    md = render_markdown(
+        _ctx(
+            stats=_timing_window(
+                datetime(2026, 7, 1, 10, 0, 0, tzinfo=UTC),
+                datetime(2026, 7, 1, 11, 0, 0, tzinfo=UTC),
+                elapsed=60.0,
+            )
+        )
+    )
+    assert "| Duration | 1m 0s |" in md
+    assert "Telemetry window" not in md
+
+
+def test_a_1970_timestamp_does_not_render_half_a_million_hours() -> None:
+    """Milliseconds handed to a nanosecond parser put the first event at the epoch."""
+    md = render_markdown(
+        _ctx(
+            stats=_timing_window(
+                datetime(1970, 1, 1, tzinfo=UTC),
+                datetime(2026, 7, 1, 10, 0, 0, tzinfo=UTC),
+            )
+        )
+    )
+    assert "Telemetry window" not in md
+
+
+def test_a_window_that_ends_before_it_starts_is_unknown_not_zero() -> None:
+    """`max(0.0, …)` rendered a corrupted snapshot as "0.0s", which reads as "the agent did
+    nothing" — a different claim from "this cannot be trusted"."""
+    md = render_markdown(
+        _ctx(
+            stats=_timing_window(
+                datetime(2026, 7, 1, 10, 0, 5, tzinfo=UTC),
+                datetime(2026, 7, 1, 10, 0, 0, tzinfo=UTC),
+            )
+        )
+    )
+    assert "Telemetry window" not in md
