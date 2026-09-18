@@ -384,11 +384,12 @@ export function RunLive({ runId }: { runId: string | null }) {
               8-fact terminal run both fill their rows with no orphaned cell. A real <dl>, because
               every cell is a term and its definition (StatTileRow supplies it). */}
           <StatTileRow className="gap-x-6 gap-y-2">
-            {/* Identity metadata — the same canonical set the results page and the HTML/MD exports
-                use: Mission (name + version, links to its brief), Agent (name + version), the
-                Platform it executed on, when it Started and how long it ran (Duration).
-                Harness is NOT here — it sits in the chip row above, with the run's other
-                identity facts. */}
+            {/* Identity metadata — the set the results page uses: Mission (name + version,
+                links to its brief), Agent (name + version), the Platform it executed on, when it
+                Started and the wall clock it has occupied (Duration). Harness is NOT here — it
+                sits in the chip row above, with the run's other identity facts. The HTML/MD
+                exports carry one row neither view has, Telemetry window, so these are close
+                relatives rather than the same set. */}
             <MetaItem
               label="Mission"
               title={`Mission: ${r.mission}`}

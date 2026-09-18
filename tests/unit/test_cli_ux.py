@@ -956,7 +956,7 @@ def test_golden_path_is_one_canonical_list():
     from xorcise.core.cli._shared import GOLDEN_PATH, golden_path_steps
 
     commands = [cmd for _label, cmd in GOLDEN_PATH]
-    assert "xorcise config set-model --name <model> --key <key>" in commands
+    assert "xorcise config set-model --name <model> --key-stdin" in commands
     root = "\n".join(golden_path_steps())
     after_up = "\n".join(golden_path_steps(skip_first=True))
     for cmd in commands:
@@ -965,6 +965,69 @@ def test_golden_path_is_one_canonical_list():
             assert cmd in after_up
     assert "xorcise up" not in after_up
     assert lifecycle.next_steps_block("http://x/ui").endswith(after_up)
+
+
+def test_no_in_product_pointer_teaches_the_key_on_argv(monkeypatch):
+    """Every surface that tells a user how to set the judge key names `--key-stdin` (#125).
+
+    A flag that keeps the credential off argv is worthless if `set-model --help` is the only
+    place it appears: a user arriving from the root epilog, `up`'s banner, `config show` or a
+    missing-input error copies the example in front of them, and that example put the key in
+    ~/.zsh_history and in /proc/<pid>/cmdline. `--key ''` is deliberately still allowed — it
+    clears the key rather than setting one, and no secret travels with it."""
+    from xorcise.core.cli._errors import _EXAMPLES
+    from xorcise.core.cli._shared import GOLDEN_PATH
+    from xorcise.core.cli.rest_client import RestClient
+
+    def _sets_a_key_on_argv(text: str) -> bool:
+        # A placeholder VALUE after --key. Bare `--key` in a list of flag names is a name, not
+        # an example, and `--key ''` is the clear.
+        return "--key <" in text or "--key sk-" in text
+
+    monkeypatch.setattr(
+        RestClient,
+        "get",
+        lambda self, path: {"judge": {"configured": False}, "default_budget_seconds": 60},
+    )
+    monkeypatch.setattr(
+        RestClient,
+        "post",
+        lambda self, path, json, timeout=None: {"ok": False, "status": "not_configured"},
+    )
+
+    pointers = {
+        "golden path": "\n".join(cmd for _label, cmd in GOLDEN_PATH),
+        "up ready banner": lifecycle.next_steps_block("http://x/ui"),
+        "missing-input examples": "\n".join(_EXAMPLES.values()),
+        "config show": runner.invoke(app, ["config", "show"]).output,
+        "config test": runner.invoke(app, ["config", "test"]).output,
+        "set-model nothing to set": runner.invoke(app, ["config", "set-model"]).output,
+        "set-terrain-model nothing to set": runner.invoke(
+            app, ["config", "set-terrain-model"]
+        ).output,
+    }
+    offenders = sorted(where for where, text in pointers.items() if _sets_a_key_on_argv(text))
+    assert not offenders, f"these still teach the key on argv: {offenders}"
+
+
+def test_stdin_interactivity_survives_a_closed_fd_zero():
+    """`xorcise … <&-` leaves `sys.stdin` as None, and the seam must read that as 'not a
+    terminal' (#125).
+
+    CPython sets sys.stdin to None when fd 0 is closed, so the bare `.isatty()` raised an
+    AttributeError that surfaced as 'unexpected error: NoneType object has no attribute
+    isatty'. Every confirmation gate routes through this one helper, so the crash was one
+    closed fd away from `down --purge` too."""
+    import sys as _sys
+
+    from xorcise.core.cli import _ux
+
+    real = _sys.stdin
+    _sys.stdin = None
+    try:
+        assert _ux._stdin_is_interactive() is False
+    finally:
+        _sys.stdin = real
 
 
 def test_documented_filter_value_with_no_matches_is_an_empty_result(monkeypatch):

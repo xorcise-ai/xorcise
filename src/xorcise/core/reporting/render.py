@@ -35,7 +35,7 @@ from __future__ import annotations
 import html
 import math
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -136,6 +136,12 @@ def _elapsed_seconds(ctx: RunReportContext) -> float | None:
     return (ctx.run.completed_at - ctx.run.created_at).total_seconds()
 
 
+# How far the harness clock may run ahead of the server's before its window stops being reportable.
+# A minute absorbs ordinary skew and the lag between an event happening and the run being closed
+# out, while still catching the hour-scale disagreements that are a broken clock, not a long run.
+_PRODUCER_CLOCK_GRACE_SECONDS = 60.0
+
+
 def _telemetry_window_seconds(ctx: RunReportContext) -> float | None:
     """How long the run's telemetry SPANS: first event start → end of the last event that
     reported a duration.
@@ -152,14 +158,25 @@ def _telemetry_window_seconds(ctx: RunReportContext) -> float | None:
 
     Earlier this used the last event's START, which reported a run whose telemetry is one
     60-second span as `0.0s` — a minute of work rendered as none.
+
+    Withheld entirely rather than shown wrong when the producer's clock cannot be reconciled with
+    the server's: a window that ends before it starts, or one longer than the wall clock the run
+    actually occupied. A skewed harness clock otherwise renders `Duration 1m 0s` beside
+    `Telemetry window 1h 0m 0s`, and milliseconds fed to a nanosecond parser put the first event
+    at the epoch and render half a million hours in the headline table. None of those are a
+    measurement; an absent row says "not known", which is the truth.
     """
     if ctx.stats is None:
         return None
     first = ctx.stats.timing.first_event_ts
     last = ctx.stats.timing.last_event_end_ts or ctx.stats.timing.last_event_ts
-    if first is None or last is None:
+    if first is None or last is None or last < first:
         return None
-    return max(0.0, (last - first).total_seconds())
+    window = (last - first).total_seconds()
+    elapsed = _elapsed_seconds(ctx)
+    if elapsed is not None and window > elapsed + _PRODUCER_CLOCK_GRACE_SECONDS:
+        return None
+    return window
 
 
 def _duration(seconds: float | None) -> str:
@@ -205,10 +222,17 @@ def _status_line(ctx: RunReportContext) -> str:
 
 
 def _metadata_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
-    """The identity metadata table, shared verbatim by both renderers and matched field-for-field
-    by the results page and the live run header: Mission and Agent carry their pinned version in
-    the name, then the Harness, when it Started and how long it ran (Duration)."""
+    """The identity metadata table, shared verbatim by the Markdown and HTML renderers: Mission
+    and Agent carry their pinned version in the name, then the Harness, when it Started, and the
+    wall clock the run occupied (Duration — what it COST, not how long the agent worked).
+
+    It used to claim the results page and the live run header matched it field-for-field. They do
+    not: neither renders Telemetry window, and nothing in `frontend/src` reads
+    `last_event_end_ts` (#134 review). The GUI tile is tracked separately rather than smuggled
+    into a report-rendering change; until it lands, this table is the only place the pair appears
+    together."""
     agent = ctx.agent_name or ctx.run.agent_id
+    window = _telemetry_window_seconds(ctx)
     return [
         ("Name", ctx.run.name or ctx.run.mission),
         # Prefer the creator SemVer ("v1.4.2"); a pre-contract run keeps its local
@@ -226,10 +250,12 @@ def _metadata_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
         ("Started", _ts(ctx.run.created_at)),
         ("Duration", _duration(_elapsed_seconds(ctx))),
         # Only when telemetry actually bounds a span. Sits beside Duration because the pair is the
-        # point: they agree on a healthy run and diverge loudly on a crashed one.
+        # point: they agree on a healthy run and diverge loudly on a crashed one — and carries the
+        # same "(reported by the harness)" mark as the model row, because unlike every other row
+        # in this table it is the producer's clock, not the server's.
         *(
-            [("Telemetry window", _duration(_telemetry_window_seconds(ctx)))]
-            if _telemetry_window_seconds(ctx) is not None
+            [("Telemetry window", f"{_duration(window)} (reported by the harness)")]
+            if window is not None
             else []
         ),
         ("Run ID", ctx.run.run_id),
@@ -238,26 +264,46 @@ def _metadata_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
     ]
 
 
-def _agent_model(ctx: RunReportContext) -> str:
+def agent_model_line(declared: str, observed: Sequence[str], dropped: int = 0) -> str:
     """Which model produced this result — declared, observed, or honestly unknown.
 
-    Two independent sources, kept distinguishable rather than collapsed. `conditions.model` is what
-    an operator typed at `agent register --model`; `stats.models` is what the harness reported
-    actually running. Almost nobody declares one, which is why this row read "not disclosed" on
-    essentially every report while the telemetry had the answer all along.
+    Two independent sources, kept distinguishable rather than collapsed. The DECLARED name is what
+    an operator typed at `agent register --model`; the OBSERVED names are what the harness reported
+    actually running. Almost nobody declares one, which is why this read "not disclosed" on
+    essentially every run while the telemetry had the answer all along.
 
     When both exist and DISAGREE, both are shown. Silently preferring either would misattribute the
-    result, and the disagreement is itself the interesting fact.
+    result, and the disagreement is itself the interesting fact. "named" rather than "reported",
+    because the common disagreement is a family name against an exact one (`claude-fable-5` vs
+    `claude-fable-5-1`, or a Bedrock ARN) — a difference in precision, not a contradiction.
+
+    `dropped` is how many further distinct names the fold saw past its cap (RunStats.models is
+    bounded — see otel.run_stats.MODELS_MAX); a capped list has to read as capped.
+
+    SHARED, not mirrored: the CLI and report.md rendered this separately and drifted — the report
+    said "gpt-5.5 (disclosed)" where `run status` said bare "gpt-5.5" (#128 review). One function
+    is the only way they cannot say different things about the same run.
     """
-    declared = (ctx.conditions.model or "").strip()
-    observed = [m for m in (ctx.stats.models if ctx.stats else ()) if m]
-    if declared and observed and declared not in observed:
-        return f"{declared} (disclosed); telemetry reported {', '.join(observed)}"
+    declared = declared.strip()
+    seen = [str(m).strip() for m in observed if str(m).strip()]
+    named = ", ".join(seen) + (f" (+{dropped} more)" if dropped > 0 else "")
+    if declared and seen and declared not in seen:
+        return f"{declared} (disclosed); telemetry named {named}"
     if declared:
         return f"{declared} (disclosed)"
-    if observed:
-        return f"{', '.join(observed)} (reported by the harness)"
+    if seen:
+        return f"{named} (reported by the harness)"
     return "not disclosed"
+
+
+def _agent_model(ctx: RunReportContext) -> str:
+    """The report's view of `agent_model_line` — see there for the rule."""
+    stats = ctx.stats
+    return agent_model_line(
+        ctx.conditions.model or "",
+        stats.models if stats else (),
+        stats.models_truncated if stats else 0,
+    )
 
 
 def _condition_rows(ctx: RunReportContext) -> list[tuple[str, str]]:

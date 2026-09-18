@@ -54,6 +54,10 @@ class RunResultView(BaseModel):
     # could not be attributed to a model after the fact. Carried here rather than fetched from
     # /stats so `run status` stays one request, and empty when the telemetry named none.
     models_reported: tuple[str, ...] = ()
+    # How many further distinct names the fold saw past its cap. The list above is agent-controlled
+    # and served on every /result, so it is bounded (otel.run_stats.MODELS_MAX) — without this a
+    # truncated list would read as the whole truth.
+    models_reported_truncated: int = 0
     # The run's evidence seal, machine-readable — the point of #116 is that a consumer can tie a
     # grade to evidence that has not changed, and until this the digest existed only as 16
     # characters of prose inside a rendered report. `evidence_digest` is the bare hex recorded at
@@ -750,6 +754,7 @@ def run_result(run_id: str, background: BackgroundTasks) -> RunResultView | JSON
         partial=partial,
         partial_trigger=partial_trigger,
         models_reported=tuple(stats.models) if stats else (),
+        models_reported_truncated=stats.models_truncated if stats else 0,
         evidence_digest=seal.digest,
         evidence_verified=seal.verified,
     )
