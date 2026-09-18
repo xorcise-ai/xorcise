@@ -252,7 +252,7 @@ def test_fold_stamps_the_projection_it_was_folded_under() -> None:
     component changes then, so every existing snapshot kept looking current and was served stale
     (#128 review).
     """
-    assert projection_key("generic", "2+normalizer.3") == "generic@2+normalizer.3+stats.2"
+    assert projection_key("generic", "2+normalizer.3") == "generic@2+normalizer.3+stats.3"
     stamped = fold_run_stats(
         [], created_at=_T0, completed_at=None, projection="generic@2+normalizer.3"
     )
@@ -390,3 +390,50 @@ def test_a_run_within_the_cap_reports_nothing_dropped() -> None:
         [_with_model(AgentEventKind.metric, "gpt-5.5")], created_at=_T0, completed_at=None
     )
     assert stats.models_truncated == 0
+
+
+# ── the telemetry window must include the last event's duration (#134 review) ────────────────
+#
+# The fold kept only min/max of event START timestamps, so a run whose telemetry is ONE 60-second
+# span reported a zero-length window — the report rendered "0.0s" for a minute of work. Span-backed
+# events carry the producer's start time; the duration is a separate field, and dropping it also
+# loses the final span's extent in a multi-span run.
+
+
+def test_the_window_covers_a_single_long_span() -> None:
+    s = fold_run_stats(
+        [_kind(AgentEventKind.tool_call, duration_ms=60_000)], created_at=_T0, completed_at=None
+    )
+    assert s.timing.last_event_end_ts is not None and s.timing.first_event_ts is not None
+    assert (s.timing.last_event_end_ts - s.timing.first_event_ts).total_seconds() == 60.0
+
+
+def test_the_window_includes_the_final_span_duration_not_just_its_start() -> None:
+    later = datetime(2026, 1, 1, 0, 0, 30, tzinfo=UTC)
+    s = fold_run_stats(
+        [
+            _kind(AgentEventKind.tool_call, duration_ms=1_000),
+            AgentEvent(
+                run_id="r1",
+                id="last",
+                ts=later,
+                source_agent="x",
+                kind=AgentEventKind.tool_call,
+                title="t",
+                duration_ms=10_000,
+                raw_ref=RawTraceRef(run_id="r1", raw_seq=0, span_id=""),
+            ),
+        ],
+        created_at=_T0,
+        completed_at=None,
+    )
+    # 30s to the last span's start, plus its own 10s — not 30.
+    assert s.timing.last_event_end_ts is not None and s.timing.first_event_ts is not None
+    assert (s.timing.last_event_end_ts - s.timing.first_event_ts).total_seconds() == 40.0
+
+
+def test_an_event_with_no_duration_contributes_only_its_timestamp() -> None:
+    """Unknown duration is not zero-length work; it is simply unknown, so the window ends at the
+    last timestamp we actually have."""
+    s = fold_run_stats([_kind(AgentEventKind.message)], created_at=_T0, completed_at=None)
+    assert s.timing.last_event_end_ts == s.timing.last_event_ts

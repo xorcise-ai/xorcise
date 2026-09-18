@@ -243,10 +243,14 @@ export function ResultsView({ runId }: { runId: string | null }) {
 }
 
 /**
- * The run's identity metadata, one canonical set shared with the live run header and the HTML/MD
- * exports: Mission and Agent (each carrying its pinned version in the name), the Harness that ran
- * it, when it Started and how long it ran (Duration). A compact labelled grid so the reader knows
- * exactly which run this is before reading the scores it produced.
+ * The run's identity metadata: Mission and Agent (each carrying its pinned version in the name),
+ * the Harness that ran it, when it Started and the wall clock it occupied (Duration — what the run
+ * COST, not how long the agent worked). A compact labelled grid so the reader knows exactly which
+ * run this is before reading the scores it produced.
+ *
+ * NEARLY the set the HTML/MD exports render, not identical: the report also carries a Telemetry
+ * window row (how long the harness's own telemetry spans), which this grid does not. Claiming
+ * field-for-field parity here was wrong once the report gained that row.
  */
 function RunMetaBar({ run, agentName }: { run: RunEntry; agentName: string }) {
   const elapsed = run.completed_at
