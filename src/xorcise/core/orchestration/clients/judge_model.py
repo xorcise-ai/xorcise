@@ -85,8 +85,11 @@ class OpenAiCompatibleJudgeModel:
         # Message ORDER is chosen for prompt caching (rec 4): the stable [instructions, evidence]
         # prefix is byte-identical across a run's per-criterion calls, so an OpenAI-compatible
         # provider reuses the cached prefix and only the tiny trailing criterion message varies.
-        # Roles preserve the injection hierarchy: trusted instructions/criterion ride the system
-        # role, untrusted agent evidence rides the user role.
+        # Roles are an ENDPOINT constraint, not the trust boundary: only the instructions ride
+        # `system`, and they come first, because servers that enforce "system must be the first
+        # message" 400 the whole call otherwise. Evidence and criterion both ride `user`; what
+        # separates trusted from untrusted is the ⟦⟧ fence around the evidence, which
+        # `_neutralize` keeps agent content from forging.
         try:
             resp = self._http.post(
                 f"{self._base_url}/chat/completions",
