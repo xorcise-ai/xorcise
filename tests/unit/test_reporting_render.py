@@ -610,3 +610,44 @@ def test_report_without_telemetry_or_transcript_count_is_unchanged():
     assert "Renderer" not in md
     assert "Judge transcript items" not in md
     assert "Telemetry warnings" not in md
+
+
+# ── the CLI and the report must not tell different stories about the same run (#128 review) ─────
+#
+# They were two copies of the same rule and they drifted: report.md rendered "gpt-5.5 (disclosed)"
+# where `run status` printed a bare "gpt-5.5". They now share one function, and this pins that.
+
+
+@pytest.mark.parametrize(
+    ("declared", "observed", "dropped"),
+    [
+        ("", (), 0),  # nothing known
+        ("gpt-5.5", (), 0),  # declared only — the case that had drifted
+        ("", ("gpt-5.5",), 0),  # observed only
+        ("gpt-5.5", ("gpt-5.5",), 0),  # agreeing
+        ("claude-fable-5", ("claude-fable-5-1",), 0),  # the family-vs-exact disagreement
+        ("", ("a", "b"), 7),  # capped list
+    ],
+)
+def test_the_cli_and_the_report_render_the_model_identically(
+    declared: str, observed: tuple[str, ...], dropped: int
+) -> None:
+    from xorcise.core.cli.commands.run import _agent_model_line
+    from xorcise.core.reporting.render import _agent_model
+
+    ctx = _ctx(
+        conditions=ResultConditions(model=declared or None),
+        stats=RunStats(models=observed, models_truncated=dropped),
+    )
+    assert _agent_model(ctx) == _agent_model_line({"model": declared}, observed, dropped)
+
+
+def test_a_capped_model_list_says_how_many_it_is_not_showing() -> None:
+    """Without the marker a bounded list reads as the complete one."""
+    from xorcise.core.reporting.render import _agent_model
+
+    ctx = _ctx(
+        conditions=ResultConditions(model=None),
+        stats=RunStats(models=("m0", "m1"), models_truncated=6),
+    )
+    assert _agent_model(ctx) == "m0, m1 (+6 more) (reported by the harness)"

@@ -2689,6 +2689,11 @@ export interface components {
              */
             models_reported: string[];
             /**
+             * Models Reported Truncated
+             * @default 0
+             */
+            models_reported_truncated: number;
+            /**
              * Partial
              * @default false
              */
@@ -2720,6 +2725,11 @@ export interface components {
              * @default []
              */
             models: string[];
+            /**
+             * Models Truncated
+             * @default 0
+             */
+            models_truncated: number;
             /** Projection */
             projection?: string | null;
             /** @default {} */

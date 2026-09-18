@@ -3504,6 +3504,11 @@
             "title": "Models Reported",
             "type": "array"
           },
+          "models_reported_truncated": {
+            "default": 0,
+            "title": "Models Reported Truncated",
+            "type": "integer"
+          },
           "partial": {
             "default": false,
             "title": "Partial",
@@ -3560,6 +3565,11 @@
             },
             "title": "Models",
             "type": "array"
+          },
+          "models_truncated": {
+            "default": 0,
+            "title": "Models Truncated",
+            "type": "integer"
           },
           "projection": {
             "anyOf": [

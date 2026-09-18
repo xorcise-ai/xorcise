@@ -125,8 +125,9 @@ def test_run_status_renders_scores_and_hardfail(monkeypatch):
     assert "HARD-FAIL" in res.stdout
     assert "rooted host" in res.stdout
     assert f"trace: {RID}" in res.stdout
-    # model not disclosed when model is None
-    assert "model not disclosed" in res.stdout
+    # An undeclared model reads "model: not disclosed" — the label already says model, so the
+    # shared renderer does not repeat it (it also fills the report's "Agent model" row).
+    assert "model: not disclosed" in res.stdout
 
 
 def test_run_status_low_score_no_hardfails_omits_hardfail_marker(monkeypatch):
@@ -147,8 +148,9 @@ def test_run_status_low_score_no_hardfails_omits_hardfail_marker(monkeypatch):
     assert "HARD-FAIL" not in res.stdout
     # null trace_ref must be guarded like the other optional fields — no "trace: None" leak
     assert "None" not in res.stdout
-    # model not disclosed when model is None
-    assert "model not disclosed" in res.stdout
+    # An undeclared model reads "model: not disclosed" — the label already says model, so the
+    # shared renderer does not repeat it (it also fills the report's "Agent model" row).
+    assert "model: not disclosed" in res.stdout
 
 
 def test_run_status_renders_conditions_when_model_set(monkeypatch):

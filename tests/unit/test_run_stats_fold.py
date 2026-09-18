@@ -14,7 +14,12 @@ import pytest
 from xorcise.core.contracts.agent_event import AgentEvent, AgentEventKind, RawTraceRef
 from xorcise.core.otel.adapters import normalize_run
 from xorcise.core.otel.adapters.base import AdapterContext
-from xorcise.core.otel.run_stats import fold_run_stats, projection_key
+from xorcise.core.otel.run_stats import (
+    MODEL_NAME_MAX,
+    MODELS_MAX,
+    fold_run_stats,
+    projection_key,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -280,3 +285,108 @@ def test_a_snapshot_stamped_before_the_models_fold_is_stale() -> None:
     from xorcise.core.otel.run_stats import projection_key
 
     assert projection_key("generic", "2+normalizer.3") != "generic@2+normalizer.3"
+
+
+# ── the model must come from where an adapter PUT it, not from any attribute bag (#128 review) ──
+#
+# The fold read `data["model"]` off every event of every kind. The generic adapter copies the whole
+# span attribute dict onto the event (`data=dict(span.attrs)`), so any span that happens to carry a
+# `model` attribute — an image-generation tool call, say — was folded in as though the run had run
+# on it. The four kinds below are the complete set an adapter deliberately names a model on:
+#
+#   metric  — otel/adapters/genai.py, the gen_ai usage metric (claude-code, openhands)
+#   status  — harness_adapters/codex/otel.py, "codex.conversation_starts"
+#   message — harness_adapters/claude_code/otel.py, "claude_code.assistant_response"
+#   error   — harness_adapters/claude_code/otel.py, "claude_code.api_refusal"
+
+
+def _with_model(
+    kind: AgentEventKind, model: str, *, extra: dict[str, str] | None = None
+) -> AgentEvent:
+    return AgentEvent(
+        run_id="r1",
+        id=f"m{kind}{model}",
+        ts=_T0,
+        source_agent="x",
+        kind=kind,
+        title="t",
+        data={"model": model, **(extra or {})},
+        raw_ref=RawTraceRef(run_id="r1", raw_seq=0, span_id=""),
+    )
+
+
+def test_a_model_named_on_a_tool_span_is_not_read_as_the_model_that_ran() -> None:
+    """The reviewer's case: a `generate_image` tool call carrying `model=dall-e-3` rendered as
+    "dall-e-3, gpt-5.5 (reported by the harness)" — the run did not run on dall-e-3."""
+    stats = fold_run_stats(
+        [
+            _with_model(
+                AgentEventKind.tool_call, "dall-e-3", extra={"tool.name": "generate_image"}
+            ),
+            _metric({"model": "gpt-5.5", "input_tokens": "10"}),
+        ],
+        created_at=_T0,
+        completed_at=None,
+    )
+    assert stats.models == ("gpt-5.5",)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        AgentEventKind.metric,
+        AgentEventKind.status,
+        AgentEventKind.message,
+        AgentEventKind.error,
+    ],
+)
+def test_the_model_is_read_from_every_kind_an_adapter_names_it_on(kind: AgentEventKind) -> None:
+    stats = fold_run_stats([_with_model(kind, "gpt-5.5")], created_at=_T0, completed_at=None)
+    assert stats.models == ("gpt-5.5",), f"{kind.value}: an adapter names the model here"
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        AgentEventKind.tool_call,
+        AgentEventKind.mcp_call,
+        AgentEventKind.unclassified,
+        AgentEventKind.file_read,
+        AgentEventKind.terminal_command,
+    ],
+)
+def test_a_model_attribute_on_any_other_kind_is_ignored(kind: AgentEventKind) -> None:
+    stats = fold_run_stats([_with_model(kind, "dall-e-3")], created_at=_T0, completed_at=None)
+    assert stats.models == (), f"{kind.value}: no adapter names a run's model here"
+
+
+# ── the list is agent-controlled, persisted and served on every /result (#128 review) ────────────
+
+
+def test_the_model_list_is_capped_and_says_how_many_it_dropped() -> None:
+    """500 distinct names would otherwise become a 500-entry tuple in `stats_json`, echoed on
+    every `/result` — which `run list` and `leaderboard` call once per terminal run."""
+    stats = fold_run_stats(
+        [_with_model(AgentEventKind.metric, f"model-{i}") for i in range(500)],
+        created_at=_T0,
+        completed_at=None,
+    )
+    assert len(stats.models) == MODELS_MAX
+    assert stats.models[0] == "model-0", "the cap keeps the FIRST seen, not the last"
+    assert stats.models_truncated == 500 - MODELS_MAX
+
+
+def test_an_absurdly_long_model_name_is_truncated_rather_than_stored_verbatim() -> None:
+    """One 200 000-character name became a 200 KB `stats_json` row, re-served on every request."""
+    stats = fold_run_stats(
+        [_with_model(AgentEventKind.metric, "x" * 200_000)], created_at=_T0, completed_at=None
+    )
+    assert len(stats.models[0]) <= MODEL_NAME_MAX
+    assert stats.models[0].endswith("…"), "a truncated name must not read as the whole name"
+
+
+def test_a_run_within_the_cap_reports_nothing_dropped() -> None:
+    stats = fold_run_stats(
+        [_with_model(AgentEventKind.metric, "gpt-5.5")], created_at=_T0, completed_at=None
+    )
+    assert stats.models_truncated == 0

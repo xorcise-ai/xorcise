@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import datetime
+from itertools import islice
 
 from xorcise.core.contracts.agent_event import AgentEvent, AgentEventKind
 from xorcise.core.contracts.reporting import CountStats, RunStats, TimingStats, TokenStats
@@ -37,6 +38,41 @@ _TOOL_KINDS = frozenset(
         AgentEventKind.browser_action,
     }
 )
+
+
+# Event kinds an adapter deliberately names a model on. The fold used to read `data["model"]` off
+# ANY event, which the generic adapter turns into a leak: it copies the whole span attribute bag
+# onto the event (`data=dict(span.attrs)`), so an image-generation tool call carrying
+# `model=dall-e-3` was folded in as a model the run ran on. Each kind here has a writer:
+#   metric  — otel/adapters/genai.py, the gen_ai usage metric (claude-code, openhands)
+#   status  — harness_adapters/codex/otel.py, "codex.conversation_starts"
+#   message — harness_adapters/claude_code/otel.py, "claude_code.assistant_response"
+#   error   — harness_adapters/claude_code/otel.py, "claude_code.api_refusal"
+# Add a kind here only alongside the adapter line that puts a model on it.
+_MODEL_KINDS = frozenset(
+    {
+        AgentEventKind.metric,
+        AgentEventKind.status,
+        AgentEventKind.message,
+        AgentEventKind.error,
+    }
+)
+
+# Bounds on the model list. Every other RunStats field is a scalar; this one is a list of
+# AGENT-CONTROLLED strings that is persisted in `stats_json` and returned on every `/result` —
+# which `run list` and `leaderboard` call once per terminal run. Unbounded, a harness reporting
+# 500 distinct names or one 200 000-character name turns a display field into a stored amplifier.
+MODELS_MAX = 8
+MODEL_NAME_MAX = 120
+# How many DISTINCT names the fold will hold while counting the overflow. Counting "how many did
+# we drop" exactly needs to remember what was already dropped, which is the unbounded set again —
+# so the tracking itself is bounded and `models_truncated` saturates past this many distinct names.
+_MODELS_TRACK_MAX = 512
+
+
+def _clip_model(name: str) -> str:
+    """Bound one name's length, marking the cut so a prefix never reads as the whole name."""
+    return name if len(name) <= MODEL_NAME_MAX else name[: MODEL_NAME_MAX - 1] + "\u2026"
 
 
 def _pick_int(data: Mapping[str, str], keys: tuple[str, ...]) -> int:
@@ -91,15 +127,18 @@ def fold_run_stats(
 
     for e in events:
         by_kind[e.kind.value] += 1
-        # Read the model off ANY event that names one, not just usage metrics. Every adapter
-        # normalises its own spelling onto `model`, but they disagree about WHERE it belongs:
-        # claude-code and openhands put it on each usage metric (from gen_ai.request/response
-        # .model), while codex reports it once on its "session started" status event — arguably
-        # the more correct place, since the model is a property of the session, not of a call.
-        # Folding metrics alone silently dropped codex entirely.
-        named_model = str((e.data or {}).get("model") or "").strip()
-        if named_model:
-            models.setdefault(named_model, None)
+        # Read the model off the kinds an adapter NAMES one on, not off every event. Adapters
+        # disagree about where it belongs — claude-code and openhands put it on each usage metric
+        # (from gen_ai.request/response.model), codex once on its "session started" status event,
+        # and claude-code also on an assistant message and an api_refusal — so folding metrics
+        # alone dropped codex entirely. Folding everything went too far the other way: the generic
+        # adapter copies the whole span attribute bag onto the event, so a `generate_image` tool
+        # call carrying `model=dall-e-3` was reported as a model the run ran on. _MODEL_KINDS is
+        # the evidenced middle.
+        if e.kind in _MODEL_KINDS:
+            named_model = str((e.data or {}).get("model") or "").strip()
+            if named_model and len(models) < _MODELS_TRACK_MAX:
+                models.setdefault(_clip_model(named_model), None)
         if e.kind is AgentEventKind.metric:
             data = e.data or {}
             inp = _pick_int(data, _INPUT)
@@ -128,7 +167,8 @@ def fold_run_stats(
     tok.total = tok.input + tok.output
     elapsed = (completed_at - created_at).total_seconds() if completed_at else None
     return RunStats(
-        models=tuple(models),
+        models=tuple(islice(models, MODELS_MAX)),
+        models_truncated=max(0, len(models) - MODELS_MAX),
         tokens=tok,
         counts=CountStats(
             model_calls=model_calls,

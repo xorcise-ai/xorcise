@@ -21,6 +21,7 @@ vi.mock("@/features/live-trace/terrain-map", () => ({
 function stats(over: Partial<RunStats["counts"]> = {}): RunStats {
   return {
     models: [],
+    models_truncated: 0,
     tokens: { input: 0, output: 0, cache_read: 0, cache_creation: 0, reasoning: 0, total: 0 },
     counts: {
       model_calls: 4,
