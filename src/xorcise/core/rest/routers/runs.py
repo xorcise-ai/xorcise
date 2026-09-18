@@ -54,6 +54,14 @@ class RunResultView(BaseModel):
     # could not be attributed to a model after the fact. Carried here rather than fetched from
     # /stats so `run status` stays one request, and empty when the telemetry named none.
     models_reported: tuple[str, ...] = ()
+    # The run's evidence seal, machine-readable — the point of #116 is that a consumer can tie a
+    # grade to evidence that has not changed, and until this the digest existed only as 16
+    # characters of prose inside a rendered report. `evidence_digest` is the bare hex recorded at
+    # seal time; `evidence_verified` is a TRISTATE re-checked on this read: true, false, or null
+    # for "could not verify" (no digest, a scheme this build cannot re-derive, or the re-hash
+    # failed). Null is never an accusation — a run that predates the feature is not a tampered one.
+    evidence_digest: str | None = None
+    evidence_verified: bool | None = None
 
 
 class RunArtifactView(BaseModel):
@@ -731,12 +739,19 @@ def run_result(run_id: str, background: BackgroundTasks) -> RunResultView | JSON
 
     run_entry = runs.get(run_id)
     stats = current_run_stats(run_entry) if run_entry is not None else None
+    # Guarded + re-verified on this read (never a verdict stored at seal time, which could only
+    # ever say "matched when we wrote it"). Lazy import matches the other joins here.
+    from xorcise.core.rest.evidence_seal import evidence_seal_view
+
+    seal = evidence_seal_view(run_id)
     return RunResultView(
         grade=grade,
         conditions=conditions,
         partial=partial,
         partial_trigger=partial_trigger,
         models_reported=tuple(stats.models) if stats else (),
+        evidence_digest=seal.digest,
+        evidence_verified=seal.verified,
     )
 
 

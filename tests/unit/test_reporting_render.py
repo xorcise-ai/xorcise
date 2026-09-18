@@ -547,6 +547,60 @@ def test_the_report_is_silent_about_sealing_when_no_digest_was_recorded() -> Non
     assert "Evidence seal" not in md
 
 
+# ── review round two (#139) ──────────────────────────────────────────────────────────────────
+
+
+def test_the_html_report_does_not_print_markdown_markup_at_the_reader() -> None:
+    """The seal line was built as Markdown and handed to the HTML path, where every cell is
+    escaped — so an HTML report showed the reader a literal backtick-and-asterisk soup instead of
+    a digest. The line has to be format-neutral text that each renderer marks up itself."""
+    html = render_html(_ctx(evidence_digest="b" * 64, evidence_verified=False))
+    seal = html[html.index("Evidence seal") : html.index("Evidence seal") + 600]
+    assert "**" not in seal and "`" not in seal
+
+
+def test_a_mismatch_is_called_out_and_not_only_a_row_in_the_last_table() -> None:
+    """A MISMATCH says the rest of the report may not be trustworthy. One row at the bottom of the
+    Conditions table is where a reader never looks — it belongs with the other banners, above the
+    scores it is casting doubt on."""
+    ctx = _ctx(evidence_digest="b" * 64, evidence_verified=False)
+
+    md = render_markdown(ctx)
+    assert md.index("no longer matches") < md.index("## Scores")
+
+    html = render_html(ctx)
+    assert "banner" in html[: html.index("Scorecard")]
+    assert "no longer matches" in html[: html.index("Scorecard")]
+
+
+def test_a_verified_seal_gets_no_callout() -> None:
+    """The callout is for the one case that needs it. A banner on every clean report is noise, and
+    noise is how a reader learns to skip the line that matters."""
+    html = render_html(_ctx(evidence_digest="a" * 64, evidence_verified=True))
+    assert "no longer matches" not in html
+
+
+def test_the_report_says_the_digest_is_stored_beside_the_evidence() -> None:
+    """A digest is not a signature: anyone able to edit a span can recompute it. "Verified" alone
+    over-trusts, for readers who will never see the PR that built this."""
+    md = render_markdown(_ctx(evidence_digest="a" * 64, evidence_verified=True))
+    assert "not independently attested" in md
+
+
+def test_a_run_whose_seal_could_not_be_hashed_says_so() -> None:
+    """The sentinel's whole point: a post-migration run with no digest must read "unavailable"
+    rather than looking exactly like a run that predates the feature."""
+    ctx = _ctx(evidence_digest=None, evidence_verified=None, evidence_digest_unavailable=True)
+    assert "unavailable" in render_markdown(ctx)
+    assert "unavailable" in render_html(ctx)
+
+
+def test_the_digest_is_shown_short_form_not_in_full() -> None:
+    digest = "0123456789abcdef" + "f" * 48
+    md = render_markdown(_ctx(evidence_digest=digest, evidence_verified=True))
+    assert "0123456789abcdef" in md and digest not in md
+
+
 # ── which model ran, on the report (#113) ────────────────────────────────────────────────────
 #
 # The Conditions table showed "Agent model (disclosed)" and, because almost nobody passes
