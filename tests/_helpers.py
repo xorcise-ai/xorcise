@@ -65,3 +65,26 @@ def install_mission(home: Path, slug: str = "c1") -> None:
     )
     ref = MissionRef(mission_id=slug, image=f"xorcise/mission-{slug}:0")
     (root / INSTALLED_FILE).write_text(InstalledMission(slug, root, manifest, ref).to_record())
+
+
+def invoke_cli_with_stdin(argv: list[str], stdin: object) -> int:
+    """Run the real CLI parser with an EXACT ``sys.stdin``; returns the exit code.
+
+    CliRunner always builds its own text stream from ``input=``, so the two inputs that matter
+    here are the two it cannot express: the ``None`` CPython leaves when fd 0 is CLOSED
+    (`xorcise … <&-`), and a bare CR, which the runner's universal-newline translation rewrites.
+    Everything else still goes through click — the options arrive with their true ``None``/
+    ``False`` defaults, where calling a Typer command function directly would hand it
+    ``OptionInfo`` objects and prove nothing."""
+    import sys
+
+    import typer.main
+
+    from xorcise.core.cli._shared import app
+
+    command = typer.main.get_command(app)
+    real, sys.stdin = sys.stdin, stdin
+    try:
+        return int(command.main(args=argv, prog_name="xorcise", standalone_mode=False))
+    finally:
+        sys.stdin = real
