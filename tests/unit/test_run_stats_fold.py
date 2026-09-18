@@ -14,7 +14,12 @@ import pytest
 from xorcise.core.contracts.agent_event import AgentEvent, AgentEventKind, RawTraceRef
 from xorcise.core.otel.adapters import normalize_run
 from xorcise.core.otel.adapters.base import AdapterContext
-from xorcise.core.otel.run_stats import fold_run_stats, projection_key
+from xorcise.core.otel.run_stats import (
+    MODEL_NAME_MAX,
+    MODELS_MAX,
+    fold_run_stats,
+    projection_key,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -143,6 +148,89 @@ def test_each_real_harness_yields_nonzero_tokens(name: str) -> None:
     assert s.counts.model_calls > 0
 
 
+# ── which model actually ran (#113) ──────────────────────────────────────────────────────────
+#
+# `runs.model` is the model the OPERATOR declared at `agent register --model`. Almost nobody passes
+# it, so every run reported "model not disclosed" and a result could not be attributed to a model
+# after the fact — fatal for a leaderboard.
+#
+# The telemetry knew all along. Every harness adapter already lands the model on its usage metric
+# as `data["model"]` (claude-code and openhands via gen_ai.request/response.model, codex via its
+# own `model` attribute); the fold just never collected it. Observed-from-telemetry is also the
+# better provenance than a declaration: it is what the harness reported actually running, not what
+# somebody typed at registration.
+
+
+def test_the_observed_model_is_folded_from_usage_metrics() -> None:
+    s = fold_run_stats(
+        [_metric({"model": "gpt-5.5", "input_tokens": "10", "output_tokens": "2"})],
+        created_at=_T0,
+        completed_at=None,
+    )
+    assert s.models == ("gpt-5.5",)
+
+
+def test_repeated_and_multiple_models_are_deduped_in_first_seen_order() -> None:
+    """A run makes many calls; a router or a fallback can change model mid-run.
+
+    Order is first-seen rather than sorted so the primary model — the one that did the early work —
+    reads first wherever this is rendered.
+    """
+    s = fold_run_stats(
+        [
+            _metric({"model": "gpt-5.5", "input_tokens": "1"}, ts=_T0),
+            _metric(
+                {"model": "gpt-5.5", "input_tokens": "1"}, ts=datetime(2026, 1, 1, 0, 1, tzinfo=UTC)
+            ),
+            _metric(
+                {"model": "claude-fable-5", "input_tokens": "1"},
+                ts=datetime(2026, 1, 1, 0, 2, tzinfo=UTC),
+            ),
+        ],
+        created_at=_T0,
+        completed_at=None,
+    )
+    assert s.models == ("gpt-5.5", "claude-fable-5")
+
+
+def test_a_run_with_no_model_telemetry_reports_none_rather_than_guessing() -> None:
+    """Empty, not a placeholder: "unknown" is a real answer and must not be mistaken for a name."""
+    s = fold_run_stats([_metric({"input_tokens": "5"})], created_at=_T0, completed_at=None)
+    assert s.models == ()
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("openhands", "bedrock/au.anthropic.claude-sonnet-4-5-20250929-v1:0"),
+        ("claude_code", "claude-fable-5"),
+        ("codex", "gpt-5.5"),
+    ],
+)
+def test_each_real_harness_capture_reveals_the_model_that_ran(name: str, expected: str) -> None:
+    """Against the real captures, because this is a provenance claim and it has to be true of the
+    actual harnesses rather than of a synthetic event this test built for itself.
+
+    Codex is the case that proves the fold must not special-case `gen_ai.*`: it carries the model
+    on its own `model` attribute, and its adapter already normalises that onto the metric.
+    """
+    from xorcise.core.harness_adapters import load_adapters
+
+    load_adapters()
+    doc = json.loads((_FIXTURES / f"{name}_real_run.json").read_text())
+    ctx = AdapterContext(
+        run_id=doc.get("run_id", "r1"),
+        source_agent=name if name != "claude_code" else "claude-code",
+        mission_id="fixture",
+        created_at=_T0,
+    )
+    view = normalize_run(doc["records"], ctx, log_records=doc.get("log_records"))
+
+    s = fold_run_stats(view.events, created_at=_T0, completed_at=None)
+
+    assert s.models == (expected,), f"{name}: folded {s.models}, expected ({expected!r},)"
+
+
 def test_unclassified_spans_are_counted_but_are_not_tool_calls() -> None:
     """The #120 shape: 113 marker-only spans must not read as 113 tool calls in the report. They
     are still events (events_total / by_kind), so the report can show them on their own row."""
@@ -156,12 +244,149 @@ def test_unclassified_spans_are_counted_but_are_not_tool_calls() -> None:
 
 
 def test_fold_stamps_the_projection_it_was_folded_under() -> None:
-    """`projection` is the renderer's identity — adapter@version — which is what lets a reader
-    tell a snapshot that predates the current classifier apart from a fresh one. Absent unless
-    the caller supplies it, so older call sites keep working."""
-    assert projection_key("generic", "2+normalizer.3") == "generic@2+normalizer.3"
+    """`projection` is what lets a reader tell a snapshot that predates the current renderer apart
+    from a fresh one. Absent unless the caller supplies it, so older call sites keep working.
+
+    It carries the fold's OWN version as well as the renderer's. Originally it was just
+    `adapter@version`, which missed the case where the fold starts emitting a NEW field: neither
+    component changes then, so every existing snapshot kept looking current and was served stale
+    (#128 review).
+    """
+    assert projection_key("generic", "2+normalizer.3") == "generic@2+normalizer.3+stats.2"
     stamped = fold_run_stats(
         [], created_at=_T0, completed_at=None, projection="generic@2+normalizer.3"
     )
     assert stamped.projection == "generic@2+normalizer.3"
     assert fold_run_stats([], created_at=_T0, completed_at=None).projection is None
+
+
+# ── a snapshot folded before `models` existed must not read as current (#128 review) ─────────
+#
+# The stamp was `<adapter>@<version>` only. Adding a FIELD to the fold changes neither component,
+# so a snapshot folded before `models` existed still matched the current stamp and was served
+# as-is — an already-graded run kept saying "model not disclosed" even though its retained
+# telemetry named the model. The stamp has to version the fold's own output shape too.
+
+
+def test_the_stamp_changes_when_the_fold_output_changes() -> None:
+    from xorcise.core.otel.run_stats import STATS_FOLD_VERSION, projection_key
+
+    key = projection_key("generic", "2+normalizer.3")
+
+    assert key.startswith("generic@2+normalizer.3")
+    assert STATS_FOLD_VERSION in key, (
+        "the stamp must carry the fold version, or adding a field to RunStats leaves every "
+        "existing snapshot looking current"
+    )
+
+
+def test_a_snapshot_stamped_before_the_models_fold_is_stale() -> None:
+    """The exact pre-change stamp — adapter and version current, fold version absent."""
+    from xorcise.core.otel.run_stats import projection_key
+
+    assert projection_key("generic", "2+normalizer.3") != "generic@2+normalizer.3"
+
+
+# ── the model must come from where an adapter PUT it, not from any attribute bag (#128 review) ──
+#
+# The fold read `data["model"]` off every event of every kind. The generic adapter copies the whole
+# span attribute dict onto the event (`data=dict(span.attrs)`), so any span that happens to carry a
+# `model` attribute — an image-generation tool call, say — was folded in as though the run had run
+# on it. The four kinds below are the complete set an adapter deliberately names a model on:
+#
+#   metric  — otel/adapters/genai.py, the gen_ai usage metric (claude-code, openhands)
+#   status  — harness_adapters/codex/otel.py, "codex.conversation_starts"
+#   message — harness_adapters/claude_code/otel.py, "claude_code.assistant_response"
+#   error   — harness_adapters/claude_code/otel.py, "claude_code.api_refusal"
+
+
+def _with_model(
+    kind: AgentEventKind, model: str, *, extra: dict[str, str] | None = None
+) -> AgentEvent:
+    return AgentEvent(
+        run_id="r1",
+        id=f"m{kind}{model}",
+        ts=_T0,
+        source_agent="x",
+        kind=kind,
+        title="t",
+        data={"model": model, **(extra or {})},
+        raw_ref=RawTraceRef(run_id="r1", raw_seq=0, span_id=""),
+    )
+
+
+def test_a_model_named_on_a_tool_span_is_not_read_as_the_model_that_ran() -> None:
+    """The reviewer's case: a `generate_image` tool call carrying `model=dall-e-3` rendered as
+    "dall-e-3, gpt-5.5 (reported by the harness)" — the run did not run on dall-e-3."""
+    stats = fold_run_stats(
+        [
+            _with_model(
+                AgentEventKind.tool_call, "dall-e-3", extra={"tool.name": "generate_image"}
+            ),
+            _metric({"model": "gpt-5.5", "input_tokens": "10"}),
+        ],
+        created_at=_T0,
+        completed_at=None,
+    )
+    assert stats.models == ("gpt-5.5",)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        AgentEventKind.metric,
+        AgentEventKind.status,
+        AgentEventKind.message,
+        AgentEventKind.error,
+    ],
+)
+def test_the_model_is_read_from_every_kind_an_adapter_names_it_on(kind: AgentEventKind) -> None:
+    stats = fold_run_stats([_with_model(kind, "gpt-5.5")], created_at=_T0, completed_at=None)
+    assert stats.models == ("gpt-5.5",), f"{kind.value}: an adapter names the model here"
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        AgentEventKind.tool_call,
+        AgentEventKind.mcp_call,
+        AgentEventKind.unclassified,
+        AgentEventKind.file_read,
+        AgentEventKind.terminal_command,
+    ],
+)
+def test_a_model_attribute_on_any_other_kind_is_ignored(kind: AgentEventKind) -> None:
+    stats = fold_run_stats([_with_model(kind, "dall-e-3")], created_at=_T0, completed_at=None)
+    assert stats.models == (), f"{kind.value}: no adapter names a run's model here"
+
+
+# ── the list is agent-controlled, persisted and served on every /result (#128 review) ────────────
+
+
+def test_the_model_list_is_capped_and_says_how_many_it_dropped() -> None:
+    """500 distinct names would otherwise become a 500-entry tuple in `stats_json`, echoed on
+    every `/result` — which `run list` and `leaderboard` call once per terminal run."""
+    stats = fold_run_stats(
+        [_with_model(AgentEventKind.metric, f"model-{i}") for i in range(500)],
+        created_at=_T0,
+        completed_at=None,
+    )
+    assert len(stats.models) == MODELS_MAX
+    assert stats.models[0] == "model-0", "the cap keeps the FIRST seen, not the last"
+    assert stats.models_truncated == 500 - MODELS_MAX
+
+
+def test_an_absurdly_long_model_name_is_truncated_rather_than_stored_verbatim() -> None:
+    """One 200 000-character name became a 200 KB `stats_json` row, re-served on every request."""
+    stats = fold_run_stats(
+        [_with_model(AgentEventKind.metric, "x" * 200_000)], created_at=_T0, completed_at=None
+    )
+    assert len(stats.models[0]) <= MODEL_NAME_MAX
+    assert stats.models[0].endswith("…"), "a truncated name must not read as the whole name"
+
+
+def test_a_run_within_the_cap_reports_nothing_dropped() -> None:
+    stats = fold_run_stats(
+        [_with_model(AgentEventKind.metric, "gpt-5.5")], created_at=_T0, completed_at=None
+    )
+    assert stats.models_truncated == 0

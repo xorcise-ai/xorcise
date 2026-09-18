@@ -48,6 +48,16 @@ class RunResultView(BaseModel):
     conditions: ResultConditions
     partial: bool = False  # True when graded on incomplete data (timeout trigger)
     partial_trigger: str | None = None  # the terminal trigger when partial
+    # The model(s) the harness reported running, lifted off the run's stats snapshot. Distinct
+    # from conditions.model, which is what the operator DECLARED — that is set only by
+    # `agent register --model` and is null on essentially every run, which is why the result
+    # could not be attributed to a model after the fact. Carried here rather than fetched from
+    # /stats so `run status` stays one request, and empty when the telemetry named none.
+    models_reported: tuple[str, ...] = ()
+    # How many further distinct names the fold saw past its cap. The list above is agent-controlled
+    # and served on every /result, so it is bounded (otel.run_stats.MODELS_MAX) — without this a
+    # truncated list would read as the whole truth.
+    models_reported_truncated: int = 0
 
 
 class RunArtifactView(BaseModel):
@@ -716,8 +726,22 @@ def run_result(run_id: str, background: BackgroundTasks) -> RunResultView | JSON
     base = reporting.result_conditions(run_id) or ResultConditions()
     conditions = base.model_copy(update={"intel_disclosed": disclosed_intel_count(run_id)})
     partial, partial_trigger = reporting.result_partial(run_id)
+    # The freshness-aware read — the same one /stats and the report use. Reading the stored
+    # snapshot directly (as this did) served it whenever its stamp matched, and a snapshot folded
+    # before a field existed still matched; `run status` then disagreed with the report about the
+    # same run. Absent snapshot ⇒ empty tuple, which renders as the same honest "not disclosed"
+    # as having no telemetry at all.
+    from xorcise.core.rest.report_assembly import current_run_stats
+
+    run_entry = runs.get(run_id)
+    stats = current_run_stats(run_entry) if run_entry is not None else None
     return RunResultView(
-        grade=grade, conditions=conditions, partial=partial, partial_trigger=partial_trigger
+        grade=grade,
+        conditions=conditions,
+        partial=partial,
+        partial_trigger=partial_trigger,
+        models_reported=tuple(stats.models) if stats else (),
+        models_reported_truncated=stats.models_truncated if stats else 0,
     )
 
 

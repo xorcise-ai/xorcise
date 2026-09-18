@@ -90,6 +90,16 @@ class RunStats(BaseModel):
     counts: CountStats = CountStats()
     timing: TimingStats = TimingStats()
     cost_estimated_usd: float | None = None  # deferred — no price map today
+    # The model(s) the HARNESS reported running, in first-seen order — distinct from
+    # ResultConditions.model, which is what the operator DECLARED at `agent register --model`.
+    # Almost nobody declares one, so that field is null in practice and a result could not be
+    # attributed to a model afterwards; the telemetry carried it the whole time. Empty when the
+    # run's telemetry never named a model — an honest unknown, never a placeholder name. Still
+    # harness-self-reported, so it stays display/comparison provenance like the rest of RunStats.
+    models: tuple[str, ...] = ()
+    # How many DISTINCT further names the fold saw and dropped, so a capped list reads as capped
+    # rather than as the whole truth. 0 whenever the run stayed inside the cap.
+    models_truncated: int = 0
     # The event projection this snapshot was folded under — "<adapter_name>@<adapter_version>",
     # e.g. "generic@2+normalizer.3" (otel.run_stats.projection_key). The projection is versioned
     # and rebuilt from RAW whenever a classifier changes; a stored snapshot whose key no longer
