@@ -110,17 +110,67 @@ class JudgeOutcome(BaseModel):
     spans_truncated: int = 0
 
 
-# Fence around agent-controlled evidence. The bracket glyphs (⟦⟧) are STRIPPED from all untrusted
-# content (see _neutralize) so agent text can never forge a marker and break out of the block — the
-# structural half of the prompt-injection defence.
+# Fence around agent-controlled evidence. The bracket glyphs (⟦⟧) — and every square-cornered
+# lookalike of them (see _neutralize) — are STRIPPED from all untrusted content, so agent text can
+# never forge a marker and break out of the block: the structural half of the injection defence.
 _FENCE_OPEN = "⟦UNTRUSTED-AGENT-EVIDENCE⟧"
 _FENCE_CLOSE = "⟦/UNTRUSTED-AGENT-EVIDENCE⟧"
 
 
+# Bracket glyphs folded to ASCII by _neutralize. Stripping only the fence's own ⟦⟧ left a
+# CONFUSION vector: a lookalike closes the fence, writes a "CRITERION TO GRADE — …" line and
+# reopens it, and nothing in the rendered prompt distinguishes that from the real thing. NFKC folds
+# none of these into ⟦⟧, so normalisation does not close it — only substitution does. The move of
+# the criterion to a `user` message narrowed the gap the forgery has to cross: it no longer has to
+# fake a system header, only a fence position and a message boundary, and backends that merge
+# consecutive user turns erase the boundary as well.
+#
+# The set is therefore the CLASS, not a handful of examples: every Unicode code point in general
+# category Ps/Pe (paired delimiters) whose name is a square-cornered bracket — "SQUARE BRACKET",
+# "TORTOISE SHELL BRACKET" or "LENTICULAR BRACKET". Rounded, curly and angle brackets stay: a
+# different SHAPE cannot stand in for a square fence, and folding them would mangle ordinary code
+# and maths in the evidence for nothing. ASCII [ ] are the replacement, so they are not listed.
+# test_neutralize_folds_every_square_cornered_bracket_in_unicode re-derives this from the character
+# database, so a future Unicode version that adds a member fails rather than silently reopening it.
+_FENCE_LOOKALIKES: tuple[tuple[str, str], ...] = (
+    ("\u2045", "\u2046"),  # square bracket with quill
+    ("\u2772", "\u2773"),  # light tortoise shell bracket ornament
+    ("\u27e6", "\u27e7"),  # mathematical white square bracket — the fence's OWN glyphs
+    ("\u27ec", "\u27ed"),  # mathematical white tortoise shell bracket
+    ("\u298b", "\u298c"),  # square bracket with underbar
+    ("\u298d", "\u298e"),  # square bracket with tick in top/bottom corner
+    ("\u298f", "\u2990"),  # square bracket with tick in bottom/top corner
+    ("\u2997", "\u2998"),  # black tortoise shell bracket
+    ("\u2e55", "\u2e56"),  # square bracket with stroke
+    ("\u2e57", "\u2e58"),  # square bracket with double stroke
+    ("\u3010", "\u3011"),  # black lenticular bracket
+    ("\u3014", "\u3015"),  # tortoise shell bracket
+    ("\u3016", "\u3017"),  # white lenticular bracket
+    ("\u3018", "\u3019"),  # white tortoise shell bracket
+    ("\u301a", "\u301b"),  # white square bracket — the closest lookalike of all
+    # U+FE18's Unicode NAME misspells "BRACKET" as "BRAKCET" (a real, frozen typo in the character
+    # database), so a purely name-driven derivation drops U+FE17's closing partner and leaves half
+    # a pair unfolded. Listed explicitly for that reason; the test allows for the misspelling too.
+    ("\ufe17", "\ufe18"),  # vertical presentation form, white lenticular
+    ("\ufe39", "\ufe3a"),  # vertical presentation form, tortoise shell
+    ("\ufe3b", "\ufe3c"),  # vertical presentation form, black lenticular
+    ("\ufe47", "\ufe48"),  # vertical presentation form, square bracket
+    ("\ufe5d", "\ufe5e"),  # small tortoise shell bracket
+    ("\uff3b", "\uff3d"),  # fullwidth square bracket
+)
+
+_NEUTRALIZE_TABLE = str.maketrans(
+    "".join(open_ for open_, _ in _FENCE_LOOKALIKES)
+    + "".join(close for _, close in _FENCE_LOOKALIKES),
+    "[" * len(_FENCE_LOOKALIKES) + "]" * len(_FENCE_LOOKALIKES),
+)
+
+
 def _neutralize(text: str) -> str:
-    """Strip the fence bracket glyphs from agent-controlled text so it cannot forge an evidence
-    marker and escape the untrusted block. ⟦⟧ are rare; ASCII fallbacks keep content readable."""
-    return text.replace("⟦", "[").replace("⟧", "]")
+    """Fold the fence bracket glyphs AND their square-cornered lookalikes out of agent-controlled
+    text, so it cannot forge an evidence marker — or something that reads as one — and escape the
+    untrusted block. These glyphs are rare; ASCII fallbacks keep content readable."""
+    return text.translate(_NEUTRALIZE_TABLE)
 
 
 # The STABLE, criterion-independent grading instructions (message 1). Deliberately carries NO
@@ -200,9 +250,29 @@ def build_shared_preamble(ctx: SealedContext) -> tuple[Message, Message]:
 
 
 def build_criterion_message(criterion: RubricCriterion) -> Message:
-    """The small, VARYING trailing message naming the one criterion to grade (trusted → system)."""
+    """The small, VARYING trailing message naming the one criterion to grade.
+
+    Role `user`, not `system`, and the distinction is an endpoint constraint rather than a trust
+    one. A trailing system message made the call [system, user, system]; servers that enforce
+    "system must be the first message" reject that outright with a 400, so every criterion came
+    back `unavailable` and BYOM runs simply had no judge score. OpenAI's own endpoint tolerates it,
+    which is exactly why it survived.
+
+    Nothing is loosened by the move, because the trust boundary was never the role — it is the ⟦⟧
+    fence. `_neutralize` strips those glyphs from all agent-controlled content, so artifact and
+    transcript text cannot forge or close the fence: the BOUNDARY holds. The instructions describe
+    the ORDER the model receives ("(1) … evidence, then (2) the criterion"), never the roles, so
+    the contract the judge is held to is unchanged.
+
+    What that does NOT establish is authorship of everything outside the fence. The pre-fence
+    HARNESS TELEMETRY DISCLOSURE interpolates `ctx.source_agent`, which comes from agent
+    registration — neutralising its glyphs, collapsing its whitespace and truncating it to 64
+    characters keeps it from breaking the structure, but does not make it platform-written. The
+    platform authors the disclosure's CLAIMS (which evidence classes are unavailable); the harness
+    NAME inside it is registrant-supplied and should be read as a label, not as an attestation.
+    """
     return (
-        "system",
+        "user",
         f"CRITERION TO GRADE — {criterion.id}: {criterion.text} "
         f"(weight {criterion.weight}). Grade ONLY this criterion.",
     )
@@ -276,8 +346,15 @@ def _parse_one(
     return result(max(0.0, min(1.0, score)), "ok", str(data.get("reason", "")))
 
 
+# `user` for the same reason as the criterion message: the retry appends this to the existing
+# three, so a system role here put TWO system messages after the evidence and 400'd on a strict
+# endpoint. Easy to miss — this path only runs when a reply fails to parse, so fixing the criterion
+# message alone would have left the malformed-JSON path still broken on exactly those servers.
+#
+# It says "your previous reply", so the call has to CARRY that reply: chat completions are
+# stateless, and the model sees only the message list it is handed.
 _REPAIR_MESSAGE: Message = (
-    "system",
+    "user",
     "Your previous reply did not match the required JSON contract. Reply again with exactly one "
     'JSON object: {"score": <0.0-1.0>, "reason": "<text>"} or '
     '{"verdict": "unknown", "reason": "<platform evidence limitation>"}.',
@@ -359,8 +436,11 @@ def grade_judge(
             allow_unobservable=allow_unobservable,
         )
         if parsed.status == "error":
+            # The unparseable reply goes back as the assistant turn it actually was, so
+            # _REPAIR_MESSAGE's "your previous reply" refers to something the model can see.
+            bad_reply: Message = ("assistant", raw)
             try:
-                raw = model.score([instructions, evidence, crit_msg, _REPAIR_MESSAGE])
+                raw = model.score([instructions, evidence, crit_msg, bad_reply, _REPAIR_MESSAGE])
             except JudgeError as exc:
                 return JudgeOutcome(
                     status="unavailable",
