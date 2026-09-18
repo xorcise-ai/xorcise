@@ -15,13 +15,20 @@ from typing import Any
 import typer
 
 from xorcise.core.cli._shared import app, console, emit_json
-from xorcise.core.cli._ux import DASH, humanize_when, print_table, ux_table
+from xorcise.core.cli._ux import (
+    COMPLETED_TRIGGERS,
+    DASH,
+    humanize_when,
+    print_table,
+    ux_table,
+)
 from xorcise.core.cli.commands.run import judge_degraded
 from xorcise.core.cli.rest_client import RestClient
 
 # How a terminal run ended, per the run-control vocabulary (mirrors the GUI's run-state map).
+# The "finished on the agent's own terms" half is COMPLETED_TRIGGERS, shared from _ux so this
+# view and `run export --genuine-only` cannot drift into two definitions of a genuine run.
 _PARTIAL_TRIGGERS = frozenset({"timeout", "budget"})
-_COMPLETED_TRIGGERS = frozenset({"done", "completed"})
 
 
 def _agent_names(client: RestClient) -> dict[str, str]:
@@ -46,7 +53,7 @@ def _flatten(run: dict[str, Any], result: dict[str, Any] | None) -> dict[str, An
         # in as though it were graded. The roll-up keeps that number — the math is intentional —
         # but carries the condition so the ranking can disclose what it is made of.
         "judge_degraded": judge_degraded(grade),
-        "completed": trigger in _COMPLETED_TRIGGERS,
+        "completed": trigger in COMPLETED_TRIGGERS,
         "when": run.get("completed_at") or run.get("created_at") or "",
     }
 
