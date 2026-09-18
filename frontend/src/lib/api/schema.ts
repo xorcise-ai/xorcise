@@ -2682,6 +2682,10 @@ export interface components {
          */
         RunResultView: {
             conditions: components["schemas"]["ResultConditions"];
+            /** Evidence Digest */
+            evidence_digest?: string | null;
+            /** Evidence Verified */
+            evidence_verified?: boolean | null;
             grade: components["schemas"]["GradeResult"];
             /**
              * Models Reported

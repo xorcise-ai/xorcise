@@ -81,12 +81,15 @@ class RunReportContext:
     # mission declared no terrain or the map could not be resolved; the section is then omitted
     # rather than drawn empty.
     terrain: ResolvedTerrainV2 | None = None
-    # The digest recorded when the run's evidence was sealed, and whether the evidence still
-    # matches it. `verified` is a TRISTATE: True/False/None, where None means no digest was
-    # recorded (unsealed, or sealed before digests existed) — reporting that as "altered" would be
-    # a false accusation, so the report says nothing at all in that case.
+    # The BARE hex digest recorded when the run's evidence was sealed, and whether the evidence
+    # still matches it. `verified` is a TRISTATE: True/False/None, where None is "could not
+    # verify" — reporting that as "altered" would be a false accusation, so the report never does.
     evidence_digest: str | None = None
     evidence_verified: bool | None = None
+    # Sealing recorded that it could NOT hash the evidence. Distinct from having no digest at all:
+    # one is a run that predates the feature and is rightly silent, the other is the feature
+    # failing on a current run, which the reader has to be told about.
+    evidence_digest_unavailable: bool = False
     # The events header (adapter, fallback, content counts, warnings) — what the replay header
     # shows, so the offline report discloses the same honesty signals. None when unavailable.
     telemetry: RunTelemetryView | None = None
@@ -266,25 +269,49 @@ def _condition_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
         ("Judge model", c.judge_model or "not configured"),
         ("Budget", f"{c.budget_seconds}s"),
         ("Sandbox image", c.sandbox_ref or _DASH),
-        # Only when a digest exists. A report that said "Evidence: unknown" on every pre-#116 run
-        # would train readers to ignore the line, which is the opposite of the point.
-        *([("Evidence seal", _evidence_seal_line(ctx))] if ctx.evidence_digest else []),
+        # Only when there is something to say. A report that said "Evidence: unknown" on every
+        # pre-#116 run would train readers to ignore the line, which is the opposite of the point.
+        *(
+            [("Evidence seal", _evidence_seal_line(ctx))]
+            if (ctx.evidence_digest or ctx.evidence_digest_unavailable)
+            else []
+        ),
     ]
 
 
 def _evidence_seal_line(ctx: RunReportContext) -> str:
-    """The seal's digest and whether the evidence still matches it.
+    """The seal's digest and whether the graded evidence still matches it.
+
+    PLAIN TEXT, no markup: this is one cell of a key/value table that both renderers fill, and the
+    Markdown emphasis it used to carry was escaped by the HTML path and shown to the reader
+    literally. Each renderer marks its own copy up.
 
     Short-form digest: enough to compare two reports of the same run by eye, while the full value
-    stays available from the seal store for an actual verification. A mismatch is stated plainly —
-    this is the one line in the report that says the rest of it may not be trustworthy.
+    stays available from the seal store for an actual verification. The wording says the digest is
+    stored BESIDE the evidence because it is not a signature — anyone able to edit a span can
+    recompute it — and a reader who never sees the code should not read "verified" as more than it
+    is. It also says GRADED evidence: server-side receipt metadata is outside the hash on purpose,
+    so a report line derived from stored timestamps can move while this still verifies.
     """
-    digest = (ctx.evidence_digest or "")[:16]
+    if ctx.evidence_digest_unavailable:
+        return (
+            "seal digest unavailable — this run was sealed but its evidence could not be hashed, "
+            "so nothing here can be checked against it"
+        )
+    digest = f"{(ctx.evidence_digest or '')[:16]}…"
     if ctx.evidence_verified is True:
-        return f"`{digest}…` verified — evidence unchanged since sealing"
+        return (
+            f"{digest} verified — the graded evidence is unchanged since sealing "
+            "(digest stored beside the evidence, not independently attested)"
+        )
     if ctx.evidence_verified is False:
-        return f"`{digest}…` **MISMATCH — the evidence has changed since it was sealed**"
-    return f"`{digest}…` (not verified)"
+        return f"{digest} MISMATCH — {_SEAL_MISMATCH}"
+    return f"{digest} recorded, but this build could not verify it — treat as unknown, not altered"
+
+
+# The one sentence in a report that says the rest of it may not be trustworthy. Shared by the
+# Conditions row and the callout above the scores so the two cannot drift apart.
+_SEAL_MISMATCH = "the graded evidence no longer matches the digest taken when the run was sealed"
 
 
 def _telemetry_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
@@ -433,6 +460,11 @@ def render_markdown(ctx: RunReportContext) -> str:
     if ctx.partial:
         # No emoji anywhere in a XORCISE artifact — the wording already carries the warning.
         lines += [f"> **{_partial_note(ctx)}**", ""]
+    if ctx.evidence_verified is False:
+        # Above the scores, not buried as one row of the Conditions table at the very bottom: a
+        # mismatch is the report casting doubt on its own scores, and a reader who stops at the
+        # numbers has to meet it first.
+        lines += [f"> **Evidence seal MISMATCH — {_SEAL_MISMATCH}.**", ""]
     lines += ["## Overview", "", *_md_kv_table(_metadata_rows(ctx)), ""]
 
     lines += [
@@ -595,6 +627,8 @@ font-size:.72rem;color:var(--muted)}
 .banner{border:1px solid var(--border);border-left:3px solid var(--warn);
 background:var(--primary-soft);border-radius:var(--radius);padding:.7rem .95rem;margin:1.1rem 0;
 font-size:.8rem}
+.banner.alarm{border-left-color:var(--err)}
+.banner.alarm strong{color:var(--err)}
 .wrap{overflow-x:auto}
 table{border-collapse:collapse;width:100%;font-size:.78rem;min-width:30rem}
 th,td{text-align:left;padding:.45rem .7rem;border-bottom:1px solid var(--border);
@@ -1022,6 +1056,14 @@ def render_html(ctx: RunReportContext) -> str:
     ]
     if ctx.partial:
         parts.append(f"<div class='banner'>{_e(_partial_note(ctx))}</div>")
+    if ctx.evidence_verified is False:
+        # Above the scores, not buried as one row of the Conditions table at the very bottom — and
+        # on the failure ladder, not the warning one: this is the report casting doubt on its own
+        # numbers, which is the strongest thing it ever says.
+        parts.append(
+            "<div class='banner alarm'><strong>Evidence seal MISMATCH</strong> — "
+            f"{_e(_SEAL_MISMATCH)}.</div>"
+        )
 
     parts += [_kpi_strip(ctx), "<h2>Scorecard</h2>", _scorecard(ctx)]
     if grade.judge_status == "partial":

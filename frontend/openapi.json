@@ -3493,6 +3493,28 @@
           "conditions": {
             "$ref": "#/components/schemas/ResultConditions"
           },
+          "evidence_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Digest"
+          },
+          "evidence_verified": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Verified"
+          },
           "grade": {
             "$ref": "#/components/schemas/GradeResult"
           },
