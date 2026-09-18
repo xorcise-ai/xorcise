@@ -14,12 +14,14 @@ read-only once set (Environment card) so the state is still visible, just not ed
 
 from __future__ import annotations
 
+import sys
+from getpass import getpass
 from typing import Any
 
 import typer
 
 from xorcise.core.cli._shared import app, console, emit_json, err_console
-from xorcise.core.cli._ux import DASH, fail, field
+from xorcise.core.cli._ux import DASH, _stdin_is_interactive, fail, field
 from xorcise.core.cli.rest_client import RestClient
 
 config_app = typer.Typer(
@@ -35,6 +37,77 @@ _LIVE_TEST_TIMEOUT_SECONDS = 180.0
 
 _DEFAULT_BASE_URL = "https://api.openai.com/v1"
 _W = 16  # one value column for every section
+
+# Every command that accepts a model key offers this instead of putting it on argv.
+_KEY_ON_ARGV_CAVEAT = (
+    " Prefer --key-stdin: a value passed here is recorded in shell history and is readable "
+    "from /proc/<pid>/cmdline by any local user while the command runs."
+)
+_KEY_STDIN_HELP = (
+    "Read the API key from stdin instead of argv — prompts without echo on a terminal, "
+    "reads the pipe otherwise. The safe way to set a key."
+)
+
+
+def _key_from_stdin() -> str:
+    """The model key, off stdin, so the credential never appears on the command line.
+
+    One flag covers both uses deliberately. On a terminal this prompts with no echo; on a pipe it
+    reads straight through, so `printf %s "$KEY" | xorcise config set-model --key-stdin` works
+    unchanged in CI and no second flag has to be chosen between.
+
+    Surrounding whitespace is stripped because `echo` supplies a trailing newline that is not part
+    of the credential — the same call `docker login --password-stdin` makes.
+    """
+    if _stdin_is_interactive():
+        return getpass("Model API key (input hidden): ").strip()
+    if sys.stdin is None:
+        # fd 0 was closed (`xorcise config set-model --key-stdin <&-`): there is no stream, so
+        # there is no key. "" routes it into the same empty-read refusal below — the honest
+        # answer, where reading a None crashed with "unexpected error" and exit 1.
+        return ""
+    return sys.stdin.read().strip()
+
+
+def _resolve_key(key: str | None, key_stdin: object, *, command: str) -> str | None:
+    """Fold the two key sources into one value, or fail if both were given.
+
+    `key_stdin` is typed `object` because these commands are also called directly (the CLI tests
+    do), where an unpassed typer.Option default arrives as a truthy OptionInfo rather than False —
+    hence the `is True`, the same guard `show` uses for `--json`.
+    """
+    if key_stdin is not True:
+        return key
+    if key is not None:
+        fail(
+            "pass the key EITHER on --key or on stdin, not both",
+            example=f'printf %s "$KEY" | xorcise config {command} --key-stdin',
+            code=2,
+        )
+    from_stdin = _key_from_stdin()
+    if not from_stdin:
+        # An empty read is almost always an unset variable — `printf %s "$KEY"` with no $KEY, or a
+        # prompt answered with Enter. The server reads an empty key as an explicit CLEAR, so
+        # forwarding it would DELETE a working key while reporting success, which is the opposite
+        # of what the command was asked to do. Clearing stays available, but only by saying so.
+        fail(
+            "no key on stdin — nothing was read, so the key was left unchanged",
+            example=f"xorcise config {command} --key ''   # to clear it deliberately",
+            code=2,
+        )
+    if "\n" in from_stdin or "\r" in from_stdin:
+        # An API key is one line, and only the ENDS are stripped — so `cat keyfile | …` on a file
+        # with a second line sends the newline through. The server writes the value into
+        # ~/.xorcise/.env unquoted: the newline splits the XORCISE_MODEL_KEY= line, dotenv reads
+        # back only the first fragment as the key, and the remainder persists as a junk line the
+        # .env writer preserves for ever. Refuse it here rather than write a file that then has
+        # to be repaired by hand.
+        fail(
+            "the key on stdin spans more than one line — an API key is a single line",
+            example=f'printf %s "$KEY" | xorcise config {command} --key-stdin',
+            code=2,
+        )
+    return from_stdin
 
 
 def _section(title: str, state: str = "") -> None:
@@ -90,7 +163,7 @@ def _render_config(view: dict[str, Any]) -> None:
     field("Per-span cap", "Disabled" if span_cap == 0 else f"{span_cap} tokens", width=_W)
     field("Tokenizer", j.get("tokenizer") or "o200k_base", width=_W)
     if not j["configured"]:
-        console.print("  [dim]set it: xorcise config set-model --name <model> --key <key>[/dim]")
+        console.print("  [dim]set it: xorcise config set-model --name <model> --key-stdin[/dim]")
 
     t = view.get("terrain") or {}
     inherits = t.get("uses_judge_default", True)
@@ -146,7 +219,7 @@ def _report_test(result: dict[str, Any], label: str, *, as_json: bool) -> None:
         # Step 3 of the golden path — the answer is the command that fixes it.
         err_console.print(f"[err]error[/err]: {label} is not configured")
         err_console.print(
-            "set it: [value]xorcise config set-model --name <model> --key <key>[/value]"
+            "set it: [value]xorcise config set-model --name <model> --key-stdin[/value]"
         )
     else:
         # A configured model that did not answer: name it, keep the server's reason.
@@ -178,11 +251,13 @@ def show(
 
 @config_app.command("set-model")
 def set_model(
-    key: str = typer.Option(
+    key: str | None = typer.Option(
         None,
         "--key",
-        help="Judge API key — bring your own model (stored locally in ~/.xorcise/.env).",
+        help="Judge API key — bring your own model (stored locally in ~/.xorcise/.env)."
+        + _KEY_ON_ARGV_CAVEAT,
     ),
+    key_stdin: bool = typer.Option(False, "--key-stdin", help=_KEY_STDIN_HELP),
     base_url: str = typer.Option(None, "--base-url", help="OpenAI-compatible base URL."),
     name: str = typer.Option(None, "--name", help="Model name, e.g. gpt-4o-mini."),
     timeout: float | None = typer.Option(
@@ -215,11 +290,14 @@ Only the fields you pass change; --key '' clears it.
 
     Applies immediately on the running instance (no restart); \
 verify it answers with: xorcise config test."""
+    # Resolve the key BEFORE the "nothing to set" guard: `--key-stdin` alone is a complete
+    # instruction, and the guard only sees it once the value has been read.
+    key = _resolve_key(key, key_stdin, command="set-model")
     if all(v is None for v in (key, base_url, name, timeout, transcript_max_tokens, tokenizer)):
         fail(
-            "nothing to set — pass at least one of --name / --base-url / --key / "
+            "nothing to set — pass at least one of --name / --base-url / --key-stdin / "
             "--timeout / --transcript-max-tokens / --tokenizer",
-            example="xorcise config set-model --name gpt-4o-mini --key sk-…",
+            example="xorcise config set-model --name gpt-4o-mini --key-stdin",
             code=2,
         )
     view = RestClient().put(
@@ -260,7 +338,12 @@ Exits non-zero when the model is unreachable or unconfigured, so it can gate a s
 
 @config_app.command("set-terrain-model")
 def set_terrain_model(
-    key: str = typer.Option(None, "--key", help="Terrain-model API key ('' clears the override)."),
+    key: str | None = typer.Option(
+        None,
+        "--key",
+        help="Terrain-model API key ('' clears the override)." + _KEY_ON_ARGV_CAVEAT,
+    ),
+    key_stdin: bool = typer.Option(False, "--key-stdin", help=_KEY_STDIN_HELP),
     base_url: str = typer.Option(None, "--base-url", help="OpenAI-compatible base URL."),
     name: str = typer.Option(None, "--name", help="Model name, e.g. gpt-4o-mini."),
     transcript_max_tokens: int | None = typer.Option(
@@ -274,9 +357,12 @@ def set_terrain_model(
     Only the fields you pass change; passing an empty string ('') clears that field \
 so it falls back to the judge model. Applies immediately (no restart), like `set-model`.
     """
+    # Same credential, same leak, same fix — #115 names only `set-model`, but this setter sits
+    # beside it and took the key on argv identically.
+    key = _resolve_key(key, key_stdin, command="set-terrain-model")
     if all(v is None for v in (key, base_url, name, transcript_max_tokens)):
         fail(
-            "nothing to set — pass at least one of --name / --base-url / --key / "
+            "nothing to set — pass at least one of --name / --base-url / --key-stdin / "
             "--transcript-max-tokens",
             example="xorcise config set-terrain-model --name gpt-4o-mini",
             code=2,
