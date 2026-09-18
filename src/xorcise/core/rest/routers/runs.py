@@ -58,6 +58,14 @@ class RunResultView(BaseModel):
     # and served on every /result, so it is bounded (otel.run_stats.MODELS_MAX) — without this a
     # truncated list would read as the whole truth.
     models_reported_truncated: int = 0
+    # The run's evidence seal, machine-readable — the point of #116 is that a consumer can tie a
+    # grade to evidence that has not changed, and until this the digest existed only as 16
+    # characters of prose inside a rendered report. `evidence_digest` is the bare hex recorded at
+    # seal time; `evidence_verified` is a TRISTATE re-checked on this read: true, false, or null
+    # for "could not verify" (no digest, a scheme this build cannot re-derive, or the re-hash
+    # failed). Null is never an accusation — a run that predates the feature is not a tampered one.
+    evidence_digest: str | None = None
+    evidence_verified: bool | None = None
 
 
 class RunArtifactView(BaseModel):
@@ -735,6 +743,11 @@ def run_result(run_id: str, background: BackgroundTasks) -> RunResultView | JSON
 
     run_entry = runs.get(run_id)
     stats = current_run_stats(run_entry) if run_entry is not None else None
+    # Guarded + re-verified on this read (never a verdict stored at seal time, which could only
+    # ever say "matched when we wrote it"). Lazy import matches the other joins here.
+    from xorcise.core.rest.evidence_seal import evidence_seal_view
+
+    seal = evidence_seal_view(run_id)
     return RunResultView(
         grade=grade,
         conditions=conditions,
@@ -742,6 +755,8 @@ def run_result(run_id: str, background: BackgroundTasks) -> RunResultView | JSON
         partial_trigger=partial_trigger,
         models_reported=tuple(stats.models) if stats else (),
         models_reported_truncated=stats.models_truncated if stats else 0,
+        evidence_digest=seal.digest,
+        evidence_verified=seal.verified,
     )
 
 

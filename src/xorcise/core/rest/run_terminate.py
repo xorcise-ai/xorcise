@@ -63,24 +63,36 @@ def seal_terminal(run_id: str, trigger: str, now: datetime, detail: str | None =
 
 
 def _seal_telemetry(run_id: str) -> None:
-    """Idempotently freeze the RAW OTLP record, keeping the OTel import lazy."""
-    from xorcise.core.otel.store import SqliteSealStore
+    """Idempotently freeze the RAW OTLP record, keeping the OTel import lazy.
 
-    SqliteSealStore().seal(run_id)
+    Both seal paths (zero-drain and post-drain) funnel through here, so recording the evidence
+    digest in one place covers them together. Sealing must happen even if hashing does not — see
+    evidence_seal.seal_with_digest.
+    """
+    from xorcise.core.rest.evidence_seal import seal_with_digest
+
+    seal_with_digest(run_id)
 
 
-def _drain_and_seal_telemetry(run_id: str) -> None:
-    """Wait one configurable grace period, unless another finalizer already sealed the run."""
+def _drain_and_seal_telemetry(run_id: str) -> bool:
+    """Wait one configurable grace period, unless another finalizer already sealed the run.
+
+    Returns True when the run was ALREADY sealed on arrival — this grade is scoring evidence a
+    previous pass sealed (a regrade, or a grade re-driven after a restart), which is the one case
+    where re-verifying the seal can tell us anything. A run we seal ourselves a moment earlier
+    cannot have moved since.
+    """
     from xorcise.core.config import get_settings
     from xorcise.core.otel.store import SqliteSealStore
 
     seals = SqliteSealStore()
     if seals.is_sealed(run_id):
-        return
+        return True
     delay = get_settings().telemetry_drain_seconds
     if delay > 0:
         time.sleep(delay)
     _seal_telemetry(run_id)
+    return False
 
 
 def grade_and_record(run_id: str) -> None:
@@ -147,6 +159,30 @@ def regrade_orphaned_terminal_runs() -> int:
     return healed
 
 
+def _warn_if_evidence_moved(run_id: str) -> None:
+    """Say so, loudly, before deriving a grade from evidence that no longer matches its seal.
+
+    Reached only for a grade over PREVIOUSLY-sealed evidence (`POST /runs/{id}/regrade` drops the
+    result and comes back through here; so does the boot sweep for a grade lost to a restart) —
+    which is the moment the seal exists for. If the bytes moved between the seal and this pass, the
+    new score is derived from something other than what was sealed. The report discloses that, but
+    only to whoever opens it: an operator re-grading from the CLI would otherwise see a fresh,
+    clean-looking score and nothing else.
+
+    Read-only and best-effort: verification is a disclosure, never a gate. Refusing to grade edited
+    evidence would leave the run wedged at "grading" forever with nothing to re-drive it, which is
+    strictly worse than grading it and saying so. `verify_evidence` is itself guarded, so a lock
+    here costs a warning we cannot make, not a grade. The lazy import keeps the otel plane off this
+    module's import path."""
+    from xorcise.core.rest.evidence_seal import verify_evidence
+
+    if verify_evidence(run_id) is False:
+        log.warning(
+            "grading %s from evidence that no longer matches the digest taken when it was sealed",
+            run_id,
+        )
+
+
 def _grade_run(run_id: str) -> None:
     run = runs.get(run_id)
     if run is None:
@@ -167,7 +203,8 @@ def _grade_run(run_id: str) -> None:
     try:
         # The agent's /complete call can emit its tool result only after the HTTP response returns.
         # Keep OTLP open for a bounded grace period, then freeze the exact input the grader sees.
-        _drain_and_seal_telemetry(run_id)
+        if _drain_and_seal_telemetry(run_id):
+            _warn_if_evidence_moved(run_id)
         # Lazy: grade_assembly keeps otel off the import path (plane-isolation invariant).
         # model=None → build_eval_judge reads the BYOM key from settings; returns None when
         # unconfigured so the judge half degrades cleanly.

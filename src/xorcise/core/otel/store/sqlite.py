@@ -58,6 +58,27 @@ class SqliteTraceStore(TraceStore):
                 for r in rows
             ]
 
+    def ordered_payloads(self, run_id: str) -> Iterator[tuple[int, str]]:
+        """Stream `(seq, payload)` for the run in a CANONICAL order — the evidence-digest read.
+
+        Two columns, not `TraceRecord`s: the digest covers `seq` and `payload` only, and building
+        pydantic models for a 20k-batch run cost ~95% of the hash and threw `received_at` away
+        again. Streamed rather than listed so a 66 MB run is hashed incrementally instead of held
+        in memory twice (here and in the caller).
+
+        Ordered by `(seq, payload)`, NOT by `seq` alone. Ingest assigns `seq = len(read(run_id))`
+        non-atomically and nothing makes `(run_id, seq)` unique, so concurrent exports can collide;
+        `ORDER BY seq` then leaves colliding rows in whatever order they physically sit in — stable
+        via rowid today, but a dump/restore that reassigns ids flips it and an untouched run reads
+        as tampered. The payload tiebreak makes the order a property of the evidence itself.
+        """
+        with session_scope() as s:
+            yield from s.execute(
+                select(TraceRow.seq, TraceRow.payload)
+                .where(TraceRow.run_id == run_id)
+                .order_by(TraceRow.seq, TraceRow.payload)
+            ).tuples()
+
     def receipt_times(self, run_id: str) -> dict[int, datetime]:
         """Map each trace record's `seq` -> its server-side ingest time (`TraceRow.created_at`, the
         OTLP-receipt clock). The anchor for mission-plane spans on the unified terrain timeline;
@@ -125,6 +146,16 @@ class SqliteLogStore(TraceStore):
                 )
                 for r in rows
             ]
+
+    def ordered_payloads(self, run_id: str) -> Iterator[tuple[int, str]]:
+        """Stream `(seq, payload)` in canonical `(seq, payload)` order — the evidence-digest read,
+        matching SqliteTraceStore (see there for why the payload tiebreak is load-bearing)."""
+        with session_scope() as s:
+            yield from s.execute(
+                select(LogRow.seq, LogRow.payload)
+                .where(LogRow.run_id == run_id)
+                .order_by(LogRow.seq, LogRow.payload)
+            ).tuples()
 
     def receipt_times(self, run_id: str) -> dict[int, datetime]:
         """Map each log export seq to its server-side ingest time, matching SqliteTraceStore."""
