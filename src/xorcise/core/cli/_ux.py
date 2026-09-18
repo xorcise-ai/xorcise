@@ -332,8 +332,14 @@ def fail(
 
 
 def _stdin_is_interactive() -> bool:
-    """Seam for tests — CliRunner swaps sys.stdin, so isatty can't be patched directly."""
-    return sys.stdin.isatty()
+    """Seam for tests — CliRunner swaps sys.stdin, so isatty can't be patched directly.
+
+    CPython leaves ``sys.stdin`` as None when the process is started with fd 0 CLOSED
+    (`xorcise … <&-`, or a launcher that hands over no stdin at all), so the bare ``.isatty()``
+    raised an AttributeError that surfaced as "unexpected error: 'NoneType' object has no
+    attribute 'isatty'". No stream is not a terminal — every caller here (the confirmation
+    gates, the `--key-stdin` read) wants exactly that reading."""
+    return sys.stdin is not None and sys.stdin.isatty()
 
 
 def confirm_or_abort(question: str, *, assume_yes: bool) -> None:

@@ -34,6 +34,7 @@ from xorcise.core.cli._ux import (
     ux_table,
 )
 from xorcise.core.cli.rest_client import RestClient
+from xorcise.core.reporting.render import agent_model_line
 
 run_app = typer.Typer(
     help="Create and manage evaluation runs.",
@@ -76,27 +77,13 @@ def _resolve_id(client: RestClient, given: str) -> str:
     return resolve_run_id(client, given)
 
 
-def _agent_model_line(cond: dict[str, Any], observed: Sequence[str]) -> str:
-    """Which model produced this result — declared, observed, or honestly unknown.
+def _agent_model_line(cond: dict[str, Any], observed: Sequence[str], dropped: int = 0) -> str:
+    """The CLI's view of `reporting.render.agent_model_line` — see there for the rule.
 
-    `conditions.model` is what an operator typed at `agent register --model`; `models_reported` is
-    what the harness reported actually running. This line read "model not disclosed" on
-    essentially every run because almost nobody passes the flag, while the telemetry had named the
-    model all along.
-
-    A declared model that DISAGREES with the observed one shows both: preferring either silently
-    would misattribute the result, and the disagreement is the fact worth seeing. Mirrors
-    reporting.render._agent_model so the CLI and report.md never tell different stories.
+    Shared rather than mirrored: this used to be a second copy and the two drifted, so `run status`
+    printed a bare declared name where report.md printed "… (disclosed)" (#128 review).
     """
-    declared = str(cond.get("model") or "").strip()
-    seen = [str(m) for m in observed if str(m).strip()]
-    if declared and seen and declared not in seen:
-        return f"{declared} (disclosed); telemetry reported {', '.join(seen)}"
-    if declared:
-        return declared
-    if seen:
-        return f"{', '.join(seen)} (reported by the harness)"
-    return "model not disclosed"
+    return agent_model_line(str(cond.get("model") or ""), observed, dropped)
 
 
 def _render_telemetry(telemetry: dict[str, Any] | None) -> None:
@@ -168,7 +155,16 @@ def _render_result(
     if grade.get("trace_ref"):
         console.print(f"trace: {escape(str(grade['trace_ref']))}")
     # Disclosed conditions travel with the result.
-    console.print(f"model: {escape(_agent_model_line(cond, r.get('models_reported') or []))}")
+    console.print(
+        "model: "
+        + escape(
+            _agent_model_line(
+                cond,
+                r.get("models_reported") or [],
+                int(r.get("models_reported_truncated") or 0),
+            )
+        )
+    )
     console.print(
         f"judge model: {escape(str(cond.get('judge_model') or 'judge model not configured'))}"
     )

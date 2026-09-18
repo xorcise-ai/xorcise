@@ -61,6 +61,11 @@ def _key_from_stdin() -> str:
     """
     if _stdin_is_interactive():
         return getpass("Model API key (input hidden): ").strip()
+    if sys.stdin is None:
+        # fd 0 was closed (`xorcise config set-model --key-stdin <&-`): there is no stream, so
+        # there is no key. "" routes it into the same empty-read refusal below — the honest
+        # answer, where reading a None crashed with "unexpected error" and exit 1.
+        return ""
     return sys.stdin.read().strip()
 
 
@@ -88,6 +93,18 @@ def _resolve_key(key: str | None, key_stdin: object, *, command: str) -> str | N
         fail(
             "no key on stdin — nothing was read, so the key was left unchanged",
             example=f"xorcise config {command} --key ''   # to clear it deliberately",
+            code=2,
+        )
+    if "\n" in from_stdin or "\r" in from_stdin:
+        # An API key is one line, and only the ENDS are stripped — so `cat keyfile | …` on a file
+        # with a second line sends the newline through. The server writes the value into
+        # ~/.xorcise/.env unquoted: the newline splits the XORCISE_MODEL_KEY= line, dotenv reads
+        # back only the first fragment as the key, and the remainder persists as a junk line the
+        # .env writer preserves for ever. Refuse it here rather than write a file that then has
+        # to be repaired by hand.
+        fail(
+            "the key on stdin spans more than one line — an API key is a single line",
+            example=f'printf %s "$KEY" | xorcise config {command} --key-stdin',
             code=2,
         )
     return from_stdin
@@ -146,7 +163,7 @@ def _render_config(view: dict[str, Any]) -> None:
     field("Per-span cap", "Disabled" if span_cap == 0 else f"{span_cap} tokens", width=_W)
     field("Tokenizer", j.get("tokenizer") or "o200k_base", width=_W)
     if not j["configured"]:
-        console.print("  [dim]set it: xorcise config set-model --name <model> --key <key>[/dim]")
+        console.print("  [dim]set it: xorcise config set-model --name <model> --key-stdin[/dim]")
 
     t = view.get("terrain") or {}
     inherits = t.get("uses_judge_default", True)
@@ -202,7 +219,7 @@ def _report_test(result: dict[str, Any], label: str, *, as_json: bool) -> None:
         # Step 3 of the golden path — the answer is the command that fixes it.
         err_console.print(f"[err]error[/err]: {label} is not configured")
         err_console.print(
-            "set it: [value]xorcise config set-model --name <model> --key <key>[/value]"
+            "set it: [value]xorcise config set-model --name <model> --key-stdin[/value]"
         )
     else:
         # A configured model that did not answer: name it, keep the server's reason.
@@ -278,9 +295,9 @@ verify it answers with: xorcise config test."""
     key = _resolve_key(key, key_stdin, command="set-model")
     if all(v is None for v in (key, base_url, name, timeout, transcript_max_tokens, tokenizer)):
         fail(
-            "nothing to set — pass at least one of --name / --base-url / --key / "
+            "nothing to set — pass at least one of --name / --base-url / --key-stdin / "
             "--timeout / --transcript-max-tokens / --tokenizer",
-            example="xorcise config set-model --name gpt-4o-mini --key sk-…",
+            example="xorcise config set-model --name gpt-4o-mini --key-stdin",
             code=2,
         )
     view = RestClient().put(
@@ -345,7 +362,7 @@ so it falls back to the judge model. Applies immediately (no restart), like `set
     key = _resolve_key(key, key_stdin, command="set-terrain-model")
     if all(v is None for v in (key, base_url, name, transcript_max_tokens)):
         fail(
-            "nothing to set — pass at least one of --name / --base-url / --key / "
+            "nothing to set — pass at least one of --name / --base-url / --key-stdin / "
             "--transcript-max-tokens",
             example="xorcise config set-terrain-model --name gpt-4o-mini",
             code=2,
