@@ -11,6 +11,7 @@ import pytest
 from typer.testing import CliRunner
 
 import xorcise.core.cli.app  # noqa: F401  -- registers the command groups
+from tests._helpers import invoke_cli_with_stdin
 from xorcise.core.cli._shared import app
 
 pytestmark = pytest.mark.unit
@@ -444,3 +445,76 @@ def test_setting_only_the_name_never_touches_the_key(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert sent["key"] is None
+
+
+# ── a multi-line --key-stdin must not corrupt .env (#125 review) ──────────────────────────────
+#
+# `_key_from_stdin()` strips only the ENDS, so `cat keyfile | … --key-stdin` on a file that
+# carries a second line sends key="line1\nline2". `set_env_vars` writes the value unquoted, the
+# newline splits the XORCISE_MODEL_KEY= line in ~/.xorcise/.env, dotenv reads back only "line1"
+# — and the remainder stays for ever, because the .env writer preserves every line it does not
+# recognise. An API key is one line; anything else is refused at the door rather than written
+# into a file that then has to be repaired by hand.
+
+
+@pytest.mark.parametrize(
+    "piped",
+    [
+        "line1\nline2\n",  # a key file with a trailing comment or a second secret
+        "sk-abc\n\nsk-def\n",  # a blank line in the middle survives the end-strip
+    ],
+)
+def test_a_multi_line_key_stdin_is_refused_before_any_request(monkeypatch, piped):
+    from xorcise.core.cli.commands import config as cfg_cmd
+
+    monkeypatch.setattr(cfg_cmd, "RestClient", lambda: _NoServer())
+    monkeypatch.setattr(cfg_cmd, "_stdin_is_interactive", lambda: False)
+
+    result = _RUNNER.invoke(app, ["config", "set-model", "--key-stdin", "--name", "m"], input=piped)
+
+    assert result.exit_code == 2, result.output
+    assert "line" in result.output.lower()
+
+
+def test_a_multi_line_key_stdin_is_refused_for_the_terrain_setter_too(monkeypatch):
+    from xorcise.core.cli.commands import config as cfg_cmd
+
+    monkeypatch.setattr(cfg_cmd, "RestClient", lambda: _NoServer())
+    monkeypatch.setattr(cfg_cmd, "_stdin_is_interactive", lambda: False)
+
+    result = _RUNNER.invoke(app, ["config", "set-terrain-model", "--key-stdin"], input="a\nb\n")
+
+    assert result.exit_code == 2, result.output
+
+
+# ── stdin that is None or carries a bare CR (#125 review) ─────────────────────────────────────
+#
+# Two inputs CliRunner cannot express, because it always builds its own text stream from
+# `input=` and that stream translates universal newlines: a CLOSED fd 0 (`… --key-stdin <&-`),
+# where CPython leaves sys.stdin as None, and a bare CR. Driven through the real click command
+# instead, so the parser still supplies the true `None`/`False` option defaults — calling the
+# command function directly would hand it typer's OptionInfo objects and prove nothing.
+
+
+def test_a_closed_stdin_is_no_key_rather_than_a_crash(monkeypatch, capsys):
+    """`xorcise config set-model --key-stdin --name m <&-` used to exit 1 with 'unexpected
+    error: NoneType object has no attribute isatty'. There is no stream, so there is no key:
+    that is the same 'nothing was read' usage error an empty pipe gets."""
+    from xorcise.core.cli.commands import config as cfg_cmd
+
+    monkeypatch.setattr(cfg_cmd, "RestClient", lambda: _NoServer())
+
+    assert invoke_cli_with_stdin(["config", "set-model", "--key-stdin", "--name", "m"], None) == 2
+    assert "stdin" in capsys.readouterr().err.lower()
+
+
+def test_a_bare_cr_in_the_piped_key_is_refused(monkeypatch):
+    """The same one-line rule, for the carriage return a CRLF key file can carry."""
+    import io
+
+    from xorcise.core.cli.commands import config as cfg_cmd
+
+    monkeypatch.setattr(cfg_cmd, "RestClient", lambda: _NoServer())
+
+    stdin = io.StringIO("sk-abc\rsk-def")
+    assert invoke_cli_with_stdin(["config", "set-model", "--key-stdin", "--name", "m"], stdin) == 2

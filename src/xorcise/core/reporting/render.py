@@ -35,7 +35,7 @@ from __future__ import annotations
 import html
 import math
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -196,26 +196,46 @@ def _metadata_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
     ]
 
 
-def _agent_model(ctx: RunReportContext) -> str:
+def agent_model_line(declared: str, observed: Sequence[str], dropped: int = 0) -> str:
     """Which model produced this result — declared, observed, or honestly unknown.
 
-    Two independent sources, kept distinguishable rather than collapsed. `conditions.model` is what
-    an operator typed at `agent register --model`; `stats.models` is what the harness reported
-    actually running. Almost nobody declares one, which is why this row read "not disclosed" on
-    essentially every report while the telemetry had the answer all along.
+    Two independent sources, kept distinguishable rather than collapsed. The DECLARED name is what
+    an operator typed at `agent register --model`; the OBSERVED names are what the harness reported
+    actually running. Almost nobody declares one, which is why this read "not disclosed" on
+    essentially every run while the telemetry had the answer all along.
 
     When both exist and DISAGREE, both are shown. Silently preferring either would misattribute the
-    result, and the disagreement is itself the interesting fact.
+    result, and the disagreement is itself the interesting fact. "named" rather than "reported",
+    because the common disagreement is a family name against an exact one (`claude-fable-5` vs
+    `claude-fable-5-1`, or a Bedrock ARN) — a difference in precision, not a contradiction.
+
+    `dropped` is how many further distinct names the fold saw past its cap (RunStats.models is
+    bounded — see otel.run_stats.MODELS_MAX); a capped list has to read as capped.
+
+    SHARED, not mirrored: the CLI and report.md rendered this separately and drifted — the report
+    said "gpt-5.5 (disclosed)" where `run status` said bare "gpt-5.5" (#128 review). One function
+    is the only way they cannot say different things about the same run.
     """
-    declared = (ctx.conditions.model or "").strip()
-    observed = [m for m in (ctx.stats.models if ctx.stats else ()) if m]
-    if declared and observed and declared not in observed:
-        return f"{declared} (disclosed); telemetry reported {', '.join(observed)}"
+    declared = declared.strip()
+    seen = [str(m).strip() for m in observed if str(m).strip()]
+    named = ", ".join(seen) + (f" (+{dropped} more)" if dropped > 0 else "")
+    if declared and seen and declared not in seen:
+        return f"{declared} (disclosed); telemetry named {named}"
     if declared:
         return f"{declared} (disclosed)"
-    if observed:
-        return f"{', '.join(observed)} (reported by the harness)"
+    if seen:
+        return f"{named} (reported by the harness)"
     return "not disclosed"
+
+
+def _agent_model(ctx: RunReportContext) -> str:
+    """The report's view of `agent_model_line` — see there for the rule."""
+    stats = ctx.stats
+    return agent_model_line(
+        ctx.conditions.model or "",
+        stats.models if stats else (),
+        stats.models_truncated if stats else 0,
+    )
 
 
 def _condition_rows(ctx: RunReportContext) -> list[tuple[str, str]]:

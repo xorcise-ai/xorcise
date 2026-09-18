@@ -33,7 +33,7 @@ XORCISE_THEME = Theme(
 GOLDEN_PATH: tuple[tuple[str, str], ...] = (
     ("Start XORCISE", "xorcise up"),
     ("Register an agent", "xorcise agent register --name my-agent"),
-    ("Add a judge model", "xorcise config set-model --name <model> --key <key>"),
+    ("Add a judge model", "xorcise config set-model --name <model> --key-stdin"),
     ("Pick a mission", "xorcise mission list"),
     ("Install it", "xorcise mission pull <id>"),
     ("Create a run", "xorcise run create --agent my-agent --mission <id>"),

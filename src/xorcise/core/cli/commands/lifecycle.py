@@ -54,7 +54,7 @@ from xorcise.core.cli._shared import (
     golden_path_steps,
 )
 from xorcise.core.cli._update import begin_update_check
-from xorcise.core.cli._ux import print_table, step_progress, ux_table
+from xorcise.core.cli._ux import _stdin_is_interactive, print_table, step_progress, ux_table
 from xorcise.core.cli._ux import service_label as _service_label
 from xorcise.core.config import get_settings, ui_url
 from xorcise.core.headscale import provision
@@ -1119,11 +1119,6 @@ def _await_exit(pid: int, timeout: float = 8.0, poll: float = 0.1) -> bool:
     except (ProcessLookupError, PermissionError):
         return True
     return False
-
-
-def _stdin_is_interactive() -> bool:
-    """Seam for tests: CliRunner swaps sys.stdin, so the guard resolves it at call time."""
-    return sys.stdin.isatty()
 
 
 @app.command(rich_help_panel="Getting started")
