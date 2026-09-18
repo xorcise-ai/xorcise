@@ -812,6 +812,325 @@ def test_run_report_reports_a_still_grading_run_instead_of_writing_json(monkeypa
     assert list(tmp_path.iterdir()) == []
 
 
+# ── bulk export across a set of runs (#114) ──────────────────────────────────────────────────
+#
+# `run report`, `run traces --export` and `run events export` are per-run, so exporting a mission's
+# worth of runs meant scripting a loop over run ids — manual glue every user had to write. Analysis
+# and hand-off almost always operate on a GROUP: a mission, an agent, a date range.
+#
+# The selection is a pure function so the filtering rules can be tested without touching a disk or
+# a server; the command is then just I/O around it.
+
+
+def _run_row(
+    rid: str,
+    *,
+    state: str = "terminal",
+    trigger: str | None = "done",
+    mission: str = "m1",
+    agent: str = "a1",
+    created: str = "2026-07-01T10:00:00+00:00",
+) -> dict[str, Any]:
+    return {
+        "run_id": rid,
+        "state": state,
+        "terminal_trigger": trigger,
+        "mission": mission,
+        "agent_id": agent,
+        "created_at": created,
+    }
+
+
+def _rid(seed: str) -> str:
+    """A run id of the shape the server mints: `uuid4().hex`, 32 lowercase hex chars.
+
+    Tests that drive the command need real ids — the export builds a directory path out of one,
+    and a readable placeholder like "good" * 8 is exactly what the path guard refuses.
+    """
+    return (seed * 32)[:32]
+
+
+def _export_server(
+    monkeypatch,
+    rows: list[dict[str, Any]],
+    *,
+    agents: list[dict[str, Any]] | None = None,
+    missions: list[dict[str, Any]] | None = None,
+    text: Any = None,
+) -> dict[str, list[Any]]:
+    """Stub the REST surface `run export` uses, patching the CLASS rather than a module name.
+
+    The name resolvers construct their own RestClient, so swapping the symbol in the command
+    module would leave `--agent` / `--mission` resolution talking to a real socket. Returns the
+    document paths fetched and the per-call timeouts, for the tests that assert on them.
+    """
+    seen: dict[str, list[Any]] = {"paths": [], "timeouts": []}
+
+    def fake_get(self, path: str, timeout: float | None = None) -> Any:  # noqa: ANN001 — stub
+        if path == "/runs":
+            return rows
+        if path == "/agents":
+            return agents or []
+        if path == "/missions":
+            return missions or []
+        raise AssertionError(f"unexpected GET {path}")
+
+    def fake_get_text(self, path: str, timeout: float | None = None) -> str:  # noqa: ANN001
+        seen["paths"].append(path)
+        seen["timeouts"].append(timeout)
+        return text(path) if text is not None else f"body-of:{path}"
+
+    monkeypatch.setattr("xorcise.core.cli.rest_client.RestClient.get", fake_get)
+    monkeypatch.setattr("xorcise.core.cli.rest_client.RestClient.get_text", fake_get_text)
+    return seen
+
+
+def test_export_selects_only_finished_runs():
+    """An active run has no report, no sealed trace and no final event stream — including it would
+    write three misleading files rather than fail honestly."""
+    from xorcise.core.cli.commands.run import select_runs_for_export
+
+    rows = [_run_row("r1"), _run_row("r2", state="active", trigger=None)]
+
+    assert [r["run_id"] for r in select_runs_for_export(rows)] == ["r1"]
+
+
+def test_export_filters_by_mission_and_agent():
+    from xorcise.core.cli.commands.run import select_runs_for_export
+
+    rows = [
+        _run_row("r1", mission="sqli", agent="a1"),
+        _run_row("r2", mission="sqli", agent="a2"),
+        _run_row("r3", mission="xss", agent="a1"),
+    ]
+
+    assert [r["run_id"] for r in select_runs_for_export(rows, mission="sqli")] == ["r1", "r2"]
+    picked = select_runs_for_export(rows, mission="sqli", agent_id="a1")
+    assert [r["run_id"] for r in picked] == ["r1"]
+
+
+def test_export_since_is_inclusive_of_its_boundary():
+    """A half-open boundary silently drops the run created exactly at the timestamp someone pasted
+    from a previous export — the one case they are most likely to be re-running."""
+    from xorcise.core.cli.commands.run import select_runs_for_export
+
+    rows = [
+        _run_row("old", created="2026-07-01T09:59:59+00:00"),
+        _run_row("edge", created="2026-07-01T10:00:00+00:00"),
+        _run_row("new", created="2026-07-01T10:00:01+00:00"),
+    ]
+
+    picked = [r["run_id"] for r in select_runs_for_export(rows, since="2026-07-01T10:00:00+00:00")]
+
+    assert picked == ["edge", "new"]
+
+
+def test_genuine_only_drops_every_way_the_platform_ends_a_run():
+    """`done` is the only trigger the server records for a run the AGENT finished itself; the
+    other four it writes — an operator kill, a budget timeout, a deploy failure and a crash — are
+    the platform stopping the run, and none of them is agent performance."""
+    from xorcise.core.cli.commands.run import select_runs_for_export
+
+    rows = [
+        _run_row("done", trigger="done"),
+        _run_row("deploy", trigger="deploy_failed"),
+        _run_row("timeout", trigger="timeout"),
+        _run_row("killed", trigger="operator"),
+        _run_row("crashed", trigger="crashed"),
+    ]
+
+    assert [r["run_id"] for r in select_runs_for_export(rows, genuine_only=True)] == ["done"]
+    # Without the flag nothing is hidden: the default export is everything that finished.
+    assert len(select_runs_for_export(rows)) == 5
+
+
+def test_genuine_only_agrees_with_the_leaderboard_on_every_trigger():
+    """Two definitions of "a run the agent finished" is how two surfaces start disagreeing about
+    the same run — `run export` shipped a copy of the leaderboard's set under a "Mirrors" comment
+    where an import belonged. Compared through behaviour, trigger by trigger, so the test holds
+    however the shared set is spelled."""
+    from xorcise.core.cli.commands.results import _flatten
+    from xorcise.core.cli.commands.run import select_runs_for_export
+
+    # Every trigger the server writes, plus the legacy synonym and an absent one.
+    for trigger in ("done", "completed", "operator", "timeout", "deploy_failed", "crashed", ""):
+        row = _run_row("r", trigger=trigger)
+
+        exported = bool(select_runs_for_export([row], genuine_only=True))
+
+        assert exported == _flatten(row, None)["completed"], trigger
+
+
+def test_genuine_only_help_names_what_it_actually_drops():
+    """The help promised "deploy failures, budget kills": the server records a budget kill as
+    `timeout`, never writes `budget`, and the flag also drops operator kills and crashes."""
+    text = _plain(runner.invoke(app, ["run", "export", "--help"]).output)
+
+    assert "operator" in text
+    assert "crash" in text
+    assert "budget kills" not in text
+
+
+def test_export_writes_all_three_artefacts_per_run(tmp_path, monkeypatch):
+    """The command's contract: one directory per run holding the same bytes the three single-run
+    commands produce, so there is no second export format to keep in sync."""
+    first, second = _rid("ab"), _rid("cd")
+    _export_server(monkeypatch, [_run_row(first), _run_row(second)])
+
+    result = runner.invoke(app, ["run", "export", "--out", str(tmp_path)])
+
+    assert result.exit_code == 0
+    for rid in (first, second):
+        assert (tmp_path / rid[:8] / "report.md").read_text().startswith("body-of:")
+        assert (tmp_path / rid[:8] / "traces.otlp.jsonl").exists()
+        assert (tmp_path / rid[:8] / "events.jsonl").exists()
+    assert "exported 2 run(s)" in result.stdout
+
+
+def test_export_skips_a_failing_run_instead_of_abandoning_the_batch(tmp_path, monkeypatch):
+    """One unreadable run must not cost the other ninety-nine — the whole reason to batch."""
+    good, bad = _rid("ab"), _rid("cd")
+
+    def text(path: str) -> str:
+        if bad in path:
+            raise RuntimeError("500 from server")
+        return "ok"
+
+    _export_server(monkeypatch, [_run_row(good), _run_row(bad)], text=text)
+
+    result = runner.invoke(app, ["run", "export", "--out", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert (tmp_path / good[:8] / "report.md").exists()
+    assert "exported 1 run(s)" in result.stdout
+
+
+def test_export_matching_nothing_is_not_the_try_again_later_exit_code(tmp_path, monkeypatch):
+    """Exit 3 is "still in progress": a script that retries on 3 loops forever against a filter
+    that can never match. Only "everything is still grading" earns that code."""
+    _export_server(monkeypatch, [_run_row(_rid("ab"))])
+
+    result = runner.invoke(app, ["run", "export", "--out", str(tmp_path), "--since", "2030-01-01"])
+
+    assert result.exit_code == 2
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_export_resolves_an_agent_name_the_way_run_create_does(tmp_path, monkeypatch):
+    """`--agent alpha` against a registered `Alpha` was an exact, case-sensitive match that fell
+    through to "treat it as an id" and then quietly selected nothing."""
+    rid = _rid("ab")
+    _export_server(
+        monkeypatch,
+        [_run_row(rid, agent="agent-1")],
+        agents=[{"id": "agent-1", "name": "Alpha"}],
+    )
+
+    result = runner.invoke(app, ["run", "export", "--out", str(tmp_path), "--agent", "alpha"])
+
+    assert result.exit_code == 0
+    assert (tmp_path / rid[:8] / "report.md").exists()
+
+
+def test_export_names_an_unknown_agent_instead_of_exporting_nothing(tmp_path, monkeypatch):
+    """A typo must fail loud with the candidate, not look like "this agent has no finished runs"."""
+    _export_server(monkeypatch, [_run_row(_rid("ab"))], agents=[{"id": "agent-1", "name": "Alpha"}])
+
+    result = runner.invoke(app, ["run", "export", "--out", str(tmp_path), "--agent", "alpga"])
+
+    assert result.exit_code != 0
+    assert "Alpha" in _plain(result.stderr)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_export_resolves_a_mission_display_name_to_its_slug(tmp_path, monkeypatch):
+    """`run list` shows the display name and `run create --mission` accepts it; the export
+    compared it against the slug the run rows carry, so the name matched nothing."""
+    rid = _rid("cd")
+    _export_server(
+        monkeypatch,
+        [_run_row(rid, mission="sqli-login")],
+        missions=[{"mission_id": "sqli-login", "name": "SQLi Login"}],
+    )
+
+    result = runner.invoke(
+        app, ["run", "export", "--out", str(tmp_path), "--mission", "SQLi Login"]
+    )
+
+    assert result.exit_code == 0
+    assert (tmp_path / rid[:8] / "report.md").exists()
+
+
+def test_export_leaves_no_directory_behind_when_a_later_fetch_fails(tmp_path, monkeypatch):
+    """A directory holding report.md alone reads as a complete run to anything globbing
+    <out>/*/ — nothing may land until all three documents are in hand."""
+    rid = _rid("ab")
+
+    def text(path: str) -> str:
+        if path.endswith("otlp.jsonl"):
+            raise RuntimeError("500 from server")
+        return "ok"
+
+    _export_server(monkeypatch, [_run_row(rid)], text=text)
+
+    result = runner.invoke(app, ["run", "export", "--out", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_export_gives_run_ids_sharing_a_prefix_their_full_ids(tmp_path, monkeypatch):
+    """Two runs under one <id8> directory: the second silently overwrote the first while the
+    command still reported "exported 2 run(s)"."""
+    first, second = "aaaaaaaa" + "b" * 24, "aaaaaaaa" + "c" * 24
+    _export_server(monkeypatch, [_run_row(first), _run_row(second)])
+
+    result = runner.invoke(app, ["run", "export", "--out", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert (tmp_path / first / "report.md").exists()
+    assert (tmp_path / second / "report.md").exists()
+
+
+def test_export_refuses_a_run_id_that_is_not_a_run_id(tmp_path, monkeypatch):
+    """The row is server-supplied data joined onto --out: a `run_id` of '../…' from a foreign or
+    hostile service would write outside the directory the operator named."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root = tmp_path / "export"
+    _export_server(monkeypatch, [_run_row("../outside/evil")])
+
+    result = runner.invoke(app, ["run", "export", "--out", str(root)])
+
+    assert result.exit_code == 1
+    assert list(outside.iterdir()) == []
+
+
+def test_export_rejects_an_out_path_that_is_not_a_directory(tmp_path, monkeypatch):
+    """One upfront usage error beats one "[Errno 20] Not a directory" skip line per run."""
+    target = tmp_path / "not-a-dir"
+    target.write_text("", encoding="utf-8")
+    seen = _export_server(monkeypatch, [_run_row(_rid("ab")), _run_row(_rid("cd"))])
+
+    result = runner.invoke(app, ["run", "export", "--out", str(target)])
+
+    assert result.exit_code == 2
+    assert seen["paths"] == []  # refused before a single document was fetched
+
+
+def test_export_waits_longer_than_the_control_default_for_each_document(tmp_path, monkeypatch):
+    """GET /report re-hashes the run's evidence server-side and an otlp.jsonl can be multi-
+    megabyte; on the 5 s control default one slow-but-healthy run aborted the whole batch,
+    because a service-wide failure is re-raised rather than skipped."""
+    seen = _export_server(monkeypatch, [_run_row(_rid("ab"))])
+
+    result = runner.invoke(app, ["run", "export", "--out", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert seen["timeouts"]
+    assert all(t is not None and t > 5.0 for t in seen["timeouts"])
+
+
 # ── run status names the model that ran (#113) ───────────────────────────────────────────────
 
 
@@ -1031,3 +1350,71 @@ def test_run_list_shows_the_harness_column(monkeypatch):
     assert "Harness" in res.stdout
     assert "OpenHands" in res.stdout
     assert "Custom" in res.stdout
+
+
+# ── review findings on bulk export (#140) ────────────────────────────────────────────────────
+
+
+def test_a_date_only_since_is_accepted_and_treated_as_utc():
+    """`--since 2026-07-01` is the obvious thing to type and it crashed: fromisoformat returns a
+    NAIVE datetime, and comparing it with an offset-aware created_at raises TypeError. A date is a
+    legitimate input, so it is assumed UTC rather than rejected."""
+    from xorcise.core.cli.commands.run import select_runs_for_export
+
+    rows = [
+        _run_row("old", created="2026-06-30T23:59:59+00:00"),
+        _run_row("new", created="2026-07-01T00:00:01+00:00"),
+    ]
+
+    picked = select_runs_for_export(rows, since="2026-07-01")
+
+    assert [r["run_id"] for r in picked] == ["new"]
+
+
+def test_a_naive_timestamp_is_also_treated_as_utc():
+    from xorcise.core.cli.commands.run import select_runs_for_export
+
+    rows = [_run_row("r", created="2026-07-01T10:00:00+00:00")]
+
+    assert len(select_runs_for_export(rows, since="2026-07-01T09:00:00")) == 1
+
+
+def test_a_still_grading_report_is_not_written_as_if_it_were_one(tmp_path, monkeypatch):
+    """Terminal does not mean graded. /report answers 202 with a JSON envelope while grading is
+    still running; `get_text` returns that body happily, so it landed in report.md as though it
+    were a report — a file that looks like an export but contains `{"status":"grading"}`.
+
+    Exit 3 (in progress) belongs to exactly this case — the same code `run report` and `run
+    status` return — and to no other: it is what tells a scripted caller to come back shortly.
+    """
+    _export_server(
+        monkeypatch,
+        [_run_row(_rid("ab"))],
+        text=lambda path: '{"run_id": "x", "status": "grading"}' if "report" in path else "payload",
+    )
+
+    result = runner.invoke(app, ["run", "export", "--out", str(tmp_path)])
+
+    assert result.exit_code == 3
+    written = list(tmp_path.rglob("report.md"))
+    assert written == [], f"a grading envelope was written as a report: {written}"
+    # The notice goes to stderr, beside the other per-run progress lines.
+    assert "graded" in (result.stdout + result.stderr).lower()
+
+
+def test_a_service_wide_failure_stops_the_export_instead_of_becoming_a_skip(tmp_path, monkeypatch):
+    """If the service goes down mid-export, RestClient raises typer.Exit(1). The broad catch
+    swallowed it, retried every remaining run and reported `skipped <id>: 1` — turning an exit
+    code into a per-run skip reason and hiding that nothing was reachable."""
+    import typer
+
+    def text(path: str) -> str:
+        raise typer.Exit(1)
+
+    seen = _export_server(monkeypatch, [_run_row("a" * 32), _run_row("b" * 32)], text=text)
+
+    result = runner.invoke(app, ["run", "export", "--out", str(tmp_path)])
+
+    assert result.exit_code == 1
+    # Stopped at the first run rather than retrying the outage for every selected run.
+    assert len(seen["paths"]) == 1, f"retried a service-wide failure per run: {seen['paths']}"

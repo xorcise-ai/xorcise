@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
 import time
+from collections import Counter
 from collections.abc import Sequence
 from enum import StrEnum
 from typing import Any
@@ -21,6 +23,7 @@ from xorcise.core.cli._resolve import (
 )
 from xorcise.core.cli._shared import EXIT_CODES_EPILOG, app, console, emit_json, err_console
 from xorcise.core.cli._ux import (
+    COMPLETED_TRIGGERS,
     DASH,
     confirm_or_abort,
     fail,
@@ -511,6 +514,257 @@ deleted — stop it first with `xorcise run terminate`.
     console.print(f"deleted run '{run_id}'")
 
 
+#: Run ids are `uuid4().hex`. The bulk export joins one onto `--out` to build a directory, so a
+#: row whose id is not that shape is refused rather than turned into a path: /runs is
+#: server-supplied data, and a `run_id` of '../…' from a foreign or hostile service would write
+#: outside the directory the operator named.
+_RUN_ID_SHAPE = re.compile(r"[0-9a-f]{32}")
+
+#: Per-call timeout for the export's document fetches. Each GET /report re-hashes the run's
+#: evidence server-side (seconds on a large run) and an otlp.jsonl can be multi-megabyte, so the
+#: 5 s control default turned a slow-but-healthy run into a client timeout — and because a
+#: service-wide failure is re-raised rather than skipped, that ONE run aborted the whole batch.
+#: `run create` widens its timeout for the same reason.
+_EXPORT_FETCH_TIMEOUT_SECONDS = 300.0
+
+
+def _is_grading_envelope(body: str) -> bool:
+    """Is this the 202 "still grading" JSON envelope rather than a rendered report?
+
+    Checked by shape, not by status code, because `get_text` does not surface one. Shared by
+    `run report` (which must not write a one-line JSON "report" to disk) and the bulk export
+    (which must not count one as an exported run) — one test, written once.
+    """
+    head = body.lstrip()[:200]
+    return head.startswith("{") and '"grading"' in head
+
+
+def select_runs_for_export(
+    runs: Sequence[dict[str, Any]],
+    *,
+    mission: str | None = None,
+    agent_id: str | None = None,
+    since: str | None = None,
+    genuine_only: bool = False,
+) -> list[dict[str, Any]]:
+    """Which runs a bulk export should write, in the order the server returned them.
+
+    Pure, so the filtering rules are testable without a disk or a server.
+
+    Only terminal runs qualify, always: an active run has no report, no sealed trace and no final
+    event stream, so including it would write three misleading files instead of failing honestly.
+
+    `mission` and `agent_id` are the CANONICAL values the run rows carry — the mission slug and the
+    agent id. The caller resolves what the operator typed (a display name, a prefix) before getting
+    here, so a typo fails with the candidates rather than as a silently empty selection.
+
+    `genuine_only` keeps only the runs the agent finished itself (COMPLETED_TRIGGERS); every other
+    trigger the server writes — an operator kill, a budget timeout, a deploy failure, a crash — is
+    the platform ending the run, which is not agent performance.
+
+    `since` compares ISO timestamps and is INCLUSIVE of its boundary — a half-open one silently
+    drops the run created exactly at a timestamp pasted from a previous export, which is the run
+    someone re-running a range is most likely to want. Unparseable timestamps on either side sort
+    the run out rather than crashing the export.
+    """
+    from datetime import UTC, datetime
+
+    def created(row: dict[str, Any]) -> datetime | None:
+        try:
+            at = datetime.fromisoformat(str(row.get("created_at") or ""))
+        except ValueError:
+            return None
+        # A stored timestamp without an offset gets the same treatment, so the comparison is
+        # always aware-vs-aware whichever side is missing its zone.
+        return at.replace(tzinfo=UTC) if at.tzinfo is None else at
+
+    floor = None
+    if since:
+        try:
+            floor = datetime.fromisoformat(since)
+        except ValueError as exc:
+            raise typer.BadParameter(
+                f"--since must be an ISO timestamp (e.g. 2026-07-01T10:00:00+00:00), got {since!r}"
+            ) from exc
+        # `--since 2026-07-01` is the obvious thing to type, and fromisoformat returns it NAIVE —
+        # comparing that with an offset-aware created_at raises TypeError. A bare date is a
+        # legitimate input, so it is read as UTC (run timestamps are UTC) rather than rejected.
+        if floor.tzinfo is None:
+            floor = floor.replace(tzinfo=UTC)
+
+    picked = []
+    for row in runs:
+        if row.get("state") != "terminal":
+            continue
+        if mission and str(row.get("mission") or row.get("mission_id") or "") != mission:
+            continue
+        if agent_id and str(row.get("agent_id") or "") != agent_id:
+            continue
+        if genuine_only and str(row.get("terminal_trigger") or "") not in COMPLETED_TRIGGERS:
+            continue
+        if floor is not None:
+            at = created(row)
+            if at is None or at < floor:
+                continue
+        picked.append(row)
+    return picked
+
+
+def export_directory_names(run_ids: Sequence[str]) -> dict[str, str]:
+    """run id → the directory name its export is written under; short where that is unambiguous.
+
+    `<id8>` is what every other view shows and what an operator recognises, but two ids sharing a
+    prefix would share a directory: the second run's files silently overwrote the first's while
+    the command still reported both as exported. Colliding ids fall back to the full 32 chars —
+    ugly, never wrong. uuid4 makes this rare, and rare-and-silent is exactly the bad combination.
+    """
+    counts = Counter(rid[:8] for rid in run_ids)
+    return {rid: (rid[:8] if counts[rid[:8]] == 1 else rid) for rid in run_ids}
+
+
+@run_app.command("export")
+def run_export(
+    out: str = typer.Option(
+        ...,
+        "--out",
+        help="Directory to write the export tree into (created if missing).",
+    ),
+    mission: str | None = typer.Option(
+        None,
+        "--mission",
+        help="Only runs of this mission — id or name (see: xorcise mission list).",
+    ),
+    agent: str | None = typer.Option(
+        None, "--agent", help="Only runs by this registered agent name (see: xorcise agent list)."
+    ),
+    since: str | None = typer.Option(
+        None, "--since", help="Only runs created at or after this ISO timestamp (inclusive)."
+    ),
+    format: ReportFormat = _FORMAT_OPTION,
+    genuine_only: bool = typer.Option(
+        False,
+        "--genuine-only",
+        help=(
+            "Skip runs the agent did not finish itself — operator kills, budget timeouts, "
+            "deploy failures and crashes."
+        ),
+    ),
+) -> None:
+    """Export a SET of runs — report, raw OTLP and normalized events — into one directory tree.
+
+    Analysis and hand-off operate on a group of runs, not one: a mission, an agent, a date range. \
+Each selected run becomes `<out>/<run-id8>/` holding `report.md` (or .html), \
+`traces.otlp.jsonl` and `events.jsonl` — the same bytes the three single-run commands \
+produce, so nothing here is a second format to keep in sync.
+
+    Only finished runs are exported; an active one has no sealed record yet. \
+A run whose files cannot be fetched is reported and skipped rather than \
+aborting the batch, so one bad run never costs you the other ninety-nine.
+
+    Re-exporting is safe but not a clean slate: a run's three files are overwritten in place \
+and anything else already in its directory is left alone. Export into a fresh directory \
+when you need the tree to contain only this export.
+    """
+    from pathlib import Path
+
+    client = RestClient()
+    agent_id = None
+    if agent:
+        # Resolve exactly as `run create` does — exact, case-insensitive, unique prefix, then a
+        # did-you-mean, failing loud. The old exact case-sensitive match fell through to "treat it
+        # as an id", so `--agent alpha` against a registered `Alpha` selected nothing and reported
+        # it as "no runs matched" — a typo dressed up as an empty result.
+        canonical = resolve_agent_name(client, agent)
+        agent_id = next(
+            (aid for aid, known in agent_names_by_id(client).items() if known == canonical),
+            canonical,
+        )
+    if mission:
+        # Run rows carry the slug, but `run list` shows the display name and `run create --mission`
+        # accepts it — so the name is what people have. resolve_mission takes either.
+        mission = str(resolve_mission(client, mission)["mission_id"])
+
+    root = Path(out)
+    if root.exists() and not root.is_dir():
+        # Every write below joins onto this path, so a file here fails identically for every
+        # selected run: one upfront usage error beats N copies of "[Errno 20] Not a directory".
+        fail(f"--out must be a directory, but {root} is a file", code=2)
+
+    runs: list[dict[str, Any]] = client.get("/runs")
+    selected = select_runs_for_export(
+        runs, mission=mission, agent_id=agent_id, since=since, genuine_only=genuine_only
+    )
+    if not selected:
+        # NOT exit 3: that code means "still in progress", so a script that retries on 3 would
+        # loop forever against a filter combination that can never match. Nothing matched is
+        # something the operator must change, which is what exit 2 says.
+        fail(
+            "no finished runs matched the filters — nothing to export",
+            see=("xorcise run list",),
+            code=2,
+        )
+
+    fmt = format.value if isinstance(format, ReportFormat) else str(format)
+    dir_names = export_directory_names([str(row["run_id"]) for row in selected])
+    written = 0
+    skipped: list[tuple[str, str]] = []
+    pending: list[str] = []  # terminal but not yet graded — a retry, not a failure
+    for row in selected:
+        rid = str(row["run_id"])
+        if _RUN_ID_SHAPE.fullmatch(rid) is None:
+            skipped.append((short_id(rid), "not a run id — refusing to build a path from it"))
+            continue
+        target = root / dir_names[rid]
+        try:
+            report = client.get_text(
+                f"/runs/{rid}/report?format={fmt}", timeout=_EXPORT_FETCH_TIMEOUT_SECONDS
+            )
+            # Terminal does not mean graded. /report answers 202 with a JSON envelope while
+            # grading is still running, and get_text hands that body back like any other — so it
+            # used to land in report.md as a file that looks like an export and contains
+            # {"status":"grading"}. Skip the run instead; it exports cleanly once graded.
+            if _is_grading_envelope(report):
+                pending.append(short_id(rid))
+                continue
+            # Fetch all three BEFORE creating the directory. Writing the report first left a
+            # directory holding report.md alone whenever traces or events failed — and anything
+            # globbing <out>/*/ reads that as an exported run. Dict values evaluate in order, so
+            # every fetch is done before the first mkdir.
+            bodies = {
+                f"report.{fmt}": report,
+                "traces.otlp.jsonl": client.get_text(
+                    f"/runs/{rid}/otlp.jsonl", timeout=_EXPORT_FETCH_TIMEOUT_SECONDS
+                ),
+                "events.jsonl": client.get_text(
+                    f"/runs/{rid}/events.jsonl", timeout=_EXPORT_FETCH_TIMEOUT_SECONDS
+                ),
+            }
+            target.mkdir(parents=True, exist_ok=True)
+            for name, body in bodies.items():
+                (target / name).write_text(body, encoding="utf-8")
+        except typer.Exit:
+            # RestClient exits on a service-wide failure (unreachable, auth). That is not a
+            # per-run problem: retrying it for every remaining run turns one outage into N
+            # identical "skipped: 1" lines and loses the diagnostic it already printed.
+            raise
+        except Exception as exc:  # noqa: BLE001 — one bad run must not end the batch
+            skipped.append((short_id(rid), str(exc)))
+            continue
+        written += 1
+        err_console.print(f"  {short_id(rid)} → {target}", markup=False)
+
+    console.print(f"exported {written} run(s) to {root}")
+    for rid in pending:
+        err_console.print(f"[warn]not yet graded[/] {rid}: re-run the export once grading finishes")
+    for rid, why in skipped:
+        err_console.print(f"[warn]skipped[/] {rid}: {escape(why)}")
+    if not written:
+        # Nothing landed. Distinguish the two reasons, because they want different next actions:
+        # everything still grading is "come back shortly" (exit 3, the in-progress code `run
+        # status` and `run report` already use), while genuine failures are a failed export.
+        raise typer.Exit(3 if pending and not skipped else 1)
+
+
 @run_app.command("report")
 def run_report(
     run_id: str = typer.Argument(..., help=_RUN_ID_HELP),
@@ -544,7 +798,7 @@ this reports.
     body = client.get_text(f"/runs/{run_id}/report?format={fmt}")
     # Parity with `run status`: a terminal-but-ungraded run 202s with a JSON envelope
     # rather than a document — say so plainly instead of writing a one-line JSON "report".
-    if body.lstrip().startswith("{") and '"grading"' in body:
+    if _is_grading_envelope(body):
         console.print(
             f"[warn]grading in progress[/] — the report for run {short_id(run_id)} is not "
             f"ready yet; re-run [value]xorcise run report {short_id(run_id)}[/value] shortly"
