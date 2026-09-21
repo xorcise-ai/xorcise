@@ -34,7 +34,7 @@
     "@types/react-dom": "^19",
     "tailwindcss": "^4",
     "@tailwindcss/postcss": "^4",
-    "vitest": "^4",
+    "vitest": "^5",
     "@vitejs/plugin-react": "^6",
     "@testing-library/react": "^16",
     "@testing-library/jest-dom": "^7",
