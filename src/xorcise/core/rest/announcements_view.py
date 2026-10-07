@@ -35,10 +35,15 @@ _NONE = AnnouncementsResponse()
 # banners. The TTL is deliberately short: an incident banner is the case that matters most, and a
 # reader who refreshes should not wait minutes to see one.
 #
-# Failures are cached too, at the same TTL, and that is the trade-off worth naming: a remote that
-# is down already degrades to an empty response, and retrying it on every page load is exactly the
-# hammering this exists to stop — but it does mean a banner published during an outage can take up
-# to one window to appear after the remote recovers.
+# Failures the SOURCE absorbs are cached too, at the same TTL, and that is the trade-off worth
+# naming: a remote that is down already degrades to an empty response, and retrying it on every
+# page load is exactly the hammering this exists to stop — but it does mean a banner published
+# during an outage can take up to one window to appear after the remote recovers.
+#
+# A failure caught at the BOUNDARY below is not cached, because the memo is written on the way out
+# of the fetch and an exception never reaches it. httpx.InvalidURL from a malformed catalog_url is
+# the realistic one, and it retries on every page load — harmless, because it never opens a
+# socket, but it is not what the paragraph above describes.
 #
 # No lock around the fetch. Two tabs racing a cold cache make two requests and the second write
 # wins, which costs one extra round trip and never serves a wrong answer; holding a lock across a

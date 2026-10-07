@@ -60,11 +60,14 @@ _MAX_ANNOUNCEMENT_ROWS = 8
 # beside an ignored 50 MB field was read in full and served. A maximal legitimate response is two
 # rows of a 600-character body, comfortably under 2 KiB, so this is ~30x any real one.
 #
-# WIRE bytes, via `iter_raw`, is the whole point: `iter_bytes` runs the content decoder first, so
-# a counter behind it is counting what the REMOTE chose to expand to, not what it sent. Measured
-# against a gzipped body, 407,698 bytes on the wire produced a 33,578,960-byte first chunk — a
-# 512x overshoot already allocated before any limit could look at it. We ask for `identity` and
-# refuse a body that arrives encoded anyway, so the two counts cannot diverge.
+# WIRE bytes is the whole point, and the identity refusal is what makes the count one: reading
+# with `iter_bytes` runs the content decoder first, so a counter behind it measures what the
+# REMOTE chose to expand to, not what it sent. Measured against a gzipped body, 407,698 bytes on
+# the wire produced a 33,578,960-byte first chunk — a 512x overshoot already allocated before any
+# limit could look at it. The request asks for `identity` and `_read_bounded` refuses a body that
+# arrives encoded anyway, which leaves the decoder an identity decoder and the two counts equal.
+# (`iter_raw` would make that structural rather than conditional; see `_read_bounded` for why it
+# cannot be used here.)
 _MAX_ANNOUNCEMENT_BYTES = 64 * 1024
 # An OVERALL wall-clock budget for the whole call. `timeout=` is not one: HTTPX's timeout is
 # PER-OPERATION (per connect, per read), so a remote that sends a byte just inside it holds
