@@ -85,8 +85,11 @@ class OpenAiCompatibleJudgeModel:
         # Message ORDER is chosen for prompt caching (rec 4): the stable [instructions, evidence]
         # prefix is byte-identical across a run's per-criterion calls, so an OpenAI-compatible
         # provider reuses the cached prefix and only the tiny trailing criterion message varies.
-        # Roles preserve the injection hierarchy: trusted instructions/criterion ride the system
-        # role, untrusted agent evidence rides the user role.
+        # Roles are an ENDPOINT constraint, not the trust boundary: only the instructions ride
+        # `system`, and they come first, because servers that enforce "system must be the first
+        # message" 400 the whole call otherwise. Evidence and criterion both ride `user`; what
+        # separates trusted from untrusted is the ⟦⟧ fence around the evidence, which
+        # `_neutralize` keeps agent content from forging.
         try:
             resp = self._http.post(
                 f"{self._base_url}/chat/completions",
@@ -101,9 +104,16 @@ class OpenAiCompatibleJudgeModel:
             raise JudgeError(f"{resp.status_code} from model {self._model!r}: {self._reason(resp)}")
         try:
             data = resp.json()
-            return str(data["choices"][0]["message"]["content"])
+            content = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, ValueError) as exc:
             raise JudgeError(f"model {self._model!r} returned an unusable response: {exc}") from exc
+        # `str()` here FABRICATED text: a null content came back as the literal word "None", and
+        # the judge then carried that word to the model as the reply it was asked to repair. A
+        # thinking model on vLLM returns content null or "" with the answer stranded in
+        # `reasoning_content` once its budget is spent, so this is the normal shape of a spent
+        # reply, not a malformed body. Anything that is not a string is no text — the judge's
+        # repair path reads the empty string as "no previous reply" and says so.
+        return content if isinstance(content, str) else ""
 
 
 def build_judge_model(settings: Settings) -> JudgeModel | None:
