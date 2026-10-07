@@ -107,9 +107,10 @@ def test_criterion_message_names_the_single_criterion_last_in_the_user_role():
     # cheaper option but a DEAD one: its template raises on any system message after index 0, so a
     # second leading system message 400s exactly like the trailing one did. (3) is also the one
     # that costs least to give up: the trust boundary here is the ⟦⟧ fence, not the role.
-    # `_neutralize` folds those glyphs — and their lookalikes — out of agent content, so agent text
-    # cannot forge or close the fence, and the instructions describe the ORDER the model sees
-    # rather than the roles. What the judge is told is unchanged.
+    # `_neutralize` folds those glyphs out of agent content, so agent text cannot reproduce the
+    # markers — the STRUCTURAL boundary holds, with the caveat `_neutralize` records about glyphs
+    # that merely look like them — and the instructions describe the ORDER the model sees rather
+    # than the roles. What the judge is told is unchanged.
     #
     # `user` is what THIS class of endpoint needs, not a role every endpoint accepts: Mistral-family
     # templates on vLLM require strictly alternating user/assistant turns and reject
