@@ -54,6 +54,31 @@ def test_http_error_becomes_judge_error():
 
 
 @pytest.mark.adapters
+def test_a_non_string_content_is_no_text_rather_than_its_repr():
+    """`str(content)` FABRICATED text. A thinking model on vLLM (Qwen3-thinking, DeepSeek-R1)
+    whose budget runs out returns `content: null` with the answer stranded in `reasoning_content`;
+    `str(None)` turned that into the literal word "None", and the judge then shipped that word back
+    to the model as the reply it was asked to repair. Anything that is not a string carries no
+    text, and the empty string is what the judge's repair path reads as "no previous reply"
+    (_EMPTY_REPLY_REPAIR_MESSAGE). This client is shared by grade_judge, terrain attribution and
+    the two `config` live tests, so the line is bound here rather than through one caller."""
+
+    def reply_with(content: object) -> str:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": content, "reasoning_content": "…"}}]},
+            )
+
+        return _client(httpx.MockTransport(handler)).score([("user", "grade this")])
+
+    assert reply_with(None) == ""  # the spent-budget shape — the literal "None" before the fix
+    assert reply_with([{"type": "text", "text": "hi"}]) == ""  # blocks — a repr() before the fix
+    assert reply_with("") == ""
+    assert reply_with('{"score": 1.0}') == '{"score": 1.0}'  # a real string is still passed through
+
+
+@pytest.mark.adapters
 def test_build_judge_model_none_when_not_configured():
     assert build_judge_model(Settings(model_key=None)) is None
 

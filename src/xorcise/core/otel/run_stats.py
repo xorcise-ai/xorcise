@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
+from hashlib import blake2b
 from itertools import islice
 
 from xorcise.core.contracts.agent_event import AgentEvent, AgentEventKind
@@ -42,12 +43,20 @@ _TOOL_KINDS = frozenset(
 
 # Event kinds an adapter deliberately names a model on. The fold used to read `data["model"]` off
 # ANY event, which the generic adapter turns into a leak: it copies the whole span attribute bag
-# onto the event (`data=dict(span.attrs)`), so an image-generation tool call carrying
+# onto the event (`data=dict(span.attrs)`), so an image-generation span carrying
 # `model=dall-e-3` was folded in as a model the run ran on. Each kind here has a writer:
 #   metric  — otel/adapters/genai.py, the gen_ai usage metric (claude-code, openhands)
 #   status  — harness_adapters/codex/otel.py, "codex.conversation_starts"
 #   message — harness_adapters/claude_code/otel.py, "claude_code.assistant_response"
 #   error   — harness_adapters/claude_code/otel.py, "claude_code.api_refusal"
+# The generic adapter still copies the whole bag, so a GENERIC span classified `message` or
+# `error` that happens to carry `model` folds in too — and its classifier reads the span NAME,
+# where `model` is itself one of the `message` keywords, so `generate_image_with_model` lands on
+# `message` and the image model it carries is folded. Accepted, not contained: telling that span
+# from a real assistant message needs the name-sniffing this fold deliberately leaves to the
+# adapters, and the residue is a bounded, self-reported display field that is never a grading
+# input. What the kind filter does buy is the reviewer's own case — a `tool_call` never folds
+# whatever its attributes say, and `generate_image` classifies `unclassified` (#128 review).
 # Add a kind here only alongside the adapter line that puts a model on it.
 _MODEL_KINDS = frozenset(
     {
@@ -67,12 +76,38 @@ MODEL_NAME_MAX = 120
 # How many DISTINCT names the fold will hold while counting the overflow. Counting "how many did
 # we drop" exactly needs to remember what was already dropped, which is the unbounded set again —
 # so the tracking itself is bounded and `models_truncated` saturates past this many distinct names.
+# A count bound alone would not be a bound: what the fold holds PER name is bounded too, by
+# `_dedupe_key` for the key and `_clip_model` for the value.
 _MODELS_TRACK_MAX = 512
 
 
 def _clip_model(name: str) -> str:
-    """Bound one name's length, marking the cut so a prefix never reads as the whole name."""
+    """Bound one name's length for DISPLAY, marking the cut so a prefix never reads as the whole
+    name. Deduping on this instead of on `_dedupe_key` merged two names agreeing on their first
+    MODEL_NAME_MAX-1 characters into one, under-reporting `models_truncated` (#128 review). The
+    price of separating them is that two such names render alike in `models` while still being
+    counted as two."""
     return name if len(name) <= MODEL_NAME_MAX else name[: MODEL_NAME_MAX - 1] + "\u2026"
+
+
+def _dedupe_key(name: str) -> str:
+    """What the tracking dict keys on: the name itself while it fits the display bound, and its
+    prefix plus a digest of the whole of it once it does not.
+
+    Two bounds meet here and neither may be spent on the other. Keying on the CLIPPED name loses
+    the count (see `_clip_model`). Keying on the RAW name recovers the count but turns
+    `_MODELS_TRACK_MAX` from a bound on how many SHORT strings the fold holds into a bound on how
+    many arbitrarily long ones — _MODELS_TRACK_MAX live copies of a 200 000-character name, the
+    amplifier these bounds exist to stop, and not copies shared with the events either, because the
+    `.strip()` upstream returns a fresh string whenever the harness pads the value. A digest is
+    bounded and still tells the two names apart. Keeping the prefix in front is what holds the key
+    longer than MODEL_NAME_MAX, so a long name's key cannot collide with a short name that happens
+    to look like a digest.
+    """
+    if len(name) <= MODEL_NAME_MAX:
+        return name
+    digest = blake2b(name.encode("utf-8", "surrogatepass"), digest_size=16).hexdigest()
+    return f"{name[:MODEL_NAME_MAX]}:{digest}"
 
 
 def _pick_int(data: Mapping[str, str], keys: tuple[str, ...]) -> int:
@@ -119,8 +154,10 @@ def fold_run_stats(
     by_kind: Counter[str] = Counter()
     # dict, not set: insertion order is the answer. A run that switches model mid-way (a router, a
     # fallback) should read primary-first, and sorting would put whichever name happens to sort
-    # lower in front of the one that did the early work.
-    models: dict[str, None] = {}
+    # lower in front of the one that did the early work. Keyed by `_dedupe_key`, valued by the
+    # display name, because deduping on the clipped name collapsed two long names that share a
+    # prefix down to one (#128 review).
+    models: dict[str, str] = {}
     model_calls = tool_calls = findings = errors = 0
     longest_tool_ms: int | None = None
     first_ts: datetime | None = None
@@ -140,7 +177,9 @@ def fold_run_stats(
         if e.kind in _MODEL_KINDS:
             named_model = str((e.data or {}).get("model") or "").strip()
             if named_model and len(models) < _MODELS_TRACK_MAX:
-                models.setdefault(_clip_model(named_model), None)
+                key = _dedupe_key(named_model)
+                if key not in models:
+                    models[key] = _clip_model(named_model)
         if e.kind is AgentEventKind.metric:
             data = e.data or {}
             inp = _pick_int(data, _INPUT)
@@ -173,7 +212,7 @@ def fold_run_stats(
     tok.total = tok.input + tok.output
     elapsed = (completed_at - created_at).total_seconds() if completed_at else None
     return RunStats(
-        models=tuple(islice(models, MODELS_MAX)),
+        models=tuple(islice(models.values(), MODELS_MAX)),
         models_truncated=max(0, len(models) - MODELS_MAX),
         tokens=tok,
         counts=CountStats(

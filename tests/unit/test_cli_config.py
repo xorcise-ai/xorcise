@@ -11,7 +11,7 @@ import pytest
 from typer.testing import CliRunner
 
 import xorcise.core.cli.app  # noqa: F401  -- registers the command groups
-from tests._helpers import invoke_cli_with_stdin
+from tests._helpers import CliArgvRejected, invoke_cli_with_stdin
 from xorcise.core.cli._shared import app
 
 pytestmark = pytest.mark.unit
@@ -240,14 +240,16 @@ def test_show_renders_timeout(monkeypatch, capsys):
 
 # ── the key must not have to travel on argv (#115) ───────────────────────────────────────────
 #
-# `--key <secret>` is the ONLY input path today, and argv is a broadcast channel: the value lands
-# in ~/.zsh_history and is readable from /proc/<pid>/cmdline by any local user for as long as the
-# command runs. The stored key was already fine (0600 ~/.xorcise/.env, masked by `config show`) —
-# the leak is purely on the way in.
+# `--key <secret>` WAS the only input path when this landed, and argv is a broadcast channel: the
+# value lands in ~/.zsh_history and is readable from /proc/<pid>/cmdline by any local user for as
+# long as the command runs. The stored key was already fine (0600 ~/.xorcise/.env, masked by
+# `config show`) — the leak is purely on the way in.
 #
-# `--key-stdin` is the safe path, and one flag covers both uses: a terminal gets a no-echo prompt,
-# a pipe is read straight through, so `printf %s "$KEY" | xorcise config set-model --key-stdin`
-# works unchanged in CI.
+# `--key-stdin` is the safe path and is what every in-product pointer teaches now (the guard for
+# that lives in tests/unit/test_cli_ux.py); one flag covers both uses: a terminal gets a no-echo
+# prompt, a pipe is read straight through, so `printf %s "$KEY" | xorcise config set-model
+# --key-stdin` works unchanged in CI. `--key` itself stays, because `--key ''` is the deliberate
+# clear and carries no secret.
 
 
 class _Recorder:
@@ -490,10 +492,17 @@ def test_a_multi_line_key_stdin_is_refused_for_the_terrain_setter_too(monkeypatc
 # ── stdin that is None or carries a bare CR (#125 review) ─────────────────────────────────────
 #
 # Two inputs CliRunner cannot express, because it always builds its own text stream from
-# `input=` and that stream translates universal newlines: a CLOSED fd 0 (`… --key-stdin <&-`),
-# where CPython leaves sys.stdin as None, and a bare CR. Driven through the real click command
-# instead, so the parser still supplies the true `None`/`False` option defaults — calling the
-# command function directly would hand it typer's OptionInfo objects and prove nothing.
+# `input=`: a CLOSED fd 0 (`… --key-stdin <&-`), where CPython leaves sys.stdin as None, and a
+# bare CR, which that stream translates to "\n" before the command ever sees it.
+#
+# The CR is a LIVE input, not a hypothetical one. CPython opens POSIX stdin with newline="\n",
+# so universal-newline translation is Windows-only: `printf 'a\rb' | xorcise config set-model
+# --key-stdin --name m` reaches the one-line guard with the CR intact and exits 2 (checked
+# against the installed binary). It is CliRunner's stream that rewrites it, and a CR rewritten
+# to "\n" would trip the OTHER half of the same guard — passing for the wrong reason. Hence the
+# real click command here, which also keeps the parser supplying the true `None`/`False` option
+# defaults, where calling the command function directly would hand it typer's OptionInfo
+# objects and prove nothing.
 
 
 def test_a_closed_stdin_is_no_key_rather_than_a_crash(monkeypatch, capsys):
@@ -505,11 +514,19 @@ def test_a_closed_stdin_is_no_key_rather_than_a_crash(monkeypatch, capsys):
     monkeypatch.setattr(cfg_cmd, "RestClient", lambda: _NoServer())
 
     assert invoke_cli_with_stdin(["config", "set-model", "--key-stdin", "--name", "m"], None) == 2
-    assert "stdin" in capsys.readouterr().err.lower()
+    # The guard's OWN sentence, where this asserted only exit 2 and the word "stdin" — click
+    # answers a renamed flag with "No such option: --key-stdinX (Possible options:
+    # --key-stdin)", which carries both. The harness now rejects that argv before the
+    # assertion is reached; this is the second lock, not the first.
+    assert "nothing was read" in capsys.readouterr().err
 
 
-def test_a_bare_cr_in_the_piped_key_is_refused(monkeypatch):
-    """The same one-line rule, for the carriage return a CRLF key file can carry."""
+def test_a_bare_cr_in_the_piped_key_is_refused(monkeypatch, capsys):
+    """The same one-line rule, for the carriage return a CR-separated key file carries.
+
+    Reachable in production: nothing translates a CR on the way into the real process, so this
+    branch of the guard is what refuses it. The hand-made stream is here only because
+    CliRunner's `input=` would have turned the CR into a newline first."""
     import io
 
     from xorcise.core.cli.commands import config as cfg_cmd
@@ -518,3 +535,55 @@ def test_a_bare_cr_in_the_piped_key_is_refused(monkeypatch):
 
     stdin = io.StringIO("sk-abc\rsk-def")
     assert invoke_cli_with_stdin(["config", "set-model", "--key-stdin", "--name", "m"], stdin) == 2
+    assert "spans more than one line" in capsys.readouterr().err
+
+
+# ── the real-stdin harness must be able to express a PASS, and only a PASS (#125 review) ──────
+#
+# Every test above it asserts a refusal, so `invoke_cli_with_stdin` only ever saw click's
+# `Exit(2)`. A success returns None through `standalone_mode=False`, and `int(None)` raises —
+# so the harness could not have expressed "this input is accepted" at all, and a guard that
+# refused EVERY key would have passed the whole section.
+#
+# The mirror image is just as bad, and is why argv click never parsed does NOT come back as an
+# exit code: a parser error exits 2 as well, so `--key-stdinX` satisfied both refusals above —
+# their loose `"stdin" in err` included, because click answers a renamed flag with "Possible
+# options: --key-stdin". Two layers now separate them: the harness refuses to report a rejected
+# argv as an exit code at all, and each refusal asserts the one sentence its own guard writes.
+
+
+def test_a_single_line_key_on_a_real_stdin_is_accepted(monkeypatch):
+    """The control for the refusal tests: the same code path, on a stream CliRunner never
+    touches, sends the key and exits 0."""
+    import io
+
+    from xorcise.core.cli.commands import config as cfg_cmd
+
+    rec = _Recorder()
+    monkeypatch.setattr(cfg_cmd, "RestClient", lambda: rec)
+
+    code = invoke_cli_with_stdin(
+        ["config", "set-model", "--key-stdin", "--name", "m"], io.StringIO("sk-real\n")
+    )
+
+    assert code == 0
+    assert rec.json["key"] == "sk-real"
+
+
+def test_the_real_stdin_harness_will_not_pass_off_a_rejected_argv_as_a_refusal(monkeypatch):
+    """A renamed or deleted `--key-stdin` must FAIL the tests above, not satisfy them.
+
+    Checked: with the parser's error mapped onto its exit code, `--key-stdinX` returned 2 and
+    printed "No such option: --key-stdinX (Possible options: --key-stdin)" — which passed the
+    `== 2` and the `"stdin" in err` those two refusals asserted at the time, so the section
+    went green against a flag the CLI does not have. Only the command's own outcome is an exit
+    code now; argv click rejected is a failure that names itself."""
+    from xorcise.core.cli.commands import config as cfg_cmd
+
+    monkeypatch.setattr(cfg_cmd, "RestClient", lambda: _NoServer())
+
+    with pytest.raises(CliArgvRejected) as rejected:
+        invoke_cli_with_stdin(["config", "set-model", "--key-stdinX", "--name", "m"], None)
+
+    # The message click would have printed, so the failure still says what was wrong with argv.
+    assert "--key-stdinX" in str(rejected.value)
