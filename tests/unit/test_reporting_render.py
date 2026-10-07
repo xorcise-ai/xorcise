@@ -627,6 +627,8 @@ def test_report_without_telemetry_or_transcript_count_is_unchanged():
         ("gpt-5.5", ("gpt-5.5",), 0),  # agreeing
         ("claude-fable-5", ("claude-fable-5-1",), 0),  # the family-vs-exact disagreement
         ("", ("a", "b"), 7),  # capped list
+        ("gpt-5.5", ("gpt-5.5", "claude-fable-5"), 0),  # declared is one of several observed
+        ("gpt-5.5", ("gpt-5.5",), 3),  # agreeing, but the cap dropped more
     ],
 )
 def test_the_cli_and_the_report_render_the_model_identically(
@@ -651,3 +653,19 @@ def test_a_capped_model_list_says_how_many_it_is_not_showing() -> None:
         stats=RunStats(models=("m0", "m1"), models_truncated=6),
     )
     assert _agent_model(ctx) == "m0, m1 (+6 more) (reported by the harness)"
+
+
+def test_a_declared_name_among_several_observed_ones_does_not_hide_the_rest() -> None:
+    """Matching one of the observed names collapsed the line to `declared (disclosed)`, which hid
+    the other models the run ran on — and the `(+N more)` marker with them (#128 review)."""
+    from xorcise.core.reporting.render import agent_model_line
+
+    line = agent_model_line("gpt-5.5", ("gpt-5.5", "claude-fable-5"), 0)
+    assert "claude-fable-5" in line, line
+
+    capped = agent_model_line("gpt-5.5", ("gpt-5.5",), 6)
+    assert "+6 more" in capped, capped
+
+    # The telemetry is redundant only when it named the declared name and nothing else; that line
+    # stays exactly as it was.
+    assert agent_model_line("gpt-5.5", ("gpt-5.5",), 0) == "gpt-5.5 (disclosed)"

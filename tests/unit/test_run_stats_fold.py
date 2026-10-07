@@ -390,3 +390,19 @@ def test_a_run_within_the_cap_reports_nothing_dropped() -> None:
         [_with_model(AgentEventKind.metric, "gpt-5.5")], created_at=_T0, completed_at=None
     )
     assert stats.models_truncated == 0
+
+
+def test_names_that_agree_up_to_the_clip_length_are_counted_as_the_names_they_are() -> None:
+    """The fold clipped each name BEFORE deduping it, so ten names sharing their first 119
+    characters collapsed into one entry and `models_truncated` said nothing was dropped — a run
+    that used ten models read as a run that used one (#128 review). Dedupe on the RAW name; the
+    clip is a display bound and belongs at emission."""
+    shared = "x" * MODEL_NAME_MAX
+    stats = fold_run_stats(
+        [_with_model(AgentEventKind.metric, f"{shared}-{i}") for i in range(10)],
+        created_at=_T0,
+        completed_at=None,
+    )
+    assert len(stats.models) == MODELS_MAX
+    assert stats.models_truncated == 10 - MODELS_MAX
+    assert all(len(m) <= MODEL_NAME_MAX for m in stats.models), "emission still bounds the name"

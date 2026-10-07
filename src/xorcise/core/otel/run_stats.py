@@ -48,6 +48,12 @@ _TOOL_KINDS = frozenset(
 #   status  — harness_adapters/codex/otel.py, "codex.conversation_starts"
 #   message — harness_adapters/claude_code/otel.py, "claude_code.assistant_response"
 #   error   — harness_adapters/claude_code/otel.py, "claude_code.api_refusal"
+# The generic adapter still copies the whole bag, so a GENERIC span classified `message` or
+# `error` that happens to carry `model` folds in too. Deliberate: on those two kinds the attribute
+# names the model that produced the message or the refusal — the same claim the claude_code
+# adapter makes explicitly — whereas on a tool call `model=dall-e-3` names the model the tool
+# invoked, not the one driving the run. The residue is a bounded, self-reported display field that
+# is never a grading input (#128 review).
 # Add a kind here only alongside the adapter line that puts a model on it.
 _MODEL_KINDS = frozenset(
     {
@@ -67,11 +73,16 @@ MODEL_NAME_MAX = 120
 # How many DISTINCT names the fold will hold while counting the overflow. Counting "how many did
 # we drop" exactly needs to remember what was already dropped, which is the unbounded set again —
 # so the tracking itself is bounded and `models_truncated` saturates past this many distinct names.
+# What it tracks is the RAW name, which costs nothing extra: those strings come off events the
+# fold is already holding, and only the clipped, capped handful is persisted.
 _MODELS_TRACK_MAX = 512
 
 
 def _clip_model(name: str) -> str:
-    """Bound one name's length, marking the cut so a prefix never reads as the whole name."""
+    """Bound one name's length at EMISSION, marking the cut so a prefix never reads as the whole
+    name. Clipping before the dedupe instead merged two names agreeing on their first
+    MODEL_NAME_MAX-1 characters into one, under-reporting `models_truncated` (#128 review). The
+    price of clipping last is that two such names render alike while still counting as two."""
     return name if len(name) <= MODEL_NAME_MAX else name[: MODEL_NAME_MAX - 1] + "\u2026"
 
 
@@ -118,7 +129,9 @@ def fold_run_stats(
     by_kind: Counter[str] = Counter()
     # dict, not set: insertion order is the answer. A run that switches model mid-way (a router, a
     # fallback) should read primary-first, and sorting would put whichever name happens to sort
-    # lower in front of the one that did the early work.
+    # lower in front of the one that did the early work. Keyed by the RAW name — the display clip
+    # happens at emission, because clipping first deduped two long names that share a prefix down
+    # to one (#128 review).
     models: dict[str, None] = {}
     model_calls = tool_calls = findings = errors = 0
     longest_tool_ms: int | None = None
@@ -138,7 +151,7 @@ def fold_run_stats(
         if e.kind in _MODEL_KINDS:
             named_model = str((e.data or {}).get("model") or "").strip()
             if named_model and len(models) < _MODELS_TRACK_MAX:
-                models.setdefault(_clip_model(named_model), None)
+                models.setdefault(named_model, None)
         if e.kind is AgentEventKind.metric:
             data = e.data or {}
             inp = _pick_int(data, _INPUT)
@@ -167,7 +180,7 @@ def fold_run_stats(
     tok.total = tok.input + tok.output
     elapsed = (completed_at - created_at).total_seconds() if completed_at else None
     return RunStats(
-        models=tuple(islice(models, MODELS_MAX)),
+        models=tuple(_clip_model(m) for m in islice(models, MODELS_MAX)),
         models_truncated=max(0, len(models) - MODELS_MAX),
         tokens=tok,
         counts=CountStats(

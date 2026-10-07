@@ -96,9 +96,13 @@ class RunStats(BaseModel):
     # attributed to a model afterwards; the telemetry carried it the whole time. Empty when the
     # run's telemetry never named a model — an honest unknown, never a placeholder name. Still
     # harness-self-reported, so it stays display/comparison provenance like the rest of RunStats.
+    # Each name is clipped to otel.run_stats.MODEL_NAME_MAX for display.
     models: tuple[str, ...] = ()
     # How many DISTINCT further names the fold saw and dropped, so a capped list reads as capped
-    # rather than as the whole truth. 0 whenever the run stayed inside the cap.
+    # rather than as the whole truth. 0 whenever the run stayed inside the cap. Distinct is decided
+    # on the name the harness reported, BEFORE the display clip, so len(models) + models_truncated
+    # is how many names the run actually named — two names that agree up to the clip length read
+    # alike here and still count as two.
     models_truncated: int = 0
     # The event projection this snapshot was folded under — "<adapter_name>@<adapter_version>",
     # e.g. "generic@2+normalizer.3" (otel.run_stats.projection_key). The projection is versioned
