@@ -2684,6 +2684,16 @@ export interface components {
             conditions: components["schemas"]["ResultConditions"];
             grade: components["schemas"]["GradeResult"];
             /**
+             * Models Reported
+             * @default []
+             */
+            models_reported: string[];
+            /**
+             * Models Reported Truncated
+             * @default 0
+             */
+            models_reported_truncated: number;
+            /**
              * Partial
              * @default false
              */
@@ -2710,6 +2720,16 @@ export interface components {
              *     }
              */
             counts: components["schemas"]["CountStats"];
+            /**
+             * Models
+             * @default []
+             */
+            models: string[];
+            /**
+             * Models Truncated
+             * @default 0
+             */
+            models_truncated: number;
             /** Projection */
             projection?: string | null;
             /** @default {} */

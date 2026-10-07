@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Sequence
 from enum import StrEnum
 from typing import Any
 
@@ -33,6 +34,7 @@ from xorcise.core.cli._ux import (
     ux_table,
 )
 from xorcise.core.cli.rest_client import RestClient
+from xorcise.core.reporting.render import agent_model_line
 
 run_app = typer.Typer(
     help="Create and manage evaluation runs.",
@@ -73,6 +75,15 @@ def _resolve_id(client: RestClient, given: str) -> str:
     if given.strip() and len(given) >= 32:
         return given
     return resolve_run_id(client, given)
+
+
+def _agent_model_line(cond: dict[str, Any], observed: Sequence[str], dropped: int = 0) -> str:
+    """The CLI's view of `reporting.render.agent_model_line` — see there for the rule.
+
+    Shared rather than mirrored: this used to be a second copy and the two drifted, so `run status`
+    printed a bare declared name where report.md printed "… (disclosed)" (#128 review).
+    """
+    return agent_model_line(str(cond.get("model") or ""), observed, dropped)
 
 
 def _render_telemetry(telemetry: dict[str, Any] | None) -> None:
@@ -134,7 +145,16 @@ def _render_result(
     if grade.get("trace_ref"):
         console.print(f"trace: {escape(str(grade['trace_ref']))}")
     # Disclosed conditions travel with the result.
-    console.print(f"model: {escape(str(cond.get('model') or 'model not disclosed'))}")
+    console.print(
+        "model: "
+        + escape(
+            _agent_model_line(
+                cond,
+                r.get("models_reported") or [],
+                int(r.get("models_reported_truncated") or 0),
+            )
+        )
+    )
     console.print(
         f"judge model: {escape(str(cond.get('judge_model') or 'judge model not configured'))}"
     )
