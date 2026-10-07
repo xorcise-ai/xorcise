@@ -270,3 +270,129 @@ def test_logs_for_a_sealed_run_are_dropped_not_persisted() -> None:
     assert resp.status_code == 200
     assert logs.read("run-sealed") == []
     assert resp.json()["partialSuccess"]["rejectedLogRecords"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Dropped-batch recording (#121): counters on /healthz, a WARNING line, optional spool
+# ---------------------------------------------------------------------------
+
+
+def test_healthz_reports_zero_drops_on_a_fresh_receiver() -> None:
+    body = TestClient(create_otel_app(InMemoryTraceStore())).get("/healthz").json()
+    assert body["status"] == "ok"
+    assert body["drops"] == {
+        "unroutable_spans": 0,
+        "unroutable_log_records": 0,
+        "sealed_spans": 0,
+        "sealed_log_records": 0,
+        "unroutable_batches": 0,
+        "sealed_batches": 0,
+        "spooled_batches": 0,
+    }
+
+
+def test_unroutable_spans_are_counted_and_logged(caplog) -> None:
+    import logging
+
+    client = TestClient(create_otel_app(InMemoryTraceStore()))
+    with caplog.at_level(logging.WARNING):
+        client.post("/v1/traces", content=json.dumps(_trace(None, ["x", "y"])))
+    drops = client.get("/healthz").json()["drops"]
+    assert drops["unroutable_spans"] == 2 and drops["unroutable_batches"] == 1
+    assert "otlp drop: signal=traces reason=unroutable spans=2" in caplog.text
+
+
+def test_late_spans_for_a_sealed_run_are_counted_as_sealed(caplog) -> None:
+    import logging
+
+    from xorcise.core.otel.store import InMemorySealStore
+
+    seal_store = InMemorySealStore()
+    seal_store.seal("run-sealed")
+    client = TestClient(create_otel_app(InMemoryTraceStore(), seal_store))
+    with caplog.at_level(logging.WARNING):
+        client.post("/v1/traces", content=json.dumps(_trace("run-sealed", ["x", "y", "z"])))
+    drops = client.get("/healthz").json()["drops"]
+    assert drops["sealed_spans"] == 3 and drops["sealed_batches"] == 1
+    assert drops["unroutable_spans"] == 0
+    assert "reason=sealed spans=3 run_id=run-sealed" in caplog.text
+
+
+def test_unroutable_log_records_are_counted_on_the_logs_signal() -> None:
+    client = TestClient(create_otel_app(InMemoryTraceStore(), log_store=InMemoryTraceStore()))
+    client.post("/v1/logs", content=json.dumps(_logs(None, ["a", "b"])))
+    drops = client.get("/healthz").json()["drops"]
+    assert drops["unroutable_log_records"] == 2 and drops["unroutable_batches"] == 1
+
+
+def test_a_late_batch_for_a_sealed_run_is_spooled_and_still_never_persisted(tmp_path) -> None:
+    """The seal invariant at the one intersection the tests above leave open: post-seal + spool
+    enabled + the real HTTP handler. The late batch must land in the spool (inspectable) AND must
+    not reach the trace store — the `sealed` branch still `continue`s before any append."""
+    from xorcise.core.otel.ingest.drops import DropRecorder, DropSpool
+    from xorcise.core.otel.store import InMemorySealStore
+
+    store = InMemoryTraceStore()
+    seal_store = InMemorySealStore()
+    seal_store.seal("run-sealed")
+    recorder = DropRecorder(spool=DropSpool(tmp_path / "dropped", cap=5))
+    client = TestClient(create_otel_app(store, seal_store, drops=recorder))
+
+    resp = client.post("/v1/traces", content=json.dumps(_trace("run-sealed", ["late-1", "late-2"])))
+    assert resp.status_code == 200
+    assert resp.json()["partialSuccess"]["rejectedSpans"] == 2
+    assert store.read("run-sealed") == []  # the seal held: nothing re-entered evidence
+    files = list((tmp_path / "dropped").glob("*.json"))
+    assert len(files) == 1
+    envelope = json.loads(files[0].read_text())
+    assert envelope["reason"] == "sealed" and envelope["signal"] == "traces"
+    assert envelope["run_id"] == "run-sealed"
+    spans = envelope["payload"]["resourceSpans"][0]["scopeSpans"][0]["spans"]
+    assert [s["name"] for s in spans] == ["late-1", "late-2"]
+    drops = client.get("/healthz").json()["drops"]
+    assert drops["sealed_spans"] == 2 and drops["sealed_batches"] == 1
+    assert drops["spooled_batches"] == 1
+
+
+def test_a_late_logs_batch_for_a_sealed_run_is_spooled_and_still_never_persisted(
+    tmp_path,
+) -> None:
+    """The logs-signal twin: the only sealed-logs coverage above never asserted the counters or
+    a spool, so the `signal="logs", reason="sealed"` call site was unproven at the HTTP boundary."""
+    from xorcise.core.otel.ingest.drops import DropRecorder, DropSpool
+    from xorcise.core.otel.store import InMemorySealStore
+
+    logs = InMemoryTraceStore()
+    seal_store = InMemorySealStore()
+    seal_store.seal("run-sealed")
+    recorder = DropRecorder(spool=DropSpool(tmp_path / "dropped", cap=5))
+    client = TestClient(
+        create_otel_app(InMemoryTraceStore(), seal_store, log_store=logs, drops=recorder)
+    )
+
+    resp = client.post("/v1/logs", content=json.dumps(_logs("run-sealed", ["l1", "l2", "l3"])))
+    assert resp.status_code == 200
+    assert logs.read("run-sealed") == []
+    files = list((tmp_path / "dropped").glob("*.json"))
+    assert len(files) == 1
+    envelope = json.loads(files[0].read_text())
+    assert envelope["reason"] == "sealed" and envelope["signal"] == "logs"
+    assert envelope["run_id"] == "run-sealed"
+    drops = client.get("/healthz").json()["drops"]
+    assert drops["sealed_log_records"] == 3 and drops["sealed_batches"] == 1
+    assert drops["sealed_spans"] == 0 and drops["spooled_batches"] == 1
+
+
+def test_dropped_batches_are_spooled_when_a_spool_is_configured(tmp_path) -> None:
+    from xorcise.core.otel.ingest.drops import DropRecorder, DropSpool
+
+    recorder = DropRecorder(spool=DropSpool(tmp_path / "dropped", cap=2))
+    client = TestClient(create_otel_app(InMemoryTraceStore(), drops=recorder))
+    for i in range(3):
+        client.post("/v1/traces", content=json.dumps(_trace(None, [f"lost-{i}"])))
+    files = sorted((tmp_path / "dropped").glob("*.json"))
+    assert len(files) == 2  # bounded: the oldest batch was evicted
+    envelope = json.loads(files[-1].read_text())
+    assert envelope["reason"] == "unroutable" and envelope["signal"] == "traces"
+    assert envelope["payload"]["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["name"] == "lost-2"
+    assert client.get("/healthz").json()["drops"]["spooled_batches"] == 3

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import difflib
+
 import typer
+from rich.markup import escape
 
 from xorcise.core.cli._resolve import mission_names_by_id, resolve_agent_name
-from xorcise.core.cli._shared import app, console, emit_json
+from xorcise.core.cli._shared import app, console, emit_json, err_console
 from xorcise.core.cli._ux import (
     DASH,
+    confirm_gate,
     confirm_or_abort,
     fail,
     fmt_score,
@@ -23,6 +27,58 @@ app.add_typer(agent_app, name="agent", rich_help_panel="Evaluate")
 
 _NAME_HELP = "Agent name (see: xorcise agent list)."
 _LAUNCH_MODES = {"host", "container"}
+
+
+_KIND_HELP = (
+    "Agent harness for replay-adapter selection, e.g. 'claude-code', 'codex', 'openhands'. "
+    "Leave it out for a custom harness (generic renderer); an unrecognised value asks for "
+    "confirmation."
+)
+_YES_HELP = "Skip the unrecognised --kind confirmation prompt."
+
+
+def _known_harness_kinds(client: RestClient) -> set[str] | None:
+    """The harness kinds the server renders with a dedicated adapter, or None when the list
+    cannot be read (an older server without /harnesses) — the gate then cannot judge and stays
+    out of the way rather than blocking on a guess."""
+    body = client.get_or_none("/harnesses")
+    if not isinstance(body, list) or not body:
+        return None
+    return {str(h["kind"]) for h in body if isinstance(h, dict) and h.get("kind")}
+
+
+def _gate_unrecognised_kind(
+    client: RestClient, *, kind: str | None, agent: str, action: str, assume_yes: bool
+) -> None:
+    """Warn about — and HARD-gate — a `--kind` no registered harness answers to (#119).
+
+    A blank kind is the sanctioned custom path and passes silently. Any other value that is not
+    a registered harness (a typo like `openhand`, or a label like `Custom`) would route every
+    run to the generic renderer with no signal at registration time, so: say which kinds exist,
+    suggest the closest one, and require a y/N. Fails closed without a TTY (see confirm_gate)."""
+    if kind is None or not kind.strip():
+        return
+    known = _known_harness_kinds(client)
+    if known is None or kind in known:
+        return
+    listed = ", ".join(sorted(known))
+    err_console.print(
+        f"[warn]warning[/]: '{escape(kind)}' is not a registered harness (known: {listed})"
+    )
+    close = difflib.get_close_matches(kind.lower(), sorted(known), n=1, cutoff=0.6)
+    if close:
+        err_console.print(f"         did you mean '{close[0]}'?")
+    err_console.print(
+        "         runs will use the generic renderer: spans are shown as-is and\n"
+        "         unrecognised span names are labelled unclassified"
+    )
+    verb = action.lower()
+    confirm_gate(
+        f"{action} '{agent}' with kind '{kind}' anyway?",
+        assume_yes=assume_yes,
+        what=f"{verb} with an unrecognised --kind",
+        example=f"xorcise agent {verb} --name {agent} --kind {kind} --yes",
+    )
 
 
 def _validate_launch_mode(value: str | None) -> str | None:
@@ -78,14 +134,13 @@ def register_agent(
     endpoint: str | None = typer.Option(None, "--endpoint", help="How it connects."),
     otel: str | None = typer.Option(None, "--otel", help="How it emits its OTel trace."),
     model: str | None = typer.Option(None, "--model", help="Agent's disclosed model (optional)."),
-    kind: str | None = typer.Option(
-        None, "--kind", help="Agent harness for replay-adapter selection, e.g. 'claude-code'."
-    ),
+    kind: str | None = typer.Option(None, "--kind", help=_KIND_HELP),
     launch_mode: str | None = typer.Option(
         None,
         "--launch-mode",
         help="Where its command runs: host (loopback addresses) or container.",
     ),
+    yes: bool = typer.Option(False, "--yes", "-y", help=_YES_HELP),
     as_json: bool = typer.Option(
         False, "--json", help="Emit the raw registered agent as JSON (for scripting)."
     ),
@@ -112,6 +167,7 @@ bump the version to 2).
             example=f"xorcise agent update --name {name}",
             see=("xorcise agent list",),
         )
+    _gate_unrecognised_kind(client, kind=kind, agent=name, action="Register", assume_yes=yes)
     body = {
         "name": name,
         "endpoint": endpoint,
@@ -134,9 +190,7 @@ def update_agent(
     endpoint: str | None = typer.Option(None, "--endpoint", help="New connection endpoint."),
     otel: str | None = typer.Option(None, "--otel", help="New OTel trace endpoint."),
     model: str | None = typer.Option(None, "--model", help="Agent's disclosed model."),
-    kind: str | None = typer.Option(
-        None, "--kind", help="Agent harness for replay-adapter selection, e.g. 'claude-code'."
-    ),
+    kind: str | None = typer.Option(None, "--kind", help=_KIND_HELP),
     launch_mode: str | None = typer.Option(
         None,
         "--launch-mode",
@@ -145,6 +199,7 @@ def update_agent(
     rename_to: str | None = typer.Option(
         None, "--rename-to", help="New unique name for this agent."
     ),
+    yes: bool = typer.Option(False, "--yes", "-y", help=_YES_HELP),
 ) -> None:
     """Update an agent's declaration and bump its version (same agent id).
 
@@ -166,6 +221,8 @@ def update_agent(
     client = RestClient()
     name = resolve_agent_name(client, name)
     entry = next(a for a in client.get("/agents") if a["name"] == name)
+    if kind is not None and kind != entry.get("kind"):
+        _gate_unrecognised_kind(client, kind=kind, agent=name, action="Update", assume_yes=yes)
     body = {
         "name": rename_to or name,
         "endpoint": endpoint if endpoint is not None else entry.get("endpoint"),

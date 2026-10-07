@@ -365,3 +365,32 @@ def test_distilled_is_far_smaller_than_the_raw_payloads():
     raw_bytes = sum(len(r.payload.encode()) for r in recs)
     distilled_bytes = sum(len(ln.encode()) for ln in distill_transcript(recs))
     assert distilled_bytes < raw_bytes // 4  # aggressive reduction
+
+
+def test_content_predicates_match_what_the_distiller_keeps() -> None:
+    """`span_has_content` / `log_has_content` are the distiller's own keep/drop decision, exposed
+    so the replay header counts content with the judge's definition, not a second one."""
+    from xorcise.core.otel.distill import log_has_content, span_has_content
+    from xorcise.core.otel.flatten import FlatLogRecord, FlatSpan
+
+    def span(attrs: dict[str, str]) -> FlatSpan:
+        return FlatSpan(
+            span_id="s",
+            parent_span_id="",
+            trace_id="t",
+            name="x",
+            start_ns=1,
+            end_ns=2,
+            status_code=0,
+            attrs=attrs,
+            scope="",
+            resource={},
+        )
+
+    assert span_has_content(span({"command": "ls -la"}))
+    assert not span_has_content(span({"event.class": "ActionEvent", "event.id": "1"}))
+    assert not span_has_content(span({}))
+    assert log_has_content(
+        FlatLogRecord(event_name="e", time_ns=1, attrs={"output": "hi"}, body="")
+    )
+    assert not log_has_content(FlatLogRecord(event_name="e", time_ns=1, attrs={}, body=""))

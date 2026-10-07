@@ -30,6 +30,9 @@ class RouteResult:
     routed: tuple[tuple[str, str], ...]  # (run_id, RAW {"resourceSpans": [rs]} JSON)
     accepted_spans: int
     dropped_spans: int
+    # The RAW payload + its span/record count for every batch that could NOT be routed, so the
+    # receiver can log/spool them instead of losing them (#121). Additive; default empty.
+    unrouted: tuple[tuple[str, int], ...] = ()
 
 
 def _run_id_of(resource_spans: dict[str, Any]) -> str:
@@ -57,6 +60,7 @@ def _route_parsed(payload: dict[str, Any]) -> RouteResult:
     """Route each ResourceSpans in an already-parsed OTLP payload dict."""
     resource_spans = payload.get("resourceSpans") or []
     routed: list[tuple[str, str]] = []
+    unrouted: list[tuple[str, int]] = []
     accepted = 0
     dropped = 0
     for rs in resource_spans:
@@ -68,7 +72,13 @@ def _route_parsed(payload: dict[str, Any]) -> RouteResult:
             accepted += count
         else:
             dropped += count
-    return RouteResult(routed=tuple(routed), accepted_spans=accepted, dropped_spans=dropped)
+            unrouted.append((raw, count))
+    return RouteResult(
+        routed=tuple(routed),
+        accepted_spans=accepted,
+        dropped_spans=dropped,
+        unrouted=tuple(unrouted),
+    )
 
 
 def route_otlp_json(body: str) -> RouteResult:
@@ -122,6 +132,7 @@ def _route_parsed_logs(payload: dict[str, Any]) -> RouteResult:
     `resource` block; the sentinel fallback greps the raw). accepted/dropped count log records."""
     resource_logs = payload.get("resourceLogs") or []
     routed: list[tuple[str, str]] = []
+    unrouted: list[tuple[str, int]] = []
     accepted = 0
     dropped = 0
     for rl in resource_logs:
@@ -133,7 +144,13 @@ def _route_parsed_logs(payload: dict[str, Any]) -> RouteResult:
             accepted += count
         else:
             dropped += count
-    return RouteResult(routed=tuple(routed), accepted_spans=accepted, dropped_spans=dropped)
+            unrouted.append((raw, count))
+    return RouteResult(
+        routed=tuple(routed),
+        accepted_spans=accepted,
+        dropped_spans=dropped,
+        unrouted=tuple(unrouted),
+    )
 
 
 def route_otlp_logs_json(body: str) -> RouteResult:

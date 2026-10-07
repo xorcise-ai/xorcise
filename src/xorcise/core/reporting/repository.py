@@ -115,6 +115,22 @@ def get_stats(run_id: str) -> RunStats | None:
         return RunStats.model_validate_json(row.stats_json)
 
 
+def put_stats(run_id: str, stats: RunStats) -> bool:
+    """Refresh a recorded result's telemetry snapshot IN PLACE.
+
+    Touches only `stats_json` — the derived, display-only column — never the grade, its disclosed
+    conditions or the partial flags. Returns False when the run has no recorded result (nothing to
+    attach a snapshot to). The caller is `rest.report_assembly.current_run_stats`, when the stored
+    snapshot predates the run's current event projection."""
+    with session_scope() as s:
+        row = s.scalar(select(ResultRow).where(ResultRow.run_id == run_id))
+        if row is None:
+            return False
+        row.stats_json = stats.model_dump_json()
+        s.flush()
+        return True
+
+
 def result_conditions(run_id: str) -> ResultConditions | None:
     """The disclosed conditions for a run's recorded result, or None if absent."""
     with session_scope() as s:

@@ -134,7 +134,7 @@ def test_shared_normalizer_version_invalidates_legacy_projection(migrated_home):
 
     rebuilt = SqliteAgentEventStore().get_staleness("r-normalizer")
     assert rebuilt is not None
-    assert rebuilt[1].endswith("+normalizer.2")
+    assert rebuilt[1].endswith("+normalizer.3")
 
 
 def test_regenerate_from_raw_equals_served(migrated_home):
@@ -171,3 +171,17 @@ def test_grader_never_imports_the_cache():
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module:
             assert "otel.store.agent_events" not in node.module
+
+
+def test_read_header_is_the_view_without_rows(migrated_home):
+    from xorcise.core.otel.store.agent_events import SqliteAgentEventStore
+    from xorcise.core.rest import events_view
+
+    runs.create_run(run_id="rh", agent_id="a1", mission="c", budget_seconds=60)
+    SqliteTraceStore().append(TraceRecord(run_id="rh", seq=0, payload=json.dumps(_otlp("s0", "x"))))
+    full = events_view._full_view("rh")
+    header = SqliteAgentEventStore().read_header("rh")
+    assert header is not None
+    assert header.events == ()
+    assert header.model_copy(update={"events": full.events}) == full
+    assert SqliteAgentEventStore().read_header("never-cached") is None

@@ -29,12 +29,12 @@ def registered_names() -> set[str]:
 def select(source_agent: str) -> tuple[TelemetryProfileProvider, bool]:
     """Pick the provider for a run: exact ``source_agent`` match → ``generic``.
 
-    Returns ``(provider, fallback)`` — ``fallback=False`` only for the exact match, mirroring
-    ``otel.adapters.registry.select`` so emit and collect agree on what "known harness" means.
+    Returns ``(provider, fallback)`` — ``fallback`` is True iff the generic floor was picked,
+    mirroring ``otel.adapters.registry.select`` so emit and collect agree on what "known
+    harness" means (a blank kind and an unrecognised one both read as the floor).
     """
-    if source_agent in _REGISTRY:
-        return _REGISTRY[source_agent], False
-    return _REGISTRY["generic"], True
+    provider = _REGISTRY.get(source_agent, _REGISTRY["generic"])
+    return provider, provider.name == "generic"
 
 
 register(GenericTelemetryProvider())

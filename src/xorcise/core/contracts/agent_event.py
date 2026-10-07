@@ -37,6 +37,12 @@ class AgentEventKind(StrEnum):
     error = "error"
     status = "status"
     metric = "metric"
+    # A real event the harness emitted that no adapter rule could classify. Shown as-is, by
+    # default, so a harness with unrecognised span names is never rendered as tool calls. Distinct
+    # from `unknown`, the adapters' escape hatch for plumbing spans they deliberately suppress
+    # (hidden unless Debug is on). Universal rather than framework-specific, so it stays inside
+    # the closed render set.
+    unclassified = "unclassified"
     unknown = "unknown"
 
 
@@ -181,3 +187,20 @@ class RunEventsView(_Frozen):
     counts: Mapping[str, int] = Field(default_factory=dict)
     warnings: tuple[AdapterWarning, ...] = ()
     events: tuple[AgentEvent, ...] = ()
+
+
+class RunTelemetryView(_Frozen):
+    """The `GET /runs/{id}/telemetry` summary — the events header WITHOUT the events.
+
+    Which adapter rendered the run and whether that was a fallback, the run-level counts (spans
+    and log records, and how many of each carry content the judge can read) and the normalization
+    warnings. One cache row to read, so the CLI and the report can show it without paging the
+    whole projection. Derived and rebuildable from RAW; never a grading input."""
+
+    run_id: str
+    source_agent: str
+    adapter_name: str
+    adapter_version: str
+    fallback: bool
+    counts: Mapping[str, int] = Field(default_factory=dict)
+    warnings: tuple[AdapterWarning, ...] = ()

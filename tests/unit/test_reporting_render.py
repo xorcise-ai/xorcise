@@ -523,3 +523,42 @@ def test_report_filename_is_slugged_and_extension_correct():
     assert report_filename(ctx, "html") == "xorcise-run-run-abcd-sqli-login.html"
     weird = _ctx(run=_run(mission="Chrono Canary / v2!"))
     assert report_filename(weird, "md") == "xorcise-run-run-abcd-chrono-canary-v2.md"
+
+
+def _telemetry(**over: object):
+    from xorcise.core.contracts.agent_event import AdapterWarning, RunTelemetryView
+
+    base: dict[str, object] = {
+        "run_id": "r1",
+        "source_agent": "custom",
+        "adapter_name": "generic",
+        "adapter_version": "2+normalizer.3",
+        "fallback": True,
+        "counts": {"spans": 114, "content_spans": 0, "logs": 0, "content_logs": 0},
+        "warnings": (
+            AdapterWarning(code="no_content", message="none of the 114 span(s) carries content"),
+        ),
+    }
+    base.update(over)
+    return RunTelemetryView(**base)  # type: ignore[arg-type]
+
+
+def test_report_discloses_renderer_content_counts_transcript_size_and_warnings():
+    grade = _grade().model_copy(update={"transcript_items": 0})
+    ctx = _ctx(grade=grade, telemetry=_telemetry())
+    md = render_markdown(ctx)
+    assert "| Renderer | generic (generic renderer — no harness-specific adapter) |" in md
+    assert "| Content-bearing spans | 0 / 114 |" in md
+    assert "| Content-bearing log records | 0 / 0 |" in md
+    assert "| Judge transcript items | 0 |" in md
+    assert "none of the 114 span(s) carries content" in md
+    html = render_html(ctx)
+    assert "Content-bearing spans" in html and "0 / 114" in html
+    assert "none of the 114 span(s) carries content" in html
+
+
+def test_report_without_telemetry_or_transcript_count_is_unchanged():
+    md = render_markdown(_ctx())
+    assert "Renderer" not in md
+    assert "Judge transcript items" not in md
+    assert "Telemetry warnings" not in md

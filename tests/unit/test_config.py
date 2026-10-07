@@ -174,3 +174,16 @@ def test_terrain_model_not_configured_when_no_key_anywhere():
 
     s = Settings()  # no judge key, no terrain key
     assert s.terrain_model_configured() is False
+
+
+def test_otel_drop_spool_defaults_off_with_dir_under_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
+    get_settings.cache_clear()
+    try:
+        s = get_settings()
+        assert s.otel_drop_spool_enabled is False
+        assert s.otel_drop_spool_dir == str(tmp_path / "otel-dropped")
+        assert s.otel_drop_spool_cap == 200
+        assert s.otel_drop_spool_max_bytes == 64 * 1024 * 1024
+    finally:
+        get_settings.cache_clear()

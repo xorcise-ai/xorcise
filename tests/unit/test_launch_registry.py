@@ -34,3 +34,9 @@ def test_exact_match_is_not_a_fallback():
     provider, fallback = select("fake-harness")
     assert provider.name == "fake-harness" and fallback is False
     assert provider.launch_command_template == "fake {mission}"
+
+
+def test_generic_by_name_is_still_the_fallback():
+    # fallback = "the generic floor was picked" — a blank kind and a mistyped one read the same.
+    provider, fallback = select("generic")
+    assert provider.name == "generic" and fallback is True

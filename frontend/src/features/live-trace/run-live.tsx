@@ -600,6 +600,7 @@ export function RunLive({ runId }: { runId: string | null }) {
                 attributing={!!attribution?.running}
                 infraRows={infraRows}
                 fill
+                live={!terminal}
               />
             )}
           </Section>

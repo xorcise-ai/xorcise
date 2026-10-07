@@ -59,6 +59,7 @@ describe("useRunEvents", () => {
       adapterName: "openhands",
       adapterVersion: "1",
       fallback: false,
+      warnings: [],
     });
   });
 

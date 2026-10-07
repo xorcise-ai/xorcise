@@ -7,11 +7,11 @@ import type { HarnessCapabilityProfile, HarnessDescriptor } from "@/lib/api/type
 
 // Every AgentEventKind. A profile is TOTAL over this set (src/xorcise/core/otel/adapters/base.py
 // `profile_from`) — any kind not explicitly given below defaults to "unsupported" here too, so
-// this fixture mirrors the real shape without hand-writing all 18 keys per adapter.
+// this fixture mirrors the real shape without hand-writing all 19 keys per adapter.
 const ALL_KINDS = [
   "message", "thinking", "terminal_command", "terminal_output", "file_edit", "file_read",
   "browser_action", "browser_observation", "tool_call", "tool_result", "mcp_call",
-  "mcp_result", "finding", "flag", "error", "status", "metric", "unknown",
+  "mcp_result", "finding", "flag", "error", "status", "metric", "unclassified", "unknown",
 ] as const;
 
 function capabilityProfile(

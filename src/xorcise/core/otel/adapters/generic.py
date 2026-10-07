@@ -1,11 +1,17 @@
-"""GenericOtelAdapter: the dumb, parity fallback adapter.
+"""GenericOtelAdapter: the dumb, honest fallback adapter.
 
-A faithful Python port of the frontend's `parse-trace.ts` `classify()`/`pickBody()` —
-same regexes, same first-match-wins order — retargeted to build `AgentEvent`s instead of
-`TraceEvent`s. This is deliberately NOT clever: no gen_ai-aware parsing, no span grouping.
-It is the last resort `registry.select()` falls back to when no framework-specific adapter
-is registered for a `source_agent`/resource/fingerprint. Smart mappings live in the
-per-harness adapters.
+Originally a 1:1 port of the frontend's `parse-trace.ts` `classify()`/`pickBody()`; that file
+is gone, so this module is now the only implementation and may evolve. It is deliberately NOT
+clever: keyword classification on the span name, first-match-wins, no gen_ai-aware parsing, no
+span grouping. It is the last resort `registry.select()` falls back to when no
+framework-specific adapter is registered for a `source_agent`/resource/fingerprint. Smart
+mappings live in the per-harness adapters.
+
+Honesty rule: a span whose name matches no keyword is `unclassified`, never `tool_call`, and
+its body is only ever a known content key (command/cmd/input/…) — the adapter does not
+fabricate a body out of the first attribute it finds. A harness that emits marker-only spans
+(class + id + source, no payload) therefore renders as exactly that, with a warning from
+`normalize_run`, instead of as a wall of confident-looking tool calls.
 
 Imports stdlib + xorcise.core.contracts.agent_event + xorcise.core.otel.flatten +
 xorcise.core.otel.adapters.base only.
@@ -27,7 +33,7 @@ from xorcise.core.contracts.agent_event import (
 from xorcise.core.otel.adapters.base import AdapterContext, AgentTraceAdapter, profile_from
 from xorcise.core.otel.flatten import FlatSpan
 
-# Same regexes, same order, as parse-trace.ts `classify()` — port 1:1, don't get clever.
+# Keyword classification, first-match-wins (inherited from the retired parse-trace.ts).
 _ERROR_RE = re.compile(r"error|fail|exception")
 _FLAG_RE = re.compile(r"flag")
 _MCP_RE = re.compile(r"mcp")
@@ -36,12 +42,15 @@ _THINKING_RE = re.compile(r"think|reason")
 _TOOL_RE = re.compile(r"tool|read|write|glob|grep|edit|fetch|search")
 _MESSAGE_RE = re.compile(r"assistant|message|llm|completion|response|model")
 
-# Same key order as parse-trace.ts `pickBody()`.
+# Content-bearing keys, in preference order. ONLY these become a body (see the honesty rule).
 _BODY_KEYS = ("command", "cmd", "input", "flag", "path", "query", "url")
 
 
 def classify(name: str, attrs: Mapping[str, str], status_code: int) -> AgentEventKind:
-    """Port of parse-trace.ts `classify()`. First-match-wins on the lower-cased span name."""
+    """First-match-wins keyword classification on the lower-cased span name.
+
+    Anything that matches no rule is `unclassified` — an honest label the UI shows by default —
+    rather than a guessed `tool_call`."""
     n = name.lower()
     if status_code == 2 or _ERROR_RE.search(n):
         return AgentEventKind.error
@@ -57,17 +66,16 @@ def classify(name: str, attrs: Mapping[str, str], status_code: int) -> AgentEven
         return AgentEventKind.tool_call
     if _MESSAGE_RE.search(n):
         return AgentEventKind.message
-    return AgentEventKind.tool_call
+    return AgentEventKind.unclassified
 
 
 def pick_body(attrs: Mapping[str, str]) -> str:
-    """Port of parse-trace.ts `pickBody()`: first known key, else the first `k: v`, else ""."""
+    """The first known content key's value, else "" — never a fabricated `k: v` of some other
+    attribute (the attributes stay visible, unaltered, in `data`)."""
     for key in _BODY_KEYS:
         value = attrs.get(key)
         if value:
             return value
-    for key, value in attrs.items():
-        return f"{key}: {value}"
     return ""
 
 
@@ -75,7 +83,9 @@ class GenericOtelAdapter(AgentTraceAdapter):
     """Agent-agnostic, dumb parity fallback. Never the smart choice, always a safe one."""
 
     name = "generic"
-    version = "1"
+    # v2: unmatched spans are `unclassified` (was `tool_call`) and the body is never fabricated
+    #     from an arbitrary attribute. Bumping the version rebuilds every cached projection.
+    version = "2"
 
     @property
     def capabilities(self) -> HarnessCapabilityProfile:
@@ -91,6 +101,7 @@ class GenericOtelAdapter(AgentTraceAdapter):
                 AgentEventKind.mcp_call,
                 AgentEventKind.flag,
                 AgentEventKind.error,
+                AgentEventKind.unclassified,
             ),
         )
 

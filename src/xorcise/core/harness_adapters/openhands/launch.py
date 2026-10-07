@@ -28,6 +28,13 @@ class OpenHandsLaunchProvider(HarnessLaunchProvider):
         return (
             "`--headless` runs the task to completion without the interactive UI; configure your "
             "model/credentials for OpenHands beforehand (e.g. via its config.toml or env).",
+            # A driver that wraps the SDK in its own Python must set the OTel env BEFORE importing
+            # `openhands.sdk`: the SDK initialises its Laminar tracing once, at import, and that
+            # tracing is what carries prompts, commands and outputs. Set afterwards, it stays off
+            # for the whole process and only the driver's own spans (if any) arrive.
+            "Driving the OpenHands SDK from your own Python instead of the CLI? Export the OTel "
+            "variables BEFORE importing `openhands.sdk` — its tracing initialises once at import "
+            "and is what carries prompts, commands and outputs.",
         )
 
     def mission_preamble(self, ctx: LaunchContext) -> tuple[str, ...]:

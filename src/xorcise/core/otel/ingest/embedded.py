@@ -8,6 +8,11 @@ blended into another run.
 
 Content-type sniffing: ``application/x-protobuf`` → protobuf decode
 (requires the ``collector`` extra); anything else → JSON decode.
+
+Every dropped batch — unroutable, or late for a sealed run — is also RECORDED via a
+``DropRecorder`` (a WARNING log line, counters on ``/healthz``, and an optional bounded spool of
+the batch itself), because the ``partialSuccess`` count in the response is invisible to the
+operator: exporters ignore it (#121).
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ from xorcise.core.otel.decode import (
     route_otlp_logs_protobuf,
     route_otlp_protobuf,
 )
+from xorcise.core.otel.ingest.drops import DropRecorder
 from xorcise.core.otel.ports import SealStore, TraceStore
 from xorcise.core.otel.store import InMemorySealStore, SqliteLogStore, SqliteTraceStore
 
@@ -67,15 +73,19 @@ def create_otel_app(
     store: TraceStore | None = None,
     seal_store: SealStore | None = None,
     log_store: TraceStore | None = None,
+    drops: DropRecorder | None = None,
 ) -> FastAPI:
     trace_store: TraceStore = store if store is not None else SqliteTraceStore()
     logs_store: TraceStore = log_store if log_store is not None else SqliteLogStore()
     seals: SealStore = seal_store if seal_store is not None else InMemorySealStore()
+    recorder: DropRecorder = drops if drops is not None else DropRecorder()
     app = FastAPI(title="xorcise-otel", version="1")
 
     @app.get("/healthz")
-    def healthz() -> dict[str, str]:
-        return {"status": "ok", "service": "otel"}
+    def healthz() -> dict[str, object]:
+        # `drops` = what this process refused since start (by signal + reason). Zero across the
+        # board is the healthy reading; anything else is a correlation or late-flush problem.
+        return {"status": "ok", "service": "otel", "drops": recorder.counters.as_dict()}
 
     @app.post("/v1/traces")
     async def ingest_traces(request: Request) -> Response:
@@ -103,10 +113,16 @@ def create_otel_app(
                 status_code=400,
             )
         rejected = result.dropped_spans
+        for payload, n in result.unrouted:
+            recorder.record(signal="traces", reason="unroutable", n=n, run_id="", payload=payload)
         for run_id, payload in result.routed:
             if seals.is_sealed(run_id):
                 # late spans after terminal are not admitted to the sealed record
-                rejected += _count_spans(payload)
+                n = _count_spans(payload)
+                rejected += n
+                recorder.record(
+                    signal="traces", reason="sealed", n=n, run_id=run_id, payload=payload
+                )
                 continue
             seq = len(trace_store.read(run_id))
             trace_store.append(TraceRecord(run_id=run_id, seq=seq, payload=payload))
@@ -145,9 +161,13 @@ def create_otel_app(
                 status_code=400,
             )
         rejected = result.dropped_spans
+        for payload, n in result.unrouted:
+            recorder.record(signal="logs", reason="unroutable", n=n, run_id="", payload=payload)
         for run_id, payload in result.routed:
             if seals.is_sealed(run_id):
-                rejected += _count_log_records(payload)
+                n = _count_log_records(payload)
+                rejected += n
+                recorder.record(signal="logs", reason="sealed", n=n, run_id=run_id, payload=payload)
                 continue
             seq = len(logs_store.read(run_id))
             logs_store.append(TraceRecord(run_id=run_id, seq=seq, payload=payload))

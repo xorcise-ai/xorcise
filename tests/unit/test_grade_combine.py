@@ -112,3 +112,14 @@ def test_partial_judge_exposes_conservative_overall_interval_and_coverage():
     assert result.judge_coverage == pytest.approx(0.25)
     assert result.overall == pytest.approx(0.625)
     assert result.overall_upper == pytest.approx(1.0)
+
+
+@pytest.mark.unit
+def test_grade_discloses_how_many_transcript_items_the_judge_saw():
+    model = _Model({"score": 0.5, "reason": "ok"})
+    empty = grade(SealedContext(run_id="r"), checks=CHECKS, rubric=RUBRIC, model=model)
+    assert empty.transcript_items == 0  # the judge graded from artifacts alone
+    ctx = SealedContext(run_id="r", transcript=("TerminalAction | command=ls", "x | output=y"))
+    assert grade(ctx, checks=CHECKS, rubric=RUBRIC, model=model).transcript_items == 2
+    # Grades persisted before the field existed read as "unknown", never as 0.
+    assert GradeResult(run_id="r", overall=0.0, breakdown=ScoreBreakdown()).transcript_items is None

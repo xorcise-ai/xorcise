@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from xorcise.core import runs
-from xorcise.core.contracts.agent_event import EventCursor, RunEventsView
+from xorcise.core.contracts.agent_event import EventCursor, RunEventsView, RunTelemetryView
 from xorcise.core.contracts.telemetry import TraceRecord
 
 # Register the built-in agent adapters (collect plane). events_view is the read-path composition
@@ -199,3 +199,30 @@ def _raw_logs(run_id: str, raw_seq: int) -> list[dict[str, Any]]:
                     if isinstance(record, dict)
                 )
     return matched
+
+
+def telemetry_summary(run_id: str) -> RunTelemetryView:
+    """The run's events header without the events: adapter, fallback, counts, warnings.
+
+    Ensures the cache is fresh, then reads the ONE header row (never the event rows). Falls back
+    to a direct normalize on the transient chance the header is absent, like `_full_view`."""
+    _ensure_fresh(run_id)
+    header = SqliteAgentEventStore().read_header(run_id)
+    view = (
+        header
+        if header is not None
+        else normalize_run(
+            SqliteTraceStore().read(run_id),
+            _ctx_for(run_id),
+            log_records=SqliteLogStore().read(run_id),
+        )
+    )
+    return RunTelemetryView(
+        run_id=view.run_id,
+        source_agent=view.source_agent,
+        adapter_name=view.adapter_name,
+        adapter_version=view.adapter_version,
+        fallback=view.fallback,
+        counts=view.counts,
+        warnings=view.warnings,
+    )

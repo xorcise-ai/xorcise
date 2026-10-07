@@ -21,7 +21,7 @@ def test_lists_every_registered_adapter_sorted_and_total() -> None:
     assert names == sorted(names)
     assert {"claude-code", "codex", "openhands", "generic"} <= set(names)
     for p in body:
-        assert len(p["kinds"]) == 18  # total over AgentEventKind
+        assert len(p["kinds"]) == 19  # total over AgentEventKind
 
 
 def test_generic_is_flagged_unverified() -> None:

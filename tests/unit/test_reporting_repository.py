@@ -200,3 +200,37 @@ def test_record_result_persists_and_reads_full_detail(migrated_home):
     assert got.hard_fails == ("rooted host",)
     assert got.major_deductions == ("no flag submitted",)
     assert got.check_breakdown[0].passed is True
+
+
+def test_put_stats_refreshes_only_the_snapshot(migrated_home):
+    """A re-fold under a newer renderer replaces the derived snapshot in place and leaves the
+    grade, its disclosed conditions and the partial flags exactly as recorded."""
+    reporting.record_result(
+        "r1",
+        "a1",
+        _result("r1"),
+        ResultConditions(model="m-1"),
+        partial=True,
+        partial_trigger="timeout",
+        stats=RunStats(
+            tokens=TokenStats(input=1, output=1, total=2), projection="generic@1+normalizer.2"
+        ),
+    )
+    fresh = RunStats(
+        tokens=TokenStats(input=100, output=20, total=120), projection="generic@2+normalizer.3"
+    )
+    assert reporting.put_stats("r1", fresh) is True
+    got = reporting.get_stats("r1")
+    assert got is not None
+    assert got.tokens.total == 120 and got.projection == "generic@2+normalizer.3"
+    grade = reporting.get_result("r1")
+    assert grade is not None and grade.overall == 0.5 and grade.trace_ref == "r1"
+    assert reporting.result_partial("r1") == (True, "timeout")
+    cond = reporting.result_conditions("r1")
+    assert cond is not None and cond.model == "m-1"
+
+
+def test_put_stats_without_a_recorded_result_is_a_noop(migrated_home):
+    """Nothing to attach a snapshot to: report False, write nothing."""
+    assert reporting.put_stats("ghost", RunStats()) is False
+    assert reporting.get_stats("ghost") is None

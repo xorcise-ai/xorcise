@@ -163,7 +163,7 @@ function DataView({ data }: { data: Record<string, string> }) {
 
 /**
  * The body layout for one event, driven ONLY by `event.kind` (the closed
- * 18-value enum) — never by `event.source_agent` or any span-name inference.
+ * 19-value enum) — never by `event.source_agent` or any span-name inference.
  */
 function EventBody({ event }: { event: AgentEvent }) {
   switch (event.kind) {
@@ -225,6 +225,27 @@ function EventBody({ event }: { event: AgentEvent }) {
           {event.body}
         </p>
       ) : null;
+
+    case "unclassified":
+      // A span no adapter rule could classify. Be honest rather than decorative: show the raw
+      // attributes as chips (never a fabricated body) and say why there is nothing more.
+      return (
+        <div className="mt-2 min-w-0">
+          {event.body ? (
+            <p className="whitespace-pre-wrap break-words text-body text-foreground">
+              {event.body}
+            </p>
+          ) : null}
+          <DataChips data={event.data ?? {}} />
+          <p
+            data-testid="unclassified-note"
+            className="mt-2 text-caption text-muted-foreground"
+          >
+            Unclassified span — XORCISE does not recognise this span name, and the harness sent
+            no content it could render. The raw span is under View raw.
+          </p>
+        </div>
+      );
 
     // "unknown" and any future/unrecognized kind: render defensively, never throw.
     default:

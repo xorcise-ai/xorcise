@@ -9,13 +9,16 @@ from collections.abc import Sequence
 
 from xorcise.core.contracts.agent_event import AgentEvent, AgentEventKind
 
-# Action-group kinds only; conversation (message/thinking) + debug (metric/unknown) carry no
-# terrain action, so they are never sent to the model.
+# Action-group kinds only; conversation (message/thinking), debug (metric/unknown) and
+# unclassified spans carry no terrain action, so they are never sent to the model. An
+# unclassified span has no recognised content to attribute and would otherwise sit at
+# "pending" forever.
 _ATTRIBUTABLE_KINDS: frozenset[str] = frozenset(k.value for k in AgentEventKind) - {
     "message",
     "thinking",
     "metric",
     "unknown",
+    "unclassified",
 }
 
 
