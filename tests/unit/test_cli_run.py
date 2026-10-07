@@ -117,7 +117,8 @@ def test_run_status_renders_scores_and_hardfail(monkeypatch):
         hard_fails=["rooted host"],
     )
     monkeypatch.setattr(
-        "xorcise.core.cli.commands.run.RestClient.get_run_result", lambda self, p: payload
+        "xorcise.core.cli.commands.run.RestClient.get_run_result",
+        lambda self, p, verify=False: payload,
     )
     res = runner.invoke(app, ["run", "status", RID])
     assert res.exit_code == 0
@@ -140,7 +141,8 @@ def test_run_status_low_score_no_hardfails_omits_hardfail_marker(monkeypatch):
         trace_ref=None,
     )
     monkeypatch.setattr(
-        "xorcise.core.cli.commands.run.RestClient.get_run_result", lambda self, p: payload
+        "xorcise.core.cli.commands.run.RestClient.get_run_result",
+        lambda self, p, verify=False: payload,
     )
     res = runner.invoke(app, ["run", "status", RID])
     assert res.exit_code == 0
@@ -163,7 +165,8 @@ def test_run_status_renders_conditions_when_model_set(monkeypatch):
         "sandbox_ref": "xorcise/mission-c1:0",
     }
     monkeypatch.setattr(
-        "xorcise.core.cli.commands.run.RestClient.get_run_result", lambda self, p: payload
+        "xorcise.core.cli.commands.run.RestClient.get_run_result",
+        lambda self, p, verify=False: payload,
     )
     res = runner.invoke(app, ["run", "status", RID])
     assert res.exit_code == 0
@@ -179,7 +182,8 @@ def test_run_status_shows_partial_banner_on_timed_out_result(monkeypatch):
     payload["partial"] = True
     payload["partial_trigger"] = "timeout"
     monkeypatch.setattr(
-        "xorcise.core.cli.commands.run.RestClient.get_run_result", lambda self, p: payload
+        "xorcise.core.cli.commands.run.RestClient.get_run_result",
+        lambda self, p, verify=False: payload,
     )
     res = runner.invoke(app, ["run", "status", RID])
     assert res.exit_code == 0
@@ -196,7 +200,8 @@ def test_run_status_no_partial_banner_on_clean_result(monkeypatch):
     payload["partial"] = False
     payload["partial_trigger"] = None
     monkeypatch.setattr(
-        "xorcise.core.cli.commands.run.RestClient.get_run_result", lambda self, p: payload
+        "xorcise.core.cli.commands.run.RestClient.get_run_result",
+        lambda self, p, verify=False: payload,
     )
     res = runner.invoke(app, ["run", "status", RID])
     assert res.exit_code == 0
@@ -209,7 +214,8 @@ def test_run_status_json_dumps_full_result(monkeypatch):
 
     payload = _grade_payload(overall=0.9, deterministic=0.9, judge=0.9)
     monkeypatch.setattr(
-        "xorcise.core.cli.commands.run.RestClient.get_run_result", lambda self, p: payload
+        "xorcise.core.cli.commands.run.RestClient.get_run_result",
+        lambda self, p, verify=False: payload,
     )
     res = runner.invoke(app, ["run", "status", RID, "--json"])
     assert res.exit_code == 0
@@ -245,7 +251,8 @@ def test_run_status_verbose_renders_breakdowns(monkeypatch):
         ],
     )
     monkeypatch.setattr(
-        "xorcise.core.cli.commands.run.RestClient.get_run_result", lambda self, p: payload
+        "xorcise.core.cli.commands.run.RestClient.get_run_result",
+        lambda self, p, verify=False: payload,
     )
     res = runner.invoke(app, ["run", "status", RID, "--verbose"])
     assert res.exit_code == 0
@@ -263,7 +270,8 @@ def test_run_status_default_omits_breakdown(monkeypatch):
         ],
     )
     monkeypatch.setattr(
-        "xorcise.core.cli.commands.run.RestClient.get_run_result", lambda self, p: payload
+        "xorcise.core.cli.commands.run.RestClient.get_run_result",
+        lambda self, p, verify=False: payload,
     )
     res = runner.invoke(app, ["run", "status", RID])
     assert res.exit_code == 0
@@ -280,7 +288,8 @@ def test_run_status_discloses_partial_judge_ranges_and_coverage(monkeypatch):
         judge_coverage=0.4,
     )
     monkeypatch.setattr(
-        "xorcise.core.cli.commands.run.RestClient.get_run_result", lambda self, p: payload
+        "xorcise.core.cli.commands.run.RestClient.get_run_result",
+        lambda self, p, verify=False: payload,
     )
     res = runner.invoke(app, ["run", "status", RID])
     assert res.exit_code == 0
@@ -293,7 +302,7 @@ def test_run_status_grading_in_progress(monkeypatch):
     """The 202 grading signal renders a friendly line and exits 3 (in progress, not failure)."""
     monkeypatch.setattr(
         "xorcise.core.cli.commands.run.RestClient.get_run_result",
-        lambda self, p: {"run_id": RID, "status": "grading"},
+        lambda self, p, verify=False: {"run_id": RID, "status": "grading"},
     )
     res = runner.invoke(app, ["run", "status", RID])
     assert res.exit_code == 3
@@ -310,7 +319,7 @@ def test_run_status_json_is_parseable_even_while_grading(monkeypatch):
 
     monkeypatch.setattr(
         "xorcise.core.cli.commands.run.RestClient.get_run_result",
-        lambda self, p: {"run_id": RID, "status": "grading"},
+        lambda self, p, verify=False: {"run_id": RID, "status": "grading"},
     )
     res = runner.invoke(app, ["run", "status", RID, "--json"])
     assert res.exit_code == 0
@@ -421,7 +430,7 @@ def test_run_regrade_poll_timeout_exits_3_with_status_hint(monkeypatch):
     )
     monkeypatch.setattr(
         "xorcise.core.cli.commands.run.RestClient.get",
-        lambda self, p: {"run_id": RID, "status": "grading"},  # never finishes
+        lambda self, p, verify=False: {"run_id": RID, "status": "grading"},  # never finishes
     )
     monkeypatch.setattr("xorcise.core.cli.commands.run._GRADE_POLL_SECONDS", 0.0)
     monkeypatch.setattr("xorcise.core.cli.commands.run._GRADE_POLL_CAP_SECONDS", 0.0)
@@ -1277,7 +1286,8 @@ def test_run_status_renders_the_telemetry_honesty_block(monkeypatch):
         ],
     }
     monkeypatch.setattr(
-        "xorcise.core.cli.commands.run.RestClient.get_run_result", lambda self, p: payload
+        "xorcise.core.cli.commands.run.RestClient.get_run_result",
+        lambda self, p, verify=False: payload,
     )
     monkeypatch.setattr(
         "xorcise.core.cli.commands.run.RestClient.get_or_none", lambda self, p: telemetry
@@ -1294,7 +1304,8 @@ def test_run_status_json_carries_telemetry_additively(monkeypatch):
 
     payload = _grade_payload(overall=0.9, deterministic=0.9, judge=0.9)
     monkeypatch.setattr(
-        "xorcise.core.cli.commands.run.RestClient.get_run_result", lambda self, p: payload
+        "xorcise.core.cli.commands.run.RestClient.get_run_result",
+        lambda self, p, verify=False: payload,
     )
     monkeypatch.setattr(
         "xorcise.core.cli.commands.run.RestClient.get_or_none",
@@ -1310,7 +1321,8 @@ def test_run_status_json_carries_telemetry_additively(monkeypatch):
 def test_run_status_is_silent_about_telemetry_when_the_server_has_none(monkeypatch):
     payload = _grade_payload(overall=0.9, deterministic=0.9, judge=0.9)
     monkeypatch.setattr(
-        "xorcise.core.cli.commands.run.RestClient.get_run_result", lambda self, p: payload
+        "xorcise.core.cli.commands.run.RestClient.get_run_result",
+        lambda self, p, verify=False: payload,
     )
     monkeypatch.setattr(
         "xorcise.core.cli.commands.run.RestClient.get_or_none", lambda self, p: None
@@ -1736,7 +1748,8 @@ def test_run_status_prints_the_evidence_seal(monkeypatch):
     payload["evidence_verified"] = True
     payload["evidence_status"] = "verified"
     monkeypatch.setattr(
-        "xorcise.core.cli.commands.run.RestClient.get_run_result", lambda self, p: payload
+        "xorcise.core.cli.commands.run.RestClient.get_run_result",
+        lambda self, p, verify=False: payload,
     )
     monkeypatch.setattr(
         "xorcise.core.cli.commands.run.RestClient.get_or_none", lambda self, p, timeout=None: None
@@ -1795,3 +1808,49 @@ def test_run_status_says_so_when_the_seal_could_not_be_hashed(capsys):
 
     out = _plain(capsys.readouterr().out).lower()
     assert "could not be hashed" in out
+
+
+# ── a healthy sealed run must not read as unverifiable (#140 review) ──────────────────────────
+#
+# /result stopped re-hashing on every call (#139), so a run fetched without ?verify=1 comes back
+# `recorded` with a null verdict. The renderer read that verdict field for everything past the
+# first three statuses, so EVERY normal run printed "recorded, but this build could not verify
+# it" — and `run status` was not asking for verification in the first place.
+
+
+def test_run_status_asks_the_server_to_verify_the_seal(monkeypatch):
+    """Without ?verify=1 the server never re-hashes, so the verdict is always null."""
+    asked: list[bool] = []
+    payload = _grade_payload()
+    payload.update(
+        {"evidence_digest": "a" * 64, "evidence_verified": True, "evidence_status": "verified"}
+    )
+
+    def _capture(self, run_id, *, verify=False):
+        asked.append(verify)
+        return payload
+
+    monkeypatch.setattr("xorcise.core.cli.commands.run.RestClient.get_run_result", _capture)
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.get_or_none", lambda self, p, timeout=None: None
+    )
+
+    res = runner.invoke(app, ["run", "status", RID])
+
+    assert res.exit_code == 0
+    assert asked == [True], "run status shows one run to a person — it must ask for the re-hash"
+
+
+def test_a_recorded_seal_says_it_was_not_checked_rather_than_unverifiable(capsys):
+    """`recorded` means nobody asked, which is not the same as "could not answer" — the wording
+    an accusation-shaped sentence would give it."""
+    from xorcise.core.cli.commands import run as run_cmd
+
+    run_cmd._render_result(
+        _graded(evidence_digest="a" * 64, evidence_verified=None, evidence_status="recorded")
+    )
+
+    out = _plain(capsys.readouterr().out)
+    assert "a" * 16 in out
+    assert "not checked here" in out
+    assert "could not verify" not in out, "nobody asked; that is not a failure to answer"

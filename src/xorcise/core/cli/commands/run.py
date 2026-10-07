@@ -111,6 +111,11 @@ def _render_telemetry(telemetry: dict[str, Any] | None) -> None:
 def _render_evidence_seal(r: dict[str, Any]) -> None:
     """The run's evidence seal, printed where the score is read.
 
+    Branches on `evidence_status` throughout — every one of its seven values has an answer here,
+    and none falls through to a verdict field. An earlier version read `evidence_verified` for
+    everything past the first three, so a healthy sealed run fetched WITHOUT `?verify=1` came back
+    `recorded` with a null verdict and printed "could not verify it" — on every normal run.
+
     /result has carried `evidence_digest` and `evidence_verified` since #116 and this view
     printed neither, so the digest reached an operator only as prose inside report.md — a grade
     tied to its evidence for a reader of the report and for nobody looking at `run status`.
@@ -150,8 +155,18 @@ def _render_evidence_seal(r: dict[str, Any]) -> None:
     digest = str(r.get("evidence_digest") or "")
     if not digest:
         return
-    verified = r.get("evidence_verified")
     short = f"{digest[:16]}…"
+    if status == "recorded":
+        # NOT "could not verify": nobody asked. /result re-hashes only on ?verify=1, because the
+        # hash is proportional to the run's telemetry and the sweeping callers fetch this once per
+        # run. `run status` does ask, so this branch is what a reader sees from a surface that
+        # deliberately did not — `run export`'s bundled result.json, today.
+        console.print(
+            f"evidence seal: {short} recorded — not checked here; "
+            "`xorcise run status <id>` re-checks it against the evidence"
+        )
+        return
+    verified = r.get("evidence_verified")
     if verified is True:
         console.print(
             f"evidence seal: {short} verified — the graded evidence is unchanged since sealing"
@@ -457,7 +472,9 @@ def run_status(
     # get_run_result: an active run's server 409 becomes {"status": "active"}, so a
     # status check right after `run create` (the golden-path hint) reads as progress,
     # not a red 409 that looks like a crash.
-    r = client.get_run_result(run_id)
+    # verify=True: this is one run shown to a person, so the digest is worth re-hashing.
+    # The sweeping callers (`run list`, the leaderboard, `run export`) deliberately do not.
+    r = client.get_run_result(run_id, verify=True)
     # The telemetry summary (renderer, content counts, warnings) rides along with a graded
     # result. Tolerant read: an older server without the endpoint simply yields nothing.
     telemetry = client.get_or_none(f"/runs/{run_id}/telemetry") if "grade" in r else None
@@ -702,9 +719,12 @@ def _publish(bodies: dict[str, str], target: Path) -> None:
     as an exported run. Staging is a sibling of the target, so each move is a rename on the same
     filesystem and a file appears whole or not at all.
 
-    Per FILE, not per directory: re-exporting overwrites a run's own files and leaves anything
-    else already in its directory alone, and replacing the whole directory would delete it. The
-    staging name is dot-prefixed so a `<out>/*/` glob never sees it even mid-write.
+    A FIRST export moves the whole staging directory in one rename, so the run appears complete
+    or not at all. A RE-export moves file by file, because replacing the directory would delete
+    anything else already in it — so the atomicity above is traded for not destroying a reader's
+    own files, and what a failure mid-loop leaves is a mix of two exports of the same run rather
+    than a half-written one. The staging name is dot-prefixed so a `<out>/*/` glob never sees it
+    even mid-write.
 
     The price, stated: a run's documents are held twice while they are staged, and a process
     killed outright (SIGKILL, power loss) leaves one `.xorcise-export-*` directory behind that
@@ -721,7 +741,18 @@ def _publish(bodies: dict[str, str], target: Path) -> None:
     try:
         for name, body in bodies.items():
             (staging / name).write_text(body, encoding="utf-8")
-        target.mkdir(parents=True, exist_ok=True)
+        if not target.exists():
+            # Nothing to preserve, so move the DIRECTORY: one rename, so the run appears whole or
+            # not at all. The per-file path below cannot promise that — a failure between two
+            # `os.replace` calls leaves some files new and some missing — and this is the common
+            # case, since most exports write a run for the first time.
+            os.replace(staging, target)
+            return
+        # Re-export onto an existing directory: per FILE, because replacing the directory would
+        # delete anything else already in it. The window the paragraph above closes is open here,
+        # and it is the narrower risk of the two: a run's own files are being overwritten with
+        # fresh copies of themselves, so a failure mid-loop leaves a MIX of two exports of the
+        # same run rather than a half-written one.
         for name in bodies:
             os.replace(staging / name, target / name)
     finally:
@@ -764,7 +795,10 @@ Each selected run becomes `<out>/<run-id8>/` holding `report.md` (or .html), `re
 `run report`, `run traces --export` and `run events export` write for a single run. \
 `result.json` is the server's `/result` envelope verbatim — the grade, the disclosed \
 conditions and the evidence seal; `run status --json` renders that same envelope with a \
-`telemetry` block merged in, so the two are one source read twice, not two formats.
+`telemetry` block merged in, so the two are one source read twice, not two formats. The \
+bundled seal is RECORDED, not verified: checking it re-hashes a run's whole evidence, which a \
+batch would pay once per run, so `evidence_verified` is null throughout. Use \
+`xorcise run status <id>` or the report to get a verdict on one run.
 
     Only finished runs are exported; an active one has no sealed record yet. \
 A run whose OWN document answers an error — a 404 or a 500 on that run's report, result, \
@@ -889,6 +923,12 @@ when you need the tree to contain only this export.
                 # evidence for a reader and for nothing else. NOT byte-identical to `run status
                 # --json`, which merges a `telemetry` block into this same envelope and
                 # re-indents it: one envelope, two renderings, and the tree takes the server's.
+                #
+                # No `?verify=1`: the seal is RECORDED here, never checked. Verifying re-hashes
+                # the run's whole evidence, and a batch would pay that once per run — the cost
+                # that made it opt-in. So `evidence_verified` is null in every bundle and
+                # `evidence_status` is "recorded", which means "not asked" rather than "could not
+                # answer". `run status <id>` and `/report` are where a verdict comes from.
                 "result.json": client.get_text_or_unavailable(
                     f"/runs/{rid}/result", timeout=_EXPORT_FETCH_TIMEOUT_SECONDS
                 ),

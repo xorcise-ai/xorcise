@@ -132,13 +132,21 @@ class RestClient:
             self.base_url,
         )
 
-    def get_run_result(self, run_id: str) -> Any:
+    def get_run_result(self, run_id: str, *, verify: bool = False) -> Any:
         """A run's result envelope; a still-active run (the server 409s 'not terminal
         yet — no result') returns a soft ``{"status": "active"}`` so `run status` /
         `run report` render progress instead of a raw 409 that looks like an internal
-        failure. Every other status is handled exactly like `get`."""
+        failure. Every other status is handled exactly like `get`.
+
+        `verify` asks the server to re-hash the run's evidence against its recorded digest.
+        It is OFF by default because the hash is proportional to the run's telemetry and
+        `/result` is fetched once per run in a loop by `run list`, the leaderboard and the
+        bulk export — the cost that made it opt-in in the first place. A caller showing ONE
+        run to a person asks for it; a caller sweeping many does not, and then the envelope
+        carries `evidence_status: "recorded"` with a null verdict, which means "not asked",
+        not "could not answer"."""
         t = _DEFAULT_TIMEOUT_SECONDS
-        url = f"{self.base_url}/runs/{run_id}/result"
+        url = f"{self.base_url}/runs/{run_id}/result" + ("?verify=1" if verify else "")
         try:
             resp = httpx.get(url, timeout=t, trust_env=False)
         except httpx.HTTPError:
