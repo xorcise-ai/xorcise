@@ -11,7 +11,7 @@ import pytest
 from xorcise.core.contracts.evidence import SealedContext
 from xorcise.core.contracts.mission import RubricCriterion
 from xorcise.core.eval.judge import (
-    _EMPTY_REPLY_REPAIR_MESSAGE,
+    _EMPTY_REPLY_PREFACE,
     _FENCE_CLOSE,
     _FENCE_OPEN,
     _REPAIR_MESSAGE,
@@ -129,8 +129,9 @@ def test_shared_preamble_is_identical_across_criteria_for_cache_reuse():
     a = build_judge_messages(RUBRIC[0], ctx)
     b = build_judge_messages(RUBRIC[1], ctx)
     assert a[0] == b[0] and a[1] == b[1]  # instructions + evidence shared
-    assert a[2] != b[2]  # only the trailing criterion differs
-    assert a[2][1] != b[2][1] and "auth-bypass" in a[2][1] and "exfil-flag" in b[2][1]
+    assert a[2] == b[2]  # the acknowledgement is constant, so it stays in the cached prefix
+    assert a[3] != b[3]  # only the trailing criterion differs
+    assert a[3][1] != b[3][1] and "auth-bypass" in a[3][1] and "exfil-flag" in b[3][1]
 
 
 # ═══ grading behaviour ═══
@@ -273,12 +274,13 @@ def test_budget_counts_agent_artifacts_not_just_the_transcript():
 
 @pytest.mark.unit
 def test_budget_uses_the_injected_token_counter_not_a_byte_count():
-    # A constant counter of 999/message over the 3 outbound messages (instructions, evidence,
-    # criterion) => 2997, which must blow a 100 budget — proving the injected counter drives it.
+    # A constant counter of 999/message over the 4 outbound messages (instructions, evidence,
+    # the constant acknowledgement, criterion) => 3996, which must blow a 100 budget — proving the
+    # injected counter drives it.
     model = _FakeModel({"auth-bypass": {"score": 1.0, "reason": "x"}})
     ctx = SealedContext(run_id="r", trace_ref="t", transcript=("tiny",))
     out = grade_judge(RUBRIC, ctx, model, max_transcript_tokens=100, count_tokens=lambda _t: 999)
-    assert out.status == "unavailable" and "2997" in (out.detail or "")
+    assert out.status == "unavailable" and "3996" in (out.detail or "")
 
 
 # ═══ Lever 1: per-span body cap ═══
@@ -715,9 +717,16 @@ def test_the_repair_retry_shows_the_model_the_reply_it_is_being_asked_to_fix() -
     # The WHOLE shape, not just the tail: asserting [-1]/[-2] alone still passes if the cached
     # [instructions, evidence] prefix is dropped or the criterion is lost, and the retry has to
     # CONTINUE the first call rather than rebuild a fresh conversation around the repair.
-    assert [role for role, _ in repair_call] == ["system", "user", "user", "assistant", "user"]
-    assert repair_call[:3] == endpoint.seen[0], (
-        f"the repair retry must continue the first call, not rebuild it: {repair_call[:3]}"
+    assert [role for role, _ in repair_call] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert repair_call[:4] == endpoint.seen[0], (
+        f"the repair retry must continue the first call, not rebuild it: {repair_call[:4]}"
     )
     assert repair_call[-1] == _REPAIR_MESSAGE
     assert repair_call[-2] == ("assistant", "Sure! Here is my analysis"), (
@@ -783,14 +792,16 @@ def test_an_empty_reply_is_not_shipped_back_as_an_empty_assistant_turn() -> None
     repair_call = endpoint.seen[1]
     blank = [(i, role) for i, (role, content) in enumerate(repair_call) if not content.strip()]
     assert blank == [], f"the repair call carries an empty turn at {blank}"
-    # No assistant turn, because there is no reply to show — and the prompt says so rather than
-    # asking the model to fix something it never sent.
-    assert [role for role, _ in repair_call] == ["system", "user", "user", "user"]
-    assert repair_call[:3] == endpoint.seen[0], (
+    # No assistant turn carrying a reply, because there is no reply to show. The ask is folded
+    # into a fresh statement of the criterion instead of riding a second consecutive user turn,
+    # so the call still alternates — see _retry_after_empty_reply.
+    assert [role for role, _ in repair_call] == ["system", "user", "assistant", "user"]
+    assert repair_call[:3] == endpoint.seen[0][:3], (
         f"the repair retry must continue the first call, not rebuild it: {repair_call[:3]}"
     )
-    assert repair_call[-1] == _EMPTY_REPLY_REPAIR_MESSAGE
+    assert repair_call[-1][1].startswith(_EMPTY_REPLY_PREFACE)
     assert "empty" in repair_call[-1][1].lower()
+    assert "did the thing" in repair_call[-1][1], "the criterion must be restated, not dropped"
 
 
 def test_a_whitespace_only_reply_counts_as_empty() -> None:
@@ -801,8 +812,8 @@ def test_a_whitespace_only_reply_counts_as_empty() -> None:
     out = grade_judge(one, SealedContext(run_id="r", trace_ref="t"), endpoint)
 
     assert out.status == "ok", f"a whitespace-only reply took the judge down: {out.detail}"
-    assert [role for role, _ in endpoint.seen[1]] == ["system", "user", "user", "user"]
-    assert endpoint.seen[1][-1] == _EMPTY_REPLY_REPAIR_MESSAGE
+    assert [role for role, _ in endpoint.seen[1]] == ["system", "user", "assistant", "user"]
+    assert endpoint.seen[1][-1][1].startswith(_EMPTY_REPLY_PREFACE)
 
 
 def test_a_non_empty_reply_is_still_carried_back_verbatim() -> None:
@@ -961,3 +972,121 @@ def test_a_forgery_can_only_appear_nested_inside_an_unforgeable_span() -> None:
     # the named glyphs apply there.
     artifacts_section = evidence.split("## SUBMITTED ARTIFACTS\n", 1)[1].split("\n\n##", 1)[0]
     assert forgery in artifacts_section and "⟦span" not in artifacts_section
+
+
+# ── the OTHER family: strict user/assistant alternation (#144) ────────────────────────────────
+#
+# #111 fixed the templates that reject a system message past index 0. Mistral-family templates on
+# vLLM enforce a different rule — roles must alternate — and answered [system, user, user] with
+# "conversation roles must alternate user/assistant" (vllm#6862). They rejected the pre-#111 shape
+# too, so nothing had regressed, but the claim that the criterion rode "a role every endpoint
+# accepts" was never true. A constant assistant acknowledgement between the evidence and the
+# criterion satisfies both families at once, and is the same bytes on every call so it stays
+# inside the cacheable prefix.
+
+
+class _AlternatingEndpoint:
+    """A server that enforces strict user/assistant alternation after a leading system message.
+
+    Mirrors the Mistral-family template rule: the first message may be `system`, and from there
+    every message must alternate, starting at `user`. Anything else is a 400, exactly as vLLM
+    reports it.
+    """
+
+    def __init__(self, replies: Sequence[str] = ()) -> None:
+        self.seen: list[list[tuple[str, str]]] = []
+        self._replies = list(replies)
+
+    def score(self, messages: Msg) -> str:
+        self.seen.append(list(messages))
+        roles = [role for role, _ in messages]
+        body = roles[1:] if roles and roles[0] == "system" else roles
+        if "system" in body:
+            raise AssertionError(f"system message past the first position: {roles}")
+        expected = ["user", "assistant"]
+        for i, role in enumerate(body):
+            if role != expected[i % 2]:
+                raise JudgeError(f"conversation roles must alternate user/assistant: {roles}")
+        if self._replies:
+            return self._replies.pop(0)
+        return '{"score": 1.0, "reason": "ok"}'
+
+
+def test_an_alternating_endpoint_can_grade_a_run() -> None:
+    """The shape [system, user(evidence), assistant(ack), user(criterion)] satisfies the rule that
+    rejected [system, user, user]."""
+    one = (RubricCriterion(id="c1", text="did the thing", weight=1.0),)
+
+    out = grade_judge(one, SealedContext(run_id="r", trace_ref="t"), _AlternatingEndpoint())
+
+    assert out.status == "ok", out.detail
+
+
+def test_the_repair_retry_also_alternates() -> None:
+    """The unparseable reply becomes the next assistant turn and the ask the next user turn, so
+    the retry alternates without anything extra."""
+    one = (RubricCriterion(id="c1", text="did the thing", weight=1.0),)
+    endpoint = _AlternatingEndpoint(replies=["not json at all"])
+
+    out = grade_judge(one, SealedContext(run_id="r", trace_ref="t"), endpoint)
+
+    assert out.status == "ok", out.detail
+    assert [role for role, _ in endpoint.seen[1]] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+    ]
+
+
+def test_the_empty_reply_retry_also_alternates() -> None:
+    """The case with no reply text to carry: the ask is folded into a restatement of the criterion
+    rather than riding a second consecutive user turn."""
+    one = (RubricCriterion(id="c1", text="did the thing", weight=1.0),)
+    endpoint = _AlternatingEndpoint(replies=[""])
+
+    out = grade_judge(one, SealedContext(run_id="r", trace_ref="t"), endpoint)
+
+    assert out.status == "ok", out.detail
+    assert [role for role, _ in endpoint.seen[1]] == ["system", "user", "assistant", "user"]
+
+
+def test_the_shape_satisfies_both_server_families_at_once() -> None:
+    """Neither fix may cost the other: the same call must pass system-first AND alternation."""
+    one = (RubricCriterion(id="c1", text="did the thing", weight=1.0),)
+
+    for endpoint in (_StrictEndpoint(), _AlternatingEndpoint()):
+        out = grade_judge(one, SealedContext(run_id="r", trace_ref="t"), endpoint)
+        assert out.status == "ok", f"{type(endpoint).__name__}: {out.detail}"
+
+
+# ── `config test` must probe with the shape the judge sends (#145) ────────────────────────────
+#
+# It sent [system, user], which essentially every OpenAI-compatible server accepts — so it could
+# answer "your judge is configured" about a server whose template rejects the real grading call on
+# its role sequence. The operator then discovered that after a mission had run and been sealed.
+
+
+def test_the_probe_sends_the_shape_the_judge_sends() -> None:
+    """Pins the probe against the real builder: bodies differ, the role sequence may not."""
+    from xorcise.core.eval.judge import build_judge_messages, judge_probe_messages
+
+    real = build_judge_messages(
+        RubricCriterion(id="c1", text="did the thing", weight=1.0),
+        SealedContext(run_id="r", trace_ref="t"),
+    )
+    probe = judge_probe_messages()
+
+    assert [role for role, _ in probe] == [role for role, _ in real]
+    assert len(probe) == len(real)
+
+
+def test_the_probe_passes_both_strict_server_families() -> None:
+    """The point of the probe is that a server which would 400 the real call also 400s this one —
+    so it has to clear exactly the same bars when the server is healthy."""
+    from xorcise.core.eval.judge import judge_probe_messages
+
+    for endpoint in (_StrictEndpoint(), _AlternatingEndpoint()):
+        endpoint.score(judge_probe_messages())  # raises if the shape is rejected
