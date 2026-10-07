@@ -18,7 +18,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-# The publisher caps a body at this many characters. Enforced again on the way IN so a
+# The publisher caps a body at this many characters. Enforced again on the way IN — by
+# `_announcement_from_remote` in `catalog/http.py`, which is the wire boundary — so a
 # server-side regression cannot push an unbounded blob through the local API into the DOM.
 MAX_BODY_CHARS = 600
 
@@ -30,8 +31,11 @@ MAX_ID_CHARS = 128
 Placement = Literal["application", "catalog"]
 Tone = Literal["information", "maintenance", "incident", "resolved"]
 
-_PLACEMENTS: tuple[Placement, ...] = ("application", "catalog")
-_TONES: tuple[Tone, ...] = ("information", "maintenance", "incident", "resolved")
+# The members again, as runtime values. Public because the inbound parser in
+# `catalog/http.py` validates against them, and they sit here, directly under the Literals
+# they repeat, so the two cannot drift apart unnoticed.
+PLACEMENTS: tuple[Placement, ...] = ("application", "catalog")
+TONES: tuple[Tone, ...] = ("information", "maintenance", "incident", "resolved")
 
 
 class _Frozen(BaseModel):
@@ -55,69 +59,3 @@ class AnnouncementsResponse(_Frozen):
     catalog switched off, an older deployment that 404s, or any failure at all."""
 
     announcements: tuple[Announcement, ...] = ()
-
-
-def announcement_from_remote(payload: object) -> Announcement | None:
-    """One remote item -> a trusted Announcement, or None when it cannot be trusted.
-
-    A module-level function, not a classmethod, so the frozen model stays a pure DTO.
-
-    LENIENT by design, and deliberately NOT `extra="forbid"` on this path: a strict remote
-    contract has already broken every client of this project once, when the server added a
-    field. The strict frozen model above is the LOCAL wire shape — what we serve to our own
-    frontend, where an unknown key is our own bug. The remote payload is untrusted input from
-    a service that ships independently of this client, so it is read key by key: exactly the
-    six known keys, every other key ignored, and anything unreadable returns None instead of
-    raising. A malformed item costs one banner, never the response.
-
-    `revision` rejects `bool` explicitly because `isinstance(True, int)` is True in Python —
-    without that check a `revision: true` server bug would be served on to the browser as a
-    valid revision.
-
-    `id` and `body_md` are LENGTH-bounded, not merely type-checked, because both are relayed
-    into the browser: `body_md` is rendered, and `id` becomes a localStorage dismissal key.
-    Type-checking alone would let a broken or hostile remote hand the local app an unbounded
-    string to store or draw. Over the bound is a rejection like any other — one banner lost,
-    nothing else.
-
-    An `incident` is then FORCED undismissible whatever the server said: an active incident
-    banner is not something a server bug gets to let an operator click away.
-    """
-    if not isinstance(payload, dict):
-        return None
-    raw: dict[str, object] = payload
-
-    ident = raw.get("id")
-    if not isinstance(ident, str) or not ident or len(ident) > MAX_ID_CHARS:
-        return None
-
-    revision = raw.get("revision")
-    if isinstance(revision, bool) or not isinstance(revision, int):
-        return None
-
-    # `_PLACEMENTS`/`_TONES` are typed tuples of the Literal members, so this membership
-    # test both validates at runtime and narrows the type — no cast needed below.
-    placement = raw.get("placement")
-    if placement not in _PLACEMENTS:
-        return None
-
-    tone = raw.get("tone")
-    if tone not in _TONES:
-        return None
-
-    body_md = raw.get("body_md")
-    if not isinstance(body_md, str) or len(body_md) > MAX_BODY_CHARS:
-        return None
-
-    dismissible = raw.get("dismissible")
-    if not isinstance(dismissible, bool):
-        return None
-
-    return Announcement(
-        id=ident,
-        revision=revision,
-        placement=placement,
-        tone=tone,
-        body_md=body_md,
-        dismissible=False if tone == "incident" else dismissible,
-    )

@@ -25,6 +25,9 @@ _NONE = AnnouncementsResponse()
 
 def list_announcements(settings: Settings) -> AnnouncementsResponse:
     """The active remote announcements, or an empty response — never an exception."""
+    # There is no cache here: every call is a fresh remote fetch. The browser asks once per
+    # document load (`queries.ts` pins that), so "the app does not poll" is a statement about
+    # one TAB and not about one install — three open tabs refreshed are three remote requests.
     # Short-circuit BEFORE any network call. `catalog_enabled`/`catalog_url` are the operator's
     # "disconnect the remote catalog" switch, and it would not mean much if the app still
     # phoned home for banners after it was thrown.

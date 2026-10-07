@@ -19,9 +19,17 @@ import type { ReactNode } from "react";
  * Three implementations of this grammar exist — the Python validator, the admin console's
  * TypeScript renderer, and this one — and nothing in any type system connects them.
  * `announcement-markdown.vectors.json` is the agreement: a corpus of inputs and their exact
- * token trees, byte-identical in all three repos and pinned by SHA-256 in all three test
- * suites. Change a rule here without regenerating and re-pinning the fixture everywhere and
- * `markdown.test.tsx` fails, which is the whole point.
+ * token trees, meant to be byte-identical in all three repos.
+ *
+ * Be exact about what that buys, because it is less than it sounds. `markdown.test.tsx`
+ * asserts the SHA-256 of the copy in THIS repo, so a rule changed here without regenerating
+ * and re-pinning the fixture fails the suite. Nothing in this repo can observe the other two
+ * copies: keeping them in step is a PROCEDURE (`_comment` in the fixture spells it out — bump
+ * `fixture_version`, re-pin, copy across in the same change), not a check. And the corpus
+ * only pins the rules somebody wrote a vector for. Where this file ends up stricter than the
+ * remote validator — the userinfo rule below is, today — a body the publisher accepted falls
+ * back here to literal text, which is the lenient direction and costs a reader formatting,
+ * never the words.
  *
  * Token tree (plain arrays, so it compares equal to the JSON fixture):
  *     block  := ["p", [inline, ...]] | ["ul", [[inline, ...], ...]]
@@ -115,12 +123,38 @@ const S = `[${WS}]`;
 const D = "\\p{Nd}";
 
 const PY_STRIP = new RegExp(`^${S}+|${S}+$`, "g");
-/** `str.rstrip()` — the trailing half, which is all `normalizeBody` wants. */
-const PY_STRIP_END = new RegExp(`${S}+$`);
+/** One code unit against the same class — the step of the linear strip below. */
+const PY_SPACE = new RegExp(`^${S}$`);
 
-/** `str.strip()`, not `String.trim()` — see the note above on U+0085 and U+FEFF. */
+/**
+ * `str.strip()`, not `String.trim()` — see the note above on U+0085 and U+FEFF.
+ *
+ * Still a regex, unlike `pyRstrip`, and the difference is reachability: everything that calls
+ * this runs inside `tokenize`, downstream of the 600-code-point cap, on a line that is already
+ * bounded. See the note on `pyRstrip` for what happens when that is not true.
+ */
 function pyStrip(s: string): string {
   return s.replace(PY_STRIP, "");
+}
+
+/**
+ * `str.rstrip()` — the trailing half, which is all `normalizeBody` wants.
+ *
+ * A loop and not `/[\s]+$/`, which is QUADRATIC on the shape "long whitespace run, then one
+ * more character": the engine re-scans the whole run from every start position before it can
+ * conclude there is no match. Measured at `"a" + " ".repeat(n) + "b"`: 46 ms at n=10 000,
+ * 4.3 s at 100 000, 37 s at 300 000, and the same for NBSP. `normalizeBody` is the one place
+ * in this file that runs BEFORE tokenize's length cap, so it is the one place where the input
+ * is whatever arrived rather than at most 600 code points — a renderer the header calls the
+ * safety boundary cannot be relying on a bound checked after it.
+ *
+ * Code units rather than code points is safe here and not lucky: every member of the class is
+ * in the BMP, so a lone surrogate simply fails the test and ends the scan.
+ */
+function pyRstrip(s: string): string {
+  let end = s.length;
+  while (end > 0 && PY_SPACE.test(s[end - 1])) end -= 1;
+  return end === s.length ? s : s.slice(0, end);
 }
 
 /**
@@ -180,7 +214,15 @@ const LINK_AT = new RegExp(`\\[([^[\\]\\n]+)\\]\\(([^${WS}()]+)\\)`, "y");
 // Python's `$` also matches just before a trailing newline and JavaScript's does not. It
 // cannot bite here: a url only ever reaches these from LINK_AT's second group, which excludes
 // every whitespace character including `\n`.
-export const URL_HTTPS = /^https:\/\/[A-Za-z0-9\-._~:/?#@!$&*+,;=%]+$/;
+// The AUTHORITY — everything between `https://` and the first `/`, `?` or `#` — is a
+// narrower class than the rest of the url, and the one character it drops is `@`. An `@`
+// there is USERINFO, not part of the host: a browser reads `https://xorcise.ai@evil.example/`
+// as host `evil.example` with the username `xorcise.ai`, so the anchor says one site and goes
+// to another. A banner is published centrally and read by people who trust the app it appears
+// in, which makes a link that lies about its destination the url bug that matters here. `@`
+// stays legal everywhere after the authority ends, where it is ordinary in a path or a query.
+export const URL_HTTPS =
+  /^https:\/\/[A-Za-z0-9\-._~:!$&*+,;=%]+(?:[/?#][A-Za-z0-9\-._~:/?#@!$&*+,;=%]*)?$/;
 export const URL_PATH = /^\/(?!\/)[A-Za-z0-9\-._~:/?#@!$&*+,;=%]*$/;
 // The scheme gate is the PREFIX only, so a URL that opens correctly but carries a bad byte
 // reports `url_invalid` (a typo) rather than `url_scheme` (a refused protocol). Two different
@@ -216,7 +258,7 @@ const LINE_RULES: ReadonlyArray<readonly [string, RegExp]> = [
  */
 export function normalizeBody(md: string): string {
   const text = md.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  const lines = text.split("\n").map((line) => line.replace(PY_STRIP_END, ""));
+  const lines = text.split("\n").map(pyRstrip);
 
   let start = 0;
   let end = lines.length;
@@ -447,10 +489,24 @@ export function renderAnnouncementMarkdown(md: string): ReactNode {
   try {
     blocks = tokenize(normalized);
   } catch (err) {
-    if (err instanceof InvalidAnnouncementBody) return <p>{normalized}</p>;
+    if (err instanceof InvalidAnnouncementBody) return <p>{literalLines(normalized)}</p>;
     throw err;
   }
   return <>{blocks.map((block, i) => renderBlock(block, i))}</>;
+}
+
+/**
+ * The body as literal text, with the author's line breaks kept.
+ *
+ * A bare `<p>{normalized}</p>` collapsed them, so a two-line outage notice —
+ * "Status: down" / "ETA: 15:00" — arrived as one run-on sentence, in the fallback of all
+ * places, which is already where the reader is getting the least help. `<br>` is the same
+ * answer `paragraph` gives a newline and one of the eight elements this renderer may emit.
+ */
+function literalLines(text: string): ReactNode[] {
+  return text
+    .split("\n")
+    .flatMap((line, index) => (index ? [<br key={index} />, line] : [line]));
 }
 
 function renderBlock(block: Block, index: number): ReactNode {

@@ -1,5 +1,5 @@
 {
-  "fixture_version": 1,
+  "fixture_version": 2,
   "grammar": "xorcise-announcement-md/1",
   "_comment": "Byte-identical copies live in xorcise-ai (apps/console/src/lib/) and xorcise (frontend/src/features/announcements/). Bump fixture_version, update ANNOUNCEMENT_VECTORS_SHA256 in all three tests, and copy the file to the other repo in the same change.",
   "reason_codes": [
@@ -619,6 +619,12 @@
     {
       "id": "url_quote",
       "input": "[x](https://a.b/c\"d)",
+      "expect": "reject",
+      "code": "url_invalid"
+    },
+    {
+      "id": "url_userinfo",
+      "input": "[click here](https://xorcise.ai@evil.example/)",
       "expect": "reject",
       "code": "url_invalid"
     }

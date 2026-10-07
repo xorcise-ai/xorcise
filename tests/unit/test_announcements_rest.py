@@ -5,7 +5,13 @@ switch, an empty setting, stub mode, an unreachable host, or an outright excepti
 source — can produce anything other than a 200 with an announcements array.
 
 NOTE the env override in every test: the default `catalog_url` is a REAL production
-endpoint, so an un-overridden test would dial the internet from the unit lane.
+endpoint, so an un-overridden test would dial the internet from the unit lane. The override is
+`http://127.0.0.1:1` — a closed port on the loopback interface — rather than a reserved
+`.invalid` name, because a name still goes to the resolver: `.invalid` is guaranteed not to
+EXIST, not guaranteed not to ANSWER, and a hijacking or captive resolver (the case
+`catalog/http.py` names in its own comments) turns "unreachable" into a real connection
+attempt against somebody else's host. A refused loopback connect needs no resolver and fails
+in microseconds.
 """
 
 from __future__ import annotations
@@ -17,6 +23,10 @@ from xorcise.core.contracts.announcements import Announcement
 from xorcise.core.roles.boot.role_all import build_rest_app
 
 pytestmark = pytest.mark.unit
+
+
+# A closed port on loopback: refused immediately, by the kernel, with no name to resolve.
+_UNREACHABLE = "http://127.0.0.1:1"
 
 
 def _client() -> TestClient:
@@ -75,22 +85,22 @@ def test_no_catalog_url_returns_empty_without_building_a_source(migrated_home, m
 def test_stub_mode_returns_empty_without_building_a_source(migrated_home, monkeypatch):
     # `xorcise up --stub` must stay deterministic, and the docs screenshot pipeline runs stub
     # mode against the real default catalog URL — so stub mode must never fetch a live banner.
-    _settings(monkeypatch, XORCISE_USE_STUBS="1", XORCISE_CATALOG_URL="https://catalog.invalid")
+    _settings(monkeypatch, XORCISE_USE_STUBS="1", XORCISE_CATALOG_URL=_UNREACHABLE)
     monkeypatch.setattr("xorcise.core.rest.catalog_view.build_catalog_source", _explode)
     r = _client().get("/api/announcements")
     assert r.status_code == 200 and r.json() == {"announcements": []}
 
 
 def test_an_unreachable_catalog_is_empty_not_a_500(migrated_home, monkeypatch):
-    # Deliberately offline: a host that does not resolve. The endpoint answers 200 with no
+    # Deliberately offline: a port nothing is listening on. The endpoint answers 200 with no
     # banners rather than a 500 that a frontend error boundary would have to absorb.
-    _settings(monkeypatch, XORCISE_CATALOG_URL="https://catalog.invalid", XORCISE_USE_STUBS="0")
+    _settings(monkeypatch, XORCISE_CATALOG_URL=_UNREACHABLE, XORCISE_USE_STUBS="0")
     r = _client().get("/api/announcements")
     assert r.status_code == 200 and r.json() == {"announcements": []}
 
 
 def test_a_configured_source_serves_both_placements(migrated_home, monkeypatch):
-    _settings(monkeypatch, XORCISE_CATALOG_URL="https://catalog.invalid", XORCISE_USE_STUBS="0")
+    _settings(monkeypatch, XORCISE_CATALOG_URL=_UNREACHABLE, XORCISE_USE_STUBS="0")
     source = _Source(_banner("app-1", "application"), _banner("cat-1", "catalog"))
     monkeypatch.setattr(
         "xorcise.core.rest.catalog_view.build_catalog_source", lambda settings: source
@@ -109,7 +119,7 @@ def test_a_raising_source_is_empty_and_leaves_the_catalog_working(
     # does reach the view's broad except (the logged warning proves which branch ran).
     import logging
 
-    _settings(monkeypatch, XORCISE_CATALOG_URL="https://catalog.invalid", XORCISE_USE_STUBS="0")
+    _settings(monkeypatch, XORCISE_CATALOG_URL=_UNREACHABLE, XORCISE_USE_STUBS="0")
 
     class _Broken:
         def announcements(self) -> tuple[Announcement, ...]:

@@ -40,12 +40,16 @@ import {
  * lenient TypeScript renderers — the admin console's and this one. Nothing in any type system
  * connects them, so the only thing keeping the three honest is a shared corpus of vectors.
  *
- * `announcement-markdown.vectors.json` is that corpus, and a BYTE-IDENTICAL copy of it lives
- * in the other two repos. Each of the three suites pins the same SHA-256 of the file. Editing
- * one copy — even reformatting it — changes the digest and fails the pin in whichever suite
- * was touched, which is the drift alarm: it is impossible to quietly change the grammar in
- * one repo. To change it deliberately, bump `fixture_version`, regenerate, update
- * `ANNOUNCEMENT_VECTORS_SHA256` in all three suites and copy the file across in one change.
+ * `announcement-markdown.vectors.json` is that corpus, and a BYTE-IDENTICAL copy of it is
+ * meant to live in the other two repos.
+ *
+ * What the pin below actually proves, which is narrower than it reads: editing THIS copy —
+ * even reformatting it — changes the digest and fails THIS suite, so the corpus cannot drift
+ * from the digest written beside it. It proves nothing about the other two copies, which this
+ * repo cannot see; `fixture_version` is the only cross-repo signal, and keeping the three in
+ * step is the procedure in the fixture's own `_comment`, not a check. To change the grammar
+ * deliberately: bump `fixture_version`, regenerate, update `ANNOUNCEMENT_VECTORS_SHA256` in
+ * all three suites and copy the file across in one change.
  *
  * Note the calling convention the vectors assume: `input` is RAW (it may contain CRLF or be
  * blank), so a vector is parsed as `tokenize(normalizeBody(input))`, never `tokenize(input)`.
@@ -60,10 +64,11 @@ import {
 
 const VECTORS_PATH = join(__dirname, "announcement-markdown.vectors.json");
 
-// The pin. The same digest is asserted in the remote service's pytest suite and in the
-// console's vitest suite, over byte-identical copies of this file.
+// The pin, over the copy in this repo. The other two suites are expected to assert the same
+// digest over the same bytes; version 2 adds the `url_userinfo` vector and has not reached
+// them yet.
 const ANNOUNCEMENT_VECTORS_SHA256 =
-  "4f7bd081b84a517b1b14b06cb3ba8e40e87d43298295f422a09f1cbe9ca9deaf";
+  "33d9e76eca219b95de3e9a81fbeed9ace6626a2b091189348c6a781f932abc63";
 
 interface Vector {
   id: string;
@@ -89,8 +94,8 @@ const okVectors = FIXTURE.vectors.filter((v) => v.expect === "ok");
 const rejectVectors = FIXTURE.vectors.filter((v) => v.expect === "reject");
 
 describe("the shared vector fixture", () => {
-  it("is byte-identical to the copy the other two implementations test against", () => {
-    expect(FIXTURE.fixture_version).toBe(1);
+  it("matches the digest pinned beside it", () => {
+    expect(FIXTURE.fixture_version).toBe(2);
     expect(FIXTURE.grammar).toBe(GRAMMAR);
     const digest = createHash("sha256").update(readFileSync(VECTORS_PATH)).digest("hex");
     expect(
@@ -195,6 +200,7 @@ const SAFE_LINK_PROBES = [
 
 const HOSTILE_LINK_PROBES = [
   "[x](javascript:alert(1))",
+  "[x](https://xorcise.ai@evil.example/)",
   "[x](javascript:alert)",
   "[x](JavaScript:alert)",
   "[x](data:text/html;base64,PHNjcmlwdD4=)",
@@ -327,11 +333,125 @@ describe("renderAnnouncementMarkdown", () => {
     }
   });
 
+  it("keeps the author's lines when it falls back to literal text", () => {
+    // The fallback is the whole body as text, and a banner is two or three lines of prose. A
+    // bare <p> collapses the newlines, so an outage notice arrived as one run-on sentence —
+    // in the fallback of all places, where the reader already has the least help.
+    const { container } = render(
+      <div>{renderAnnouncementMarkdown("Status: <b>down</b>\nETA: 15:00")}</div>,
+    );
+    const p = container.querySelector("p");
+    expect(container.querySelector("b")).toBeNull();
+    expect(p?.innerHTML).toBe("Status: &lt;b&gt;down&lt;/b&gt;<br>ETA: 15:00");
+    expect(p?.querySelectorAll("br")).toHaveLength(1);
+  });
+
   it("keeps an author's line break rather than reflowing the banner", () => {
     const { container } = render(
       <div>{renderAnnouncementMarkdown("Line one\nLine two")}</div>,
     );
     expect(container.querySelectorAll("br")).toHaveLength(1);
     expect(container.querySelectorAll("p")).toHaveLength(1);
+  });
+});
+
+/* --- userinfo: a url that says one host and goes to another --------------------- */
+
+describe("userinfo in an https url", () => {
+  it("is refused, because the host is what the reader cannot see", () => {
+    // In `https://xorcise.ai@evil.example/` everything before the `@` is USERINFO, not a
+    // host: the anchor reads as xorcise.ai and navigates to evil.example. An announcement is
+    // published centrally and read by people who trust the app it appears in, so a link that
+    // lies about where it goes is the one url bug that matters in this grammar.
+    const probe = "[click here](https://xorcise.ai@evil.example/)";
+    const { container } = render(<div>{renderAnnouncementMarkdown(probe)}</div>);
+    expect(container.querySelector("a")).toBeNull();
+    expect(container.textContent).toBe(probe);
+    expect(URL_HTTPS.test("https://xorcise.ai@evil.example/")).toBe(false);
+    expect(URL_HTTPS.test("https://xorcise.ai@evil.example")).toBe(false);
+  });
+
+  it("is still allowed once the path has started, where it cannot be a host", () => {
+    // Non-vacuity: the rule is about the AUTHORITY, not about the character. `@` is ordinary
+    // in a path or a query and refusing it everywhere would break real links.
+    expect(URL_HTTPS.test("https://xorcise.ai/u/@guru")).toBe(true);
+    expect(URL_HTTPS.test("https://xorcise.ai/?to=a@b")).toBe(true);
+    expect(URL_HTTPS.test("https://xorcise.ai#a@b")).toBe(true);
+    expect(URL_HTTPS.test("https://docs.xorcise.ai/guide")).toBe(true);
+    expect(URL_PATH.test("/u/@guru")).toBe(true);
+  });
+});
+
+/* --- the renderer defends itself ------------------------------------------------
+ *
+ * This file's header presents the renderer as the safety boundary, so it has to hold on its
+ * own input rather than on the publisher's promise about it. */
+
+// The pre-change rstrip, kept verbatim as an ORACLE: the replacement has to agree with it on
+// every character, because the shared fixture pins token trees and a strip that differed by
+// one code point would move them.
+const ORACLE_WS =
+  "\\t\\n\\v\\f\\r\\x1C-\\x1F\\x20\\x85\\xA0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000";
+const ORACLE_STRIP_END = new RegExp(`[${ORACLE_WS}]+$`);
+
+function oracleNormalizeBody(md: string): string {
+  const text = md.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const lines = text.split("\n").map((line) => line.replace(ORACLE_STRIP_END, ""));
+  let start = 0;
+  let end = lines.length;
+  while (start < end && !lines[start]) start += 1;
+  while (end > start && !lines[end - 1]) end -= 1;
+  const collapsed: string[] = [];
+  for (const line of lines.slice(start, end)) {
+    if (!line && collapsed.length && !collapsed[collapsed.length - 1]) continue;
+    collapsed.push(line);
+  }
+  return collapsed.join("\n");
+}
+
+const WS_CHARS = [
+  "\t", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x1f", " ", "\x85", "\xa0",
+  " ", " ", " ", " ", " ", " ", " ", " ", "　",
+];
+// Neither of these is whitespace to Python's `str.strip()`, and both are to JavaScript's
+// `trim()` or `\s` — they are the reason the character class is spelled out at all.
+const NOT_WS_CHARS = ["﻿", "​"];
+
+describe("normalizeBody", () => {
+  it("strips exactly what the regex form stripped", () => {
+    const corpus: string[] = ["", "\n", "   ", "a", "a b"];
+    for (const ws of [...WS_CHARS, ...NOT_WS_CHARS]) {
+      corpus.push(`a${ws}`, `${ws}a`, `a${ws}${ws}b${ws}`, `${ws}`, `${ws}${ws}`);
+      corpus.push(`one${ws}\ntwo${ws}\n\n\nthree${ws}`);
+      corpus.push(`\r\n${ws}a${ws}\r\rb\r\n`);
+    }
+    for (const input of corpus) {
+      expect(normalizeBody(input), JSON.stringify(input)).toBe(oracleNormalizeBody(input));
+    }
+  });
+
+  it("normalises a pathological whitespace run in linear time", () => {
+    // `[\s]+$` applied per line backtracks across the whole run at every start position:
+    // "a" + " ".repeat(n) + "b" measured 46 ms at n=10 000, 4.3 s at 100 000 and 37 s at
+    // 300 000. The 600-character cap makes that unreachable from a published announcement,
+    // but the cap is checked INSIDE tokenize, which normalizeBody runs before — so on this
+    // path the renderer was relying on a promise made somewhere else.
+    for (const filler of [" ", "\xa0"]) {
+      const hostile = `a${filler.repeat(100_000)}b`;
+      const started = performance.now();
+      normalizeBody(hostile);
+      const elapsed = performance.now() - started;
+      expect(elapsed, `${JSON.stringify(filler)} took ${elapsed.toFixed(0)} ms`).toBeLessThan(
+        1000,
+      );
+    }
+  });
+
+  it("lets renderAnnouncementMarkdown refuse the same body promptly", () => {
+    // The whole public path, not just the helper: over the cap, so the answer is the literal
+    // fallback — the point is that it ARRIVES.
+    const started = performance.now();
+    renderAnnouncementMarkdown(`a${" ".repeat(100_000)}b`);
+    expect(performance.now() - started).toBeLessThan(1000);
   });
 });

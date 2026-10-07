@@ -1,5 +1,6 @@
 "use client";
 
+import { useCallback } from "react";
 import { AnnouncementBanner } from "./announcement-banner";
 import { useDismissal } from "./dismissal";
 import { announcementFor, useAnnouncements } from "./queries";
@@ -35,12 +36,35 @@ function Placement({
     announcement?.id ?? "",
     announcement?.revision ?? 0,
   );
-  if (!announcement || dismissed) return null;
+  const dismissAndKeepFocus = useCallback(() => {
+    dismissNow();
+    focusMainLandmark();
+  }, [dismissNow]);
+  // `&& dismissible`, because the dismissal record is the READER'S file, not ours: another
+  // tab, an older build or a devtools console can write any id and revision into it. Honouring
+  // it unconditionally meant one hand-written entry hid an active incident — the single banner
+  // the remote parser and the banner component both go out of their way to make unclosable.
+  // Storage may hide only what the publisher allowed to be hidden.
+  if (!announcement || (dismissed && announcement.dismissible)) return null;
   return (
     <AnnouncementBanner
       announcement={announcement}
       variant="shell"
-      onDismiss={dismissNow}
+      onDismiss={dismissAndKeepFocus}
     />
   );
+}
+
+/**
+ * Dismiss, then put focus somewhere it still exists.
+ *
+ * The close button is the focused element when this runs and unmounts with the banner an
+ * instant later. With no target focus falls to <body>, where a keyboard or switch user's next
+ * Tab restarts at the top of the document — past the skip link, the header and the whole
+ * sidebar (WCAG 2.4.3, Focus Order). The app shell already gives <main> `tabIndex={-1}` so its
+ * skip link can land there, which makes it the one focus target the shell guarantees exists;
+ * `preventScroll` keeps dismissing a banner from also moving the page under the reader.
+ */
+function focusMainLandmark(): void {
+  document.getElementById("main-content")?.focus({ preventScroll: true });
 }

@@ -4,6 +4,7 @@ import { http, HttpResponse } from "msw";
 import { server } from "@/test/msw/server";
 import { renderWithProviders } from "@/test/render";
 import { useUiStore } from "@/stores/ui";
+import { DISMISSED_STORAGE_KEY } from "./dismissal";
 import type { Announcement } from "@/lib/api/types";
 
 vi.mock("next/navigation", () => ({ usePathname: () => "/" }));
@@ -165,6 +166,48 @@ describe("ApplicationAnnouncement in the app shell", () => {
     expect(screen.getByText("page-content")).toBeInTheDocument();
     expect(screen.getByLabelText("XORCISE.AI")).toBeInTheDocument();
     expect(screen.getByRole("main")).toBeInTheDocument();
+  });
+
+  it("still shows an undismissible banner that storage claims was dismissed", async () => {
+    // localStorage is the reader's own file: another tab, an older build, a bookmarklet or a
+    // devtools console can put anything in it. The placement honoured `isDismissed` whatever
+    // the announcement said, so one hand-written entry hid an ACTIVE INCIDENT — the one
+    // banner the whole stack goes out of its way to make unclosable (the remote parser forces
+    // dismissible=false for an incident, and the banner refuses to draw a close control).
+    // Storage may only hide what the publisher allowed to be hidden.
+    const incident: Announcement = {
+      ...APPLICATION,
+      id: "inc-1",
+      tone: "incident",
+      dismissible: false,
+      body_md: "Catalog pulls are failing.",
+    };
+    window.localStorage.setItem(DISMISSED_STORAGE_KEY, JSON.stringify({ "inc-1": 1 }));
+    serveAnnouncements(incident);
+    renderShell();
+
+    const banner = await screen.findByTestId("announcement-banner-application");
+    expect(banner).toHaveTextContent("Catalog pulls are failing.");
+    // …and it is still the undismissible one, so this is not passing by losing the tone.
+    expect(screen.queryByRole("button", { name: "Dismiss announcement" })).not.toBeInTheDocument();
+  });
+
+  it("hands focus to the main landmark when the close button unmounts", async () => {
+    // Dismissing removes the element that has focus. With nothing to take it, focus falls to
+    // <body> and the next Tab restarts at the top of the document — past the skip link, the
+    // header and the whole sidebar (WCAG 2.4.3). <main> is already tabIndex={-1} for the skip
+    // link, so it is the one target the shell guarantees exists.
+    serveAnnouncements(APPLICATION);
+    renderShell();
+
+    const close = await screen.findByRole("button", { name: "Dismiss announcement" });
+    close.focus();
+    expect(document.activeElement).toBe(close);
+    fireEvent.click(close);
+
+    expect(screen.queryByTestId("announcement-banner-application")).not.toBeInTheDocument();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(screen.getByRole("main"));
   });
 
   it("ignores a catalog-placement announcement", async () => {

@@ -11,12 +11,12 @@ a banner and nothing else.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 import httpx
 import pytest
 
-from xorcise.core.catalog.http import HttpCatalogSource
+from xorcise.core.catalog.http import HttpCatalogSource, _announcement_from_remote
 
 pytestmark = pytest.mark.unit
 
@@ -212,3 +212,227 @@ def test_the_announcements_timeout_is_shorter_than_the_general_one() -> None:
     from xorcise.core.catalog.http import _ANNOUNCEMENTS_TIMEOUT, _TIMEOUT
 
     assert _ANNOUNCEMENTS_TIMEOUT < _TIMEOUT
+
+
+def test_the_overall_budget_is_what_bounds_the_page_load_not_the_per_read_timeout() -> None:
+    # `timeout=` is HTTPX's PER-OPERATION (inactivity) timeout, so a server that trickles a
+    # byte just inside it holds the request open for as long as it likes. The deadline is the
+    # bound that actually survives that, so it has to exist and be the larger of the two.
+    from xorcise.core.catalog.http import (
+        _ANNOUNCEMENTS_DEADLINE,
+        _ANNOUNCEMENTS_TIMEOUT,
+        _TIMEOUT,
+    )
+
+    # At least one read's worth of patience, and still shorter than the general catalog
+    # timeout — a page-load call may not cost more than an explicit browse does.
+    assert _ANNOUNCEMENTS_TIMEOUT <= _ANNOUNCEMENTS_DEADLINE < _TIMEOUT
+
+
+def _streaming(chunks: Iterator[bytes]) -> Callable[[httpx.Request], httpx.Response]:
+    """A 200 whose body is produced lazily, so a test can count what was actually pulled."""
+
+    def h(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=chunks, headers={"content-type": "application/json"})
+
+    return h
+
+
+def test_an_oversized_body_is_abandoned_mid_stream_not_buffered_then_rejected() -> None:
+    # The row and string limits run AFTER the body is in memory, so on their own they bound
+    # nothing the remote actually costs us: a valid announcement beside a 50 MB field was
+    # parsed in full. The cap has to be applied to the BYTES, while they stream.
+    pulled = 0
+
+    def chunks() -> Iterator[bytes]:
+        nonlocal pulled
+        for _ in range(4096):  # 32 MB if anything reads it all
+            pulled += 1
+            yield b"x" * 8192
+
+    assert _source(_streaming(chunks())).announcements() == ()
+    # 8 KiB a chunk, so crossing a cap in the tens of KiB is a handful of chunks. The number
+    # is loose on purpose — what it pins is "a bounded prefix", not the exact cap.
+    assert pulled < 64, f"read {pulled} chunks ({pulled * 8} KiB) before giving up"
+
+
+def test_a_well_formed_response_is_nowhere_near_the_byte_cap() -> None:
+    # The non-vacuity half of the test above: the cap must never truncate a real response, so
+    # pin that a maximal legitimate one (two placements, both bodies at the published limit)
+    # is still served in full.
+    from xorcise.core.contracts.announcements import MAX_BODY_CHARS
+
+    big = {**_APP, "body_md": "x" * MAX_BODY_CHARS}
+    other = {**_CAT, "body_md": "y" * MAX_BODY_CHARS}
+    anns = _source(_ok({"announcements": [big, other]})).announcements()
+    assert [a.id for a in anns] == ["app-1", "cat-1"]
+    assert len(anns[0].body_md) == MAX_BODY_CHARS
+
+
+def test_a_trickling_response_is_abandoned_at_the_overall_deadline(monkeypatch) -> None:
+    # The reproduction from review, scaled down: every individual read lands well inside the
+    # per-operation timeout, so only a wall-clock budget can end this. Without one the call
+    # runs for as long as the remote cares to keep typing.
+    import time
+
+    monkeypatch.setattr("xorcise.core.catalog.http._ANNOUNCEMENTS_DEADLINE", 0.3)
+    pulled = 0
+
+    def chunks() -> Iterator[bytes]:
+        nonlocal pulled
+        for _ in range(200):  # 10 s at this rate
+            pulled += 1
+            time.sleep(0.05)
+            yield b" "
+
+    started = time.monotonic()
+    assert _source(_streaming(chunks())).announcements() == ()
+    elapsed = time.monotonic() - started
+    assert elapsed < 2.0, f"ran for {elapsed:.2f}s against a 0.3s budget"
+    assert pulled < 200
+
+
+def test_an_abandoned_fetch_warns_once_so_an_operator_can_see_it() -> None:
+    # A remote that overruns a bound is a SERVER-side defect, which is the same split the
+    # shape/item warnings already use: quiet for the failures a laptop causes, one line for
+    # the ones the remote causes.
+    import logging
+
+    def chunks() -> Iterator[bytes]:
+        for _ in range(4096):
+            yield b"x" * 8192
+
+    records: list[logging.LogRecord] = []
+    logger = logging.getLogger("xorcise.core.catalog.http")
+
+    class _Collect(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Collect(level=logging.WARNING)
+    logger.addHandler(handler)
+    try:
+        assert _source(_streaming(chunks())).announcements() == ()
+    finally:
+        logger.removeHandler(handler)
+    assert len([r for r in records if r.levelno >= logging.WARNING]) == 1
+
+
+# --- the inbound row parser ---------------------------------------------------------------
+#
+# `_announcement_from_remote` reads ONE untrusted row. It moved here from `contracts` with the
+# code: it is a wire parser like `_to_item`, and the frozen model it builds is pinned
+# separately in `test_announcements_contract.py`.
+
+_GOOD: dict[str, object] = {
+    "id": "a1",
+    "revision": 3,
+    "placement": "application",
+    "tone": "information",
+    "body_md": "Scheduled maintenance on **Sunday**.",
+    "dismissible": True,
+}
+
+
+def test_the_parser_reads_a_well_formed_row() -> None:
+    ann = _announcement_from_remote(_GOOD)
+    assert ann is not None
+    assert ann.id == "a1"
+    assert ann.revision == 3
+    assert ann.placement == "application"
+    assert ann.tone == "information"
+    assert ann.dismissible is True
+
+
+def test_the_parser_ignores_a_key_the_server_added_later() -> None:
+    # The whole point of the lenient path: a server that grows a field must not blank the
+    # banner on every client that predates it.
+    ann = _announcement_from_remote({**_GOOD, "starts_at": "2026-09-01T00:00:00Z", "colour": "red"})
+    assert ann is not None and ann.id == "a1"
+
+
+def test_the_parser_rejects_a_non_mapping() -> None:
+    assert _announcement_from_remote(["not", "a", "mapping"]) is None
+    assert _announcement_from_remote(None) is None
+    assert _announcement_from_remote("a1") is None
+
+
+def test_the_parser_rejects_a_missing_key() -> None:
+    for key in _GOOD:
+        payload = {k: v for k, v in _GOOD.items() if k != key}
+        assert _announcement_from_remote(payload) is None, key
+
+
+def test_the_parser_rejects_an_empty_or_non_string_id() -> None:
+    assert _announcement_from_remote({**_GOOD, "id": ""}) is None
+    assert _announcement_from_remote({**_GOOD, "id": 7}) is None
+
+
+def test_the_parser_rejects_an_oversized_id() -> None:
+    # The browser uses `id` as a localStorage dismissal key, so an unbounded identifier from a
+    # broken or hostile remote would be written verbatim into the user's browser storage.
+    from xorcise.core.contracts.announcements import MAX_ID_CHARS
+
+    assert _announcement_from_remote({**_GOOD, "id": "a" * MAX_ID_CHARS}) is not None
+    assert _announcement_from_remote({**_GOOD, "id": "a" * (MAX_ID_CHARS + 1)}) is None
+
+
+def test_the_parser_rejects_a_bad_placement() -> None:
+    assert _announcement_from_remote({**_GOOD, "placement": "sidebar"}) is None
+
+
+def test_the_parser_rejects_a_bad_tone() -> None:
+    assert _announcement_from_remote({**_GOOD, "tone": "urgent"}) is None
+
+
+def test_the_parser_rejects_a_body_over_the_cap() -> None:
+    from xorcise.core.contracts.announcements import MAX_BODY_CHARS
+
+    assert _announcement_from_remote({**_GOOD, "body_md": "x" * MAX_BODY_CHARS}) is not None
+    assert _announcement_from_remote({**_GOOD, "body_md": "x" * (MAX_BODY_CHARS + 1)}) is None
+
+
+def test_the_parser_rejects_a_blank_body() -> None:
+    # A banner with no words in it is not a quieter banner: it draws the tone word and a close
+    # button and tells the reader there is news without saying what it is. The length bound
+    # only ever looked at the top end, so "" and a line of spaces were both served end to end.
+    assert _announcement_from_remote({**_GOOD, "body_md": ""}) is None
+    assert _announcement_from_remote({**_GOOD, "body_md": "   "}) is None
+    assert _announcement_from_remote({**_GOOD, "body_md": " \n\t "}) is None
+    # …and a body whose only content is padded still renders, because it has content.
+    ann = _announcement_from_remote({**_GOOD, "body_md": "  Back up.  "})
+    assert ann is not None and ann.body_md == "  Back up.  "
+
+
+def test_a_blank_body_never_reaches_the_browser() -> None:
+    # The end-to-end half: the row is dropped by the source, not merely by the parser.
+    assert _source(_ok({"announcements": [{**_APP, "body_md": "  "}]})).announcements() == ()
+
+
+def test_the_parser_rejects_a_non_string_body() -> None:
+    assert _announcement_from_remote({**_GOOD, "body_md": 42}) is None
+
+
+def test_the_parser_rejects_a_bool_revision() -> None:
+    # isinstance(True, int) is True in Python, so a naive int check would let a bool
+    # through and serve `revision: true` to the browser. A bool here is a server bug.
+    assert _announcement_from_remote({**_GOOD, "revision": True}) is None
+    assert _announcement_from_remote({**_GOOD, "revision": "3"}) is None
+
+
+def test_the_parser_rejects_a_non_bool_dismissible() -> None:
+    assert _announcement_from_remote({**_GOOD, "dismissible": "yes"}) is None
+    assert _announcement_from_remote({**_GOOD, "dismissible": 1}) is None
+
+
+def test_the_parser_forces_an_incident_to_be_undismissible() -> None:
+    # An incident banner is never dismissible. Enforcing it locally means a server bug
+    # cannot hide an active incident from an operator with one click.
+    ann = _announcement_from_remote({**_GOOD, "tone": "incident", "dismissible": True})
+    assert ann is not None and ann.dismissible is False
+
+
+def test_the_parser_leaves_other_tones_dismissible_as_published() -> None:
+    for tone in ("information", "maintenance", "resolved"):
+        ann = _announcement_from_remote({**_GOOD, "tone": tone, "dismissible": True})
+        assert ann is not None and ann.dismissible is True, tone
