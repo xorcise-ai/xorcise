@@ -102,6 +102,12 @@ def _resolve_key(key: str | None, key_stdin: object, *, command: str) -> str | N
         # back only the first fragment as the key, and the remainder persists as a junk line the
         # .env writer preserves for ever. Refuse it here rather than write a file that then has
         # to be repaired by hand.
+        #
+        # The `\r` half is a live path, not a belt-and-braces addition: CPython opens POSIX
+        # stdin with newline="\n", so universal-newline translation is Windows-only and a bare
+        # CR arrives here verbatim — `printf 'a\rb' | xorcise config set-model --key-stdin`
+        # is refused by this branch. Only click's test runner rewrites the CR, which is why the
+        # test covering it has to supply its own stream.
         fail(
             "the key on stdin spans more than one line — an API key is a single line",
             example=f'printf %s "$KEY" | xorcise config {command} --key-stdin',

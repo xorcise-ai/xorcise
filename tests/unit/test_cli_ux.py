@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import httpx
 import pytest
+import typer
 from typer.testing import CliRunner
 
 import xorcise.core.cli.app as cli_app  # noqa: F401 — registers commands on shared app
@@ -16,6 +18,7 @@ from xorcise.core.cli._shared import app
 from xorcise.core.cli.commands import lifecycle
 
 runner = CliRunner()
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 # --- banner gating -----------------------------------------------------------
@@ -974,7 +977,17 @@ def test_no_in_product_pointer_teaches_the_key_on_argv(monkeypatch):
     place it appears: a user arriving from the root epilog, `up`'s banner, `config show` or a
     missing-input error copies the example in front of them, and that example put the key in
     ~/.zsh_history and in /proc/<pid>/cmdline. `--key ''` is deliberately still allowed — it
-    clears the key rather than setting one, and no secret travels with it."""
+    clears the key rather than setting one, and no secret travels with it.
+
+    The rendered surfaces are a fixed LIST, and the next example will be written somewhere the
+    list does not reach — so the `--help` screens are rendered here too, the CLI source is read
+    with its `#` comments dropped, and README.md and CONTRIBUTING.md whole. That catches a
+    `--key sk-…` added to an option help string, an epilog, a docstring `--help` renders, or
+    the quickstart, without anyone remembering to come back and extend this test (#125 review).
+
+    What it does NOT catch is anything the two patterns miss: `--key $KEY` and `--key MYKEY`
+    pass on every surface here. This is a guard against the example people actually write — a
+    placeholder or a key-shaped literal — not proof that the flag is unmentionable."""
     from xorcise.core.cli._errors import _EXAMPLES
     from xorcise.core.cli._shared import GOLDEN_PATH
     from xorcise.core.cli.rest_client import RestClient
@@ -1006,6 +1019,26 @@ def test_no_in_product_pointer_teaches_the_key_on_argv(monkeypatch):
             app, ["config", "set-terrain-model"]
         ).output,
     }
+    # The help screens the list above never rendered — where an option's own help text, and the
+    # command docstring beside it, are the first thing a user reads.
+    for screen in (["--help"], ["config", "--help"]):
+        pointers[f"xorcise {' '.join(screen)}"] = runner.invoke(app, screen).output
+    for setter in ("set-model", "set-terrain-model"):
+        pointers[f"{setter} --help"] = runner.invoke(app, ["config", setter, "--help"]).output
+    # And the text itself, so a pointer added on a surface nobody listed here is still caught.
+    # `#` comment lines are dropped from the source first: a comment is never rendered to a
+    # user, so a sentence ABOUT the hazard is not a pointer to it, and this very fix had to
+    # write several. The cost is a string literal whose own line starts with `#`, which goes
+    # with them; the four `--help` screens above still cover the setters' own text.
+    for path in sorted((_REPO_ROOT / "src" / "xorcise").rglob("*.py")):
+        pointers[str(path.relative_to(_REPO_ROOT))] = "\n".join(
+            line
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if not line.lstrip().startswith("#")
+        )
+    for prose in ("README.md", "CONTRIBUTING.md"):
+        pointers[prose] = (_REPO_ROOT / prose).read_text(encoding="utf-8")
+
     offenders = sorted(where for where, text in pointers.items() if _sets_a_key_on_argv(text))
     assert not offenders, f"these still teach the key on argv: {offenders}"
 
@@ -1028,6 +1061,35 @@ def test_stdin_interactivity_survives_a_closed_fd_zero():
         assert _ux._stdin_is_interactive() is False
     finally:
         _sys.stdin = real
+
+
+def test_the_hard_gate_still_fails_closed_when_fd_zero_is_closed(capsys):
+    """`xorcise agent register --kind <typo> <&-` refuses with exit 2, not "unexpected error".
+
+    The second seam the closed-fd-0 fix moved, named here because the commit that made it only
+    counted the first (#125 review). The REFUSAL is not new — this gate has always stopped a
+    script that cannot answer — but it was reached through the bare `.isatty()`, so a missing
+    stream raised an AttributeError that `app.py` rendered as "unexpected error" and exit 1.
+    Driven at the seam, like the test above it: CliRunner cannot hand a command a None stdin."""
+    import sys as _sys
+
+    from xorcise.core.cli import _ux
+
+    real = _sys.stdin
+    _sys.stdin = None
+    try:
+        with pytest.raises(typer.Exit) as exited:
+            _ux.confirm_gate(
+                "Register 'a' with kind 'bogus' anyway?",
+                assume_yes=False,
+                what="register with an unrecognised --kind",
+                example="xorcise agent register --name a --kind bogus --yes",
+            )
+    finally:
+        _sys.stdin = real
+
+    assert exited.value.exit_code == 2
+    assert "unrecognised --kind" in capsys.readouterr().err
 
 
 def test_documented_filter_value_with_no_matches_is_an_empty_result(monkeypatch):
