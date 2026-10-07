@@ -487,20 +487,31 @@ def test_a_first_grade_with_no_drain_window_hashes_the_evidence_once(
     assert calls == [run.run_id], f"the run was hashed {len(calls)} times on a first grade"
 
 
-def test_a_straggler_after_a_zero_drain_seal_does_not_accuse_the_first_grade(
+def test_a_straggler_after_a_zero_drain_seal_is_disclosed_by_the_report_not_the_grade_log(
     migrated_home, caplog
 ) -> None:
     """The cost is the cheap half of that bug; this is the loud half. `seal()` narrows the
     admission race but does not close it — a request already past `is_sealed()` can still land
     while we hash — so at zero drain a straggler between the seal and the grade made a FIRST grade
-    log "evidence no longer matches", which is the sentence reserved for a regrade over evidence
-    that moved. Nothing had moved: this pass sealed the run itself."""
+    log "evidence no longer matches".
+
+    That sentence was TRUE: the evidence really did move. What it was not was consistent. At any
+    non-zero drain — the 5.0s default, which is every deployment — the first grade seals the run
+    itself, never verifies, and has never logged this straggler at all. So the line appeared only
+    in the zero-drain mode, as an artifact of not being able to tell "I sealed this" from "someone
+    else did", and reading it as "a regrade found edited evidence" was exactly wrong.
+
+    Nothing is suppressed that is not said better elsewhere, which is what this pins: the report
+    carries the MISMATCH banner and `/result?verify=1` answers false, for as long as the run
+    exists, rather than once into a log nobody is tailing."""
     import logging
     from datetime import UTC, datetime
 
-    from xorcise.core import runs
+    from xorcise.core import reporting, runs
     from xorcise.core.contracts.telemetry import TraceRecord
     from xorcise.core.otel.store import SqliteTraceStore
+    from xorcise.core.rest.evidence_seal import evidence_seal_view
+    from xorcise.core.rest.report_assembly import assemble_report
     from xorcise.core.rest.run_terminate import grade_and_record, seal_terminal
 
     run = runs.create_run(agent_id="a1", mission="m1", budget_seconds=60)
@@ -514,8 +525,14 @@ def test_a_straggler_after_a_zero_drain_seal_does_not_accuse_the_first_grade(
         grade_and_record(run.run_id)
 
     assert not [r for r in caplog.records if "no longer matches" in r.getMessage()], (
-        "a first grade accused its own seal"
+        "a first grade used the regrade's sentence"
     )
+    # ...and the move itself is still on the record, on the surfaces that keep it.
+    view = evidence_seal_view(run.run_id)
+    assert (view.verified, view.status) == (False, "mismatch")
+    ctx = assemble_report(run.run_id)
+    assert ctx is not None
+    assert "MISMATCH" in reporting.render_markdown(ctx), "the straggler went undisclosed entirely"
 
 
 def test_a_hashing_failure_records_one_bounded_line_not_the_whole_exception(
@@ -715,3 +732,113 @@ def test_the_report_says_could_not_verify_for_a_scheme_it_cannot_re_derive(migra
 
     assert "could not verify it" in md
     assert "MISMATCH" not in md, "an unverifiable seal is never an accusation"
+
+
+# ── review round four (#139) ─────────────────────────────────────────────────────────────────
+
+
+def test_the_report_says_the_seal_could_not_be_read_instead_of_printing_nothing(
+    migrated_home, monkeypatch
+) -> None:
+    """Round three gave the VIEW a fourth state and `/result` a field for it, and left the surface
+    the review actually named — the rendered report — exactly as silent as before: its seal row is
+    gated on having a digest or the unavailable sentinel, and a read failure has neither.
+
+    Silence is what a run sealed before digests existed looks like, and it is right for that run.
+    A read failing right now is not that, and a reader who cannot tell them apart has been told
+    the wrong thing by omission."""
+    from datetime import UTC, datetime
+
+    from xorcise.core import reporting, runs
+    from xorcise.core.otel.store import SqliteSealStore
+    from xorcise.core.rest.report_assembly import assemble_report
+    from xorcise.core.rest.run_terminate import terminate_run
+
+    run = runs.create_run(agent_id="a1", mission="m1", budget_seconds=60)
+    _seed(run.run_id)
+    terminate_run(run.run_id, "done", datetime(2026, 9, 17, tzinfo=UTC))
+
+    def locked(self: SqliteSealStore, run_id: str) -> str:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(SqliteSealStore, "evidence_digest", locked)
+
+    ctx = assemble_report(run.run_id)
+    assert ctx is not None
+    md = reporting.render_markdown(ctx)
+    html = reporting.render_html(ctx)
+
+    assert "could not be read" in md, "the report stayed silent about a seal it could not read"
+    assert "could not be read" in html
+    assert "MISMATCH" not in md, "a read failure is never an accusation"
+
+
+def test_the_report_re_verifies_the_seal_on_every_request(migrated_home) -> None:
+    """The other half of the round-three decision. `/result` stopped re-hashing; `/report` must
+    not, because it is the surface whose whole point is the mismatch banner — one run, one
+    deliberate fetch. Nothing pinned it: the opt-in could have been carried here by a single
+    keyword and the evidence + reporting suites would both have stayed green."""
+    from datetime import UTC, datetime
+
+    from xorcise.core import reporting, runs
+    from xorcise.core.db import session_scope
+    from xorcise.core.otel.store.models import TraceRow
+    from xorcise.core.rest.report_assembly import assemble_report
+    from xorcise.core.rest.run_terminate import terminate_run
+
+    run = runs.create_run(agent_id="a1", mission="m1", budget_seconds=60)
+    _seed(run.run_id)
+    terminate_run(run.run_id, "done", datetime(2026, 9, 17, tzinfo=UTC))
+
+    # The evidence moves after the grade — exactly what the report exists to disclose.
+    with session_scope() as s:
+        s.query(TraceRow).filter_by(run_id=run.run_id, seq=1).one().payload = '{"span":"forged"}'
+
+    ctx = assemble_report(run.run_id)
+    assert ctx is not None
+    assert ctx.evidence_verified is False, "the report read the seal without re-checking it"
+    assert "MISMATCH" in reporting.render_markdown(ctx)
+
+
+def test_a_grade_that_dies_on_the_way_in_does_not_silence_the_next_regrade(
+    migrated_home, monkeypatch, caplog
+) -> None:
+    """The "sealed here" mark is consumed inside `_grade_run`'s try, so every way out of
+    `_grade_run` that never reaches that call left it behind — and a mark left behind suppresses
+    the verification on the NEXT regrade of that run, which is the one pass the seal exists for.
+
+    The way out used here is the one this module's own comments call real: a "database is locked"
+    on the read that decides whether the run is already graded, before any of the work starts."""
+    import logging
+    from datetime import UTC, datetime
+
+    import pytest
+
+    from xorcise.core import runs
+    from xorcise.core.db import session_scope
+    from xorcise.core.otel.store.models import TraceRow
+    from xorcise.core.rest.run_terminate import grade_and_record, seal_terminal
+
+    run = runs.create_run(agent_id="a1", mission="m1", budget_seconds=60)
+    _seed(run.run_id)
+    seal_terminal(run.run_id, "done", datetime(2026, 9, 17, tzinfo=UTC))  # marks: sealed here
+
+    def locked(run_id: str) -> None:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr("xorcise.core.rest.run_terminate.reporting.get_result", locked)
+    with pytest.raises(RuntimeError):
+        grade_and_record(run.run_id)
+    monkeypatch.undo()
+
+    # Evidence moves while the run sits terminal and ungraded; the re-drive must still say so.
+    with session_scope() as s:
+        s.query(TraceRow).filter_by(run_id=run.run_id, seq=1).one().payload = '{"span":"forged"}'
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        grade_and_record(run.run_id)
+
+    assert any("no longer matches" in r.getMessage() for r in caplog.records), (
+        "a mark left behind by a failed grade silenced the verification on the next one"
+    )

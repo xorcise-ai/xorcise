@@ -31,7 +31,8 @@ log = logging.getLogger(__name__)
 
 # The seal's public surface. `evidence_seal_view` is the one every display path should reach for:
 # it is guarded, it resolves the stored `scheme:value` into a bare digest, and its `status` is the
-# only thing that tells the four "no verdict" cases apart. `verify_evidence` is the narrow
+# only thing that tells the five "no verdict" cases apart — `none`, `recorded`, `unverifiable`,
+# `unavailable` and `unreadable` all leave `verified` None. `verify_evidence` is the narrow
 # tristate for callers that only want the answer.
 __all__ = [
     "EvidenceSealStatus",
@@ -230,6 +231,13 @@ class EvidenceSealView:
         `status`; kept as a name because the report renders this case with its own wording."""
         return self.status == "unavailable"
 
+    @property
+    def unreadable(self) -> bool:
+        """The seal row itself could not be read on this request, so nothing else on this view
+        means anything. Derived for the same reason `unavailable` is, and named for the same one:
+        the report has its own sentence for it, and it is about the read, not about the run."""
+        return self.status == "unreadable"
+
 
 def evidence_seal_view(run_id: str, *, verify: bool = True) -> EvidenceSealView:
     """Read the recorded digest and, by default, re-verify against it. Never raises.
@@ -289,11 +297,13 @@ def verify_evidence(run_id: str) -> bool | None:
 
     True / False / **None**, and the third is the one that matters. None covers every case we
     cannot answer: no digest recorded (the run is unsealed, or predates this), a scheme this build
-    cannot re-derive, sealing having failed to hash at all, or the re-hash failing now. Collapsing
-    any of those into False would report an untouched run as tampered, which is the loudest
-    possible false accusation and would make the signal worthless.
+    cannot re-derive, sealing having failed to hash at all, the seal row being unreadable on this
+    request, or the re-hash failing now. Collapsing any of those into False would report an
+    untouched run as tampered, which is the loudest possible false accusation and would make the
+    signal worthless.
 
     Always re-hashes — a caller asking this question wants an answer, not a row read. Callers that
-    need to tell the four Nones apart read `evidence_seal_view` and branch on its `status`.
+    need to tell those Nones apart read `evidence_seal_view` and branch on its `status`; there are
+    five of them, and this function cannot distinguish them by construction.
     """
     return evidence_seal_view(run_id).verified

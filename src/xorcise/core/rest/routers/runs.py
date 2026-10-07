@@ -65,12 +65,15 @@ class RunResultView(BaseModel):
     # seal time. `evidence_verified` is a tristate: true, false, or null for "this response did not
     # answer" — never an accusation, because a run that predates the feature is not a tampered one.
     #
-    # `evidence_status` is the field to branch on, and the reason this is not two fields. Null/null
-    # was returned for a run sealed before digests existed, for one whose hash FAILED at seal time,
-    # for a seal row that could not be read on this request and (now that verification is opt-in)
-    # for a digest simply not re-checked here — four different things, one answer, which is the
-    # ambiguity the rendered report had already stopped having. See EvidenceSealStatus for what
-    # each value means.
+    # `evidence_status` is the field to branch on, and the reason this is not two fields. A null
+    # `evidence_verified` is returned for FIVE different situations — a run sealed before digests
+    # existed (`none`), one whose hash failed at seal time (`unavailable`), a seal row that could
+    # not be read on this request (`unreadable`), a scheme this build cannot re-derive
+    # (`unverifiable`), and, now that verification is opt-in, a digest simply not re-checked here
+    # (`recorded`) — one answer for all of them, which is the ambiguity the rendered report had
+    # already stopped having. Only the first three also carry a null `evidence_digest`; the last
+    # two return the recorded hex, so "no verdict" and "no digest" are not the same question.
+    # See EvidenceSealStatus for what each value means.
     evidence_digest: str | None = None
     evidence_verified: bool | None = None
     evidence_status: EvidenceSealStatus = "none"

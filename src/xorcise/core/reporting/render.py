@@ -90,6 +90,11 @@ class RunReportContext:
     # one is a run that predates the feature and is rightly silent, the other is the feature
     # failing on a current run, which the reader has to be told about.
     evidence_digest_unavailable: bool = False
+    # The seal record itself could not be READ while this report was assembled, so none of the
+    # three fields above means anything for this run — not "no seal", which is what they look
+    # like. A third flag rather than a sentinel digest: a report that cannot reach the seal must
+    # not be able to print a digest-shaped anything.
+    evidence_seal_unreadable: bool = False
     # The events header (adapter, fallback, content counts, warnings) — what the replay header
     # shows, so the offline report discloses the same honesty signals. None when unavailable.
     telemetry: RunTelemetryView | None = None
@@ -317,16 +322,24 @@ def _condition_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
         ("Sandbox image", c.sandbox_ref or _DASH),
         # Only when there is something to say. A report that said "Evidence: unknown" on every
         # pre-#116 run would train readers to ignore the line, which is the opposite of the point.
+        # A failed READ is something to say: it is this report not being able to answer, which no
+        # amount of staring at an absent row would tell anyone.
         *(
             [("Evidence seal", _evidence_seal_line(ctx))]
-            if (ctx.evidence_digest or ctx.evidence_digest_unavailable)
+            if (
+                ctx.evidence_digest
+                or ctx.evidence_digest_unavailable
+                or ctx.evidence_seal_unreadable
+            )
             else []
         ),
     ]
 
 
 def _evidence_seal_line(ctx: RunReportContext) -> str:
-    """The seal's digest and whether the graded evidence still matches it.
+    """The seal's digest and whether the graded evidence still matches it — or, when the answer is
+    not available, which kind of not-available it is: nothing hashed at seal time, nothing
+    readable now, or a digest on file that this build cannot re-derive.
 
     PLAIN TEXT, no markup: this is one cell of a key/value table that both renderers fill, and the
     Markdown emphasis it used to carry was escaped by the HTML path and shown to the reader
@@ -339,6 +352,13 @@ def _evidence_seal_line(ctx: RunReportContext) -> str:
     is. It also says GRADED evidence: server-side receipt metadata is outside the hash on purpose,
     so a report line derived from stored timestamps can move while this still verifies.
     """
+    if ctx.evidence_seal_unreadable:
+        # About the READ, not about the run: we do not know whether this run has a seal at all,
+        # so nothing here may be phrased as a fact about its evidence.
+        return (
+            "seal could not be read — this report could not reach the seal record, so it cannot "
+            "say whether this run has one or whether its evidence still matches"
+        )
     if ctx.evidence_digest_unavailable:
         return (
             "seal digest unavailable — this run was sealed but its evidence could not be hashed, "
