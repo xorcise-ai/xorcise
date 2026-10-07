@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -525,6 +525,177 @@ def test_report_filename_is_slugged_and_extension_correct():
     assert report_filename(weird, "md") == "xorcise-run-run-abcd-chrono-canary-v2.md"
 
 
+# ── the report states the evidence seal (#116) ───────────────────────────────────────────────
+
+
+def test_the_report_states_the_evidence_is_unchanged_since_sealing() -> None:
+    md = render_markdown(_ctx(evidence_digest="a" * 64, evidence_verified=True))
+    assert "Evidence seal" in md and "verified" in md
+
+
+def test_the_report_says_plainly_when_the_evidence_no_longer_matches() -> None:
+    """The one line that tells a reader the rest of the report may not be trustworthy — so it has
+    to be unmissable rather than a quiet status word."""
+    md = render_markdown(_ctx(evidence_digest="b" * 64, evidence_verified=False))
+    assert "MISMATCH" in md
+
+
+def test_the_report_is_silent_about_sealing_when_no_digest_was_recorded() -> None:
+    """Runs sealed before digests existed. A permanent "unknown" row on every old report would
+    train readers to skip the line, which defeats it."""
+    md = render_markdown(_ctx(evidence_digest=None, evidence_verified=None))
+    assert "Evidence seal" not in md
+
+
+# ── review round two (#139) ──────────────────────────────────────────────────────────────────
+
+
+def test_the_html_report_does_not_print_markdown_markup_at_the_reader() -> None:
+    """The seal line was built as Markdown and handed to the HTML path, where every cell is
+    escaped — so an HTML report showed the reader a literal backtick-and-asterisk soup instead of
+    a digest. The line has to be format-neutral text that each renderer marks up itself."""
+    html = render_html(_ctx(evidence_digest="b" * 64, evidence_verified=False))
+    seal = html[html.index("Evidence seal") : html.index("Evidence seal") + 600]
+    assert "**" not in seal and "`" not in seal
+
+
+def test_a_mismatch_is_called_out_and_not_only_a_row_in_the_last_table() -> None:
+    """A MISMATCH says the rest of the report may not be trustworthy. One row at the bottom of the
+    Conditions table is where a reader never looks — it belongs with the other banners, above the
+    scores it is casting doubt on."""
+    ctx = _ctx(evidence_digest="b" * 64, evidence_verified=False)
+
+    md = render_markdown(ctx)
+    assert md.index("no longer matches") < md.index("## Scores")
+
+    html = render_html(ctx)
+    assert "banner" in html[: html.index("Scorecard")]
+    assert "no longer matches" in html[: html.index("Scorecard")]
+
+
+def test_a_verified_seal_gets_no_callout() -> None:
+    """The callout is for the one case that needs it. A banner on every clean report is noise, and
+    noise is how a reader learns to skip the line that matters."""
+    html = render_html(_ctx(evidence_digest="a" * 64, evidence_verified=True))
+    assert "no longer matches" not in html
+
+
+def test_the_report_says_the_digest_is_stored_beside_the_evidence() -> None:
+    """A digest is not a signature: anyone able to edit a span can recompute it. "Verified" alone
+    over-trusts, for readers who will never see the PR that built this."""
+    md = render_markdown(_ctx(evidence_digest="a" * 64, evidence_verified=True))
+    assert "not independently attested" in md
+
+
+def test_a_run_whose_seal_could_not_be_hashed_says_so() -> None:
+    """The sentinel's whole point: a post-migration run with no digest must read "unavailable"
+    rather than looking exactly like a run that predates the feature."""
+    ctx = _ctx(evidence_digest=None, evidence_verified=None, evidence_digest_unavailable=True)
+    assert "unavailable" in render_markdown(ctx)
+    assert "unavailable" in render_html(ctx)
+
+
+def test_the_digest_is_shown_short_form_not_in_full() -> None:
+    digest = "0123456789abcdef" + "f" * 48
+    md = render_markdown(_ctx(evidence_digest=digest, evidence_verified=True))
+    assert "0123456789abcdef" in md and digest not in md
+
+
+# ── which model ran, on the report (#113) ────────────────────────────────────────────────────
+#
+# The Conditions table showed "Agent model (disclosed)" and, because almost nobody passes
+# `agent register --model`, printed "not disclosed" on essentially every report. The harness
+# telemetry named the model all along (RunStats.models); the report just never asked.
+#
+# Disclosed and observed stay distinguishable rather than being collapsed into one field: one is
+# what an operator typed, the other is what the harness reported running, and a disagreement
+# between them is provenance worth seeing, not noise worth hiding.
+
+
+def test_the_report_names_the_model_the_harness_reported_when_none_was_disclosed() -> None:
+    md = render_markdown(
+        _ctx(
+            conditions=ResultConditions(model=None, judge_model="gpt-4o", budget_seconds=600),
+            stats=RunStats(models=("gpt-5.5",)),
+        )
+    )
+    assert "gpt-5.5" in md
+    assert "not disclosed" not in md
+
+
+def test_the_report_says_so_when_neither_source_names_a_model() -> None:
+    """An honest unknown. The point of the fix is provenance, not inventing a plausible name."""
+    md = render_markdown(
+        _ctx(
+            conditions=ResultConditions(model=None, judge_model="gpt-4o", budget_seconds=600),
+            stats=RunStats(models=()),
+        )
+    )
+    assert "not disclosed" in md
+
+
+def test_the_report_shows_both_when_the_declared_model_is_not_the_one_that_ran() -> None:
+    """The case that matters most and is easiest to lose by collapsing the two into one field:
+    the operator declared one model and the harness reported another. Silently preferring either
+    would misattribute the result."""
+    md = render_markdown(
+        _ctx(
+            conditions=ResultConditions(
+                model="claude-opus-4", judge_model="gpt-4o", budget_seconds=600
+            ),
+            stats=RunStats(models=("gpt-5.5",)),
+        )
+    )
+    assert "claude-opus-4" in md and "gpt-5.5" in md
+
+
+# ── Duration must not read as 30 minutes of work (#112) ──────────────────────────────────────
+#
+# A run whose agent crashed a second in is not closed out until its budget expires, so the report
+# showed `Duration | 30m 0s` for ~1s of activity. Wall clock is not wrong — the run really did hold
+# a slot for half an hour — but presented alone it reads as "the agent worked for 30 minutes".
+#
+# Both facts are kept, because each answers a different question: wall clock is what the run COST,
+# the telemetry span is what the agent DID. Collapsing them either hides the wasted slot or
+# overstates the work.
+
+
+def test_the_report_separates_time_spent_working_from_time_held() -> None:
+    md = render_markdown(
+        _ctx(
+            stats=RunStats(
+                timing=TimingStats(
+                    elapsed_seconds=1800.0,
+                    # Inside the run the events belong to: a snapshot whose first event predates
+                    # its own run is a clock fault, and the renderer now withholds it (#134
+                    # review, third round). This fixture dated them three weeks early.
+                    first_event_ts=_CREATED,
+                    last_event_ts=_CREATED + timedelta(seconds=1),
+                )
+            )
+        )
+    )
+
+    assert "| Duration | 30m 0s |" in md, "wall clock must still be reported — the slot was held"
+    # Asserted as a row rather than a bare digit: the point is that the ~1s of real work appears
+    # BESIDE the 30 minutes, not how many decimal places the formatter happens to use.
+    assert "| Telemetry window | 1.0s (reported by the harness) |" in md, (
+        f"the agent's real activity is missing:\n{md[:700]}"
+    )
+
+
+def test_the_report_omits_the_activity_span_when_there_is_no_telemetry() -> None:
+    """No events means no span to report — a zero would read as 'the agent did nothing', which is
+    a different claim from 'nothing was recorded'.
+
+    Names the rendered label, so it fails if the row ever appears unconditionally; before the row
+    existed this asserted the absence of a string nothing emitted, and was vacuous (#134 review).
+    """
+    md = render_markdown(_ctx(stats=RunStats(timing=TimingStats(elapsed_seconds=42.0))))
+
+    assert "Telemetry window" not in md
+
+
 def _telemetry(**over: object):
     from xorcise.core.contracts.agent_event import AdapterWarning, RunTelemetryView
 
@@ -562,3 +733,252 @@ def test_report_without_telemetry_or_transcript_count_is_unchanged():
     assert "Renderer" not in md
     assert "Judge transcript items" not in md
     assert "Telemetry warnings" not in md
+
+
+# ── the CLI and the report must not tell different stories about the same run (#128 review) ─────
+#
+# They were two copies of the same rule and they drifted: report.md rendered "gpt-5.5 (disclosed)"
+# where `run status` printed a bare "gpt-5.5". They now share one function, and this pins that.
+
+
+@pytest.mark.parametrize(
+    ("declared", "observed", "dropped"),
+    [
+        ("", (), 0),  # nothing known
+        ("gpt-5.5", (), 0),  # declared only — the case that had drifted
+        ("", ("gpt-5.5",), 0),  # observed only
+        ("gpt-5.5", ("gpt-5.5",), 0),  # agreeing
+        ("claude-fable-5", ("claude-fable-5-1",), 0),  # the family-vs-exact disagreement
+        ("", ("a", "b"), 7),  # capped list
+        ("gpt-5.5", ("gpt-5.5", "claude-fable-5"), 0),  # declared is one of several observed
+        ("gpt-5.5", ("gpt-5.5",), 3),  # agreeing, but the cap dropped more
+    ],
+)
+def test_the_cli_and_the_report_render_the_model_identically(
+    declared: str, observed: tuple[str, ...], dropped: int
+) -> None:
+    from xorcise.core.cli.commands.run import _agent_model_line
+    from xorcise.core.reporting.render import _agent_model
+
+    ctx = _ctx(
+        conditions=ResultConditions(model=declared or None),
+        stats=RunStats(models=observed, models_truncated=dropped),
+    )
+    assert _agent_model(ctx) == _agent_model_line({"model": declared}, observed, dropped)
+
+
+def test_a_capped_model_list_says_how_many_it_is_not_showing() -> None:
+    """Without the marker a bounded list reads as the complete one."""
+    from xorcise.core.reporting.render import _agent_model
+
+    ctx = _ctx(
+        conditions=ResultConditions(model=None),
+        stats=RunStats(models=("m0", "m1"), models_truncated=6),
+    )
+    assert _agent_model(ctx) == "m0, m1 (+6 more) (reported by the harness)"
+
+
+# ── the window is the HARNESS's clock, and must not be printed as a platform fact (#134 review) ──
+#
+# The row sits between Started and Duration, both of which are the server's own clock, with nothing
+# to mark that this one is not. A harness whose clock is skewed renders "Duration 1m 0s /
+# Telemetry window 1h 0m 0s" with no signal, and milliseconds mistaken for nanoseconds put the
+# first event in 1970 and render a window of half a million hours in the headline table.
+#
+# Third round of the same review: withholding is now DISCLOSED rather than silent — an absent row
+# could not be told apart from a run that recorded no telemetry at all — and a second bound was
+# added, on WHERE the telemetry starts: a producer clock running behind the server's dates the
+# first event before the run was created and yields a window small enough to pass for a
+# measurement. The two bounds are on different quantities (start position, and length), and
+# neither refuses a producer clock uniformly ahead of the server's — see `_telemetry_window`.
+
+
+def _at(**over: float) -> datetime:
+    """A timestamp relative to the run's own start, so a fixture cannot silently sit outside the
+    run it describes (every one of these used to, by three weeks)."""
+    return _CREATED + timedelta(**over)
+
+
+def _timing_window(first: datetime, last: datetime, elapsed: float | None = 1800.0) -> RunStats:
+    return RunStats(
+        timing=TimingStats(elapsed_seconds=elapsed, first_event_ts=first, last_event_ts=last)
+    )
+
+
+def test_the_telemetry_window_says_whose_clock_it_came_from() -> None:
+    md = render_markdown(_ctx(stats=_timing_window(_at(), _at(seconds=1))))
+    assert "| Telemetry window | 1.0s (reported by the harness) |" in md
+
+
+def test_a_window_longer_than_the_run_itself_is_withheld_rather_than_shown() -> None:
+    """A skewed producer clock: one minute of run, an hour of "telemetry". The window cannot
+    exceed the wall clock the run actually occupied, so the excess is the clock, not the work."""
+    md = render_markdown(_ctx(stats=_timing_window(_at(), _at(hours=1), elapsed=60.0)))
+
+    assert "| Duration | 1m 0s |" in md
+    assert "1h 0m 0s" not in md, "the hour that is the clock fault must not reach the table"
+    assert (
+        "| Telemetry window | withheld — the harness reported more telemetry than the run "
+        "has lasted |" in md
+    )
+
+
+def test_a_1970_timestamp_does_not_render_half_a_million_hours() -> None:
+    """Milliseconds handed to a nanosecond parser put the first event at the epoch — decades
+    before the run was created, which is the cheapest tell that this is not the server's clock."""
+    md = render_markdown(_ctx(stats=_timing_window(datetime(1970, 1, 1, tzinfo=UTC), _at())))
+
+    assert "h 0m 0s" not in md, "no hour-scale window may reach the table"
+    assert (
+        "| Telemetry window | withheld — the harness dated the first event before the run "
+        "started |" in md
+    )
+
+
+def test_a_window_that_ends_before_it_starts_is_unknown_not_zero() -> None:
+    """`max(0.0, …)` rendered a corrupted snapshot as "0.0s", which reads as "the agent did
+    nothing" — a different claim from "this cannot be trusted"."""
+    md = render_markdown(_ctx(stats=_timing_window(_at(seconds=5), _at())))
+
+    assert "0.0s" not in md
+    assert (
+        "| Telemetry window | withheld — the harness dated the last event before the first |" in md
+    )
+
+
+def test_telemetry_dated_before_the_run_started_is_withheld() -> None:
+    """The guard was one-sided. A producer clock running BEHIND the server's puts the first event
+    before the run was created, and the window built from it is exactly as unbelievable as one
+    that overruns the end — it was only ever small enough to pass for a measurement."""
+    md = render_markdown(_ctx(stats=_timing_window(_at(minutes=-5), _at(seconds=1))))
+
+    assert (
+        "| Telemetry window | withheld — the harness dated the first event before the run "
+        "started |" in md
+    )
+
+
+def test_telemetry_a_minute_before_the_run_is_skew_not_a_fault() -> None:
+    """The lower bound allows the SAME minute of NTP-class skew the upper bound does, inclusive:
+    a tighter one would withhold healthy runs, which is the cost the grace exists to avoid."""
+    md = render_markdown(_ctx(stats=_timing_window(_at(seconds=-60), _at(seconds=-59))))
+
+    assert "| Telemetry window | 1.0s (reported by the harness) |" in md
+
+
+def test_a_window_that_bounds_no_span_is_omitted_not_reported_as_zero() -> None:
+    """A single event that reported no duration: `last_event_end_ts` falls back to that event's
+    START (TimingStats), so the window is zero because nothing measured an extent — not because
+    the extent was zero. "0.0s" is the same "the agent did nothing" misreading that dropping
+    `max(0.0, …)` was meant to end, and the row is as absent as it is for no telemetry at all."""
+    md = render_markdown(_ctx(stats=_timing_window(_at(), _at())))
+
+    assert "Telemetry window" not in md
+
+
+def test_a_sub_tenth_second_window_is_not_rounded_down_to_nothing() -> None:
+    """40 ms of telemetry IS a span, and the duration formatter stops at a tenth of a second — so
+    the row reported a real measurement as "0.0s", the one reading the whole guard is about."""
+    md = render_markdown(_ctx(stats=_timing_window(_at(), _at(milliseconds=40))))
+
+    assert "| Telemetry window | under 0.1s (reported by the harness) |" in md
+
+
+def test_an_unfinished_run_is_checked_against_the_clock_the_report_is_rendered_on() -> None:
+    """The comparison used to skip itself when elapsed was unknown, so the one shape the guard
+    exists to refuse — an unchecked window — rendered. A run with no `completed_at` is not
+    unbounded, though: it cannot have run for longer than the report's own clock says it has been
+    open, which is the bound used here (#134 review). One minute open, an hour of telemetry."""
+    md = render_markdown(
+        _ctx(
+            run=_run(state="active", completed_at=None, terminal_trigger=None),
+            stats=_timing_window(_at(), _at(hours=1), elapsed=None),
+            generated_at=_at(minutes=1),
+        )
+    )
+
+    assert "1h 0m 0s" not in md
+    assert (
+        "| Telemetry window | withheld — the harness reported more telemetry than the run "
+        "has lasted |" in md
+    )
+
+
+def test_an_unfinished_run_still_shows_a_window_its_own_clock_supports() -> None:
+    """Withholding every window on a run with no `completed_at` would suppress sane ones, and
+    would assert the run has no clock to check against when it has one: created→now. The report
+    already holds that clock — it stamps itself with it."""
+    md = render_markdown(
+        _ctx(
+            run=_run(state="active", completed_at=None, terminal_trigger=None),
+            stats=_timing_window(_at(), _at(seconds=1), elapsed=None),
+            generated_at=_at(minutes=1),
+        )
+    )
+
+    assert "| Telemetry window | 1.0s (reported by the harness) |" in md
+
+
+def test_the_html_report_discloses_a_withheld_window_too() -> None:
+    """Both renderers share `_metadata_rows`, and the HTML one is the artifact that leaves the
+    building — the disclosure cannot be a Markdown-only nicety."""
+    doc = render_html(_ctx(stats=_timing_window(_at(), _at(hours=1), elapsed=60.0)))
+
+    assert "1h 0m 0s" not in doc
+    assert "withheld — the harness reported more telemetry than the run has lasted" in doc
+
+
+def test_a_corrupt_snapshot_whose_window_is_zero_is_disclosed_not_silently_omitted() -> None:
+    """Milliseconds fed to a nanosecond parser land EVERY event in 1970, so a single-event run
+    corrupted that way has a zero-length window AND a provably broken clock. The zero-span return
+    used to run first and swallow it, leaving the one input class the lower bound was added to
+    catch indistinguishable from a run that recorded no telemetry (#134 review)."""
+    epoch = datetime(1970, 1, 1, 0, 28, 20, tzinfo=UTC)
+    md = render_markdown(_ctx(stats=_timing_window(epoch, epoch, elapsed=60.0)))
+
+    assert (
+        "| Telemetry window | withheld — the harness dated the first event before the run "
+        "started |" in md
+    )
+
+
+def test_a_window_exactly_a_minute_longer_than_the_run_is_still_shown() -> None:
+    """The length bound's grace is inclusive at the boundary, as the start bound's is. Only the
+    lower one was pinned, so a later tightening of this one would have gone unnoticed."""
+    md = render_markdown(_ctx(stats=_timing_window(_at(), _at(seconds=1860), elapsed=1800.0)))
+
+    assert "| Telemetry window | 31m 0s (reported by the harness) |" in md
+
+
+def test_a_producer_timestamp_with_no_timezone_does_not_500_the_report() -> None:
+    """The window is the only place in this module that subtracts a STATS timestamp from a RUN-ROW
+    one, and `TimingStats` has no timezone validator — an offset-less value in `stats_json` parses
+    naive and the subtraction raises. A report must never 500 (rest.report_assembly), so the two
+    producer timestamps are read as UTC, the same way every other boundary in this codebase reads
+    a stored datetime."""
+    naive = RunStats.model_validate_json(
+        '{"timing":{"elapsed_seconds":1800.0,"first_event_ts":"2026-07-24T10:00:00",'
+        '"last_event_ts":"2026-07-24T10:00:01"}}'
+    )
+    assert naive.timing.first_event_ts is not None
+    assert naive.timing.first_event_ts.tzinfo is None, "fixture must actually be naive"
+
+    md = render_markdown(_ctx(stats=naive))
+
+    assert "| Telemetry window | 1.0s (reported by the harness) |" in md
+
+
+def test_a_declared_name_among_several_observed_ones_does_not_hide_the_rest() -> None:
+    """Matching one of the observed names collapsed the line to `declared (disclosed)`, which hid
+    the other models the run ran on — and the `(+N more)` marker with them (#128 review)."""
+    from xorcise.core.reporting.render import agent_model_line
+
+    line = agent_model_line("gpt-5.5", ("gpt-5.5", "claude-fable-5"), 0)
+    assert "claude-fable-5" in line, line
+
+    capped = agent_model_line("gpt-5.5", ("gpt-5.5",), 6)
+    assert "+6 more" in capped, capped
+
+    # The telemetry is redundant only when it named the declared name and nothing else; that line
+    # stays exactly as it was.
+    assert agent_model_line("gpt-5.5", ("gpt-5.5",), 0) == "gpt-5.5 (disclosed)"

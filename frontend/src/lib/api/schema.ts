@@ -1054,6 +1054,15 @@ export interface paths {
          * Run Result
          * @description Recorded 50/50 explainable result + disclosed conditions for a run.
          *
+         *     `verify=1` re-hashes the run's evidence and answers `evidence_verified`. It is OPT-IN because
+         *     three first-party consumers fetch this endpoint once per run in a loop — `run list`, the
+         *     leaderboard roll-up and the results table — and none of them shows a verdict: re-hashing on
+         *     every read put a whole run's evidence through SHA-256 per row, which measured at 3.3 ms per MB,
+         *     so a 124-run dataset at 3 MB a run spent over a second of a list command on it. Unasked, the
+         *     response still carries the digest (it is one indexed row read) with `evidence_status`
+         *     "recorded", and `GET /report` — one run, deliberately fetched, and the surface whose whole
+         *     point is the mismatch banner — keeps verifying unconditionally.
+         *
          *     When no result is recorded yet, distinguish three cases instead of a blanket 404:
          *     grading runs asynchronously after /complete, so a terminal-but-ungraded run is a normal
          *     transient state, NOT a failure. Unknown run → 404; terminal-but-ungraded → 202
@@ -2739,7 +2748,27 @@ export interface components {
          */
         RunResultView: {
             conditions: components["schemas"]["ResultConditions"];
+            /** Evidence Digest */
+            evidence_digest?: string | null;
+            /**
+             * Evidence Status
+             * @default none
+             * @enum {string}
+             */
+            evidence_status: "none" | "recorded" | "verified" | "mismatch" | "unverifiable" | "unavailable" | "unreadable";
+            /** Evidence Verified */
+            evidence_verified?: boolean | null;
             grade: components["schemas"]["GradeResult"];
+            /**
+             * Models Reported
+             * @default []
+             */
+            models_reported: string[];
+            /**
+             * Models Reported Truncated
+             * @default 0
+             */
+            models_reported_truncated: number;
             /**
              * Partial
              * @default false
@@ -2767,6 +2796,16 @@ export interface components {
              *     }
              */
             counts: components["schemas"]["CountStats"];
+            /**
+             * Models
+             * @default []
+             */
+            models: string[];
+            /**
+             * Models Truncated
+             * @default 0
+             */
+            models_truncated: number;
             /** Projection */
             projection?: string | null;
             /** @default {} */
@@ -3097,6 +3136,8 @@ export interface components {
             elapsed_seconds?: number | null;
             /** First Event Ts */
             first_event_ts?: string | null;
+            /** Last Event End Ts */
+            last_event_end_ts?: string | null;
             /** Last Event Ts */
             last_event_ts?: string | null;
             /** Longest Tool Ms */
@@ -4648,7 +4689,9 @@ export interface operations {
     };
     run_result_api_runs__run_id__result_get: {
         parameters: {
-            query?: never;
+            query?: {
+                verify?: boolean;
+            };
             header?: never;
             path: {
                 run_id: string;

@@ -29,6 +29,7 @@ from xorcise.core.contracts.run import (
     RunEnvironmentView,
 )
 from xorcise.core.contracts.terrain import ResolvedTerrainV2
+from xorcise.core.rest.evidence_seal import EvidenceSealStatus
 from xorcise.core.rest.mission_pull import MissionNotInCatalogError, PullError
 from xorcise.core.rest.run_create import (
     NoAgentError,
@@ -48,6 +49,36 @@ class RunResultView(BaseModel):
     conditions: ResultConditions
     partial: bool = False  # True when graded on incomplete data (timeout trigger)
     partial_trigger: str | None = None  # the terminal trigger when partial
+    # The model(s) the harness reported running, lifted off the run's stats snapshot. Distinct
+    # from conditions.model, which is what the operator DECLARED — that is set only by
+    # `agent register --model` and is null on essentially every run, which is why the result
+    # could not be attributed to a model after the fact. Carried here rather than fetched from
+    # /stats so `run status` stays one request, and empty when the telemetry named none.
+    models_reported: tuple[str, ...] = ()
+    # How many further distinct names the fold saw past its cap. The list above is agent-controlled
+    # and served on every /result, so it is bounded (otel.run_stats.MODELS_MAX) — without this a
+    # truncated list would read as the whole truth. Distinct is counted before the names are
+    # clipped for display, so the list above can repeat a name this count tells apart; and the
+    # count itself saturates at the fold's tracking bound (contracts.reporting.RunStats).
+    models_reported_truncated: int = 0
+    # The run's evidence seal, machine-readable — the point of #116 is that a consumer can tie a
+    # grade to evidence that has not changed, and until this the digest existed only as 16
+    # characters of prose inside a rendered report. `evidence_digest` is the bare hex recorded at
+    # seal time. `evidence_verified` is a tristate: true, false, or null for "this response did not
+    # answer" — never an accusation, because a run that predates the feature is not a tampered one.
+    #
+    # `evidence_status` is the field to branch on, and the reason this is not two fields. A null
+    # `evidence_verified` is returned for FIVE different situations — a run sealed before digests
+    # existed (`none`), one whose hash failed at seal time (`unavailable`), a seal row that could
+    # not be read on this request (`unreadable`), a scheme this build cannot re-derive
+    # (`unverifiable`), and, now that verification is opt-in, a digest simply not re-checked here
+    # (`recorded`) — one answer for all of them, which is the ambiguity the rendered report had
+    # already stopped having. Only the first three also carry a null `evidence_digest`; the last
+    # two return the recorded hex, so "no verdict" and "no digest" are not the same question.
+    # See EvidenceSealStatus for what each value means.
+    evidence_digest: str | None = None
+    evidence_verified: bool | None = None
+    evidence_status: EvidenceSealStatus = "none"
 
 
 class RunArtifactView(BaseModel):
@@ -684,8 +715,19 @@ def run_artifacts(run_id: str) -> list[RunArtifactView]:
 
 
 @router.get("/{run_id}/result", response_model=RunResultView)
-def run_result(run_id: str, background: BackgroundTasks) -> RunResultView | JSONResponse:
+def run_result(
+    run_id: str, background: BackgroundTasks, verify: bool = False
+) -> RunResultView | JSONResponse:
     """Recorded 50/50 explainable result + disclosed conditions for a run.
+
+    `verify=1` re-hashes the run's evidence and answers `evidence_verified`. It is OPT-IN because
+    three first-party consumers fetch this endpoint once per run in a loop — `run list`, the
+    leaderboard roll-up and the results table — and none of them shows a verdict: re-hashing on
+    every read put a whole run's evidence through SHA-256 per row, which measured at 3.3 ms per MB,
+    so a 124-run dataset at 3 MB a run spent over a second of a list command on it. Unasked, the
+    response still carries the digest (it is one indexed row read) with `evidence_status`
+    "recorded", and `GET /report` — one run, deliberately fetched, and the surface whose whole
+    point is the mismatch banner — keeps verifying unconditionally.
 
     When no result is recorded yet, distinguish three cases instead of a blanket 404:
     grading runs asynchronously after /complete, so a terminal-but-ungraded run is a normal
@@ -716,8 +758,31 @@ def run_result(run_id: str, background: BackgroundTasks) -> RunResultView | JSON
     base = reporting.result_conditions(run_id) or ResultConditions()
     conditions = base.model_copy(update={"intel_disclosed": disclosed_intel_count(run_id)})
     partial, partial_trigger = reporting.result_partial(run_id)
+    # The freshness-aware read — the same one /stats and the report use. Reading the stored
+    # snapshot directly (as this did) served it whenever its stamp matched, and a snapshot folded
+    # before a field existed still matched; `run status` then disagreed with the report about the
+    # same run. Absent snapshot ⇒ empty tuple, which renders as the same honest "not disclosed"
+    # as having no telemetry at all.
+    from xorcise.core.rest.report_assembly import current_run_stats
+
+    run_entry = runs.get(run_id)
+    stats = current_run_stats(run_entry) if run_entry is not None else None
+    # Guarded; re-verified on this read only when asked (never a verdict stored at seal time,
+    # which could only ever say "matched when we wrote it"). Lazy import matches the other joins
+    # here — the module-level one above is the status type, which the response model needs.
+    from xorcise.core.rest.evidence_seal import evidence_seal_view
+
+    seal = evidence_seal_view(run_id, verify=verify)
     return RunResultView(
-        grade=grade, conditions=conditions, partial=partial, partial_trigger=partial_trigger
+        grade=grade,
+        conditions=conditions,
+        partial=partial,
+        partial_trigger=partial_trigger,
+        models_reported=tuple(stats.models) if stats else (),
+        models_reported_truncated=stats.models_truncated if stats else 0,
+        evidence_digest=seal.digest,
+        evidence_verified=seal.verified,
+        evidence_status=seal.status,
     )
 
 

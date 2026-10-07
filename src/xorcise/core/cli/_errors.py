@@ -50,7 +50,7 @@ _EXAMPLES = {
     "xorcise run launch-profile": "xorcise run launch-profile <run-id>",
     "xorcise run events export": "xorcise run events export <run-id>",
     "xorcise run events": "xorcise run events export <run-id>",
-    "xorcise config set-model": "xorcise config set-model --name gpt-4o-mini --key sk-…",
+    "xorcise config set-model": "xorcise config set-model --name gpt-4o-mini --key-stdin",
 }
 
 # Commands whose required inputs should be explained TOGETHER (not first-missing-only).

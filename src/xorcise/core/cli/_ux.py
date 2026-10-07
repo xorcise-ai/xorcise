@@ -184,6 +184,22 @@ def size_label(size_bytes: int | None) -> str:
     return f"{max(0, round(n))} B"
 
 
+#: Terminal triggers meaning the AGENT ended the run on its own terms, as opposed to the platform
+#: stopping it. The server writes exactly five triggers — `done` (the agent's own /complete),
+#: `operator` (a manual terminate), `timeout` (the budget watchdog and the gate backstop),
+#: `deploy_failed` (the readiness gate) and `crashed` (the boot reconcile) — so anything NOT in
+#: here is a run the agent never finished.
+#:
+#: `completed` is NOT a legacy synonym: no server has ever written it. Every terminal_trigger
+#: write goes through runs.mark_terminal, those five are the only literals passed to it, and the
+#: initial commit already had this same set. It stays only for parity with run_state_label and
+#: the GUI's run-state map, which both accept it — so no surface can disagree about one trigger.
+#:
+#: Lives here, beside run_state_label, because both the leaderboard and `run export --genuine-only`
+#: draw this exact line: two definitions of "a real run" is how two surfaces start disagreeing.
+COMPLETED_TRIGGERS = frozenset({"done", "completed"})
+
+
 def run_state_label(state: str | None, trigger: str | None = None) -> str:
     """Server-side run state (+ terminal trigger) → the user-facing result word.
 
@@ -332,15 +348,32 @@ def fail(
 
 
 def _stdin_is_interactive() -> bool:
-    """Seam for tests — CliRunner swaps sys.stdin, so isatty can't be patched directly."""
-    return sys.stdin.isatty()
+    """Seam for tests — CliRunner swaps sys.stdin, so isatty can't be patched directly.
+
+    CPython leaves ``sys.stdin`` as None when the process is started with fd 0 CLOSED
+    (`xorcise … <&-`, or a launcher that hands over no stdin at all), so the bare ``.isatty()``
+    raised an AttributeError that surfaced as "unexpected error: 'NoneType' object has no
+    attribute 'isatty'". No stream is not a terminal — every caller here (the confirmation
+    gates, the `--key-stdin` read) wants exactly that reading."""
+    return sys.stdin is not None and sys.stdin.isatty()
 
 
 def confirm_or_abort(question: str, *, assume_yes: bool) -> None:
     """TTY-gated confirmation for destructive commands.
 
     --yes and non-interactive stdin both skip the prompt (a prompt would hang CI
-    or an agent harness; scripts keep their historical no-prompt behaviour)."""
+    or an agent harness; scripts keep their historical no-prompt behaviour).
+
+    A CLOSED fd 0 now counts as non-interactive, and that is a real behaviour change, not just
+    a crash fix (#125): the bare `.isatty()` this used to call raised on the `None` CPython
+    leaves at `xorcise agent rm a <&-`, so the command died one line short of the destructive
+    call. It now proceeds unprompted — what `</dev/null` has always done, and the posture every
+    caller of this seam was scripted against — so `mission uninstall`, `run terminate`,
+    `run regrade`, `run delete` and `agent rm` all changed with it. Where a missing terminal
+    must STOP the command instead of waving it through, `confirm_gate` below takes the opposite
+    posture and moved with the same fix. `down --purge` holds that line too but is not one of
+    its callers: it repeats the `_stdin_is_interactive` check inline, so editing either of
+    these two functions leaves it exactly where it is."""
     if assume_yes or not _stdin_is_interactive():
         return
     if not typer.confirm(question):
@@ -355,7 +388,13 @@ def confirm_gate(question: str, *, assume_yes: bool, what: str, example: str) ->
     scripted before the prompt existed. This gate is the opposite: it exists to STOP a script
     from making the choice unnoticed, so without a TTY and without --yes it fails closed — exit
     2, naming the flag — the same posture as `down --purge`. Interactively the default answer
-    is No; `n` prints "aborted" and exits 1."""
+    is No; `n` prints "aborted" and exits 1.
+
+    A CLOSED fd 0 reaches that refusal cleanly only since #125: the shared
+    `_stdin_is_interactive` raised an AttributeError on the `None` CPython leaves there, which
+    `app.py` turned into "unexpected error" and exit 1. The posture is unchanged — `agent
+    register` and `agent update` with an unrecognised `--kind` refused then and refuse now —
+    but the exit code and the message did move."""
     if assume_yes:
         return
     if not _stdin_is_interactive():

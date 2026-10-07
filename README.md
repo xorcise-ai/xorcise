@@ -46,7 +46,7 @@ xorcise up                                # boots the stack, prints the console 
 ```
 
 ```bash
-xorcise config set-model --name <model> --key <key>          # the judge — half the score
+xorcise config set-model --name <model> --key-stdin          # the judge — half the score
 xorcise agent register --name my-agent --kind claude-code
 xorcise mission list
 xorcise mission pull aviary-access
@@ -54,6 +54,10 @@ xorcise run create --agent my-agent --mission aviary-access
 xorcise run launch-cmd <run_id>           # paste into your agent's terminal, then run it
 xorcise run status <run_id>               # score, breakdown, evidence
 ```
+
+`--key-stdin` prompts for the judge key without echoing it, and reads a pipe
+when there is one (`printf %s "$KEY" | xorcise config set-model --key-stdin`),
+so the credential never reaches your shell history or `/proc/<pid>/cmdline`.
 
 `xorcise down` stops it all. No Docker on the box? `xorcise up --stub` is the
 self-contained demo. `xorcise --help` has the rest, and

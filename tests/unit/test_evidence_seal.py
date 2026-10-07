@@ -1,0 +1,844 @@
+"""The seal must be tamper-EVIDENT, not just a timestamp (#116).
+
+Sealing recorded only `sealed_at` — "no more telemetry accepted after this time". That is a
+lifecycle marker: it says when the evidence stopped growing, and nothing about whether the bytes
+still say what they said. Anyone with database access could rewrite a span after the seal and no
+read would notice, and a regrade could not prove it graded the same evidence as the first pass.
+
+For a platform whose claim is "grade the evidence, not the claim", the evidence itself needs to be
+checkable. These tests pin the property that matters — a changed byte changes the digest — rather
+than the particular hash construction, which is free to change as long as it stays deterministic
+and covers everything the judge reads.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from xorcise.core.contracts.telemetry import TraceRecord
+
+pytestmark = pytest.mark.unit
+
+
+def _record(run_id: str, seq: int, payload: str) -> TraceRecord:
+    return TraceRecord(run_id=run_id, seq=seq, payload=payload)
+
+
+def _seed(run_id: str, *, payload: str = '{"span":"recon"}') -> None:
+    """One run's worth of evidence across all three sources the judge reads."""
+    from xorcise.core.otel.store import SqliteLogStore, SqliteTraceStore
+    from xorcise.core.runcontrol.store import SqliteSubmissionStore
+
+    SqliteTraceStore().append(_record(run_id, 1, payload))
+    SqliteLogStore().append(_record(run_id, 1, '{"log":"started"}'))
+    SqliteSubmissionStore().record(run_id, "flag", "flag", "XORCISE{found}")
+
+
+def test_the_digest_is_stable_for_unchanged_evidence(migrated_home) -> None:
+    """Recomputing must be deterministic, or verification is useless — a digest that drifts on its
+    own would cry tampering on every honest run."""
+    from xorcise.core.rest.evidence_seal import compute_evidence_digest
+
+    _seed("r1")
+
+    assert compute_evidence_digest("r1") == compute_evidence_digest("r1")
+
+
+def test_altering_a_sealed_span_changes_the_digest(migrated_home) -> None:
+    """The property the whole feature exists for: edited evidence stops matching its seal."""
+    from xorcise.core.rest.evidence_seal import compute_evidence_digest
+
+    _seed("r1", payload='{"span":"recon"}')
+    before = compute_evidence_digest("r1")
+
+    # Rewrite the span in place, exactly as someone with database access could.
+    from xorcise.core.db import session_scope
+    from xorcise.core.otel.store.models import TraceRow
+
+    with session_scope() as s:
+        row = s.query(TraceRow).filter_by(run_id="r1", seq=1).one()
+        row.payload = '{"span":"recon","flag":"XORCISE{forged}"}'
+
+    assert compute_evidence_digest("r1") != before
+
+
+def test_a_submitted_artifact_is_covered_too(migrated_home) -> None:
+    """Artifacts are graded evidence — the judge reads them — so a digest over spans alone would
+    leave the most directly claim-bearing part of a run unprotected."""
+    from xorcise.core.rest.evidence_seal import compute_evidence_digest
+    from xorcise.core.runcontrol.store import SqliteSubmissionStore
+
+    _seed("r1")
+    before = compute_evidence_digest("r1")
+
+    SqliteSubmissionStore().record("r1", "artifact", "notes.md", "late addition")
+
+    assert compute_evidence_digest("r1") != before
+
+
+def test_two_runs_with_identical_evidence_do_not_share_a_digest(migrated_home) -> None:
+    """The run id is bound in: a digest cannot be lifted from one run and shown for another."""
+    from xorcise.core.rest.evidence_seal import compute_evidence_digest
+
+    _seed("r1")
+    _seed("r2")
+
+    assert compute_evidence_digest("r1") != compute_evidence_digest("r2")
+
+
+def test_sealing_records_the_digest_and_verifies_clean(migrated_home) -> None:
+    from xorcise.core.otel.store import SqliteSealStore
+    from xorcise.core.rest.evidence_seal import seal_with_digest, verify_evidence
+
+    _seed("r1")
+    seal_with_digest("r1")
+
+    assert SqliteSealStore().evidence_digest("r1")
+    assert verify_evidence("r1") is True
+
+
+def test_verification_fails_once_the_evidence_is_edited(migrated_home) -> None:
+    from xorcise.core.db import session_scope
+    from xorcise.core.otel.store.models import TraceRow
+    from xorcise.core.rest.evidence_seal import seal_with_digest, verify_evidence
+
+    _seed("r1")
+    seal_with_digest("r1")
+
+    with session_scope() as s:
+        s.query(TraceRow).filter_by(run_id="r1", seq=1).one().payload = '{"span":"tampered"}'
+
+    assert verify_evidence("r1") is False
+
+
+def test_a_run_sealed_before_digests_existed_is_unknown_not_failed(migrated_home) -> None:
+    """None, not False. Rows predate the column, and reporting an old run as TAMPERED because we
+    simply never recorded a digest would be a false accusation — the loudest possible one."""
+    from xorcise.core.otel.store import SqliteSealStore
+    from xorcise.core.rest.evidence_seal import verify_evidence
+
+    _seed("r1")
+    SqliteSealStore().seal("r1")  # the pre-#116 call shape: no digest
+
+    assert verify_evidence("r1") is None
+
+
+def test_sealing_twice_keeps_the_first_digest(migrated_home) -> None:
+    """Seal is first-wins by design. If a later seal could overwrite the digest, anyone able to
+    re-seal could launder edited evidence into a clean verification."""
+    from xorcise.core.otel.store import SqliteSealStore
+    from xorcise.core.rest.evidence_seal import seal_with_digest
+
+    _seed("r1")
+    seal_with_digest("r1")
+    first = SqliteSealStore().evidence_digest("r1")
+
+    from xorcise.core.runcontrol.store import SqliteSubmissionStore
+
+    SqliteSubmissionStore().record("r1", "artifact", "added.md", "after the seal")
+    seal_with_digest("r1")
+
+    assert SqliteSealStore().evidence_digest("r1") == first
+
+
+# ── review findings (#139) ───────────────────────────────────────────────────────────────────
+
+
+def test_editing_an_observed_fact_breaks_verification(migrated_home) -> None:
+    """Observed facts are GRADED — `grade_assembly` feeds them into SealedContext and deterministic
+    checks resolve against them — but the digest never covered them, so altering one left the run
+    verifying clean. Evidence that decides a score has to be inside the seal."""
+    from xorcise.core.contracts.telemetry import ObservedFact
+    from xorcise.core.db import session_scope
+    from xorcise.core.rest.evidence_seal import seal_with_digest, verify_evidence
+    from xorcise.core.runs.observed import SqliteObservedFactsStore
+
+    _seed("r1")
+    SqliteObservedFactsStore().record(
+        ObservedFact(run_id="r1", kind="run-control", name="flag_seen", value="no")
+    )
+    seal_with_digest("r1")
+    assert verify_evidence("r1") is True
+
+    from xorcise.core.runs.models import RunObservedFactRow
+
+    with session_scope() as s:
+        s.query(RunObservedFactRow).filter_by(run_id="r1", name="flag_seen").one().value = "yes"
+
+    assert verify_evidence("r1") is False
+
+
+def test_admission_is_closed_before_the_evidence_is_hashed(migrated_home, monkeypatch) -> None:
+    """The digest was taken BEFORE `seal()`, so anything admitted in between was hashed out of
+    existence and the freshly sealed run verified False immediately. Sealing must close the door
+    first, then hash what is behind it."""
+    from xorcise.core.otel.store import SqliteSealStore
+    from xorcise.core.rest import evidence_seal
+
+    _seed("r1")
+    order: list[str] = []
+    real_compute = evidence_seal.compute_evidence_digest
+    real_seal = SqliteSealStore.seal
+
+    def spy_compute(run_id: str) -> str:
+        order.append("hash")
+        return real_compute(run_id)
+
+    def spy_seal(self: SqliteSealStore, run_id: str, digest: str | None = None) -> None:
+        order.append("seal")
+        real_seal(self, run_id, digest)
+
+    monkeypatch.setattr(evidence_seal, "compute_evidence_digest", spy_compute)
+    monkeypatch.setattr(SqliteSealStore, "seal", spy_seal)
+
+    evidence_seal.seal_with_digest("r1")
+
+    assert order[0] == "seal", f"hashed before closing admission: {order}"
+
+
+def test_a_digest_from_an_unknown_scheme_reads_unknown_not_tampered(migrated_home) -> None:
+    """Only the hex was stored, so verification always recomputed with the CURRENT construction,
+    and bumping the version would report every untouched older run as modified. The stored value
+    has to say which scheme produced it; an unrecognised one is unknown, never an accusation."""
+    from xorcise.core.otel.store import SqliteSealStore
+    from xorcise.core.rest.evidence_seal import verify_evidence
+
+    _seed("r1")
+    SqliteSealStore().seal("r1", "xorcise-evidence-v99:" + "a" * 64)
+
+    assert verify_evidence("r1") is None
+
+
+def test_the_stored_digest_records_its_scheme(migrated_home) -> None:
+    from xorcise.core.otel.store import SqliteSealStore
+    from xorcise.core.rest.evidence_seal import _DIGEST_VERSION, seal_with_digest
+
+    _seed("r1")
+    seal_with_digest("r1")
+
+    stored = SqliteSealStore().evidence_digest("r1") or ""
+    assert stored.startswith(f"{_DIGEST_VERSION}:")
+
+
+# ── review round two (#139) ──────────────────────────────────────────────────────────────────
+
+
+def test_hashing_never_materialises_trace_records(migrated_home, monkeypatch) -> None:
+    """The report re-hashes on every GET, and ~95% of that went on `store.read()` building pydantic
+    `TraceRecord`s whose `received_at` the digest then throws away. Hashing must read the two
+    columns it covers, so the cost is the SHA-256 and not an ORM round trip."""
+    from xorcise.core.otel.store import SqliteLogStore, SqliteTraceStore
+    from xorcise.core.rest.evidence_seal import compute_evidence_digest
+
+    _seed("r1")
+
+    def forbidden(self: object, run_id: str) -> list[TraceRecord]:
+        raise AssertionError("the digest materialised TraceRecords instead of reading columns")
+
+    monkeypatch.setattr(SqliteTraceStore, "read", forbidden)
+    monkeypatch.setattr(SqliteLogStore, "read", forbidden)
+
+    assert compute_evidence_digest("r1")
+
+
+def test_duplicate_seq_hashes_the_same_whatever_order_the_rows_arrived(migrated_home) -> None:
+    """Ingest assigns `seq = len(read(run_id))` non-atomically and nothing makes `(run_id, seq)`
+    unique, so two concurrent OTLP posts can collide. Sorting on `seq` alone then leaves the order
+    to whatever the rows happen to sit in — stable today via rowid, but a dump/restore that
+    reassigns ids flips it and an untouched run reads as tampered."""
+    from xorcise.core.db import session_scope
+    from xorcise.core.otel.store import SqliteTraceStore
+    from xorcise.core.otel.store.models import TraceRow
+    from xorcise.core.rest.evidence_seal import compute_evidence_digest
+
+    store = SqliteTraceStore()
+    store.append(_record("r1", 1, '{"span":"alpha"}'))
+    store.append(_record("r1", 1, '{"span":"beta"}'))
+    first = compute_evidence_digest("r1")
+
+    # Re-insert the same two payloads in the opposite order, as a dump/restore would.
+    with session_scope() as s:
+        s.query(TraceRow).filter_by(run_id="r1").delete()
+    store.append(_record("r1", 1, '{"span":"beta"}'))
+    store.append(_record("r1", 1, '{"span":"alpha"}'))
+
+    assert compute_evidence_digest("r1") == first
+
+
+def test_an_edit_outside_the_hash_does_not_trip_verification(migrated_home) -> None:
+    """The digest deliberately excludes server-side receipt metadata. That exclusion has to be
+    real: touching `created_at` must not read as tampering, or the signal cries wolf."""
+    from datetime import UTC, datetime
+
+    from xorcise.core.db import session_scope
+    from xorcise.core.otel.store.models import TraceRow
+    from xorcise.core.rest.evidence_seal import seal_with_digest, verify_evidence
+
+    _seed("r1")
+    seal_with_digest("r1")
+
+    with session_scope() as s:
+        row = s.query(TraceRow).filter_by(run_id="r1", seq=1).one()
+        row.created_at = datetime(2001, 1, 1, tzinfo=UTC)
+
+    assert verify_evidence("r1") is True
+
+
+def test_the_digest_is_the_same_in_a_separate_process(migrated_home) -> None:
+    """Determinism has to hold ACROSS processes, not just within one: a regrade, an export and the
+    report all run in different interpreters from the one that sealed. Anything iteration-order or
+    hash-randomisation dependent would pass the in-process test and fail here."""
+    import subprocess
+    import sys
+
+    from xorcise.core.rest.evidence_seal import compute_evidence_digest
+
+    _seed("r1")
+    here = compute_evidence_digest("r1")
+
+    out = subprocess.run(  # noqa: S603 — fixed argv, this interpreter
+        [
+            sys.executable,
+            "-c",
+            "from xorcise.core.rest.evidence_seal import compute_evidence_digest;"
+            "print(compute_evidence_digest('r1'))",
+        ],
+        capture_output=True,
+        text=True,
+        env={"XORCISE_HOME": str(migrated_home), "PATH": "/usr/bin:/bin", "PYTHONHASHSEED": "1"},
+        check=True,
+    )
+
+    assert out.stdout.strip() == here
+
+
+def test_a_hashing_failure_is_told_apart_from_a_run_that_predates_digests(
+    migrated_home, monkeypatch, caplog
+) -> None:
+    """A failed hash logged one WARNING and left the column NULL — indistinguishable, forever, from
+    a run sealed before digests existed, because `attach_digest` is first-wins and nothing
+    backfills. An import error or a lock at every finalisation would quietly make every new run
+    unverifiable and the report would say nothing at all."""
+    import logging
+
+    from xorcise.core.otel.store import SqliteSealStore
+    from xorcise.core.rest import evidence_seal
+
+    _seed("r1")
+
+    def boom(run_id: str) -> str:
+        raise RuntimeError("no hash for you")
+
+    monkeypatch.setattr(evidence_seal, "compute_evidence_digest", boom)
+    with caplog.at_level(logging.ERROR):
+        evidence_seal.seal_with_digest("r1")
+
+    assert SqliteSealStore().is_sealed("r1"), "sealing must not depend on hashing"
+    recorded = SqliteSealStore().evidence_digest("r1")
+    assert recorded and recorded.startswith(evidence_seal._DIGEST_UNAVAILABLE)
+    assert any(r.levelno >= logging.ERROR for r in caplog.records), "a failed hash must log ERROR"
+    # Still unknown, never an accusation.
+    assert evidence_seal.verify_evidence("r1") is None
+
+
+def test_the_report_view_says_unavailable_rather_than_nothing(migrated_home) -> None:
+    """The point of the sentinel: a post-migration run whose hash failed renders "unavailable"
+    instead of looking exactly like a run that predates the feature."""
+    from xorcise.core.otel.store import SqliteSealStore
+    from xorcise.core.rest.evidence_seal import _DIGEST_UNAVAILABLE, evidence_seal_view
+
+    _seed("r1")
+    SqliteSealStore().seal("r1", f"{_DIGEST_UNAVAILABLE}:hash failed")
+
+    view = evidence_seal_view("r1")
+    assert view.unavailable is True
+    assert view.digest is None and view.verified is None
+
+
+def test_the_report_view_hands_over_the_bare_digest_not_the_scheme_tag(migrated_home) -> None:
+    """The stored value is `scheme:hex`; the report short-forms the first 16 characters of what it
+    is given. Handing it the raw stored value printed 16 characters of the SCHEME on every report —
+    the same string for every run, which compares equal by eye no matter what changed."""
+    from xorcise.core.rest.evidence_seal import (
+        _DIGEST_VERSION,
+        compute_evidence_digest,
+        evidence_seal_view,
+        seal_with_digest,
+    )
+
+    _seed("r1")
+    seal_with_digest("r1")
+
+    view = evidence_seal_view("r1")
+    assert view.digest == compute_evidence_digest("r1")
+    assert view.verified is True
+    assert not (view.digest or "").startswith(_DIGEST_VERSION)
+
+
+def test_the_report_view_degrades_instead_of_raising_when_the_store_is_unreadable(
+    migrated_home, monkeypatch
+) -> None:
+    """Every other display join in `assemble_report` is wrapped; this one was not, so a transient
+    "database is locked" — documented as real on this shared file — 500'd `GET /report` instead of
+    dropping one row."""
+    from xorcise.core.rest import evidence_seal
+
+    _seed("r1")
+    evidence_seal.seal_with_digest("r1")
+
+    def locked(run_id: str) -> str:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(evidence_seal, "compute_evidence_digest", locked)
+
+    view = evidence_seal.evidence_seal_view("r1")
+    assert view.digest, "the recorded digest is still readable"
+    assert view.verified is None, "could not verify — never an accusation"
+
+
+def test_the_result_json_carries_the_digest_and_the_verdict(migrated_home) -> None:
+    """#116 asked for the digest to be SURFACED so consumers can validate. Nothing
+    machine-readable carried it: `/result`, `/runs/{id}` and the GUI had neither the digest nor the
+    verdict, and the only place it appeared was 16 characters of text inside a rendered report.
+
+    The verdict is behind `verify=1` since round three — it costs a hash of the whole run and the
+    list surfaces that drove this endpoint in a loop never showed it (see
+    test_the_result_endpoint_does_not_rehash_the_evidence_by_default). What #116 asked for is that
+    a consumer CAN get it from JSON, which this still pins."""
+    from datetime import UTC, datetime
+
+    from fastapi.testclient import TestClient
+
+    from xorcise.core import runs
+    from xorcise.core.rest.evidence_seal import compute_evidence_digest
+    from xorcise.core.rest.run_terminate import terminate_run
+    from xorcise.core.roles.boot.role_all import build_rest_app
+
+    run = runs.create_run(agent_id="a1", mission="m1", budget_seconds=60)
+    _seed(run.run_id)
+    terminate_run(run.run_id, "done", datetime(2026, 9, 17, tzinfo=UTC))
+
+    body = TestClient(build_rest_app()).get(f"/api/runs/{run.run_id}/result?verify=1").json()
+
+    assert body["evidence_digest"] == compute_evidence_digest(run.run_id)
+    assert body["evidence_verified"] is True
+
+
+def test_grading_warns_loudly_before_it_scores_evidence_that_moved(migrated_home, caplog) -> None:
+    """A regrade re-scores ALREADY-SEALED evidence. If that evidence no longer matches its seal,
+    the new grade is derived from something other than what was sealed — and that has to be in the
+    log at the moment it happens, not only in a report someone may never open."""
+    import logging
+    from datetime import UTC, datetime
+
+    from xorcise.core import reporting, runs
+    from xorcise.core.db import session_scope
+    from xorcise.core.otel.store.models import TraceRow
+    from xorcise.core.rest.run_terminate import grade_and_record, terminate_run
+
+    run = runs.create_run(agent_id="a1", mission="m1", budget_seconds=60)
+    _seed(run.run_id)
+    terminate_run(run.run_id, "done", datetime(2026, 9, 17, tzinfo=UTC))
+
+    with session_scope() as s:
+        s.query(TraceRow).filter_by(run_id=run.run_id, seq=1).one().payload = '{"span":"forged"}'
+
+    reporting.delete_result(run.run_id)  # what POST /runs/{id}/regrade does first
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        grade_and_record(run.run_id)
+
+    assert any(
+        "no longer matches" in r.getMessage() and r.levelno >= logging.WARNING
+        for r in caplog.records
+    ), [r.getMessage() for r in caplog.records]
+
+
+# ── review round three (#139) ────────────────────────────────────────────────────────────────
+
+
+def test_a_first_grade_with_no_drain_window_hashes_the_evidence_once(
+    migrated_home, monkeypatch
+) -> None:
+    """The claim "a first grade does not pay for a second hash" held only for drain > 0. At
+    `XORCISE_TELEMETRY_DRAIN_SECONDS=0` — the whole test suite, and a documented operator mode —
+    `seal_terminal` seals synchronously, so the grade that follows finds the run already sealed,
+    reads that as "someone else sealed this" and re-hashes the whole run to verify a seal it took
+    itself moments earlier."""
+    from datetime import UTC, datetime
+
+    from xorcise.core import runs
+    from xorcise.core.rest import evidence_seal
+    from xorcise.core.rest.run_terminate import terminate_run
+
+    run = runs.create_run(agent_id="a1", mission="m1", budget_seconds=60)
+    _seed(run.run_id)
+
+    calls: list[str] = []
+    real = evidence_seal.compute_evidence_digest
+
+    def counted(run_id: str) -> str:
+        calls.append(run_id)
+        return real(run_id)
+
+    monkeypatch.setattr(evidence_seal, "compute_evidence_digest", counted)
+    terminate_run(run.run_id, "done", datetime(2026, 9, 17, tzinfo=UTC))
+
+    assert calls == [run.run_id], f"the run was hashed {len(calls)} times on a first grade"
+
+
+def test_a_straggler_after_a_zero_drain_seal_is_disclosed_by_the_report_not_the_grade_log(
+    migrated_home, caplog
+) -> None:
+    """The cost is the cheap half of that bug; this is the loud half. `seal()` narrows the
+    admission race but does not close it — a request already past `is_sealed()` can still land
+    while we hash — so at zero drain a straggler between the seal and the grade made a FIRST grade
+    log "evidence no longer matches".
+
+    That sentence was TRUE: the evidence really did move. What it was not was consistent. At any
+    non-zero drain — the 5.0s default, which is every deployment — the first grade seals the run
+    itself, never verifies, and has never logged this straggler at all. So the line appeared only
+    in the zero-drain mode, as an artifact of not being able to tell "I sealed this" from "someone
+    else did", and reading it as "a regrade found edited evidence" was exactly wrong.
+
+    Nothing is suppressed that is not said better elsewhere, which is what this pins: the report
+    carries the MISMATCH banner and `/result?verify=1` answers false, for as long as the run
+    exists, rather than once into a log nobody is tailing."""
+    import logging
+    from datetime import UTC, datetime
+
+    from xorcise.core import reporting, runs
+    from xorcise.core.contracts.telemetry import TraceRecord
+    from xorcise.core.otel.store import SqliteTraceStore
+    from xorcise.core.rest.evidence_seal import evidence_seal_view
+    from xorcise.core.rest.report_assembly import assemble_report
+    from xorcise.core.rest.run_terminate import grade_and_record, seal_terminal
+
+    run = runs.create_run(agent_id="a1", mission="m1", budget_seconds=60)
+    _seed(run.run_id)
+    seal_terminal(run.run_id, "done", datetime(2026, 9, 17, tzinfo=UTC))
+    # The straggler: an export that passed the admission check before `seal()` and lands after it.
+    SqliteTraceStore().append(TraceRecord(run_id=run.run_id, seq=9, payload='{"span":"late"}'))
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        grade_and_record(run.run_id)
+
+    assert not [r for r in caplog.records if "no longer matches" in r.getMessage()], (
+        "a first grade used the regrade's sentence"
+    )
+    # ...and the move itself is still on the record, on the surfaces that keep it.
+    view = evidence_seal_view(run.run_id)
+    assert (view.verified, view.status) == (False, "mismatch")
+    ctx = assemble_report(run.run_id)
+    assert ctx is not None
+    assert "MISMATCH" in reporting.render_markdown(ctx), "the straggler went undisclosed entirely"
+
+
+def test_a_hashing_failure_records_one_bounded_line_not_the_whole_exception(
+    migrated_home, monkeypatch
+) -> None:
+    """The sentinel's reason is stored, never rendered, so nothing bounded it: `str(exc)` went into
+    a Text column verbatim — a SQLAlchemy error carries its whole statement and several lines of
+    it. One line, bounded, is enough to tell a lock apart from an import error."""
+    from xorcise.core.otel.store import SqliteSealStore
+    from xorcise.core.rest import evidence_seal
+
+    _seed("r1")
+
+    def boom(run_id: str) -> str:
+        raise RuntimeError("database is locked\nSELECT payload FROM traces WHERE " + "x" * 400)
+
+    monkeypatch.setattr(evidence_seal, "compute_evidence_digest", boom)
+    evidence_seal.seal_with_digest("r1")
+
+    recorded = SqliteSealStore().evidence_digest("r1") or ""
+    reason = recorded.partition(":")[2]
+    assert "\n" not in recorded, "a multi-line reason went into the column verbatim"
+    assert reason.startswith("database is locked")
+    assert len(reason) <= 120, f"the reason is unbounded: {len(reason)} characters"
+
+
+def test_a_hashing_failure_with_nothing_to_say_records_the_exception_type(
+    migrated_home, monkeypatch
+) -> None:
+    """An empty `str(exc)` — `raise KeyError()`, a bare `RecursionError` — would record the
+    sentinel and nothing else, which is the NULL column the sentinel exists to replace."""
+    from xorcise.core.otel.store import SqliteSealStore
+    from xorcise.core.rest import evidence_seal
+
+    _seed("r1")
+
+    def boom(run_id: str) -> str:
+        raise RecursionError
+
+    monkeypatch.setattr(evidence_seal, "compute_evidence_digest", boom)
+    evidence_seal.seal_with_digest("r1")
+
+    assert (SqliteSealStore().evidence_digest("r1") or "").endswith(":RecursionError")
+
+
+def test_a_seal_row_that_cannot_be_read_says_so_rather_than_nothing(
+    migrated_home, monkeypatch
+) -> None:
+    """A read failure returned the same empty view as a run that was never sealed, so the report
+    simply dropped the row and the result said null — silence where the honest answer is "could
+    not verify". The two failure modes have to be tellable apart, which is the whole argument for
+    the UNAVAILABLE sentinel applied one layer out."""
+    from xorcise.core.otel.store import SqliteSealStore
+    from xorcise.core.rest.evidence_seal import evidence_seal_view
+
+    _seed("r1")
+    SqliteSealStore().seal("r1")
+
+    def locked(self: SqliteSealStore, run_id: str) -> str | None:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(SqliteSealStore, "evidence_digest", locked)
+
+    view = evidence_seal_view("r1")
+    assert view.status == "unreadable"
+    assert view.verified is None, "could not read is never an accusation"
+
+
+def test_an_unknown_scheme_still_hands_over_the_digest_it_recorded(migrated_home) -> None:
+    """The view dropped the digest for a scheme it cannot re-derive, and the report's seal row is
+    gated on having a digest — so an unknown scheme rendered NOTHING, identical to a run that
+    predates the feature. The reply to review claimed it rendered "recorded, but this build could
+    not verify it"; it did not. Carrying the digest is what makes that sentence true: the hex is
+    still worth comparing between two reports of the same run, and the wording already says
+    unknown rather than altered."""
+    from xorcise.core.otel.store import SqliteSealStore
+    from xorcise.core.rest.evidence_seal import evidence_seal_view
+
+    _seed("r1")
+    SqliteSealStore().seal("r1", "xorcise-evidence-v99:" + "a" * 64)
+
+    view = evidence_seal_view("r1")
+    assert view.digest == "a" * 64
+    assert view.verified is None
+    assert view.status == "unverifiable"
+
+
+def test_the_result_endpoint_does_not_rehash_the_evidence_by_default(
+    migrated_home, monkeypatch
+) -> None:
+    """`run list`, the leaderboard roll-up and the frontend's results table each fetch /result once
+    per run in a loop. Re-hashing there put the whole of a run's evidence through SHA-256 on every
+    row of a list — measured at 3.3 ms per MB, so a 124-run dataset at 3 MB a run added over a
+    second to `xorcise run list` for a verdict the list never shows."""
+    from datetime import UTC, datetime
+
+    from fastapi.testclient import TestClient
+
+    from xorcise.core import runs
+    from xorcise.core.rest import evidence_seal
+    from xorcise.core.rest.run_terminate import terminate_run
+    from xorcise.core.roles.boot.role_all import build_rest_app
+
+    run = runs.create_run(agent_id="a1", mission="m1", budget_seconds=60)
+    _seed(run.run_id)
+    terminate_run(run.run_id, "done", datetime(2026, 9, 17, tzinfo=UTC))
+
+    calls: list[str] = []
+    real = evidence_seal.compute_evidence_digest
+
+    def counted(rid: str) -> str:
+        calls.append(rid)
+        return real(rid)
+
+    monkeypatch.setattr(evidence_seal, "compute_evidence_digest", counted)
+    client = TestClient(build_rest_app())
+    body = client.get(f"/api/runs/{run.run_id}/result").json()
+
+    assert calls == [], "/result re-hashed the run's evidence for a list view"
+    assert body["evidence_digest"], "the recorded digest is still carried — it is one row read"
+    assert body["evidence_status"] == "recorded"
+    assert body["evidence_verified"] is None
+
+    verified = client.get(f"/api/runs/{run.run_id}/result?verify=1").json()
+    assert calls == [run.run_id], "?verify=1 must actually re-hash"
+    assert verified["evidence_verified"] is True
+    assert verified["evidence_status"] == "verified"
+
+
+def test_the_result_endpoint_tells_a_failed_hash_apart_from_a_pre_feature_run(
+    migrated_home,
+) -> None:
+    """The view's `unavailable` flag was dropped on the way into the response, so the
+    machine-readable surface carried exactly the ambiguity the report no longer has: a run sealed
+    but never hashed came back `null/null`, indistinguishable from one sealed before digests
+    existed. Everything the report can say, a consumer has to be able to read."""
+    from datetime import UTC, datetime
+
+    from fastapi.testclient import TestClient
+
+    from xorcise.core import runs
+    from xorcise.core.db import session_scope
+    from xorcise.core.otel.store.models import TraceSealRow
+    from xorcise.core.rest.evidence_seal import _DIGEST_UNAVAILABLE
+    from xorcise.core.rest.run_terminate import terminate_run
+    from xorcise.core.roles.boot.role_all import build_rest_app
+
+    def _graded_run(stored: str | None) -> str:
+        """A graded run whose seal row carries exactly `stored`. Written after terminating rather
+        than before, because `attach_digest` backfills a NULL column on the way through."""
+        run = runs.create_run(agent_id="a1", mission="m1", budget_seconds=60)
+        _seed(run.run_id)
+        terminate_run(run.run_id, "done", datetime(2026, 9, 17, tzinfo=UTC))
+        with session_scope() as s:
+            row = s.get(TraceSealRow, run.run_id)
+            assert row is not None
+            row.evidence_digest = stored
+        return run.run_id
+
+    unhashed = _graded_run(f"{_DIGEST_UNAVAILABLE}:RuntimeError")
+    old = _graded_run(None)  # sealed before digests existed; nothing ever backfills it
+
+    client = TestClient(build_rest_app())
+    a = client.get(f"/api/runs/{unhashed}/result").json()
+    b = client.get(f"/api/runs/{old}/result").json()
+
+    assert (a["evidence_digest"], a["evidence_verified"]) == (None, None)
+    assert (b["evidence_digest"], b["evidence_verified"]) == (None, None)
+    assert a["evidence_status"] == "unavailable"
+    assert b["evidence_status"] == "none"
+
+
+def test_the_report_says_could_not_verify_for_a_scheme_it_cannot_re_derive(migrated_home) -> None:
+    """The end of the same silence, through the real assembly + renderer. The report's seal row is
+    gated on having a digest, so dropping it for an unknown scheme printed NOTHING — the reply to
+    review claimed this row read "recorded, but this build could not verify it", and it did not.
+    It does now, which is the wording that was always right for this case: unknown, not altered."""
+    from datetime import UTC, datetime
+
+    from xorcise.core import reporting, runs
+    from xorcise.core.db import session_scope
+    from xorcise.core.otel.store.models import TraceSealRow
+    from xorcise.core.rest.report_assembly import assemble_report
+    from xorcise.core.rest.run_terminate import terminate_run
+
+    run = runs.create_run(agent_id="a1", mission="m1", budget_seconds=60)
+    _seed(run.run_id)
+    terminate_run(run.run_id, "done", datetime(2026, 9, 17, tzinfo=UTC))
+    with session_scope() as s:
+        row = s.get(TraceSealRow, run.run_id)
+        assert row is not None
+        row.evidence_digest = "xorcise-evidence-v99:" + "c" * 64
+
+    ctx = assemble_report(run.run_id)
+    assert ctx is not None
+    md = reporting.render_markdown(ctx)
+
+    assert "could not verify it" in md
+    assert "MISMATCH" not in md, "an unverifiable seal is never an accusation"
+
+
+# ── review round four (#139) ─────────────────────────────────────────────────────────────────
+
+
+def test_the_report_says_the_seal_could_not_be_read_instead_of_printing_nothing(
+    migrated_home, monkeypatch
+) -> None:
+    """Round three gave the VIEW a fourth state and `/result` a field for it, and left the surface
+    the review actually named — the rendered report — exactly as silent as before: its seal row is
+    gated on having a digest or the unavailable sentinel, and a read failure has neither.
+
+    Silence is what a run sealed before digests existed looks like, and it is right for that run.
+    A read failing right now is not that, and a reader who cannot tell them apart has been told
+    the wrong thing by omission."""
+    from datetime import UTC, datetime
+
+    from xorcise.core import reporting, runs
+    from xorcise.core.otel.store import SqliteSealStore
+    from xorcise.core.rest.report_assembly import assemble_report
+    from xorcise.core.rest.run_terminate import terminate_run
+
+    run = runs.create_run(agent_id="a1", mission="m1", budget_seconds=60)
+    _seed(run.run_id)
+    terminate_run(run.run_id, "done", datetime(2026, 9, 17, tzinfo=UTC))
+
+    def locked(self: SqliteSealStore, run_id: str) -> str:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(SqliteSealStore, "evidence_digest", locked)
+
+    ctx = assemble_report(run.run_id)
+    assert ctx is not None
+    md = reporting.render_markdown(ctx)
+    html = reporting.render_html(ctx)
+
+    assert "could not be read" in md, "the report stayed silent about a seal it could not read"
+    assert "could not be read" in html
+    assert "MISMATCH" not in md, "a read failure is never an accusation"
+
+
+def test_the_report_re_verifies_the_seal_on_every_request(migrated_home) -> None:
+    """The other half of the round-three decision. `/result` stopped re-hashing; `/report` must
+    not, because it is the surface whose whole point is the mismatch banner — one run, one
+    deliberate fetch. Nothing pinned it: the opt-in could have been carried here by a single
+    keyword and the evidence + reporting suites would both have stayed green."""
+    from datetime import UTC, datetime
+
+    from xorcise.core import reporting, runs
+    from xorcise.core.db import session_scope
+    from xorcise.core.otel.store.models import TraceRow
+    from xorcise.core.rest.report_assembly import assemble_report
+    from xorcise.core.rest.run_terminate import terminate_run
+
+    run = runs.create_run(agent_id="a1", mission="m1", budget_seconds=60)
+    _seed(run.run_id)
+    terminate_run(run.run_id, "done", datetime(2026, 9, 17, tzinfo=UTC))
+
+    # The evidence moves after the grade — exactly what the report exists to disclose.
+    with session_scope() as s:
+        s.query(TraceRow).filter_by(run_id=run.run_id, seq=1).one().payload = '{"span":"forged"}'
+
+    ctx = assemble_report(run.run_id)
+    assert ctx is not None
+    assert ctx.evidence_verified is False, "the report read the seal without re-checking it"
+    assert "MISMATCH" in reporting.render_markdown(ctx)
+
+
+def test_a_grade_that_dies_on_the_way_in_does_not_silence_the_next_regrade(
+    migrated_home, monkeypatch, caplog
+) -> None:
+    """The "sealed here" mark is consumed inside `_grade_run`'s try, so every way out of
+    `_grade_run` that never reaches that call left it behind — and a mark left behind suppresses
+    the verification on the NEXT regrade of that run, which is the one pass the seal exists for.
+
+    The way out used here is the one this module's own comments call real: a "database is locked"
+    on the read that decides whether the run is already graded, before any of the work starts."""
+    import logging
+    from datetime import UTC, datetime
+
+    import pytest
+
+    from xorcise.core import runs
+    from xorcise.core.db import session_scope
+    from xorcise.core.otel.store.models import TraceRow
+    from xorcise.core.rest.run_terminate import grade_and_record, seal_terminal
+
+    run = runs.create_run(agent_id="a1", mission="m1", budget_seconds=60)
+    _seed(run.run_id)
+    seal_terminal(run.run_id, "done", datetime(2026, 9, 17, tzinfo=UTC))  # marks: sealed here
+
+    def locked(run_id: str) -> None:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr("xorcise.core.rest.run_terminate.reporting.get_result", locked)
+    with pytest.raises(RuntimeError):
+        grade_and_record(run.run_id)
+    monkeypatch.undo()
+
+    # Evidence moves while the run sits terminal and ungraded; the re-drive must still say so.
+    with session_scope() as s:
+        s.query(TraceRow).filter_by(run_id=run.run_id, seq=1).one().payload = '{"span":"forged"}'
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        grade_and_record(run.run_id)
+
+    assert any("no longer matches" in r.getMessage() for r in caplog.records), (
+        "a mark left behind by a failed grade silenced the verification on the next one"
+    )

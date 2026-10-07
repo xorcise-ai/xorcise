@@ -778,6 +778,42 @@ def test_down_purge_non_interactive_needs_yes(monkeypatch, tmp_path):
     assert "--yes" in result.stderr
 
 
+def test_down_purge_with_a_closed_stdin_still_fails_closed(monkeypatch, tmp_path):
+    """`xorcise down --purge <&-` must hit the same exit-2 gate, not crash (#125 review).
+
+    fd 0 closed leaves sys.stdin as None, and the bare `.isatty()` behind this guard raised an
+    AttributeError the user read as 'unexpected error' — turning a deliberate fail-closed gate
+    into a crash. The gate is the whole reason a scripted --purge cannot proceed unattended."""
+    from tests._helpers import invoke_cli_with_stdin
+
+    home = tmp_path / ".xorcise"
+    home.mkdir()
+    (home / "config.toml").write_text("k=1")
+    monkeypatch.setenv("XORCISE_HOME", str(home))
+
+    assert invoke_cli_with_stdin(["down", "--purge"], None) == 2
+    assert home.exists()
+
+
+def test_a_closed_stdin_lets_a_destructive_confirm_proceed_unprompted(monkeypatch):
+    """`xorcise agent rm alpha <&-` now DELETES instead of crashing (#125 review).
+
+    The other half of the closed-fd-0 fix, and a behaviour change in its own right: the bare
+    `.isatty()` behind `confirm_or_abort` raised on the `None` CPython leaves there, so the
+    command died one line short of the DELETE. No stream is not a terminal, so the prompt is
+    skipped exactly as `</dev/null` has always skipped it, and every caller of that seam moved
+    together — `mission uninstall`, `run terminate`, `run regrade`, `run delete`, `agent rm`.
+    `down --purge` above is the deliberate exception: its gate fails closed instead."""
+    from tests._helpers import invoke_cli_with_stdin
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(RestClient, "get", lambda self, path: [{"name": "alpha"}])
+    monkeypatch.setattr(RestClient, "delete", lambda self, path: captured.setdefault("path", path))
+
+    assert invoke_cli_with_stdin(["agent", "rm", "alpha"], None) == 0
+    assert captured["path"] == "/agents/alpha"
+
+
 def test_down_keep_data_and_purge_is_error(monkeypatch, tmp_path):
     monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
     result = runner.invoke(app, ["down", "--keep-data", "--purge"])

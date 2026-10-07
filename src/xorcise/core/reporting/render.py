@@ -35,7 +35,7 @@ from __future__ import annotations
 import html
 import math
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -81,6 +81,20 @@ class RunReportContext:
     # mission declared no terrain or the map could not be resolved; the section is then omitted
     # rather than drawn empty.
     terrain: ResolvedTerrainV2 | None = None
+    # The BARE hex digest recorded when the run's evidence was sealed, and whether the evidence
+    # still matches it. `verified` is a TRISTATE: True/False/None, where None is "could not
+    # verify" — reporting that as "altered" would be a false accusation, so the report never does.
+    evidence_digest: str | None = None
+    evidence_verified: bool | None = None
+    # Sealing recorded that it could NOT hash the evidence. Distinct from having no digest at all:
+    # one is a run that predates the feature and is rightly silent, the other is the feature
+    # failing on a current run, which the reader has to be told about.
+    evidence_digest_unavailable: bool = False
+    # The seal record itself could not be READ while this report was assembled, so none of the
+    # three fields above means anything for this run — not "no seal", which is what they look
+    # like. A third flag rather than a sentinel digest: a report that cannot reach the seal must
+    # not be able to print a digest-shaped anything.
+    evidence_seal_unreadable: bool = False
     # The events header (adapter, fallback, content counts, warnings) — what the replay header
     # shows, so the offline report discloses the same honesty signals. None when unavailable.
     telemetry: RunTelemetryView | None = None
@@ -127,6 +141,126 @@ def _elapsed_seconds(ctx: RunReportContext) -> float | None:
     return (ctx.run.completed_at - ctx.run.created_at).total_seconds()
 
 
+# The slack allowed to EACH of the two checks below before a window stops being reportable. The
+# window's endpoints come from the producer's clock and everything they are checked against
+# (created_at, elapsed, render time) comes from the server's, so the two can disagree by ordinary
+# NTP-class skew with nothing actually wrong; a minute absorbs that while still catching the
+# hour-scale disagreements that are a broken clock rather than a long run.
+#
+# It is NOT slack for the lag between an event happening and the run being closed out, which this
+# comment used to claim (#134 review): that lag only ever enlarges ELAPSED, so it loosens the
+# length check on its own and can never make an honest window look too big.
+_PRODUCER_CLOCK_GRACE_SECONDS = 60.0
+
+
+def _utc(value: datetime) -> datetime:
+    """A stored timestamp read as UTC when it carries no offset.
+
+    `TimingStats` has no timezone validator and `get_stats` re-parses the snapshot out of a JSON
+    column, so an offset-less value there arrives naive — and the window is the only place in this
+    module that subtracts a producer timestamp from a server one, which raises on a mixed pair.
+    `rest.report_assembly` says it of a missing agent name — "a report must never 500" — and a
+    stored timestamp's missing offset is the same kind of defect: readable, not fatal. Same
+    reading every other boundary in this codebase gives a stored datetime
+    (`runs.repository._utc`, `otel.store.sqlite._utc`)."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _telemetry_window(ctx: RunReportContext) -> tuple[float | None, str | None]:
+    """How long the run's telemetry SPANS — first event start → end of the last event that
+    reported a duration — or why that span cannot be believed.
+
+    Returns `(seconds, None)` for a window the server's own clock corroborates, `(None, reason)`
+    for one it contradicts, and `(None, None)` when there is no span to report at all. The caller
+    renders the reason in the cell where the number would have gone: an absent row alone could not
+    be told apart from a run that recorded no telemetry (#134 review).
+
+    Not "how long the agent worked", and deliberately not named that any more. It is built from
+    producer timestamps, so it inherits their clock; it includes any silent gap between events;
+    and an event that reports no duration contributes only its start. What it does bound is the
+    stretch of wall clock the run's own telemetry covers.
+
+    It is still worth reporting beside Duration, because the two diverge exactly when something
+    went wrong: a run reaped at its budget half an hour after its agent died shows thirty minutes
+    of Duration against seconds of telemetry. Reading Duration alone says the agent worked for
+    thirty minutes.
+
+    Earlier this used the last event's START, which reported a run whose telemetry is one
+    60-second span as `0.0s` — a minute of work rendered as none.
+
+    Withheld rather than shown wrong where the server's own record of the run contradicts it. Two
+    things are checked, and they are checked against different quantities: WHERE the telemetry
+    starts (a first event dated more than the grace before the run was created) and HOW LONG it
+    runs (a window longer than the run has lasted, plus that same grace). A third shape, a last
+    event dated before the first, bounds no span at all. A skewed harness clock otherwise renders
+    `Duration 1m 0s` beside `Telemetry window 1h 0m 0s`, and milliseconds fed to a nanosecond
+    parser put every event at the epoch and render half a million hours in the headline table.
+
+    What is deliberately NOT refused is a producer clock running uniformly AHEAD of the server's.
+    Both endpoints are then offset by the same amount, so the difference between them is still a
+    correct measurement of the span, and the row says whose clock it came from. So these are two
+    bounds on two quantities — not a two-sided bound on clock offset, which is what an earlier
+    draft of this docstring and the constant above both claimed (#134 review).
+    """
+    if ctx.stats is None:
+        return (None, None)
+    first = ctx.stats.timing.first_event_ts
+    last = ctx.stats.timing.last_event_end_ts or ctx.stats.timing.last_event_ts
+    if first is None or last is None:
+        return (None, None)
+    first, last = _utc(first), _utc(last)
+    if last < first:
+        return (None, "withheld — the harness dated the last event before the first")
+    window = (last - first).total_seconds()
+    # Both clock checks run BEFORE the zero-span return below, because a window can be zero AND
+    # provably corrupt at the same time: milliseconds fed to a nanosecond parser land every event
+    # in 1970, and a run with one such event has nothing to measure and a broken clock. Ordered
+    # the other way, the one input class this first check was added to catch was swallowed in
+    # silence (#134 review).
+    #
+    # A producer clock running behind the server's dates the first event before the run existed.
+    # The window that follows is as unbelievable as one that overruns the end — and, unlike that
+    # one, small enough to pass for a measurement.
+    if (ctx.run.created_at - first).total_seconds() > _PRODUCER_CLOCK_GRACE_SECONDS:
+        return (None, "withheld — the harness dated the first event before the run started")
+    lasted = _elapsed_seconds(ctx)
+    if lasted is None:
+        # No completed_at, hence no TimingStats.elapsed_seconds either. `/report` 409s on exactly
+        # that run (rest/routers/runs.py:run_report) so no API caller reaches this, but the
+        # renderers are exported from `xorcise.core.reporting` and an UNCHECKED window is the one
+        # shape this function exists to refuse. It is not unbounded either: the run cannot have
+        # been open longer than the clock this report is being stamped with says it has, which is
+        # a valid bound on any plausible window (#134 review) — the same bound `run-live.tsx`
+        # already ticks for an unfinished run.
+        lasted = ((ctx.generated_at or datetime.now(UTC)) - ctx.run.created_at).total_seconds()
+    if window > lasted + _PRODUCER_CLOCK_GRACE_SECONDS:
+        return (None, "withheld — the harness reported more telemetry than the run has lasted")
+    if window == 0.0:
+        # `last_event_end_ts` falls back to the last event's START when nothing reported a
+        # duration (TimingStats), so a zero-length window is an extent NOBODY MEASURED, not an
+        # extent of zero — and "0.0s" reads as "the agent did nothing", the same misreading that
+        # dropping `max(0.0, …)` was meant to end. Nothing was withheld; there is simply no span.
+        return (None, None)
+    return (window, None)
+
+
+def _telemetry_window_row(ctx: RunReportContext) -> list[tuple[str, str]]:
+    """The Telemetry-window row for the metadata table: the number, the disclosure that stands in
+    for it, or nothing at all."""
+    window, withheld = _telemetry_window(ctx)
+    if withheld is not None:
+        return [("Telemetry window", withheld)]
+    if window is None:
+        return []
+    span = _duration(window)
+    # `_duration` stops at a tenth of a second, so a real 40ms span printed as "0.0s" — a
+    # measurement rendered as none. The window is the one row where that reads as a verdict on
+    # the agent, so it says "under" instead; Duration keeps the shared formatter unchanged.
+    if span == "0.0s":
+        span = "under 0.1s"
+    return [("Telemetry window", f"{span} (reported by the harness)")]
+
+
 def _duration(seconds: float | None) -> str:
     if seconds is None:
         return _DASH
@@ -170,9 +304,15 @@ def _status_line(ctx: RunReportContext) -> str:
 
 
 def _metadata_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
-    """The identity metadata table, shared verbatim by both renderers and matched field-for-field
-    by the results page and the live run header: Mission and Agent carry their pinned version in
-    the name, then the Harness, when it Started and how long it ran (Duration)."""
+    """The identity metadata table, shared verbatim by the Markdown and HTML renderers: Mission
+    and Agent carry their pinned version in the name, then the Harness, when it Started, and the
+    wall clock the run occupied (Duration — what it COST, not how long the agent worked).
+
+    It used to claim the results page and the live run header matched it field-for-field. They do
+    not: neither renders Telemetry window, and nothing in `frontend/src` reads
+    `last_event_end_ts` (#134 review). The GUI tile is tracked separately rather than smuggled
+    into a report-rendering change; until it lands, this table is the only place the pair appears
+    together."""
     agent = ctx.agent_name or ctx.run.agent_id
     return [
         ("Name", ctx.run.name or ctx.run.mission),
@@ -190,10 +330,66 @@ def _metadata_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
         *([("Platform", ctx.conditions.platform)] if ctx.conditions.platform else []),
         ("Started", _ts(ctx.run.created_at)),
         ("Duration", _duration(_elapsed_seconds(ctx))),
+        # The span when the server's own record of the run corroborates it, the reason it is
+        # withheld when that record contradicts it, and absent when there is no span to report —
+        # a withheld span says so here rather than vanishing into a row that would look like a run
+        # with no telemetry at all. Sits beside Duration because the pair is the point: they agree
+        # on a healthy run and diverge loudly on a crashed one — and carries the same "(reported
+        # by the harness)" mark as the model row, because unlike every other row in this table it
+        # is the producer's clock, not the server's.
+        *_telemetry_window_row(ctx),
         ("Run ID", ctx.run.run_id),
         ("Status", _status_line(ctx)),
         ("Budget", f"{ctx.run.budget_seconds}s" if ctx.run.budget_seconds else _DASH),
     ]
+
+
+def agent_model_line(declared: str, observed: Sequence[str], dropped: int = 0) -> str:
+    """Which model produced this result — declared, observed, or honestly unknown.
+
+    Two independent sources, kept distinguishable rather than collapsed. The DECLARED name is what
+    an operator typed at `agent register --model`; the OBSERVED names are what the harness reported
+    actually running. Almost nobody declares one, which is why this read "not disclosed" on
+    essentially every run while the telemetry had the answer all along.
+
+    When both exist and the telemetry says anything the declared name does not already account for
+    — a different name, a further name beside it, or names the cap dropped — both halves are shown.
+    Silently preferring either would misattribute the result, and the disagreement is itself the
+    interesting fact. "named" rather than "reported", because the common disagreement is a family
+    name against an exact one (`claude-fable-5` vs `claude-fable-5-1`, or a Bedrock ARN) — a
+    difference in precision, not a contradiction.
+
+    `dropped` is how many further distinct names the fold saw past its cap (RunStats.models is
+    bounded — see otel.run_stats.MODELS_MAX); a capped list has to read as capped.
+
+    SHARED, not mirrored: the CLI and report.md rendered this separately and drifted — the report
+    said "gpt-5.5 (disclosed)" where `run status` said bare "gpt-5.5" (#128 review). One function
+    is the only way they cannot say different things about the same run.
+    """
+    declared = declared.strip()
+    seen = [str(m).strip() for m in observed if str(m).strip()]
+    named = ", ".join(seen) + (f" (+{dropped} more)" if dropped > 0 else "")
+    # The telemetry adds nothing only when it named the declared name and nothing else. Asking
+    # `declared not in seen` instead collapsed a declared name that MATCHED one of SEVERAL observed
+    # names down to `declared (disclosed)`, hiding the run's other models — and the `(+N more)`
+    # marker with them (#128 review).
+    if declared and seen and (seen != [declared] or dropped > 0):
+        return f"{declared} (disclosed); telemetry named {named}"
+    if declared:
+        return f"{declared} (disclosed)"
+    if seen:
+        return f"{named} (reported by the harness)"
+    return "not disclosed"
+
+
+def _agent_model(ctx: RunReportContext) -> str:
+    """The report's view of `agent_model_line` — see there for the rule."""
+    stats = ctx.stats
+    return agent_model_line(
+        ctx.conditions.model or "",
+        stats.models if stats else (),
+        stats.models_truncated if stats else 0,
+    )
 
 
 def _condition_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
@@ -201,11 +397,68 @@ def _condition_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
     # here — Conditions carries only what the run was *evaluated under*.
     c = ctx.conditions
     return [
-        ("Agent model (disclosed)", c.model or "not disclosed"),
+        ("Agent model", _agent_model(ctx)),
         ("Judge model", c.judge_model or "not configured"),
         ("Budget", f"{c.budget_seconds}s"),
         ("Sandbox image", c.sandbox_ref or _DASH),
+        # Only when there is something to say. A report that said "Evidence: unknown" on every
+        # pre-#116 run would train readers to ignore the line, which is the opposite of the point.
+        # A failed READ is something to say: it is this report not being able to answer, which no
+        # amount of staring at an absent row would tell anyone.
+        *(
+            [("Evidence seal", _evidence_seal_line(ctx))]
+            if (
+                ctx.evidence_digest
+                or ctx.evidence_digest_unavailable
+                or ctx.evidence_seal_unreadable
+            )
+            else []
+        ),
     ]
+
+
+def _evidence_seal_line(ctx: RunReportContext) -> str:
+    """The seal's digest and whether the graded evidence still matches it — or, when the answer is
+    not available, which kind of not-available it is: nothing hashed at seal time, nothing
+    readable now, or a digest on file that this build cannot re-derive.
+
+    PLAIN TEXT, no markup: this is one cell of a key/value table that both renderers fill, and the
+    Markdown emphasis it used to carry was escaped by the HTML path and shown to the reader
+    literally. Each renderer marks its own copy up.
+
+    Short-form digest: enough to compare two reports of the same run by eye, while the full value
+    stays available from the seal store for an actual verification. The wording says the digest is
+    stored BESIDE the evidence because it is not a signature — anyone able to edit a span can
+    recompute it — and a reader who never sees the code should not read "verified" as more than it
+    is. It also says GRADED evidence: server-side receipt metadata is outside the hash on purpose,
+    so a report line derived from stored timestamps can move while this still verifies.
+    """
+    if ctx.evidence_seal_unreadable:
+        # About the READ, not about the run: we do not know whether this run has a seal at all,
+        # so nothing here may be phrased as a fact about its evidence.
+        return (
+            "seal could not be read — this report could not reach the seal record, so it cannot "
+            "say whether this run has one or whether its evidence still matches"
+        )
+    if ctx.evidence_digest_unavailable:
+        return (
+            "seal digest unavailable — this run was sealed but its evidence could not be hashed, "
+            "so nothing here can be checked against it"
+        )
+    digest = f"{(ctx.evidence_digest or '')[:16]}…"
+    if ctx.evidence_verified is True:
+        return (
+            f"{digest} verified — the graded evidence is unchanged since sealing "
+            "(digest stored beside the evidence, not independently attested)"
+        )
+    if ctx.evidence_verified is False:
+        return f"{digest} MISMATCH — {_SEAL_MISMATCH}"
+    return f"{digest} recorded, but this build could not verify it — treat as unknown, not altered"
+
+
+# The one sentence in a report that says the rest of it may not be trustworthy. Shared by the
+# Conditions row and the callout above the scores so the two cannot drift apart.
+_SEAL_MISMATCH = "the graded evidence no longer matches the digest taken when the run was sealed"
 
 
 def _telemetry_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
@@ -354,6 +607,11 @@ def render_markdown(ctx: RunReportContext) -> str:
     if ctx.partial:
         # No emoji anywhere in a XORCISE artifact — the wording already carries the warning.
         lines += [f"> **{_partial_note(ctx)}**", ""]
+    if ctx.evidence_verified is False:
+        # Above the scores, not buried as one row of the Conditions table at the very bottom: a
+        # mismatch is the report casting doubt on its own scores, and a reader who stops at the
+        # numbers has to meet it first.
+        lines += [f"> **Evidence seal MISMATCH — {_SEAL_MISMATCH}.**", ""]
     lines += ["## Overview", "", *_md_kv_table(_metadata_rows(ctx)), ""]
 
     lines += [
@@ -516,6 +774,8 @@ font-size:.72rem;color:var(--muted)}
 .banner{border:1px solid var(--border);border-left:3px solid var(--warn);
 background:var(--primary-soft);border-radius:var(--radius);padding:.7rem .95rem;margin:1.1rem 0;
 font-size:.8rem}
+.banner.alarm{border-left-color:var(--err)}
+.banner.alarm strong{color:var(--err)}
 .wrap{overflow-x:auto}
 table{border-collapse:collapse;width:100%;font-size:.78rem;min-width:30rem}
 th,td{text-align:left;padding:.45rem .7rem;border-bottom:1px solid var(--border);
@@ -943,6 +1203,14 @@ def render_html(ctx: RunReportContext) -> str:
     ]
     if ctx.partial:
         parts.append(f"<div class='banner'>{_e(_partial_note(ctx))}</div>")
+    if ctx.evidence_verified is False:
+        # Above the scores, not buried as one row of the Conditions table at the very bottom — and
+        # on the failure ladder, not the warning one: this is the report casting doubt on its own
+        # numbers, which is the strongest thing it ever says.
+        parts.append(
+            "<div class='banner alarm'><strong>Evidence seal MISMATCH</strong> — "
+            f"{_e(_SEAL_MISMATCH)}.</div>"
+        )
 
     parts += [_kpi_strip(ctx), "<h2>Scorecard</h2>", _scorecard(ctx)]
     if grade.judge_status == "partial":
