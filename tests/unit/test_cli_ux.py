@@ -817,7 +817,7 @@ def test_run_status_scores_are_two_decimals(monkeypatch):
         },
         "conditions": {"budget_seconds": 60},
     }
-    monkeypatch.setattr(RestClient, "get_run_result", lambda self, rid: envelope)
+    monkeypatch.setattr(RestClient, "get_run_result", lambda self, rid, verify=False: envelope)
     result = runner.invoke(app, ["run", "status", "r" * 32])
     assert result.exit_code == 0
     assert "overall=0.41" in result.stdout
@@ -869,7 +869,9 @@ def test_run_status_on_active_run_reads_as_progress_not_a_409(monkeypatch):
     still-active run that must read as progress (exit 3), never a raw red 409."""
     from xorcise.core.cli.rest_client import RestClient
 
-    monkeypatch.setattr(RestClient, "get_run_result", lambda self, rid: {"status": "active"})
+    monkeypatch.setattr(
+        RestClient, "get_run_result", lambda self, rid, verify=False: {"status": "active"}
+    )
     result = runner.invoke(app, ["run", "status", "a" * 32])
     assert result.exit_code == 3  # in progress, not failure — a poll loop keeps waiting
     assert "still running" in result.stdout
@@ -879,7 +881,9 @@ def test_run_status_on_active_run_reads_as_progress_not_a_409(monkeypatch):
 def test_run_status_active_json_is_parseable(monkeypatch):
     from xorcise.core.cli.rest_client import RestClient
 
-    monkeypatch.setattr(RestClient, "get_run_result", lambda self, rid: {"status": "active"})
+    monkeypatch.setattr(
+        RestClient, "get_run_result", lambda self, rid, verify=False: {"status": "active"}
+    )
     result = runner.invoke(app, ["run", "status", "a" * 32, "--json"])
     assert result.exit_code == 0  # --json always exits 0; the envelope carries the status
     assert json.loads(result.stdout) == {"status": "active"}

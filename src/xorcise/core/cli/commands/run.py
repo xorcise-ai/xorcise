@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 import time
+from collections import Counter
 from collections.abc import Sequence
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -21,6 +24,7 @@ from xorcise.core.cli._resolve import (
 )
 from xorcise.core.cli._shared import EXIT_CODES_EPILOG, app, console, emit_json, err_console
 from xorcise.core.cli._ux import (
+    COMPLETED_TRIGGERS,
     DASH,
     confirm_or_abort,
     fail,
@@ -33,8 +37,8 @@ from xorcise.core.cli._ux import (
     short_id,
     ux_table,
 )
-from xorcise.core.cli.rest_client import RestClient
-from xorcise.core.reporting.render import agent_model_line
+from xorcise.core.cli.rest_client import DocumentUnavailable, RestClient
+from xorcise.core.reporting.render import _SEAL_MISMATCH, agent_model_line
 
 run_app = typer.Typer(
     help="Create and manage evaluation runs.",
@@ -104,6 +108,81 @@ def _render_telemetry(telemetry: dict[str, Any] | None) -> None:
         console.print(f"[warn]warning[/]: {escape(str(w.get('message', '')))}")
 
 
+def _render_evidence_seal(r: dict[str, Any]) -> None:
+    """The run's evidence seal, printed where the score is read.
+
+    Branches on `evidence_status` throughout — every one of its seven values has an answer here,
+    and none falls through to a verdict field. An earlier version read `evidence_verified` for
+    everything past the first three, so a healthy sealed run fetched WITHOUT `?verify=1` came back
+    `recorded` with a null verdict and printed "could not verify it" — on every normal run.
+
+    /result has carried `evidence_digest` and `evidence_verified` since #116 and this view
+    printed neither, so the digest reached an operator only as prose inside report.md — a grade
+    tied to its evidence for a reader of the report and for nobody looking at `run status`.
+
+    Silent on a run whose /result carries no digest (sealed before the feature, or never
+    sealed): a line reading "unknown" on every old run trains people to ignore it, which is the
+    opposite of the point. The report's Conditions table drops its row for that reason too — but
+    it is NOT quite the report's rule. The report gates on having a digest OR a recorded failure
+    to produce one; this gates on `evidence_status`, which /result now carries, so the two agree
+    on every case the status can name — including a run whose sealing failed to hash, which used
+    to be explicit in the report and silent here.
+
+    Short-form digest for the same reason the report uses one: enough to compare two views of a
+    run by eye, with the full value in the seal store for an actual verification.
+
+    `verified` is a TRISTATE, and null is never an accusation: a build that cannot re-derive the
+    scheme has not found a mismatch.
+    """
+    status = str(r.get("evidence_status") or "none")
+    if status == "none":
+        return  # unsealed, or sealed before digests existed — a line here would say nothing
+    if status == "unavailable":
+        # Sealed, but hashing it failed at seal time. The report has always said this; without
+        # `evidence_status` on /result this surface could only fall silent, which read as a run
+        # that simply predates the feature.
+        console.print(
+            "[warn]evidence seal: sealed, but its evidence could not be hashed[/] — "
+            "this run cannot be checked against its evidence"
+        )
+        return
+    if status == "unreadable":
+        console.print(
+            "[warn]evidence seal: the seal could not be read just now[/] — "
+            "treat as unknown, not altered"
+        )
+        return
+    digest = str(r.get("evidence_digest") or "")
+    if not digest:
+        return
+    short = f"{digest[:16]}…"
+    if status == "recorded":
+        # NOT "could not verify": nobody asked. /result re-hashes only on ?verify=1, because the
+        # hash is proportional to the run's telemetry and the sweeping callers fetch this once per
+        # run. `run status` does ask, so this branch is what a reader sees from a surface that
+        # deliberately did not — `run export`'s bundled result.json, today.
+        console.print(
+            f"evidence seal: {short} recorded — not checked here; "
+            "`xorcise run status <id>` re-checks it against the evidence"
+        )
+        return
+    verified = r.get("evidence_verified")
+    if verified is True:
+        console.print(
+            f"evidence seal: {short} verified — the graded evidence is unchanged since sealing"
+        )
+    elif verified is False:
+        # The report's own sentence, imported rather than re-worded for the same reason
+        # agent_model_line is: two spellings of "this run's evidence changed" is how two
+        # surfaces start disagreeing about the same run (#128 review).
+        console.print(f"[err]evidence seal: {short} MISMATCH[/] — {escape(_SEAL_MISMATCH)}")
+    else:
+        console.print(
+            f"evidence seal: {short} recorded, but this build could not verify it — "
+            "treat as unknown, not altered"
+        )
+
+
 def _render_result(
     r: dict[str, Any], *, verbose: bool = False, telemetry: dict[str, Any] | None = None
 ) -> None:
@@ -170,6 +249,7 @@ def _render_result(
     )
     console.print(f"budget: {cond.get('budget_seconds', 0)}s")
     console.print(f"sandbox: {escape(str(cond.get('sandbox_ref') or '—'))}")
+    _render_evidence_seal(r)
     _render_telemetry(telemetry)
     # Partial banner — only shown when the result was graded on incomplete data.
     if r.get("partial"):
@@ -392,7 +472,9 @@ def run_status(
     # get_run_result: an active run's server 409 becomes {"status": "active"}, so a
     # status check right after `run create` (the golden-path hint) reads as progress,
     # not a red 409 that looks like a crash.
-    r = client.get_run_result(run_id)
+    # verify=True: this is one run shown to a person, so the digest is worth re-hashing.
+    # The sweeping callers (`run list`, the leaderboard, `run export`) deliberately do not.
+    r = client.get_run_result(run_id, verify=True)
     # The telemetry summary (renderer, content counts, warnings) rides along with a graded
     # result. Tolerant read: an older server without the endpoint simply yields nothing.
     telemetry = client.get_or_none(f"/runs/{run_id}/telemetry") if "grade" in r else None
@@ -511,6 +593,402 @@ deleted — stop it first with `xorcise run terminate`.
     console.print(f"deleted run '{run_id}'")
 
 
+#: Run ids are `uuid4().hex`. The bulk export joins one onto `--out` to build a directory, so a
+#: row whose id is not that shape is refused rather than turned into a path: /runs is
+#: server-supplied data, and a `run_id` of '../…' from a foreign or hostile service would write
+#: outside the directory the operator named.
+_RUN_ID_SHAPE = re.compile(r"[0-9a-f]{32}")
+
+#: Per-call timeout for the export's document fetches. Each GET /report re-hashes the run's
+#: evidence server-side (seconds on a large run) and an otlp.jsonl can be multi-megabyte, so the
+#: 5 s control default turned a slow-but-healthy run into a client timeout — and because a
+#: service-wide failure is re-raised rather than skipped, that ONE run aborted the whole batch.
+#: `run create` widens its timeout for the same reason.
+_EXPORT_FETCH_TIMEOUT_SECONDS = 300.0
+
+
+def _is_grading_envelope(body: str) -> bool:
+    """Is this the 202 "still grading" JSON envelope rather than a rendered report?
+
+    Checked by shape, not by status code, because `get_text` does not surface one. Shared by
+    `run report` (which must not write a one-line JSON "report" to disk) and the bulk export
+    (which must not count one as an exported run) — one test, written once.
+    """
+    head = body.lstrip()[:200]
+    return head.startswith("{") and '"grading"' in head
+
+
+def select_runs_for_export(
+    runs: Sequence[dict[str, Any]],
+    *,
+    mission: str | None = None,
+    agent_id: str | None = None,
+    since: str | None = None,
+    genuine_only: bool = False,
+) -> list[dict[str, Any]]:
+    """Which runs a bulk export should write, in the order the server returned them.
+
+    Pure, so the filtering rules are testable without a disk or a server.
+
+    Only terminal runs qualify, always: an active run has no report, no sealed trace and no final
+    event stream, so including it would write three misleading files instead of failing honestly.
+
+    `mission` and `agent_id` are the CANONICAL values the run rows carry — the mission slug and the
+    agent id. The caller resolves what the operator typed (a display name, a prefix) before getting
+    here, so a typo fails with the candidates rather than as a silently empty selection.
+
+    `genuine_only` keeps only the runs the agent finished itself (COMPLETED_TRIGGERS); every other
+    trigger the server writes — an operator kill, a budget timeout, a deploy failure, a crash — is
+    the platform ending the run, which is not agent performance.
+
+    `since` compares ISO timestamps and is INCLUSIVE of its boundary — a half-open one silently
+    drops the run created exactly at a timestamp pasted from a previous export, which is the run
+    someone re-running a range is most likely to want. Unparseable timestamps on either side sort
+    the run out rather than crashing the export. An EMPTY `since` is rejected, not read as "no
+    floor": `--since "$FROM"` with an unset FROM is the same hazard `--agent ""` is, and it
+    exported the entire history with exit 0.
+    """
+    from datetime import UTC, datetime
+
+    def created(row: dict[str, Any]) -> datetime | None:
+        try:
+            at = datetime.fromisoformat(str(row.get("created_at") or ""))
+        except ValueError:
+            return None
+        # A stored timestamp without an offset gets the same treatment, so the comparison is
+        # always aware-vs-aware whichever side is missing its zone.
+        return at.replace(tzinfo=UTC) if at.tzinfo is None else at
+
+    floor = None
+    # `is not None`, not truthiness: `--since ""` fell through to "no floor" and selected every
+    # run ever recorded. fromisoformat refuses it below, so it fails as the usage error it is.
+    if since is not None:
+        try:
+            floor = datetime.fromisoformat(since)
+        except ValueError as exc:
+            raise typer.BadParameter(
+                f"--since must be an ISO timestamp (e.g. 2026-07-01T10:00:00+00:00), got {since!r}"
+            ) from exc
+        # `--since 2026-07-01` is the obvious thing to type, and fromisoformat returns it NAIVE —
+        # comparing that with an offset-aware created_at raises TypeError. A bare date is a
+        # legitimate input, so it is read as UTC (run timestamps are UTC) rather than rejected.
+        if floor.tzinfo is None:
+            floor = floor.replace(tzinfo=UTC)
+
+    picked = []
+    for row in runs:
+        if row.get("state") != "terminal":
+            continue
+        if mission and str(row.get("mission") or row.get("mission_id") or "") != mission:
+            continue
+        if agent_id and str(row.get("agent_id") or "") != agent_id:
+            continue
+        if genuine_only and str(row.get("terminal_trigger") or "") not in COMPLETED_TRIGGERS:
+            continue
+        if floor is not None:
+            at = created(row)
+            if at is None or at < floor:
+                continue
+        picked.append(row)
+    return picked
+
+
+def export_directory_names(run_ids: Sequence[str]) -> dict[str, str]:
+    """run id → the directory name its export is written under; short where that is unambiguous.
+
+    `<id8>` is what every other view shows and what an operator recognises, but two ids sharing a
+    prefix would share a directory: the second run's files silently overwrote the first's while
+    the command still reported both as exported. Colliding ids fall back to the full 32 chars —
+    ugly, never wrong. uuid4 makes this rare, and rare-and-silent is exactly the bad combination.
+    """
+    counts = Counter(rid[:8] for rid in run_ids)
+    return {rid: (rid[:8] if counts[rid[:8]] == 1 else rid) for rid in run_ids}
+
+
+def _document_name(path: str) -> str:
+    """`/runs/<id>/otlp.jsonl` → `otlp.jsonl` — which document failed, without the id again."""
+    return path.rsplit("/", 1)[-1].split("?", 1)[0]
+
+
+def _publish(bodies: dict[str, str], target: Path) -> None:
+    """Write one run's bundle through a staging directory, then move each file into place.
+
+    Fetching every document before the first mkdir covers a failed FETCH. It does not cover a
+    write that fails PART WAY — a full disk on a multi-megabyte trace is the realistic one —
+    which left a directory holding a truncated file, and anything globbing `<out>/*/` reads that
+    as an exported run. Staging is a sibling of the target, so each move is a rename on the same
+    filesystem and a file appears whole or not at all.
+
+    A FIRST export moves the whole staging directory in one rename, so the run appears complete
+    or not at all. A RE-export moves file by file, because replacing the directory would delete
+    anything else already in it — so the atomicity above is traded for not destroying a reader's
+    own files, and what a failure mid-loop leaves is a mix of two exports of the same run rather
+    than a half-written one. The staging name is dot-prefixed so a `<out>/*/` glob never sees it
+    even mid-write.
+
+    The price, stated: a run's documents are held twice while they are staged, and a process
+    killed outright (SIGKILL, power loss) leaves one `.xorcise-export-*` directory behind that
+    nothing reaps. Dot-prefixed it stays out of every `<out>/*/` reader, so it is litter rather
+    than a wrong answer — and a sweep here would delete a CONCURRENT export's staging directory,
+    which is worse than the litter.
+    """
+    import os
+    import shutil
+    import tempfile
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".xorcise-export-", dir=target.parent))
+    try:
+        for name, body in bodies.items():
+            (staging / name).write_text(body, encoding="utf-8")
+        if not target.exists():
+            # Nothing to preserve, so move the DIRECTORY: one rename, so the run appears whole or
+            # not at all. The per-file path below cannot promise that — a failure between two
+            # `os.replace` calls leaves some files new and some missing — and this is the common
+            # case, since most exports write a run for the first time.
+            os.replace(staging, target)
+            return
+        # Re-export onto an existing directory: per FILE, because replacing the directory would
+        # delete anything else already in it. The window the paragraph above closes is open here,
+        # and it is the narrower risk of the two: a run's own files are being overwritten with
+        # fresh copies of themselves, so a failure mid-loop leaves a MIX of two exports of the
+        # same run rather than a half-written one.
+        for name in bodies:
+            os.replace(staging / name, target / name)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+@run_app.command("export")
+def run_export(
+    out: str = typer.Option(
+        ...,
+        "--out",
+        help="Directory to write the export tree into (created if missing).",
+    ),
+    mission: str | None = typer.Option(
+        None,
+        "--mission",
+        help="Only runs of this mission — id or name (see: xorcise mission list).",
+    ),
+    agent: str | None = typer.Option(
+        None, "--agent", help="Only runs by this registered agent name (see: xorcise agent list)."
+    ),
+    since: str | None = typer.Option(
+        None, "--since", help="Only runs created at or after this ISO timestamp (inclusive)."
+    ),
+    format: ReportFormat = _FORMAT_OPTION,
+    genuine_only: bool = typer.Option(
+        False,
+        "--genuine-only",
+        help=(
+            "Skip runs the agent did not finish itself — operator kills, budget timeouts, "
+            "deploy failures and crashes."
+        ),
+    ),
+) -> None:
+    """Export a SET of runs — report, result, raw OTLP and normalized events — into one tree.
+
+    Analysis and hand-off operate on a group of runs, not one: a mission, an agent, a date range. \
+Each selected run becomes `<out>/<run-id8>/` holding `report.md` (or .html), `result.json`, \
+`traces.otlp.jsonl` and `events.jsonl`. Report, traces and events are the same bytes \
+`run report`, `run traces --export` and `run events export` write for a single run. \
+`result.json` is the server's `/result` envelope verbatim — the grade, the disclosed \
+conditions and the evidence seal; `run status --json` renders that same envelope with a \
+`telemetry` block merged in, so the two are one source read twice, not two formats. The \
+bundled seal is RECORDED, not verified: checking it re-hashes a run's whole evidence, which a \
+batch would pay once per run, so `evidence_verified` is null throughout. Use \
+`xorcise run status <id>` or the report to get a verdict on one run.
+
+    Only finished runs are exported; an active one has no sealed record yet. \
+A run whose OWN document answers an error — a 404 or a 500 on that run's report, result, \
+trace or events — is reported and skipped rather than aborting the batch, so one bad run does \
+not cost you the ninety-nine after it. Anything that is not one document's answer stops the \
+export instead: an unreachable service, an auth / rate-limit / gateway status, or no response \
+inside the per-document timeout. That last one may well be a single slow run, but nothing here \
+can tell it from a slow service, and retrying it would spend the whole timeout again on every \
+run left. Whatever was written stays on disk, and the summary says how much.
+
+    Exit codes say what the tree holds: 0 nothing failed — any run still grading is named on \
+stderr · 1 a run was skipped, or the export stopped early; what it did write is on disk and \
+the summary says how much · 2 nothing matched the filters, or the invocation was a usage \
+error · 3 nothing was exported at all because every selected run is still grading — re-run \
+once grading finishes.
+
+    Re-exporting is safe but not a clean slate: a run's own files are overwritten in place \
+and anything else already in its directory is left alone. Export into a fresh directory \
+when you need the tree to contain only this export.
+    """
+    client = RestClient()
+    # An empty filter value is an unset shell variable, not "no filter" — `--agent ""` skipped
+    # resolution and exported EVERY run. The two resolvers refuse it for themselves
+    # (`_require_value`); `--since` has no resolver, so it is refused here, before the first
+    # request, rather than inside the pure selector below where the /runs GET has already gone
+    # out and an unreachable service would answer a usage error with a connection error.
+    if since is not None and not since.strip():
+        fail("missing --since timestamp", see=("xorcise run list",), code=2)
+    agent_id = None
+    # `is not None`, not truthiness, for the same reason — the resolvers then refuse the empty
+    # value as the usage error it is.
+    if agent is not None:
+        # Resolve exactly as `run create` does — exact, case-insensitive, unique prefix, then a
+        # did-you-mean, failing loud. The old exact case-sensitive match fell through to "treat it
+        # as an id", so `--agent alpha` against a registered `Alpha` selected nothing and reported
+        # it as "no runs matched" — a typo dressed up as an empty result.
+        canonical = resolve_agent_name(client, agent)
+        # resolve_agent_name returns a name it read out of /agents, so the id is in this map
+        # unless that name stopped being one between the two reads — the agent deregistered, or
+        # renamed (the id stays, the name moves). The old fallback used the canonical NAME as an
+        # id, which can only ever match no run and then reports the race as "no finished runs
+        # matched the filters".
+        agent_id = next(
+            (aid for aid, known in agent_names_by_id(client).items() if known == canonical), None
+        )
+        if agent_id is None:
+            fail(
+                f"no agent is registered as '{canonical}' any more — it was deregistered or "
+                "renamed while this command was resolving it",
+                see=("xorcise agent list",),
+            )
+    if mission is not None:
+        # Run rows carry the slug, but `run list` shows the display name and `run create --mission`
+        # accepts it — so the name is what people have. resolve_mission takes either.
+        mission = str(resolve_mission(client, mission)["mission_id"])
+
+    root = Path(out)
+    if root.exists() and not root.is_dir():
+        # Every write below joins onto this path, so a file here fails identically for every
+        # selected run: one upfront usage error beats N copies of "[Errno 20] Not a directory".
+        fail(f"--out must be a directory, but {root} is a file", code=2)
+
+    runs: list[dict[str, Any]] = client.get("/runs")
+    selected = select_runs_for_export(
+        runs, mission=mission, agent_id=agent_id, since=since, genuine_only=genuine_only
+    )
+    if not selected:
+        # NOT exit 3: that code means "still in progress", so a script that retries on 3 would
+        # loop forever against a filter combination that can never match. Nothing matched is
+        # something the operator must change, which is what exit 2 says.
+        fail(
+            "no finished runs matched the filters — nothing to export",
+            see=("xorcise run list",),
+            code=2,
+        )
+
+    fmt = format.value if isinstance(format, ReportFormat) else str(format)
+    dir_names = export_directory_names([str(row["run_id"]) for row in selected])
+    # A run that collided onto a shared prefix is written under its full id — so a directory
+    # already sitting at `<id8>/` is one nothing in this export will touch, while anything
+    # globbing `<out>/*/` still reads it as an exported run. Name it, saying only what is
+    # checked: the name, and that this export writes elsewhere. Not who wrote it — the guard is
+    # `is_dir()`, so it may not be an export at all. Never delete it either: this command
+    # removes nothing it did not write.
+    for prefix in sorted({rid[:8] for rid, name in dir_names.items() if name != rid[:8]}):
+        if (root / prefix).is_dir():
+            err_console.print(
+                f"[warn]stale[/] {escape(str(root / prefix))}: run ids share this prefix, so "
+                "this export writes them under their full ids and leaves this directory as it is"
+            )
+    written = 0
+    skipped: list[tuple[str, str]] = []
+    pending: list[str] = []  # terminal but not yet graded — a retry, not a failure
+    stopped: tuple[str, int] | None = None  # the run in hand when a service-wide failure ended it
+    for row in selected:
+        rid = str(row["run_id"])
+        if _RUN_ID_SHAPE.fullmatch(rid) is None:
+            skipped.append((short_id(rid), "not a run id — refusing to build a path from it"))
+            continue
+        target = root / dir_names[rid]
+        try:
+            report = client.get_text_or_unavailable(
+                f"/runs/{rid}/report?format={fmt}", timeout=_EXPORT_FETCH_TIMEOUT_SECONDS
+            )
+            # Terminal does not mean graded. /report answers 202 with a JSON envelope while
+            # grading is still running, and get_text hands that body back like any other — so it
+            # used to land in report.md as a file that looks like an export and contains
+            # {"status":"grading"}. Skip the run instead; it exports cleanly once graded.
+            if _is_grading_envelope(report):
+                pending.append(short_id(rid))
+                continue
+            # Fetch all FOUR before creating the directory. Writing the report first left a
+            # directory holding report.md alone whenever a later document failed — and anything
+            # globbing <out>/*/ reads that as an exported run. Dict values evaluate in order, so
+            # every fetch is done before the first mkdir.
+            bodies = {
+                f"report.{fmt}": report,
+                # The machine-readable half of the bundle: the server's /result envelope as it
+                # returns it, carrying the grade AND the evidence seal (evidence_digest +
+                # evidence_verified). Without it the seal reaches the tree only as sixteen
+                # characters of prose inside the rendered report, which ties a grade to its
+                # evidence for a reader and for nothing else. NOT byte-identical to `run status
+                # --json`, which merges a `telemetry` block into this same envelope and
+                # re-indents it: one envelope, two renderings, and the tree takes the server's.
+                #
+                # No `?verify=1`: the seal is RECORDED here, never checked. Verifying re-hashes
+                # the run's whole evidence, and a batch would pay that once per run — the cost
+                # that made it opt-in. So `evidence_verified` is null in every bundle and
+                # `evidence_status` is "recorded", which means "not asked" rather than "could not
+                # answer". `run status <id>` and `/report` are where a verdict comes from.
+                "result.json": client.get_text_or_unavailable(
+                    f"/runs/{rid}/result", timeout=_EXPORT_FETCH_TIMEOUT_SECONDS
+                ),
+                "traces.otlp.jsonl": client.get_text_or_unavailable(
+                    f"/runs/{rid}/otlp.jsonl", timeout=_EXPORT_FETCH_TIMEOUT_SECONDS
+                ),
+                "events.jsonl": client.get_text_or_unavailable(
+                    f"/runs/{rid}/events.jsonl", timeout=_EXPORT_FETCH_TIMEOUT_SECONDS
+                ),
+            }
+            _publish(bodies, target)
+        except DocumentUnavailable as exc:
+            # ONE run's document answered an error status that is about that document (a 404, a
+            # 500). `_send` exits the process for any error status — right for a single-run
+            # command, fatal to a batch — so this used to take the ninety-nine runs after it.
+            skipped.append((short_id(rid), f"{_document_name(exc.path)}: {exc}"))
+            continue
+        except typer.Exit as exc:
+            # RestClient exits for a failure this layer cannot pin on one document: unreachable,
+            # an auth / rate-limit / gateway status, or no response inside the timeout. The last
+            # of those may genuinely be one slow run — a multi-megabyte trace — but a stalled
+            # document and a stalled service look identical from here, and the conservative read
+            # is also the cheap one: retrying a timeout per run spends that whole wait again on
+            # each. So stop; but BREAK rather than re-raise, because the runs already written
+            # are on disk and the summary below is the only place that is said. The client has
+            # printed its own diagnostic above it.
+            stopped = (short_id(rid), int(exc.exit_code))
+            break
+        except Exception as exc:  # noqa: BLE001 — one bad run must not end the batch
+            skipped.append((short_id(rid), str(exc)))
+            continue
+        written += 1
+        err_console.print(f"  {short_id(rid)} → {target}", markup=False)
+
+    console.print(f"exported {written} run(s) to {root}")
+    for rid in pending:
+        err_console.print(f"[warn]not yet graded[/] {rid}: re-run the export once grading finishes")
+    for rid, why in skipped:
+        err_console.print(f"[warn]skipped[/] {rid}: {escape(why)}")
+    if stopped is not None:
+        rid, code = stopped
+        remaining = len(selected) - written - len(skipped) - len(pending) - 1
+        err_console.print(
+            f"[warn]stopped[/] at {rid}: {remaining} further run(s) were not attempted — a "
+            "failure this command cannot pin on one document is not retried per run"
+        )
+        raise typer.Exit(code)
+    # A skipped run was silent and exited 0, so a script consuming <out>/*/ could not tell
+    # ninety-nine runs from a hundred. It needs a person, so it outranks "not ready".
+    if skipped:
+        raise typer.Exit(1)
+    # 3 is the in-progress code `run status` and `run report` already use, and it stays reserved
+    # for the one state a caller retrying on it converges out of: NOTHING written, everything
+    # still grading. On a mixed batch it would never converge — one run stuck in grading would
+    # exit 3 for that filter for good — and `run export … && …` would start failing on a batch
+    # that has only just finished, which is the normal case. Those runs are named on stderr.
+    if pending and not written:
+        raise typer.Exit(3)
+
+
 @run_app.command("report")
 def run_report(
     run_id: str = typer.Argument(..., help=_RUN_ID_HELP),
@@ -527,8 +1005,6 @@ disclosed conditions — one self-contained file. The report is available once \
 the run has finished; while it is still running or being graded, that is what \
 this reports.
     """
-    from pathlib import Path
-
     client = RestClient()
     run_id = _resolve_id(client, run_id)
     # A still-active run has no report yet — say it's still running (exit 3), instead
@@ -544,7 +1020,7 @@ this reports.
     body = client.get_text(f"/runs/{run_id}/report?format={fmt}")
     # Parity with `run status`: a terminal-but-ungraded run 202s with a JSON envelope
     # rather than a document — say so plainly instead of writing a one-line JSON "report".
-    if body.lstrip().startswith("{") and '"grading"' in body:
+    if _is_grading_envelope(body):
         console.print(
             f"[warn]grading in progress[/] — the report for run {short_id(run_id)} is not "
             f"ready yet; re-run [value]xorcise run report {short_id(run_id)}[/value] shortly"
@@ -598,8 +1074,6 @@ JSONL instead, see `xorcise run events export`.
     client = RestClient()
     run_id = _resolve_id(client, run_id)
     if export:
-        from pathlib import Path
-
         # Conservative labeling: checked BEFORE the download, so a run that seals mid-flight
         # can only be over-labeled partial (harmless) — never under-labeled complete.
         active = client.get_run_result(run_id).get("status") == "active"
@@ -699,8 +1173,6 @@ def run_events_export(
 one event per line with clean bodies (debug/inspection). Works mid-run as a partial \
 snapshot. For the raw OTLP stream instead, see `xorcise run traces --export`.
     """
-    from pathlib import Path
-
     client = RestClient()
     run_id = _resolve_id(client, run_id)
     body = client.get_text(f"/runs/{run_id}/events.jsonl")

@@ -81,6 +81,45 @@ def _warn_if_foreign_instance(base_url: str) -> None:
         )
 
 
+#: Error statuses that are never about the document that was asked for. Credentials, a rate
+#: limit and a gateway/unavailable answer are the service's answer to the NEXT request too, so
+#: handing them back as a per-item failure turns one outage into N identical lines and N further
+#: requests — the same hazard the transport rule below exists to prevent. Everything else (404,
+#: 409, 410, 422, 500, …) is read as this request's.
+SERVICE_WIDE_STATUSES = frozenset({401, 403, 429, 502, 503, 504})
+
+
+class DocumentUnavailable(Exception):
+    """One document fetch answered with an HTTP error STATUS — one request's problem, not the
+    service's.
+
+    Raised only by `get_text_or_unavailable`; nothing else in this client's behaviour changes.
+    Carries the status and the server's own `detail` so a batch can say WHICH request failed and
+    why without re-deriving either from the message.
+    """
+
+    def __init__(self, path: str, status_code: int, detail: str) -> None:
+        super().__init__(f"{status_code} {detail}".strip())
+        self.path = path
+        self.status_code = status_code
+        self.detail = detail
+
+
+def _error_detail(resp: httpx.Response) -> str:
+    """The server's own sentence for an error response, or its reason phrase.
+
+    A second reading of what `_send` extracts, rather than a refactor of it: this whole fetch
+    variant is additive, and reshaping the one error path every other command goes through is
+    not a change worth making for it.
+    """
+    try:
+        body = resp.json()
+    except ValueError:  # non-JSON error body (e.g. a bare text/plain 500)
+        return resp.text.strip() or resp.reason_phrase
+    detail = str(body.get("detail", "")) if isinstance(body, dict) else ""
+    return detail or resp.reason_phrase
+
+
 class RestClient:
     def __init__(self, base_url: str | None = None) -> None:
         self.base_url = base_url or default_base_url()
@@ -93,13 +132,21 @@ class RestClient:
             self.base_url,
         )
 
-    def get_run_result(self, run_id: str) -> Any:
+    def get_run_result(self, run_id: str, *, verify: bool = False) -> Any:
         """A run's result envelope; a still-active run (the server 409s 'not terminal
         yet — no result') returns a soft ``{"status": "active"}`` so `run status` /
         `run report` render progress instead of a raw 409 that looks like an internal
-        failure. Every other status is handled exactly like `get`."""
+        failure. Every other status is handled exactly like `get`.
+
+        `verify` asks the server to re-hash the run's evidence against its recorded digest.
+        It is OFF by default because the hash is proportional to the run's telemetry and
+        `/result` is fetched once per run in a loop by `run list`, the leaderboard and the
+        bulk export — the cost that made it opt-in in the first place. A caller showing ONE
+        run to a person asks for it; a caller sweeping many does not, and then the envelope
+        carries `evidence_status: "recorded"` with a null verdict, which means "not asked",
+        not "could not answer"."""
         t = _DEFAULT_TIMEOUT_SECONDS
-        url = f"{self.base_url}/runs/{run_id}/result"
+        url = f"{self.base_url}/runs/{run_id}/result" + ("?verify=1" if verify else "")
         try:
             resp = httpx.get(url, timeout=t, trust_env=False)
         except httpx.HTTPError:
@@ -141,6 +188,45 @@ class RestClient:
             t,
             self.base_url,
         )
+
+    def get_text_or_unavailable(self, path: str, timeout: float | None = None) -> str:
+        """`get_text`, except that an error status ABOUT THIS DOCUMENT raises DocumentUnavailable
+        instead of exiting.
+
+        Opt-in, and only for a caller that fetches one document per item of a BATCH: a 404 or a
+        500 on one run's report is THAT run's problem, and `_send`'s exit — the right answer for
+        a single-run command — costs such a caller every item it had not reached yet.
+
+        Two kinds of failure are deliberately NOT redirected: a SERVICE_WIDE_STATUSES status
+        (auth, rate limit, gateway, unavailable) and a transport failure (unreachable, or no
+        response inside the timeout). A status in that set genuinely is the same answer for the
+        next request. A transport failure may not be — a read timeout can be one oversized
+        document on a healthy service — but nothing at this layer can tell that from a stalled
+        service, and reading it per item costs the caller the WHOLE timeout again for every item
+        it has left. Both go through the shared handler and exit.
+        """
+        t = timeout or _DEFAULT_TIMEOUT_SECONDS
+        url = f"{self.base_url}{path}"
+        try:
+            resp = httpx.get(url, timeout=t, trust_env=False)
+        except httpx.HTTPError as exc:
+            # Hand the SAME failure to the shared handler so it gets the clean, operation-aware
+            # message and exit — replaying the exception rather than re-issuing the request,
+            # which on a batch-sized timeout would cost the operator a second full wait.
+            # Rebound first: Python unbinds an `except ... as` name at the end of the clause, so
+            # a closure over it is a trap even where (as here) it is called before that happens.
+            failure = exc
+
+            def replay() -> httpx.Response:
+                raise failure
+
+            return self._call_text(replay, t, self.base_url)
+        if resp.is_error and resp.status_code not in SERVICE_WIDE_STATUSES:
+            raise DocumentUnavailable(path, resp.status_code, _error_detail(resp))
+        # Everything left — a success, or a service-wide status — goes back through the shared
+        # path, so nothing (the foreign-instance warning, the error message and exit) is skipped
+        # by taking this route.
+        return self._call_text(lambda: resp, t, self.base_url)
 
     def post(self, path: str, json: dict[str, Any], timeout: float | None = None) -> Any:
         t = timeout or _DEFAULT_TIMEOUT_SECONDS

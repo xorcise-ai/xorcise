@@ -184,6 +184,22 @@ def size_label(size_bytes: int | None) -> str:
     return f"{max(0, round(n))} B"
 
 
+#: Terminal triggers meaning the AGENT ended the run on its own terms, as opposed to the platform
+#: stopping it. The server writes exactly five triggers — `done` (the agent's own /complete),
+#: `operator` (a manual terminate), `timeout` (the budget watchdog and the gate backstop),
+#: `deploy_failed` (the readiness gate) and `crashed` (the boot reconcile) — so anything NOT in
+#: here is a run the agent never finished.
+#:
+#: `completed` is NOT a legacy synonym: no server has ever written it. Every terminal_trigger
+#: write goes through runs.mark_terminal, those five are the only literals passed to it, and the
+#: initial commit already had this same set. It stays only for parity with run_state_label and
+#: the GUI's run-state map, which both accept it — so no surface can disagree about one trigger.
+#:
+#: Lives here, beside run_state_label, because both the leaderboard and `run export --genuine-only`
+#: draw this exact line: two definitions of "a real run" is how two surfaces start disagreeing.
+COMPLETED_TRIGGERS = frozenset({"done", "completed"})
+
+
 def run_state_label(state: str | None, trigger: str | None = None) -> str:
     """Server-side run state (+ terminal trigger) → the user-facing result word.
 
