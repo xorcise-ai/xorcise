@@ -118,11 +118,10 @@ def _render_evidence_seal(r: dict[str, Any]) -> None:
     Silent on a run whose /result carries no digest (sealed before the feature, or never
     sealed): a line reading "unknown" on every old run trains people to ignore it, which is the
     opposite of the point. The report's Conditions table drops its row for that reason too — but
-    it is NOT the same rule, and the difference is worth stating: the report also receives
-    `evidence_digest_unavailable` and prints "sealed, but its evidence could not be hashed" for
-    it, while `RunResultView` has no such field, so a run whose sealing failed to hash is
-    explicit there and silent here. Narrower than the report, never louder; closing it needs
-    that field carried on /result, not a different rule on this surface.
+    it is NOT quite the report's rule. The report gates on having a digest OR a recorded failure
+    to produce one; this gates on `evidence_status`, which /result now carries, so the two agree
+    on every case the status can name — including a run whose sealing failed to hash, which used
+    to be explicit in the report and silent here.
 
     Short-form digest for the same reason the report uses one: enough to compare two views of a
     run by eye, with the full value in the seal store for an actual verification.
@@ -130,6 +129,24 @@ def _render_evidence_seal(r: dict[str, Any]) -> None:
     `verified` is a TRISTATE, and null is never an accusation: a build that cannot re-derive the
     scheme has not found a mismatch.
     """
+    status = str(r.get("evidence_status") or "none")
+    if status == "none":
+        return  # unsealed, or sealed before digests existed — a line here would say nothing
+    if status == "unavailable":
+        # Sealed, but hashing it failed at seal time. The report has always said this; without
+        # `evidence_status` on /result this surface could only fall silent, which read as a run
+        # that simply predates the feature.
+        console.print(
+            "[warn]evidence seal: sealed, but its evidence could not be hashed[/] — "
+            "this run cannot be checked against its evidence"
+        )
+        return
+    if status == "unreadable":
+        console.print(
+            "[warn]evidence seal: the seal could not be read just now[/] — "
+            "treat as unknown, not altered"
+        )
+        return
     digest = str(r.get("evidence_digest") or "")
     if not digest:
         return

@@ -1734,6 +1734,7 @@ def test_run_status_prints_the_evidence_seal(monkeypatch):
     payload = _grade_payload()
     payload["evidence_digest"] = "a" * 64
     payload["evidence_verified"] = True
+    payload["evidence_status"] = "verified"
     monkeypatch.setattr(
         "xorcise.core.cli.commands.run.RestClient.get_run_result", lambda self, p: payload
     )
@@ -1754,7 +1755,9 @@ def test_run_status_calls_a_mismatched_seal_what_it_is(capsys):
     from xorcise.core.cli.commands import run as run_cmd
     from xorcise.core.reporting.render import _SEAL_MISMATCH
 
-    run_cmd._render_result(_graded(evidence_digest="a" * 64, evidence_verified=False))
+    run_cmd._render_result(
+        _graded(evidence_digest="a" * 64, evidence_verified=False, evidence_status="mismatch")
+    )
 
     out = _plain(capsys.readouterr().out)
     assert "MISMATCH" in out
@@ -1763,9 +1766,8 @@ def test_run_status_calls_a_mismatched_seal_what_it_is(capsys):
 
 def test_run_status_says_nothing_about_a_seal_a_run_never_had(capsys):
     """A line saying "unknown" on every pre-#116 run trains readers to ignore it. The report's
-    Conditions table drops its row for the same reason — though not by the same rule: it also
-    speaks for `evidence_digest_unavailable`, which /result does not carry, so this surface is
-    the narrower of the two."""
+    Conditions table drops its row for the same reason, and now by the same rule: /result carries
+    `evidence_status`, so `none` is the one case both surfaces stay quiet about."""
     from xorcise.core.cli.commands import run as run_cmd
 
     run_cmd._render_result(_graded())
@@ -1782,3 +1784,14 @@ def test_the_genuine_set_keeps_a_trigger_no_server_has_ever_written():
 
     assert "completed" in COMPLETED_TRIGGERS
     assert run_state_label("terminal", "completed") == run_state_label("terminal", "done")
+
+
+def test_run_status_says_so_when_the_seal_could_not_be_hashed(capsys):
+    """`unavailable` used to be indistinguishable here from a run that predates sealing: /result
+    carried no status, so this surface could only fall silent on both (#139 review)."""
+    from xorcise.core.cli.commands import run as run_cmd
+
+    run_cmd._render_result(_graded(evidence_status="unavailable"))
+
+    out = _plain(capsys.readouterr().out).lower()
+    assert "could not be hashed" in out
