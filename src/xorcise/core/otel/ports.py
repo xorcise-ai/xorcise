@@ -44,10 +44,33 @@ class TraceStore(ABC):
 
 class SealStore(ABC):
     @abstractmethod
-    def seal(self, run_id: str) -> None: ...
+    def seal(self, run_id: str, digest: str | None = None) -> None:
+        """Freeze the run. `digest` is computed by the CALLER, not here.
+
+        The digest must cover artifacts as well as telemetry, and artifacts live in another
+        part-island this one may not import (the dependency rule) — so it is assembled in the rest
+        layer, which is allowed to read across modules, and handed down. Keeping it a parameter
+        also leaves this store honest about what it is: durable storage, not a hashing policy.
+        """
 
     @abstractmethod
     def is_sealed(self, run_id: str) -> bool: ...
 
     @abstractmethod
     def sealed_at(self, run_id: str) -> datetime | None: ...
+
+    @abstractmethod
+    def attach_digest(self, run_id: str, digest: str) -> None:
+        """Record the digest for an already-sealed run, first-wins.
+
+        Separate from seal() so the caller can close admission BEFORE hashing the evidence —
+        hashing first means anything admitted meanwhile is hashed out of existence.
+        """
+
+    @abstractmethod
+    def evidence_digest(self, run_id: str) -> str | None:
+        """The digest recorded at seal time; None when unsealed OR sealed before digests existed.
+
+        Those two cases are deliberately not distinguished here — neither is evidence of tampering,
+        and `is_sealed` already separates them for any caller that cares.
+        """

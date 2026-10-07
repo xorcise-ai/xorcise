@@ -229,11 +229,21 @@ def assemble_report(run_id: str) -> RunReportContext | None:
     partial, partial_trigger = reporting.result_partial(run_id)
     # Disclosure provenance: fill intel_disclosed from the run-control submission store (delivery
     # layer owns the cross-module join; lazy import matches _artifacts_for above).
+    from xorcise.core.rest.evidence_seal import evidence_seal_view
     from xorcise.core.runcontrol.store import disclosed_intel_count
 
     conditions = (reporting.result_conditions(run_id) or ResultConditions()).model_copy(
         update={"intel_disclosed": disclosed_intel_count(run_id)}
     )
+    # Read + re-verify in ONE guarded call. It used to be two unwrapped ones — read the digest,
+    # then re-hash — which both read the seal row and, alone among the joins here, let a transient
+    # "database is locked" 500 the whole report instead of dropping a row.
+    #
+    # The re-hash is DELIBERATE here, and the default rather than `verify=True` only because that
+    # is the function's default. `/result` made it opt-in because list surfaces drove it once per
+    # row; this is one run, deliberately fetched, and the mismatch banner is the whole point of the
+    # document. Pinned by test_the_report_re_verifies_the_seal_on_every_request.
+    seal = evidence_seal_view(run_id)
     return RunReportContext(
         run=run,
         agent_name=_agent_name(run.agent_id),
@@ -245,4 +255,8 @@ def assemble_report(run_id: str) -> RunReportContext | None:
         telemetry=_telemetry_for(run_id),
         artifacts=_artifacts_for(run_id),
         terrain=_terrain_for(run_id, run.mission),
+        evidence_digest=seal.digest,
+        evidence_verified=seal.verified,
+        evidence_digest_unavailable=seal.unavailable,
+        evidence_seal_unreadable=seal.unreadable,
     )

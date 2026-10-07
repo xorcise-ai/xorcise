@@ -49,6 +49,10 @@ class TraceSealRow(Base):
     sealed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
+    # Digest over everything the run is graded from, taken at the moment of sealing. `sealed_at`
+    # says when the evidence stopped growing; this says whether it still reads the same. Nullable
+    # because rows predate the column — absent means "unknown", never "tampered".
+    evidence_digest: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
 
 
 class AgentEventRunRow(Base):
