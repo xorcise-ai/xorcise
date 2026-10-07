@@ -236,6 +236,60 @@ describe("MissionCatalog", () => {
       screen.queryByRole("button", { name: /Clear filters/i }),
     ).not.toBeInTheDocument();
   });
+
+  it("shows the catalog announcement on XORCISE Remote and nowhere else", async () => {
+    // The banner is the first child of the Remote TabsContent, which returns null when its
+    // tab is inactive — so "absent on the other two tabs" is a property of where it was put,
+    // not of a condition it carries. This asserts that placement really does have that effect.
+    server.use(
+      http.get("*/api/missions", () => HttpResponse.json(catalog)),
+      http.get("*/api/announcements", () =>
+        HttpResponse.json({
+          announcements: [
+            {
+              id: "cat-1",
+              revision: 1,
+              placement: "catalog",
+              tone: "maintenance",
+              body_md: "Pulls are slower than usual.",
+              dismissible: true,
+            },
+          ],
+        }),
+      ),
+    );
+    renderWithProviders(<MissionCatalog />);
+
+    // Your Own is active first (it holds as many missions as the library here), so the
+    // banner is not on screen yet.
+    await waitFor(() => expect(screen.getByText("SQLi Login")).toBeInTheDocument());
+    expect(screen.queryByTestId("announcement-banner-catalog")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: /XORCISE Remote/i }));
+    const banner = await screen.findByTestId("announcement-banner-catalog");
+    expect(banner).toHaveTextContent("Pulls are slower than usual.");
+    // Directly above the "Connected" line, inside the panel that also holds the grid.
+    const panel = banner.parentElement!;
+    expect(panel.firstElementChild).toBe(banner);
+    expect(panel).toHaveTextContent(/connected/i);
+
+    fireEvent.click(screen.getByRole("tab", { name: /Other providers/i }));
+    expect(screen.queryByTestId("announcement-banner-catalog")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: /Your Own/i }));
+    expect(screen.queryByTestId("announcement-banner-catalog")).not.toBeInTheDocument();
+  });
+
+  it("leaves the Remote tab untouched when there is no catalog announcement", async () => {
+    // The default handler serves an empty list. Absence must change nothing about the panel.
+    server.use(http.get("*/api/missions", () => HttpResponse.json(catalog)));
+    renderWithProviders(<MissionCatalog />);
+
+    await waitFor(() => expect(screen.getByText("SQLi Login")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("tab", { name: /XORCISE Remote/i }));
+    await waitFor(() => expect(screen.getByText("Stack Smash")).toBeInTheDocument());
+    expect(screen.queryByTestId("announcement-banner-catalog")).not.toBeInTheDocument();
+  });
 });
 
 describe("MissionDetail", () => {

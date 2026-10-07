@@ -6,6 +6,7 @@ import { Sidebar } from "./sidebar";
 import { StatusBar } from "./status-bar";
 import { ServerUnreachable } from "./server-unreachable";
 import { ToastHost } from "@/components/ui/toast";
+import { ApplicationAnnouncement } from "@/features/announcements/application-announcement";
 import { RunNotificationsWatcher } from "@/features/runs/run-notifications";
 import { useServerHealth } from "@/features/setup/queries";
 
@@ -28,6 +29,11 @@ export function AppShell({ children }: { children: ReactNode }) {
       </a>
       <Header />
       {unreachable && <ServerUnreachable />}
+      {/* In normal flow between the header and the sidebar/main row, deliberately NOT inside
+          <main>: that element is overflow-auto and the Page primitive inside it assumes
+          h-full, so a banner there would scroll away with the page content and shorten every
+          route by its own height. Here it pushes the row down and overlays nothing. */}
+      <ApplicationAnnouncement />
       <div className="flex min-h-0 flex-1">
         <Sidebar />
         <main

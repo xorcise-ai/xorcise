@@ -44,3 +44,10 @@ def test_fetch_manifest_unknown_id_raises() -> None:
 
     with pytest.raises(NotFoundError):
         StubCatalogSource(enabled=True).fetch_manifest("nope")
+
+
+def test_announcements_default_to_empty() -> None:
+    # A NON-abstract, degrading default (same convention as mission_base): the stub and any
+    # source written before announcements existed keep working untouched, and "no banner" is
+    # the honest answer when a source cannot say.
+    assert StubCatalogSource(enabled=True).announcements() == ()

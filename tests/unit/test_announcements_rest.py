@@ -1,0 +1,236 @@
+"""GET /api/announcements (real wiring): always 200, always a list, never the app's problem.
+
+Announcements are decoration. The contract this file pins is that NOTHING about them — a
+switch, an empty setting, stub mode, an unreachable host, or an outright exception from the
+source — can produce anything other than a 200 with an announcements array.
+
+NOTE the env override in every test: the default `catalog_url` is a REAL production
+endpoint, so an un-overridden test would dial the internet from the unit lane. The override is
+`http://127.0.0.1:1` — a closed port on the loopback interface — rather than a reserved
+`.invalid` name, because a name still goes to the resolver: `.invalid` is guaranteed not to
+EXIST, not guaranteed not to ANSWER, and a hijacking or captive resolver (the case
+`catalog/http.py` names in its own comments) turns "unreachable" into a real connection
+attempt against somebody else's host. A refused loopback connect needs no resolver and fails
+in microseconds.
+"""
+
+from __future__ import annotations
+
+import pytest
+from fastapi.testclient import TestClient
+
+from xorcise.core.contracts.announcements import Announcement
+from xorcise.core.roles.boot.role_all import build_rest_app
+
+pytestmark = pytest.mark.unit
+
+
+# A closed port on loopback: refused immediately, by the kernel, with no name to resolve.
+_UNREACHABLE = "http://127.0.0.1:1"
+
+
+def _client() -> TestClient:
+    return TestClient(build_rest_app())
+
+
+def _settings(monkeypatch, **env: str) -> None:
+    from xorcise.core.config import get_settings
+    from xorcise.core.rest.announcements_view import reset_announcements_cache
+
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    get_settings.cache_clear()
+    # The announcements memo is dropped around every test by an autouse fixture in
+    # tests/conftest.py, so it is not reset here — but a test that changes the catalog URL
+    # MID-test still needs it, which is why this helper keeps calling it.
+    reset_announcements_cache()
+
+
+def _explode(settings):  # noqa: ANN001 — a stand-in for the factory, signature-compatible
+    raise AssertionError("the catalog source must not be built on a short-circuit path")
+
+
+def _banner(ident: str, placement: str) -> Announcement:
+    return Announcement(
+        id=ident,
+        revision=1,
+        placement=placement,  # type: ignore[arg-type]  # the test supplies a valid member
+        tone="information",
+        body_md="hello",
+        dismissible=True,
+    )
+
+
+class _Source:
+    """Minimal stand-in for a CatalogSource: only announcements() is exercised here."""
+
+    def __init__(self, *banners: Announcement) -> None:
+        self._banners = banners
+
+    def announcements(self) -> tuple[Announcement, ...]:
+        return self._banners
+
+
+def test_switched_off_returns_empty_without_building_a_source(migrated_home, monkeypatch):
+    # The operator disconnected the remote catalog, so there is nothing to ask. Proven by
+    # making the factory raise: if the response is still 200/empty, no network path was taken.
+    _settings(monkeypatch, XORCISE_CATALOG_ENABLED="false")
+    monkeypatch.setattr("xorcise.core.rest.catalog_view.build_catalog_source", _explode)
+    r = _client().get("/api/announcements")
+    assert r.status_code == 200 and r.json() == {"announcements": []}
+
+
+def test_no_catalog_url_returns_empty_without_building_a_source(migrated_home, monkeypatch):
+    _settings(monkeypatch, XORCISE_CATALOG_URL="")
+    monkeypatch.setattr("xorcise.core.rest.catalog_view.build_catalog_source", _explode)
+    r = _client().get("/api/announcements")
+    assert r.status_code == 200 and r.json() == {"announcements": []}
+
+
+def test_stub_mode_returns_empty_without_building_a_source(migrated_home, monkeypatch):
+    # `xorcise up --stub` must stay deterministic, and the docs screenshot pipeline runs stub
+    # mode against the real default catalog URL — so stub mode must never fetch a live banner.
+    _settings(monkeypatch, XORCISE_USE_STUBS="1", XORCISE_CATALOG_URL=_UNREACHABLE)
+    monkeypatch.setattr("xorcise.core.rest.catalog_view.build_catalog_source", _explode)
+    r = _client().get("/api/announcements")
+    assert r.status_code == 200 and r.json() == {"announcements": []}
+
+
+def test_an_unreachable_catalog_is_empty_not_a_500(migrated_home, monkeypatch):
+    # Deliberately offline: a port nothing is listening on. The endpoint answers 200 with no
+    # banners rather than a 500 that a frontend error boundary would have to absorb.
+    _settings(monkeypatch, XORCISE_CATALOG_URL=_UNREACHABLE, XORCISE_USE_STUBS="0")
+    r = _client().get("/api/announcements")
+    assert r.status_code == 200 and r.json() == {"announcements": []}
+
+
+def test_a_configured_source_serves_both_placements(migrated_home, monkeypatch):
+    _settings(monkeypatch, XORCISE_CATALOG_URL=_UNREACHABLE, XORCISE_USE_STUBS="0")
+    source = _Source(_banner("app-1", "application"), _banner("cat-1", "catalog"))
+    monkeypatch.setattr(
+        "xorcise.core.rest.catalog_view.build_catalog_source", lambda settings: source
+    )
+    body = _client().get("/api/announcements").json()
+    assert [a["id"] for a in body["announcements"]] == ["app-1", "cat-1"]
+    assert body["announcements"][0]["placement"] == "application"
+
+
+def test_a_raising_source_is_empty_and_leaves_the_catalog_working(
+    migrated_home, monkeypatch, caplog
+):
+    # FAILURE ISOLATION, the whole point of this endpoint's error handling: a broken
+    # announcement source costs the banner and nothing else — the catalog still answers.
+    # The remote is CONFIGURED here, so no settings guard short-circuits and the raise really
+    # does reach the view's broad except (the logged warning proves which branch ran).
+    import logging
+
+    _settings(monkeypatch, XORCISE_CATALOG_URL=_UNREACHABLE, XORCISE_USE_STUBS="0")
+
+    class _Broken:
+        def announcements(self) -> tuple[Announcement, ...]:
+            raise RuntimeError("source exploded")
+
+    monkeypatch.setattr(
+        "xorcise.core.rest.catalog_view.build_catalog_source", lambda settings: _Broken()
+    )
+    client = _client()
+    with caplog.at_level(logging.WARNING, logger="xorcise.core.rest.announcements_view"):
+        r = client.get("/api/announcements")
+    assert r.status_code == 200 and r.json() == {"announcements": []}
+    assert "source exploded" in caplog.text
+    assert client.get("/api/catalog/status").status_code == 200
+
+
+def test_a_malformed_catalog_url_is_empty_not_a_500(migrated_home, monkeypatch):
+    # The real reason the view's broad `except Exception` cannot be deleted as redundant:
+    # httpx.InvalidURL derives from Exception, NOT httpx.HTTPError, so a malformed setting
+    # sails straight through HttpCatalogSource.announcements()' narrow catch and is stopped
+    # only here. Both layers are load-bearing; this pins that.
+    _settings(monkeypatch, XORCISE_CATALOG_URL="::::", XORCISE_USE_STUBS="0")
+    r = _client().get("/api/announcements")
+    assert r.status_code == 200 and r.json() == {"announcements": []}
+
+
+def test_the_response_is_never_cached(migrated_home, monkeypatch):
+    # A publish or a withdrawal must reach the operator on a manual refresh, so the browser
+    # is told not to keep a copy.
+    _settings(monkeypatch, XORCISE_CATALOG_URL="")
+    r = _client().get("/api/announcements")
+    assert r.headers["cache-control"] == "no-store"
+
+
+# ── one remote fetch per window per install, not one per document load (#137 review) ──────────
+
+
+def _counting(monkeypatch, calls: list[str]) -> None:
+    """Point the factory at a source that records which catalog it was asked for."""
+    from xorcise.core.rest import announcements_view
+
+    class _Counter:
+        def __init__(self, url: str) -> None:
+            self._url = url
+
+        def announcements(self) -> tuple[Announcement, ...]:
+            calls.append(self._url)
+            return ()
+
+    monkeypatch.setattr(
+        "xorcise.core.rest.catalog_view.build_catalog_source",
+        lambda s: _Counter(s.catalog_url),
+    )
+    announcements_view.reset_announcements_cache()
+
+
+def _live_settings(monkeypatch, url: str):
+    from xorcise.core.config import get_settings
+
+    _settings(monkeypatch, XORCISE_CATALOG_URL=url, XORCISE_USE_STUBS="0")
+    return get_settings()
+
+
+def test_a_second_page_load_inside_the_window_does_not_hit_the_remote(
+    migrated_home, monkeypatch
+) -> None:
+    from xorcise.core.rest.announcements_view import list_announcements
+
+    calls: list[str] = []
+    _counting(monkeypatch, calls)
+    settings = _live_settings(monkeypatch, "https://catalog.example")
+
+    list_announcements(settings)
+    list_announcements(settings)
+    list_announcements(settings)
+
+    assert calls == ["https://catalog.example"], "three document loads, one remote request"
+
+
+def test_the_window_expires(migrated_home, monkeypatch) -> None:
+    from xorcise.core.rest import announcements_view
+    from xorcise.core.rest.announcements_view import list_announcements
+
+    calls: list[str] = []
+    _counting(monkeypatch, calls)
+    settings = _live_settings(monkeypatch, "https://catalog.example")
+
+    import time
+
+    list_announcements(settings)
+    later = time.monotonic() + announcements_view._ANNOUNCEMENTS_TTL_SECONDS + 1
+    monkeypatch.setattr(time, "monotonic", lambda: later)
+    list_announcements(settings)
+
+    assert len(calls) == 2, "a request after the window must reach the remote again"
+
+
+def test_a_different_catalog_is_not_served_the_previous_one_s_banners(
+    migrated_home, monkeypatch
+) -> None:
+    from xorcise.core.rest.announcements_view import list_announcements
+
+    calls: list[str] = []
+    _counting(monkeypatch, calls)
+
+    list_announcements(_live_settings(monkeypatch, "https://one.example"))
+    list_announcements(_live_settings(monkeypatch, "https://two.example"))
+
+    assert calls == ["https://one.example", "https://two.example"]

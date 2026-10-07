@@ -115,6 +115,27 @@ def _force_stubs(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_announcement_memo():
+    """Drop the memoised announcements response between tests.
+
+    `rest.announcements_view` caches the remote answer for a couple of minutes, keyed by catalog
+    URL, so one install costs one fetch per window rather than one per browser document load.
+    Process-wide state outlives a test: two tests pointing at the SAME catalog URL with different
+    stubbed sources would see the first one's banners, and the failure reads as the stub not
+    being applied rather than as a stale memo. Two existing tests failed exactly that way when
+    the cache was added.
+
+    Here rather than in one test module's helper: any test that changes catalog settings inherits
+    the hazard, not only the ones that know about it.
+    """
+    from xorcise.core.rest.announcements_view import reset_announcements_cache
+
+    reset_announcements_cache()
+    yield
+    reset_announcements_cache()
+
+
+@pytest.fixture(autouse=True)
 def _no_loopback_instance_probe(monkeypatch):
     """Keep the unit lane off the loopback network: `up`/`down`/`db upgrade` ask `/api/system` on
     the REST ports this home could be serving on. Unstubbed, that is a real HTTP call from a unit

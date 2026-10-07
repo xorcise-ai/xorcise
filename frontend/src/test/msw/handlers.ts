@@ -212,6 +212,10 @@ export const handlers = [
     }),
   ),
   http.get("*/api/catalog/status", () => HttpResponse.json({ state: "connected" })),
+  // No banners by default. The setup runs MSW with onUnhandledRequest: "error", so this
+  // handler must exist for every test the moment anything calls the endpoint; a test that
+  // asserts on a banner overrides it with server.use(...).
+  http.get("*/api/announcements", () => HttpResponse.json({ announcements: [] })),
   http.get("*/api/system", () =>
     HttpResponse.json({
       role: "all",
