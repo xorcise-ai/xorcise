@@ -37,6 +37,28 @@ __all__ = [
 _grading_lock = threading.Lock()
 _grading_in_flight: set[str] = set()
 
+# Runs THIS process sealed and has not yet graded. At XORCISE_TELEMETRY_DRAIN_SECONDS=0 —
+# the whole test suite, and a documented operator mode — seal_terminal seals synchronously, so the
+# grade that follows a moment later finds the run already sealed and cannot tell "something else
+# sealed this" (a regrade, or a grade re-driven after a restart: the case the seal exists for) from
+# "I sealed this myself". It assumed the former, and so re-hashed the whole run to check a seal it
+# had taken moments earlier, on every zero-drain finalisation.
+#
+# It also logged "the evidence no longer matches" whenever a straggler landed in the window —
+# `seal()` narrows the admission race but does not close it. Note what that line is NOT: it is not
+# a false accusation. If a straggler lands, the graded evidence really has moved past the recorded
+# digest, permanently. What it was is INCONSISTENT — at any non-zero drain (the 5.0s default) the
+# first grade seals the run itself, `_drain_and_seal_telemetry` returns False, and that same
+# straggler has never been logged. Dropping it here makes the two drain settings agree, and costs
+# no disclosure: /report renders the MISMATCH banner and /result?verify=1 answers false, for as
+# long as the run exists rather than once into a log.
+#
+# Consumed by the first grade that follows the seal, so a later regrade of the same run in the same
+# process is verified normally. Its own lock: this is unrelated to the de-dup slot above, and
+# sharing one mutex between two sets would only invite a reader to assume they are.
+_sealed_here_lock = threading.Lock()
+_sealed_here: set[str] = set()
+
 
 def seal_terminal(run_id: str, trigger: str, now: datetime, detail: str | None = None) -> str:
     """Fast sync phase: transition immediately and begin the telemetry drain window.
@@ -66,33 +88,64 @@ def _seal_telemetry(run_id: str) -> None:
     """Idempotently freeze the RAW OTLP record, keeping the OTel import lazy.
 
     Both seal paths (zero-drain and post-drain) funnel through here, so recording the evidence
-    digest in one place covers them together. Sealing must happen even if hashing does not — see
-    evidence_seal.seal_with_digest.
+    digest — and the mark saying this process is the one that took it — happens in one place for
+    both. Sealing must happen even if hashing does not — see evidence_seal.seal_with_digest.
     """
     from xorcise.core.rest.evidence_seal import seal_with_digest
 
     seal_with_digest(run_id)
+    with _sealed_here_lock:
+        _sealed_here.add(run_id)
+
+
+def _claim_sealed_here(run_id: str) -> bool:
+    """Did this process seal this run with no grade since? Clears the mark either way.
+
+    Clearing is the load-bearing half: a mark left behind would suppress the verification on the
+    next regrade of that run in this process, which is exactly the pass the seal exists for.
+    """
+    with _sealed_here_lock:
+        if run_id not in _sealed_here:
+            return False
+        _sealed_here.discard(run_id)
+        return True
+
+
+def _forget_sealed_here(run_id: str) -> None:
+    """Drop the mark, claimed or not. Belt to `_claim_sealed_here`'s braces: that consumer sits
+    inside `_grade_run`'s try, so every way out of `_grade_run` that never reaches it — an absent
+    or non-terminal run, an already-recorded result, a "database is locked" on the way in — would
+    otherwise leave the mark behind to silence the NEXT regrade of that run. A run sealed and then
+    never graded at all (deleted first) still keeps its mark for the life of the process; that one
+    is a dead id nothing will ask about again, not a suppressed verification.
+    """
+    with _sealed_here_lock:
+        _sealed_here.discard(run_id)
 
 
 def _drain_and_seal_telemetry(run_id: str) -> bool:
     """Wait one configurable grace period, unless another finalizer already sealed the run.
 
-    Returns True when the run was ALREADY sealed on arrival — this grade is scoring evidence a
-    previous pass sealed (a regrade, or a grade re-driven after a restart), which is the one case
-    where re-verifying the seal can tell us anything. A run we seal ourselves a moment earlier
-    cannot have moved since.
+    Returns True when the run was sealed by SOMETHING OTHER than this finalisation — a regrade, or
+    a grade re-driven after a restart — which is the one case where re-verifying the seal can tell
+    us anything. A run this process sealed itself a moment earlier cannot have moved since, so
+    asking buys nothing and costs a second hash of the whole run (see `_sealed_here`): "already
+    sealed on arrival" alone could not tell the two apart at a zero drain interval, where
+    seal_terminal seals before the grade is even scheduled.
     """
     from xorcise.core.config import get_settings
     from xorcise.core.otel.store import SqliteSealStore
 
-    seals = SqliteSealStore()
-    if seals.is_sealed(run_id):
-        return True
-    delay = get_settings().telemetry_drain_seconds
-    if delay > 0:
-        time.sleep(delay)
-    _seal_telemetry(run_id)
-    return False
+    already_sealed = SqliteSealStore().is_sealed(run_id)
+    if not already_sealed:
+        delay = get_settings().telemetry_drain_seconds
+        if delay > 0:
+            time.sleep(delay)
+        _seal_telemetry(run_id)
+    # Claimed on BOTH paths: the mark the line above just left is ours too, and leaving it behind
+    # would silence the verification on the next regrade of this run.
+    sealed_by_us = _claim_sealed_here(run_id)
+    return already_sealed and not sealed_by_us
 
 
 def grade_and_record(run_id: str) -> None:
@@ -102,7 +155,8 @@ def grade_and_record(run_id: str) -> None:
     background thread (endpoints) AND be reached synchronously by the watchdog; record_result is
     itself idempotent on run_id as a second guard against the two racing on the same run. Claims
     the in-flight de-dup slot itself (a concurrent duplicate no-ops instead of double-paying the
-    judge) and always releases it, however grading ends."""
+    judge) and always releases it — along with any "sealed here" mark for this run — however
+    grading ends."""
     with _grading_lock:
         if run_id in _grading_in_flight:
             return  # a grade for this run is already in flight — the drain-window duplicate
@@ -112,6 +166,7 @@ def grade_and_record(run_id: str) -> None:
     finally:
         with _grading_lock:
             _grading_in_flight.discard(run_id)
+        _forget_sealed_here(run_id)
 
 
 def ensure_graded_async(run_id: str, schedule: Callable[[Callable[[], None]], None]) -> bool:

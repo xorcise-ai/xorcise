@@ -238,6 +238,11 @@ def assemble_report(run_id: str) -> RunReportContext | None:
     # Read + re-verify in ONE guarded call. It used to be two unwrapped ones — read the digest,
     # then re-hash — which both read the seal row and, alone among the joins here, let a transient
     # "database is locked" 500 the whole report instead of dropping a row.
+    #
+    # The re-hash is DELIBERATE here, and the default rather than `verify=True` only because that
+    # is the function's default. `/result` made it opt-in because list surfaces drove it once per
+    # row; this is one run, deliberately fetched, and the mismatch banner is the whole point of the
+    # document. Pinned by test_the_report_re_verifies_the_seal_on_every_request.
     seal = evidence_seal_view(run_id)
     return RunReportContext(
         run=run,
@@ -253,4 +258,5 @@ def assemble_report(run_id: str) -> RunReportContext | None:
         evidence_digest=seal.digest,
         evidence_verified=seal.verified,
         evidence_digest_unavailable=seal.unavailable,
+        evidence_seal_unreadable=seal.unreadable,
     )
