@@ -110,28 +110,30 @@ class JudgeOutcome(BaseModel):
     spans_truncated: int = 0
 
 
-# Fence around agent-controlled evidence. The bracket glyphs (⟦⟧) — and every square-cornered
-# lookalike of them (see _neutralize) — are STRIPPED from all untrusted content, so agent text can
-# never forge a marker and break out of the block: the structural half of the injection defence.
+# Fence around agent-controlled evidence. ⟦⟧ are folded out of every untrusted string (see
+# _neutralize), so the two markers below — and the ⟦span N⟧ markers — are byte sequences that
+# cannot occur inside agent content. That makes the REAL markers unforgeable. It does NOT make a
+# forgery unconvincing, which is a separate problem; _neutralize's docstring says what carries it.
 _FENCE_OPEN = "⟦UNTRUSTED-AGENT-EVIDENCE⟧"
 _FENCE_CLOSE = "⟦/UNTRUSTED-AGENT-EVIDENCE⟧"
 
 
-# Bracket glyphs folded to ASCII by _neutralize. Stripping only the fence's own ⟦⟧ left a
-# CONFUSION vector: a lookalike closes the fence, writes a "CRITERION TO GRADE — …" line and
-# reopens it, and nothing in the rendered prompt distinguishes that from the real thing. NFKC folds
-# none of these into ⟦⟧, so normalisation does not close it — only substitution does. The move of
-# the criterion to a `user` message narrowed the gap the forgery has to cross: it no longer has to
-# fake a system header, only a fence position and a message boundary, and backends that merge
-# consecutive user turns erase the boundary as well.
+# Bracket glyphs CANONICALISED to ASCII by _neutralize. Folding only the fence's own ⟦⟧ left the
+# rest of the square-bracket family rendering beside the real markers at near-identical width, so
+# a span could close the fence with a lookalike, write a "CRITERION TO GRADE — …" line and reopen
+# it. NFKC folds none of these into ⟦⟧, so normalisation does not reach them — substitution does.
+# What that buys is a canonical form for one family. It does not close the confusion vector, and
+# the docstring on _neutralize names what survives and what the fence rests on instead.
 #
-# The set is therefore the CLASS, not a handful of examples: every Unicode code point in general
-# category Ps/Pe (paired delimiters) whose name is a square-cornered bracket — "SQUARE BRACKET",
-# "TORTOISE SHELL BRACKET" or "LENTICULAR BRACKET". Rounded, curly and angle brackets stay: a
-# different SHAPE cannot stand in for a square fence, and folding them would mangle ordinary code
-# and maths in the evidence for nothing. ASCII [ ] are the replacement, so they are not listed.
+# The set is the CLASS, not a handful of examples: every Unicode code point in general category
+# Ps/Pe (paired delimiters) whose name is a square-cornered bracket — "SQUARE BRACKET",
+# "TORTOISE SHELL BRACKET" or "LENTICULAR BRACKET". Rounded, curly and angle brackets stay out
+# because folding them would mangle ordinary code and maths in the evidence, and the fold is a
+# readability measure over a bounded family rather than the boundary itself. ASCII [ ] are the
+# replacement, so they are not listed.
 # test_neutralize_folds_every_square_cornered_bracket_in_unicode re-derives this from the character
-# database, so a future Unicode version that adds a member fails rather than silently reopening it.
+# database, so a future Unicode version that adds a member fails rather than the fold silently
+# drifting away from the class it claims.
 _FENCE_LOOKALIKES: tuple[tuple[str, str], ...] = (
     ("\u2045", "\u2046"),  # square bracket with quill
     ("\u2772", "\u2773"),  # light tortoise shell bracket ornament
@@ -159,6 +161,11 @@ _FENCE_LOOKALIKES: tuple[tuple[str, str], ...] = (
     ("\uff3b", "\uff3d"),  # fullwidth square bracket
 )
 
+# str.translate walks every character once the text is not Latin-1, which makes it far slower than
+# targeted replaces — measured at ~50 ms to build the whole shared preamble from a 680 KB distilled
+# transcript (600 spans carrying box-drawing glyphs). Kept as a table anyway: it is paid once per
+# graded run, since the preamble is built once and reused across the run's criteria, and the table
+# is what lets the fold be the whole class rather than two hardcoded glyphs.
 _NEUTRALIZE_TABLE = str.maketrans(
     "".join(open_ for open_, _ in _FENCE_LOOKALIKES)
     + "".join(close for _, close in _FENCE_LOOKALIKES),
@@ -167,9 +174,27 @@ _NEUTRALIZE_TABLE = str.maketrans(
 
 
 def _neutralize(text: str) -> str:
-    """Fold the fence bracket glyphs AND their square-cornered lookalikes out of agent-controlled
-    text, so it cannot forge an evidence marker — or something that reads as one — and escape the
-    untrusted block. These glyphs are rare; ASCII fallbacks keep content readable."""
+    """Canonicalise the square-cornered bracket family to ASCII in agent-controlled text.
+
+    ⟦⟧ are in the folded set, so the real markers — the fence pair above and ⟦span N⟧ / ⟦/span N⟧ —
+    become byte sequences agent content cannot contain. That is what this guarantees, and it is a
+    guarantee about the REAL marker, not about lookalikes. Three things still read as fence-like
+    to a model, which sees tokens rather than shapes: `『』` (U+300E/F), square-cornered and
+    hollow, excluded only because its Unicode name says CORNER BRACKET; plain doubled `[[…]]`,
+    which is no lookalike at all; and this fold's own output, since a folded marker renders as
+    `[/UNTRUSTED-AGENT-EVIDENCE]`. Adding `「」『』` is not the fix — it mangles ordinary Japanese
+    prose in the evidence and the next confusable is one code point away. The vector is not
+    closable by substitution.
+
+    What the fence rests on instead is structural, and no survivor reaches it. `_INSTRUCTIONS`
+    names the exact glyphs, so the model is told which sequence is authoritative; and in the
+    transcript every agent line additionally sits inside a ⟦span N⟧ / ⟦/span N⟧ pair the agent
+    cannot produce, so a forgery can only appear NESTED inside a real span, never beside the real
+    fence. That second part is the transcript's alone — submitted artifacts, and the
+    registrant-supplied harness name in the pre-fence disclosure, carry no per-item markers, so
+    there the naming stands by itself (the disclosure is also whitespace-collapsed and
+    length-capped in _evidence_block, so it cannot grow structure of its own).
+    """
     return text.translate(_NEUTRALIZE_TABLE)
 
 
@@ -259,10 +284,11 @@ def build_criterion_message(criterion: RubricCriterion) -> Message:
     which is exactly why it survived.
 
     Nothing is loosened by the move, because the trust boundary was never the role — it is the ⟦⟧
-    fence. `_neutralize` strips those glyphs from all agent-controlled content, so artifact and
-    transcript text cannot forge or close the fence: the BOUNDARY holds. The instructions describe
-    the ORDER the model receives ("(1) … evidence, then (2) the criterion"), never the roles, so
-    the contract the judge is held to is unchanged.
+    fence. `_neutralize` folds those glyphs out of all agent-controlled content, so artifact and
+    transcript text cannot reproduce the markers: the STRUCTURAL boundary holds, with the caveat
+    _neutralize records about glyphs that merely look like them. The instructions describe the
+    ORDER the model receives ("(1) … evidence, then (2) the criterion"), never the roles, so the
+    contract the judge is held to is unchanged.
 
     What that does NOT establish is authorship of everything outside the fence. The pre-fence
     HARNESS TELEMETRY DISCLOSURE interpolates `ctx.source_agent`, which comes from agent
@@ -360,6 +386,18 @@ _REPAIR_MESSAGE: Message = (
     '{"verdict": "unknown", "reason": "<platform evidence limitation>"}.',
 )
 
+# The same ask, for the case where there is NO previous reply to show. An empty completion parses
+# as unparseable and takes the repair path, but it cannot travel as an assistant turn (see
+# grade_judge), so _REPAIR_MESSAGE would be describing something the model never sent and cannot
+# see. Naming what actually happened is both true and more useful — an empty reply has a different
+# cause (a thinking budget spent before any content was emitted) than a malformed one.
+_EMPTY_REPLY_REPAIR_MESSAGE: Message = (
+    "user",
+    "Your previous reply was empty. Reply again with exactly one JSON object: "
+    '{"score": <0.0-1.0>, "reason": "<text>"} or '
+    '{"verdict": "unknown", "reason": "<platform evidence limitation>"}.',
+)
+
 
 def grade_judge(
     rubric: Sequence[RubricCriterion],
@@ -437,10 +475,22 @@ def grade_judge(
         )
         if parsed.status == "error":
             # The unparseable reply goes back as the assistant turn it actually was, so
-            # _REPAIR_MESSAGE's "your previous reply" refers to something the model can see.
-            bad_reply: Message = ("assistant", raw)
+            # _REPAIR_MESSAGE's "your previous reply" refers to something the model can see —
+            # but only when there IS text to send. An empty assistant turn is not universally
+            # accepted: OpenAI and vLLM take one, while the Anthropic Messages API behind LiteLLM
+            # answers it with 400 "text content blocks must be non-empty" and Gemini's
+            # OpenAI-compat layer rejects empty parts. An empty completion is exactly what a
+            # thinking model (Qwen3-thinking, DeepSeek-R1 on vLLM) returns once its budget is
+            # spent — content "" or null, with the reasoning stranded in `reasoning_content` —
+            # so shipping a blank turn would turn one repairable criterion into an `unavailable`
+            # judge for the WHOLE run on those backends. Say what happened instead.
+            retry: list[Message]
+            if raw.strip():
+                retry = [instructions, evidence, crit_msg, ("assistant", raw), _REPAIR_MESSAGE]
+            else:
+                retry = [instructions, evidence, crit_msg, _EMPTY_REPLY_REPAIR_MESSAGE]
             try:
-                raw = model.score([instructions, evidence, crit_msg, bad_reply, _REPAIR_MESSAGE])
+                raw = model.score(retry)
             except JudgeError as exc:
                 return JudgeOutcome(
                     status="unavailable",
