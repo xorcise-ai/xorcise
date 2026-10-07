@@ -55,8 +55,12 @@ _TOOL_KINDS = frozenset(
 # `message` and the image model it carries is folded. Accepted, not contained: telling that span
 # from a real assistant message needs the name-sniffing this fold deliberately leaves to the
 # adapters, and the residue is a bounded, self-reported display field that is never a grading
-# input. What the kind filter does buy is the reviewer's own case — a `tool_call` never folds
-# whatever its attributes say, and `generate_image` classifies `unclassified` (#128 review).
+# input. What the kind filter buys is narrower than "the reviewer's case is contained", which is how
+# an earlier version of this comment read: a SUCCESSFUL `generate_image` span classifies
+# `unclassified` and is filtered out, but a FAILED one classifies `error` — the generic adapter
+# keys that off `status_code == 2` before it ever looks at the name — and lands back inside the
+# residue above. The filter removes the tool kinds and `unclassified`; it does not remove a span
+# that happens to fail (#128 review).
 # Add a kind here only alongside the adapter line that puts a model on it.
 _MODEL_KINDS = frozenset(
     {
