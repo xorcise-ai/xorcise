@@ -346,7 +346,18 @@ def confirm_or_abort(question: str, *, assume_yes: bool) -> None:
     """TTY-gated confirmation for destructive commands.
 
     --yes and non-interactive stdin both skip the prompt (a prompt would hang CI
-    or an agent harness; scripts keep their historical no-prompt behaviour)."""
+    or an agent harness; scripts keep their historical no-prompt behaviour).
+
+    A CLOSED fd 0 now counts as non-interactive, and that is a real behaviour change, not just
+    a crash fix (#125): the bare `.isatty()` this used to call raised on the `None` CPython
+    leaves at `xorcise agent rm a <&-`, so the command died one line short of the destructive
+    call. It now proceeds unprompted — what `</dev/null` has always done, and the posture every
+    caller of this seam was scripted against — so `mission uninstall`, `run terminate`,
+    `run regrade`, `run delete` and `agent rm` all changed with it. Where a missing terminal
+    must STOP the command instead of waving it through, `confirm_gate` below takes the opposite
+    posture and moved with the same fix. `down --purge` holds that line too but is not one of
+    its callers: it repeats the `_stdin_is_interactive` check inline, so editing either of
+    these two functions leaves it exactly where it is."""
     if assume_yes or not _stdin_is_interactive():
         return
     if not typer.confirm(question):
@@ -361,7 +372,13 @@ def confirm_gate(question: str, *, assume_yes: bool, what: str, example: str) ->
     scripted before the prompt existed. This gate is the opposite: it exists to STOP a script
     from making the choice unnoticed, so without a TTY and without --yes it fails closed — exit
     2, naming the flag — the same posture as `down --purge`. Interactively the default answer
-    is No; `n` prints "aborted" and exits 1."""
+    is No; `n` prints "aborted" and exits 1.
+
+    A CLOSED fd 0 reaches that refusal cleanly only since #125: the shared
+    `_stdin_is_interactive` raised an AttributeError on the `None` CPython leaves there, which
+    `app.py` turned into "unexpected error" and exit 1. The posture is unchanged — `agent
+    register` and `agent update` with an unrecognised `--kind` refused then and refuse now —
+    but the exit code and the message did move."""
     if assume_yes:
         return
     if not _stdin_is_interactive():
