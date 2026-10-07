@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import httpx
@@ -992,10 +993,28 @@ def test_no_in_product_pointer_teaches_the_key_on_argv(monkeypatch):
     from xorcise.core.cli._shared import GOLDEN_PATH
     from xorcise.core.cli.rest_client import RestClient
 
+    def _flatten(text: str) -> str:
+        """Rendered output with Rich's layout taken back out of it.
+
+        A `--help` screen lays options out in a box, so the value can land on the next line from
+        its flag with a `\u2502` and padding in between — and a substring search finds nothing in
+        a screen that visibly reads `--key <your-key>`. The reviewer caught exactly that: an
+        injected example was found by the source grep and NOT by the screen it rendered on, which
+        made the rendered half of this test decorative (#125 review).
+        """
+        return re.sub(r"[\s\u2500-\u257f]+", " ", text)
+
     def _sets_a_key_on_argv(text: str) -> bool:
-        # A placeholder VALUE after --key. Bare `--key` in a list of flag names is a name, not
-        # an example, and `--key ''` is the clear.
-        return "--key <" in text or "--key sk-" in text
+        """An EXAMPLE that puts a key value on argv, as opposed to naming the flag.
+
+        Bare `--key` in a list of flag names is a name, `--key ''` is the deliberate clear, and
+        `--key <str>` is Typer's own type metavar in the Options table — generated from the
+        parameter's type, sitting beside help text that says to prefer `--key-stdin`, and not
+        something anyone wrote as an instruction. Everything else with a placeholder value after
+        `--key` is teaching the argv path.
+        """
+        flat = _flatten(text)
+        return bool(re.search(r"--key <(?!str>)", flat)) or "--key sk-" in flat
 
     monkeypatch.setattr(
         RestClient,
