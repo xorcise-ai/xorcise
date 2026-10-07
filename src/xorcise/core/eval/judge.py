@@ -408,13 +408,6 @@ def _parse_one(
     return result(max(0.0, min(1.0, score)), "ok", str(data.get("reason", "")))
 
 
-# `user` for the same reason as the criterion message: the retry appends this to the existing
-# three, so a system role here put TWO system messages after the evidence and 400'd on a strict
-# endpoint. Easy to miss — this path only runs when a reply fails to parse, so fixing the criterion
-# message alone would have left the malformed-JSON path still broken on exactly those servers.
-#
-# It says "your previous reply", so the call has to CARRY that reply: chat completions are
-# stateless, and the model sees only the message list it is handed.
 # A CONSTANT assistant turn between the evidence and the criterion, so the call alternates
 # user/assistant instead of sending two user messages back to back.
 #
@@ -431,6 +424,13 @@ def _parse_one(
 _ACK_MESSAGE: Message = ("assistant", "Acknowledged. State the criterion.")
 
 
+# `user` for the same reason as the criterion message: the retry appends this to the existing
+# FOUR, so a system role here put TWO system messages after the evidence and 400'd on a strict
+# endpoint. Easy to miss — this path only runs when a reply fails to parse, so fixing the criterion
+# message alone would have left the malformed-JSON path still broken on exactly those servers.
+#
+# It says "your previous reply", so the call has to CARRY that reply: chat completions are
+# stateless, and the model sees only the message list it is handed.
 _REPAIR_MESSAGE: Message = (
     "user",
     "Your previous reply did not match the required JSON contract. Reply again with exactly one "
@@ -451,7 +451,8 @@ _REPAIR_MESSAGE: Message = (
 # true of the judge's input and not of the wire. Narrowing it further would need the client to
 # distinguish the two, which the reviewed `isinstance` shape deliberately does not.
 _EMPTY_REPLY_PREFACE = (
-    "Your previous reply was empty. Reply again with exactly one JSON object: "
+    "Your previous answer to this criterion was empty. Reply again with exactly one "
+    "JSON object: "
     '{"score": <0.0-1.0>, "reason": "<text>"} or '
     '{"verdict": "unknown", "reason": "<platform evidence limitation>"}. '
     "The criterion is repeated below."
@@ -466,6 +467,10 @@ def _retry_after_empty_reply(criterion: RubricCriterion) -> Message:
     would be exactly the lie the assistant turn exists to avoid; but sending the ask as a second
     consecutive `user` message reintroduces the shape Mistral-family templates reject. Folding the
     ask into a fresh statement of the criterion keeps it to one user turn and stays true.
+
+    "your previous ANSWER TO THIS CRITERION", not "your previous reply": the model's previous turn
+    is now the constant acknowledgement, which was not empty, so the shorter wording would be
+    false from where the model sits.
     """
     role, body = build_criterion_message(criterion)
     return (role, f"{_EMPTY_REPLY_PREFACE}\n\n{body}")
