@@ -313,10 +313,37 @@ def build_criterion_message(criterion: RubricCriterion) -> Message:
     )
 
 
+def judge_probe_messages() -> list[Message]:
+    """A trivial call in the SHAPE the judge actually sends, for `config test` to probe with.
+
+    `config test` exists to tell an operator their judge endpoint works BEFORE they spend a run on
+    it. It sent [system, user] — two messages, one of each role — which essentially every
+    OpenAI-compatible server accepts. The real grading call does not look like that, and the role
+    sequence is exactly what the strict templates reject: a system message past index 0 (#111) and
+    two consecutive user turns (#144). So the probe could answer "your judge is configured" about
+    a server that 400s the first real grade, and the operator found out after a mission had run to
+    completion and been sealed — the most expensive moment there is.
+
+    The bodies are deliberately trivial; the ROLE SEQUENCE is the whole point, and
+    `test_the_probe_sends_the_shape_the_judge_sends` pins it against `build_judge_messages` so the
+    two cannot drift apart again.
+    """
+    return [
+        ("system", "You are a connectivity check."),
+        ("user", "Reply with: ok"),
+        _ACK_MESSAGE,
+        ("user", "Reply with: ok"),
+    ]
+
+
 def build_judge_messages(criterion: RubricCriterion, ctx: SealedContext) -> list[Message]:
-    """The full ordered message list for one criterion: [instructions, evidence, criterion]."""
+    """The full ordered message list for one criterion:
+    [instructions, evidence, acknowledgement, criterion].
+
+    The acknowledgement is a constant assistant turn — see `_ACK_MESSAGE` for why the shape
+    alternates rather than sending two user messages in a row."""
     instructions, evidence = build_shared_preamble(ctx)
-    return [instructions, evidence, build_criterion_message(criterion)]
+    return [instructions, evidence, _ACK_MESSAGE, build_criterion_message(criterion)]
 
 
 def render_messages_for_display(messages: Sequence[Message]) -> str:
@@ -388,6 +415,22 @@ def _parse_one(
 #
 # It says "your previous reply", so the call has to CARRY that reply: chat completions are
 # stateless, and the model sees only the message list it is handed.
+# A CONSTANT assistant turn between the evidence and the criterion, so the call alternates
+# user/assistant instead of sending two user messages back to back.
+#
+# #111 fixed the servers that reject a system message after index 0. It did not fix the other
+# family: Mistral-style templates on vLLM enforce strict alternation and answer [system, user,
+# user] with "conversation roles must alternate user/assistant" (vllm#6862). Those rejected the
+# pre-#111 shape too, so nothing regressed — but "a role every endpoint accepts" was never true,
+# and this is what makes it true for both families at once.
+#
+# Constant on purpose: it is the same bytes on every criterion of every run, so it sits inside the
+# cacheable prefix rather than after it, and costs nothing beyond its own handful of tokens. It
+# also makes the repair path fall out naturally — the model's unparseable reply becomes the NEXT
+# assistant turn, and the ask after it is the next user turn.
+_ACK_MESSAGE: Message = ("assistant", "Acknowledged. State the criterion.")
+
+
 _REPAIR_MESSAGE: Message = (
     "user",
     "Your previous reply did not match the required JSON contract. Reply again with exactly one "
@@ -407,12 +450,25 @@ _REPAIR_MESSAGE: Message = (
 # Anthropic-style content blocks through a gateway — and the client dropped it, so "empty" is
 # true of the judge's input and not of the wire. Narrowing it further would need the client to
 # distinguish the two, which the reviewed `isinstance` shape deliberately does not.
-_EMPTY_REPLY_REPAIR_MESSAGE: Message = (
-    "user",
+_EMPTY_REPLY_PREFACE = (
     "Your previous reply was empty. Reply again with exactly one JSON object: "
     '{"score": <0.0-1.0>, "reason": "<text>"} or '
-    '{"verdict": "unknown", "reason": "<platform evidence limitation>"}.',
+    '{"verdict": "unknown", "reason": "<platform evidence limitation>"}. '
+    "The criterion is repeated below."
 )
+
+
+def _retry_after_empty_reply(criterion: RubricCriterion) -> Message:
+    """The criterion again, prefaced with what happened — as ONE user turn.
+
+    The malformed-reply path carries the model's own words back as an assistant turn and then asks
+    for a correction, which alternates. An empty reply has no words to carry, and inventing some
+    would be exactly the lie the assistant turn exists to avoid; but sending the ask as a second
+    consecutive `user` message reintroduces the shape Mistral-family templates reject. Folding the
+    ask into a fresh statement of the criterion keeps it to one user turn and stays true.
+    """
+    role, body = build_criterion_message(criterion)
+    return (role, f"{_EMPTY_REPLY_PREFACE}\n\n{body}")
 
 
 def grade_judge(
@@ -452,7 +508,7 @@ def grade_judge(
     # gate. When enabled, budget the ACTUAL OUTBOUND MESSAGES (the ⟦span⟧ glyphs tokenize
     # expensively) by sizing the largest single per-criterion call once here.
     if max_transcript_tokens > 0:
-        sample = [instructions, evidence, build_criterion_message(rubric[0])]
+        sample = [instructions, evidence, _ACK_MESSAGE, build_criterion_message(rubric[0])]
         tokens = sum(counter(content) for _role, content in sample)
         if tokens > max_transcript_tokens:
             return JudgeOutcome(
@@ -472,7 +528,7 @@ def grade_judge(
     for criterion in rubric:
         crit_msg = build_criterion_message(criterion)
         try:
-            raw = model.score([instructions, evidence, crit_msg])
+            raw = model.score([instructions, evidence, _ACK_MESSAGE, crit_msg])
         except JudgeError as exc:
             # A transport/protocol failure hits every criterion the same way (same endpoint/key), so
             # fail the whole judge loud rather than mislabel every criterion "unknown".
@@ -502,9 +558,16 @@ def grade_judge(
             # judge for the WHOLE run on those backends. Say what happened instead.
             retry: list[Message]
             if raw.strip():
-                retry = [instructions, evidence, crit_msg, ("assistant", raw), _REPAIR_MESSAGE]
+                retry = [
+                    instructions,
+                    evidence,
+                    _ACK_MESSAGE,
+                    crit_msg,
+                    ("assistant", raw),
+                    _REPAIR_MESSAGE,
+                ]
             else:
-                retry = [instructions, evidence, crit_msg, _EMPTY_REPLY_REPAIR_MESSAGE]
+                retry = [instructions, evidence, _ACK_MESSAGE, _retry_after_empty_reply(criterion)]
             try:
                 raw = model.score(retry)
             except JudgeError as exc:

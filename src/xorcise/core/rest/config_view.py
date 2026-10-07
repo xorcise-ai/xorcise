@@ -26,7 +26,7 @@ from xorcise.core.contracts.config import (
     TerrainModelConfigUpdate,
     TerrainModelConfigView,
 )
-from xorcise.core.eval.judge import JudgeError
+from xorcise.core.eval.judge import JudgeError, judge_probe_messages
 from xorcise.core.home import set_env_vars
 from xorcise.core.orchestration.clients.judge_model import build_judge_model, build_terrain_model
 
@@ -111,7 +111,9 @@ def run_judge_live_test(settings: Settings) -> JudgeTestResult:
             message="No judge API key configured.",
         )
     try:
-        model.score([("system", "You are a connectivity check."), ("user", "Reply with: ok")])
+        # The judge's own shape, not a minimal pair — see judge.judge_probe_messages. A
+        # [system, user] probe passes on servers whose templates reject the real grading call.
+        model.score(judge_probe_messages())
     except JudgeError as exc:
         return JudgeTestResult(
             ok=False,
