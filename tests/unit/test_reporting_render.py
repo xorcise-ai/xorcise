@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -590,8 +590,11 @@ def test_the_report_separates_time_spent_working_from_time_held() -> None:
             stats=RunStats(
                 timing=TimingStats(
                     elapsed_seconds=1800.0,
-                    first_event_ts=datetime(2026, 7, 1, 10, 0, 0, tzinfo=UTC),
-                    last_event_ts=datetime(2026, 7, 1, 10, 0, 1, tzinfo=UTC),
+                    # Inside the run the events belong to: a snapshot whose first event predates
+                    # its own run is a clock fault, and the renderer now withholds it (#134
+                    # review, third round). This fixture dated them three weeks early.
+                    first_event_ts=_CREATED,
+                    last_event_ts=_CREATED + timedelta(seconds=1),
                 )
             )
         )
@@ -703,6 +706,17 @@ def test_a_capped_model_list_says_how_many_it_is_not_showing() -> None:
 # to mark that this one is not. A harness whose clock is skewed renders "Duration 1m 0s /
 # Telemetry window 1h 0m 0s" with no signal, and milliseconds mistaken for nanoseconds put the
 # first event in 1970 and render a window of half a million hours in the headline table.
+#
+# Third round of the same review: withholding is now DISCLOSED rather than silent — an absent row
+# could not be told apart from a run that recorded no telemetry at all — and the guard is
+# SYMMETRIC, because a producer clock running behind the server's dates the first event before the
+# run was created and yields a window small enough to pass for a measurement.
+
+
+def _at(**over: float) -> datetime:
+    """A timestamp relative to the run's own start, so a fixture cannot silently sit outside the
+    run it describes (every one of these used to, by three weeks)."""
+    return _CREATED + timedelta(**over)
 
 
 def _timing_window(first: datetime, last: datetime, elapsed: float | None = 1800.0) -> RunStats:
@@ -712,55 +726,107 @@ def _timing_window(first: datetime, last: datetime, elapsed: float | None = 1800
 
 
 def test_the_telemetry_window_says_whose_clock_it_came_from() -> None:
-    md = render_markdown(
-        _ctx(
-            stats=_timing_window(
-                datetime(2026, 7, 1, 10, 0, 0, tzinfo=UTC),
-                datetime(2026, 7, 1, 10, 0, 1, tzinfo=UTC),
-            )
-        )
-    )
+    md = render_markdown(_ctx(stats=_timing_window(_at(), _at(seconds=1))))
     assert "| Telemetry window | 1.0s (reported by the harness) |" in md
 
 
 def test_a_window_longer_than_the_run_itself_is_withheld_rather_than_shown() -> None:
     """A skewed producer clock: one minute of run, an hour of "telemetry". The window cannot
     exceed the wall clock the run actually occupied, so the excess is the clock, not the work."""
-    md = render_markdown(
-        _ctx(
-            stats=_timing_window(
-                datetime(2026, 7, 1, 10, 0, 0, tzinfo=UTC),
-                datetime(2026, 7, 1, 11, 0, 0, tzinfo=UTC),
-                elapsed=60.0,
-            )
-        )
-    )
+    md = render_markdown(_ctx(stats=_timing_window(_at(), _at(hours=1), elapsed=60.0)))
+
     assert "| Duration | 1m 0s |" in md
-    assert "Telemetry window" not in md
+    assert "1h 0m 0s" not in md, "the hour that is the clock fault must not reach the table"
+    assert (
+        "| Telemetry window | withheld — the harness reported more telemetry than the run "
+        "lasted |" in md
+    )
 
 
 def test_a_1970_timestamp_does_not_render_half_a_million_hours() -> None:
-    """Milliseconds handed to a nanosecond parser put the first event at the epoch."""
-    md = render_markdown(
-        _ctx(
-            stats=_timing_window(
-                datetime(1970, 1, 1, tzinfo=UTC),
-                datetime(2026, 7, 1, 10, 0, 0, tzinfo=UTC),
-            )
-        )
+    """Milliseconds handed to a nanosecond parser put the first event at the epoch — decades
+    before the run was created, which is the cheapest tell that this is not the server's clock."""
+    md = render_markdown(_ctx(stats=_timing_window(datetime(1970, 1, 1, tzinfo=UTC), _at())))
+
+    assert "h 0m 0s" not in md, "no hour-scale window may reach the table"
+    assert (
+        "| Telemetry window | withheld — the harness dated the first event before the run "
+        "started |" in md
     )
-    assert "Telemetry window" not in md
 
 
 def test_a_window_that_ends_before_it_starts_is_unknown_not_zero() -> None:
     """`max(0.0, …)` rendered a corrupted snapshot as "0.0s", which reads as "the agent did
     nothing" — a different claim from "this cannot be trusted"."""
+    md = render_markdown(_ctx(stats=_timing_window(_at(seconds=5), _at())))
+
+    assert "0.0s" not in md
+    assert (
+        "| Telemetry window | withheld — the harness dated the last event before the first |" in md
+    )
+
+
+def test_telemetry_dated_before_the_run_started_is_withheld() -> None:
+    """The guard was one-sided. A producer clock running BEHIND the server's puts the first event
+    before the run was created, and the window built from it is exactly as unbelievable as one
+    that overruns the end — it was only ever small enough to pass for a measurement."""
+    md = render_markdown(_ctx(stats=_timing_window(_at(minutes=-5), _at(seconds=1))))
+
+    assert (
+        "| Telemetry window | withheld — the harness dated the first event before the run "
+        "started |" in md
+    )
+
+
+def test_telemetry_a_minute_before_the_run_is_skew_not_a_fault() -> None:
+    """The lower bound allows the SAME minute of NTP-class skew the upper bound does, inclusive:
+    a tighter one would withhold healthy runs, which is the cost the grace exists to avoid."""
+    md = render_markdown(_ctx(stats=_timing_window(_at(seconds=-60), _at(seconds=-59))))
+
+    assert "| Telemetry window | 1.0s (reported by the harness) |" in md
+
+
+def test_a_window_that_bounds_no_span_is_omitted_not_reported_as_zero() -> None:
+    """A single event that reported no duration: `last_event_end_ts` falls back to that event's
+    START (TimingStats), so the window is zero because nothing measured an extent — not because
+    the extent was zero. "0.0s" is the same "the agent did nothing" misreading that dropping
+    `max(0.0, …)` was meant to end, and the row is as absent as it is for no telemetry at all."""
+    md = render_markdown(_ctx(stats=_timing_window(_at(), _at())))
+
+    assert "Telemetry window" not in md
+
+
+def test_a_sub_tenth_second_window_is_not_rounded_down_to_nothing() -> None:
+    """40 ms of telemetry IS a span, and the duration formatter stops at a tenth of a second — so
+    the row reported a real measurement as "0.0s", the one reading the whole guard is about."""
+    md = render_markdown(_ctx(stats=_timing_window(_at(), _at(milliseconds=40))))
+
+    assert "| Telemetry window | under 0.1s (reported by the harness) |" in md
+
+
+def test_a_window_the_runs_wall_clock_cannot_check_is_withheld() -> None:
+    """The comparison was skipped when elapsed was unknown, so the one shape the guard exists to
+    refuse — an unchecked window — rendered. `/report` cannot reach it (it 409s on a run that is
+    not terminal, and only a terminal run has the completed_at elapsed is made from), but the
+    renderers are exported from `xorcise.core.reporting` and nothing in them said so."""
     md = render_markdown(
         _ctx(
-            stats=_timing_window(
-                datetime(2026, 7, 1, 10, 0, 5, tzinfo=UTC),
-                datetime(2026, 7, 1, 10, 0, 0, tzinfo=UTC),
-            )
+            run=_run(state="active", completed_at=None, terminal_trigger=None),
+            stats=_timing_window(_at(), _at(hours=1), elapsed=None),
         )
     )
-    assert "Telemetry window" not in md
+
+    assert "1h 0m 0s" not in md
+    assert (
+        "| Telemetry window | withheld — the run has no wall clock to check the window "
+        "against |" in md
+    )
+
+
+def test_the_html_report_discloses_a_withheld_window_too() -> None:
+    """Both renderers share `_metadata_rows`, and the HTML one is the artifact that leaves the
+    building — the disclosure cannot be a Markdown-only nicety."""
+    doc = render_html(_ctx(stats=_timing_window(_at(), _at(hours=1), elapsed=60.0)))
+
+    assert "1h 0m 0s" not in doc
+    assert "withheld — the harness reported more telemetry than the run lasted" in doc
