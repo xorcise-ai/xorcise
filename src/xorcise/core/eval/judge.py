@@ -161,11 +161,16 @@ _FENCE_LOOKALIKES: tuple[tuple[str, str], ...] = (
     ("\uff3b", "\uff3d"),  # fullwidth square bracket
 )
 
-# str.translate walks every character once the text is not Latin-1, which makes it far slower than
-# targeted replaces — measured at ~50 ms to build the whole shared preamble from a 680 KB distilled
-# transcript (600 spans carrying box-drawing glyphs). Kept as a table anyway: it is paid once per
-# graded run, since the preamble is built once and reused across the run's criteria, and the table
-# is what lets the fold be the whole class rather than two hardcoded glyphs.
+# str.translate takes CPython's fast path only while the WHOLE string is ASCII, and ONE non-ASCII
+# character anywhere drops the whole string to the per-character path. The threshold is not
+# Latin-1: ordinary accented European prose (résumé, Passwörter) costs the same as the box-drawing
+# glyphs a terminal transcript is full of. Measured on CPython 3.12 over a distilled transcript of
+# 696k characters across 600 spans (counted in characters, since the byte size moves with the
+# encoding), building the whole shared preamble takes ~2 ms pure-ASCII, ~43 ms with accents alone
+# (max code point U+00FC) and ~43 ms with box drawing, against ~0.02 ms for two targeted replaces.
+# Kept as a table anyway: it is paid once per graded run, since the preamble is built once and
+# reused across the run's criteria, and the table is what lets the fold be the whole class rather
+# than two hardcoded glyphs.
 _NEUTRALIZE_TABLE = str.maketrans(
     "".join(open_ for open_, _ in _FENCE_LOOKALIKES)
     + "".join(close for _, close in _FENCE_LOOKALIKES),
@@ -184,7 +189,9 @@ def _neutralize(text: str) -> str:
     which is no lookalike at all; and this fold's own output, since a folded marker renders as
     `[/UNTRUSTED-AGENT-EVIDENCE]`. Adding `「」『』` is not the fix — it mangles ordinary Japanese
     prose in the evidence and the next confusable is one code point away. The vector is not
-    closable by substitution.
+    closable by substitution. That list covers the FENCE's lookalikes only, not every platform
+    marker: the '[... span body truncated ...]' elision `_INSTRUCTIONS` advertises is plain ASCII,
+    so an agent can emit it verbatim inside its own span.
 
     What the fence rests on instead is structural, and no survivor reaches it. `_INSTRUCTIONS`
     names the exact glyphs, so the model is told which sequence is authoritative; and in the
@@ -192,8 +199,10 @@ def _neutralize(text: str) -> str:
     cannot produce, so a forgery can only appear NESTED inside a real span, never beside the real
     fence. That second part is the transcript's alone — submitted artifacts, and the
     registrant-supplied harness name in the pre-fence disclosure, carry no per-item markers, so
-    there the naming stands by itself (the disclosure is also whitespace-collapsed and
-    length-capped in _evidence_block, so it cannot grow structure of its own).
+    there the naming stands by itself. That NAME is additionally whitespace-collapsed and
+    length-capped in _evidence_block, so it cannot grow structure of its own; the gap sentences
+    printed beside it are interpolated raw, and are safe because they are platform text —
+    `telemetry_gaps_for` builds them from in-repo adapter capability profiles, never from the run.
     """
     return text.translate(_NEUTRALIZE_TABLE)
 
@@ -386,11 +395,18 @@ _REPAIR_MESSAGE: Message = (
     '{"verdict": "unknown", "reason": "<platform evidence limitation>"}.',
 )
 
-# The same ask, for the case where there is NO previous reply to show. An empty completion parses
-# as unparseable and takes the repair path, but it cannot travel as an assistant turn (see
+# The same ask, for the case where there is no reply TEXT to carry back. Such a reply parses as
+# unparseable and takes the repair path, but it cannot travel as an assistant turn (see
 # grade_judge), so _REPAIR_MESSAGE would be describing something the model never sent and cannot
-# see. Naming what actually happened is both true and more useful — an empty reply has a different
-# cause (a thinking budget spent before any content was emitted) than a malformed one.
+# see. Naming what actually happened is both true and more useful — a reply with no text has a
+# different cause (a thinking budget spent before any content was emitted) than a malformed one.
+#
+# Three inputs reach this message, and the wording is accurate for what the JUDGE received rather
+# than for what the server sent: a genuinely empty completion; a whitespace-only one; and any
+# non-string `content`, which the client maps to "" (judge_model.py). That last case HAD text —
+# Anthropic-style content blocks through a gateway — and the client dropped it, so "empty" is
+# true of the judge's input and not of the wire. Narrowing it further would need the client to
+# distinguish the two, which the reviewed `isinstance` shape deliberately does not.
 _EMPTY_REPLY_REPAIR_MESSAGE: Message = (
     "user",
     "Your previous reply was empty. Reply again with exactly one JSON object: "
