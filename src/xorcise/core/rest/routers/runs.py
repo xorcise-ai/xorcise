@@ -29,6 +29,7 @@ from xorcise.core.contracts.run import (
     RunEnvironmentView,
 )
 from xorcise.core.contracts.terrain import ResolvedTerrainV2
+from xorcise.core.rest.evidence_seal import EvidenceSealStatus
 from xorcise.core.rest.mission_pull import MissionNotInCatalogError, PullError
 from xorcise.core.rest.run_create import (
     NoAgentError,
@@ -61,11 +62,18 @@ class RunResultView(BaseModel):
     # The run's evidence seal, machine-readable — the point of #116 is that a consumer can tie a
     # grade to evidence that has not changed, and until this the digest existed only as 16
     # characters of prose inside a rendered report. `evidence_digest` is the bare hex recorded at
-    # seal time; `evidence_verified` is a TRISTATE re-checked on this read: true, false, or null
-    # for "could not verify" (no digest, a scheme this build cannot re-derive, or the re-hash
-    # failed). Null is never an accusation — a run that predates the feature is not a tampered one.
+    # seal time. `evidence_verified` is a tristate: true, false, or null for "this response did not
+    # answer" — never an accusation, because a run that predates the feature is not a tampered one.
+    #
+    # `evidence_status` is the field to branch on, and the reason this is not two fields. Null/null
+    # was returned for a run sealed before digests existed, for one whose hash FAILED at seal time,
+    # for a seal row that could not be read on this request and (now that verification is opt-in)
+    # for a digest simply not re-checked here — four different things, one answer, which is the
+    # ambiguity the rendered report had already stopped having. See EvidenceSealStatus for what
+    # each value means.
     evidence_digest: str | None = None
     evidence_verified: bool | None = None
+    evidence_status: EvidenceSealStatus = "none"
 
 
 class RunArtifactView(BaseModel):
@@ -702,8 +710,19 @@ def run_artifacts(run_id: str) -> list[RunArtifactView]:
 
 
 @router.get("/{run_id}/result", response_model=RunResultView)
-def run_result(run_id: str, background: BackgroundTasks) -> RunResultView | JSONResponse:
+def run_result(
+    run_id: str, background: BackgroundTasks, verify: bool = False
+) -> RunResultView | JSONResponse:
     """Recorded 50/50 explainable result + disclosed conditions for a run.
+
+    `verify=1` re-hashes the run's evidence and answers `evidence_verified`. It is OPT-IN because
+    three first-party consumers fetch this endpoint once per run in a loop — `run list`, the
+    leaderboard roll-up and the results table — and none of them shows a verdict: re-hashing on
+    every read put a whole run's evidence through SHA-256 per row, which measured at 3.3 ms per MB,
+    so a 124-run dataset at 3 MB a run spent over a second of a list command on it. Unasked, the
+    response still carries the digest (it is one indexed row read) with `evidence_status`
+    "recorded", and `GET /report` — one run, deliberately fetched, and the surface whose whole
+    point is the mismatch banner — keeps verifying unconditionally.
 
     When no result is recorded yet, distinguish three cases instead of a blanket 404:
     grading runs asynchronously after /complete, so a terminal-but-ungraded run is a normal
@@ -743,11 +762,12 @@ def run_result(run_id: str, background: BackgroundTasks) -> RunResultView | JSON
 
     run_entry = runs.get(run_id)
     stats = current_run_stats(run_entry) if run_entry is not None else None
-    # Guarded + re-verified on this read (never a verdict stored at seal time, which could only
-    # ever say "matched when we wrote it"). Lazy import matches the other joins here.
+    # Guarded; re-verified on this read only when asked (never a verdict stored at seal time,
+    # which could only ever say "matched when we wrote it"). Lazy import matches the other joins
+    # here — the module-level one above is the status type, which the response model needs.
     from xorcise.core.rest.evidence_seal import evidence_seal_view
 
-    seal = evidence_seal_view(run_id)
+    seal = evidence_seal_view(run_id, verify=verify)
     return RunResultView(
         grade=grade,
         conditions=conditions,
@@ -757,6 +777,7 @@ def run_result(run_id: str, background: BackgroundTasks) -> RunResultView | JSON
         models_reported_truncated=stats.models_truncated if stats else 0,
         evidence_digest=seal.digest,
         evidence_verified=seal.verified,
+        evidence_status=seal.status,
     )
 
 

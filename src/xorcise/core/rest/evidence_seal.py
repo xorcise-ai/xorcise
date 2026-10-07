@@ -25,9 +25,22 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 log = logging.getLogger(__name__)
+
+# The seal's public surface. `evidence_seal_view` is the one every display path should reach for:
+# it is guarded, it resolves the stored `scheme:value` into a bare digest, and its `status` is the
+# only thing that tells the four "no verdict" cases apart. `verify_evidence` is the narrow
+# tristate for callers that only want the answer.
+__all__ = [
+    "EvidenceSealStatus",
+    "EvidenceSealView",
+    "compute_evidence_digest",
+    "evidence_seal_view",
+    "seal_with_digest",
+    "verify_evidence",
+]
 
 # Version tag inside the hash input. A future change to what is covered (or how it is framed)
 # MUST bump this, so old digests read as a different construction rather than silently comparing
@@ -37,9 +50,15 @@ _DIGEST_VERSION = "xorcise-evidence-v1"
 # Recorded IN PLACE OF a digest when hashing failed. Without it a hashing failure and a run sealed
 # before digests existed are the same NULL forever — `attach_digest` is first-wins, so nothing
 # backfills — and a build that could never hash would look like a harmless backlog of old runs
-# rather than a feature that has stopped working. Deliberately shaped like a scheme tag so
-# `verify_evidence` reads it as "unknown construction" and still never accuses.
+# rather than a feature that has stopped working. Shaped like a scheme tag so that a reader (and
+# anything that only knows the `scheme:value` split) sees a construction it does not implement
+# rather than a digest; `evidence_seal_view` recognises it by name and never treats it as one.
 _DIGEST_UNAVAILABLE = "xorcise-evidence-unavailable"
+
+# How much of a hashing failure's message is worth keeping beside the sentinel. The reason is
+# stored and never rendered, so nothing downstream trims it, and `str(exc)` on what this catches is
+# not a one-liner — a SQLAlchemy error carries its whole statement and its parameters.
+_REASON_MAX = 120
 
 
 class _Hasher(Protocol):
@@ -114,6 +133,20 @@ def compute_evidence_digest(run_id: str) -> str:
     return h.hexdigest()
 
 
+def _unavailable_reason(exc: BaseException) -> str:
+    """One bounded line to record beside the UNAVAILABLE sentinel.
+
+    The whole of `str(exc)` used to go into the column verbatim, and the failures this catches are
+    multi-line: a SQLAlchemy error brings its statement and its parameters with it. The first line
+    carries what the operator needs — "database is locked" told apart from a missing import — and
+    the type name is the fallback for an exception that says nothing at all (`raise KeyError()`),
+    which would otherwise record the bare sentinel and reinstate the NULL it exists to replace.
+    """
+    lines = str(exc).strip().splitlines()
+    reason = lines[0].strip() if lines else ""
+    return reason[:_REASON_MAX] if reason else type(exc).__name__
+
+
 def seal_with_digest(run_id: str) -> None:
     """Seal the run, recording the digest of what it is being sealed over. Idempotent.
 
@@ -144,11 +177,36 @@ def seal_with_digest(run_id: str) -> None:
         digest = compute_evidence_digest(run_id)
     except Exception as exc:  # noqa: BLE001 — sealing must not depend on hashing succeeding
         log.error("evidence digest failed for %s; sealing unverifiable", run_id, exc_info=True)
-        seals.attach_digest(run_id, f"{_DIGEST_UNAVAILABLE}:{exc}")
+        seals.attach_digest(run_id, f"{_DIGEST_UNAVAILABLE}:{_unavailable_reason(exc)}")
         return
     # Tagged with the construction that produced it, so a future change to what is covered reads
     # as a different scheme rather than as tampering.
     seals.attach_digest(run_id, f"{_DIGEST_VERSION}:{digest}")
+
+
+# Everything a reader can be told about a run's seal, as ONE value. `verified` alone is a tristate
+# whose None lumps five different situations together — and they are not the same situation: a run
+# that predates the feature is rightly silent, a run whose hash FAILED at seal time is the feature
+# breaking, and a seal row we could not read right now is this request failing. Collapsing them is
+# what left `/result` answering `null/null` to all three.
+#
+#   none         nothing recorded — the run is unsealed, or was sealed before digests existed
+#   recorded     a digest is on file; THIS read did not re-check it (the cheap /result path)
+#   verified     re-hashed here, and the graded evidence still matches
+#   mismatch     re-hashed here, and it does not — the only value that is ever an accusation
+#   unverifiable a digest is on file this build cannot check: a scheme it does not implement, or
+#                the re-hash failed on this request
+#   unavailable  sealing could not hash the evidence at all, so there is nothing to check against
+#   unreadable   the seal row itself could not be read on this request
+EvidenceSealStatus = Literal[
+    "none",
+    "recorded",
+    "verified",
+    "mismatch",
+    "unverifiable",
+    "unavailable",
+    "unreadable",
+]
 
 
 @dataclass(frozen=True)
@@ -159,16 +217,22 @@ class EvidenceSealView:
     # display, and handing them the stored string printed 16 characters of the scheme tag: the
     # same constant on every report, which compares equal by eye no matter what changed.
     digest: str | None = None
-    # True / False / None, where None is "could not verify" — no digest recorded, a scheme this
-    # build cannot re-derive, or the re-hash itself failed. Never False on any of those.
+    # True / False / None, where None is "this read did not answer" — not checked, no digest
+    # recorded, a scheme this build cannot re-derive, or the re-hash itself failed. Never False on
+    # any of those; `status` is what tells them apart.
     verified: bool | None = None
-    # Sealing recorded that it could not hash the evidence at all. Distinct from "no digest": one
-    # is a run that predates the feature, the other is the feature failing.
-    unavailable: bool = False
+    # Which of the seven situations above this is. The field callers should branch on.
+    status: EvidenceSealStatus = "none"
+
+    @property
+    def unavailable(self) -> bool:
+        """Sealing recorded that it could not hash the evidence. Derived, so it cannot drift from
+        `status`; kept as a name because the report renders this case with its own wording."""
+        return self.status == "unavailable"
 
 
-def evidence_seal_view(run_id: str) -> EvidenceSealView:
-    """Read the recorded digest and re-verify against it, for the read paths. Never raises.
+def evidence_seal_view(run_id: str, *, verify: bool = True) -> EvidenceSealView:
+    """Read the recorded digest and, by default, re-verify against it. Never raises.
 
     GUARDED, unlike the bare calls it replaces. `GET /report` and `GET /result` reach this on every
     request, and it is the only join in those handlers that touches the evidence tables — the same
@@ -179,6 +243,12 @@ def evidence_seal_view(run_id: str) -> EvidenceSealView:
 
     Verification is done HERE, at read time, not read from a verdict stored at seal time: a stored
     verdict would only ever say "matched when we wrote it", which is the one thing never in doubt.
+
+    `verify=False` reads the seal ROW ONLY — one indexed lookup, no hash. The verdict costs the
+    whole of a run's evidence through SHA-256 (3.3 ms per MB here), and the surfaces that fetch one
+    result per run in a loop never show it: `run list`, the leaderboard roll-up and the results
+    table would each have paid it on every row. The digest still comes back, because the row read
+    already has it, and `status` says plainly that it was not checked.
     """
     from xorcise.core.otel.store import SqliteSealStore
 
@@ -186,22 +256,32 @@ def evidence_seal_view(run_id: str) -> EvidenceSealView:
         recorded = SqliteSealStore().evidence_digest(run_id)
     except Exception:  # noqa: BLE001 — a display join must never fail the request
         log.warning("could not read the evidence seal for %s", run_id, exc_info=True)
-        return EvidenceSealView()
+        # NOT the same empty view as an unsealed run: that one is silence, and this is a failure
+        # happening now, which the reader has to be able to tell from a run that has no seal.
+        return EvidenceSealView(status="unreadable")
     if not recorded:
-        return EvidenceSealView()
+        return EvidenceSealView(status="none")
     scheme, _, digest = recorded.partition(":")
     if scheme == _DIGEST_UNAVAILABLE:
-        return EvidenceSealView(unavailable=True)
+        return EvidenceSealView(status="unavailable")
     if not digest or scheme != _DIGEST_VERSION:
         # Written by a construction this build does not implement. Unknown — never False: an old
         # seal we cannot re-derive is not evidence of tampering, and saying so would be the
-        # loudest possible false accusation.
-        return EvidenceSealView()
+        # loudest possible false accusation. The digest still comes back: dropping it made the
+        # report's seal row (gated on having one) vanish entirely, which is the same silence as a
+        # run that predates the feature — and the hex is still worth comparing by eye between two
+        # reports of the same run, which is all the short form was ever for.
+        return EvidenceSealView(digest=digest or None, status="unverifiable")
+    if not verify:
+        return EvidenceSealView(digest=digest, status="recorded")
     try:
-        return EvidenceSealView(digest=digest, verified=compute_evidence_digest(run_id) == digest)
+        matches = compute_evidence_digest(run_id) == digest
     except Exception:  # noqa: BLE001 — could not verify is not an accusation
         log.warning("could not verify the evidence seal for %s", run_id, exc_info=True)
-        return EvidenceSealView(digest=digest)
+        return EvidenceSealView(digest=digest, status="unverifiable")
+    return EvidenceSealView(
+        digest=digest, verified=matches, status="verified" if matches else "mismatch"
+    )
 
 
 def verify_evidence(run_id: str) -> bool | None:
@@ -212,5 +292,8 @@ def verify_evidence(run_id: str) -> bool | None:
     cannot re-derive, sealing having failed to hash at all, or the re-hash failing now. Collapsing
     any of those into False would report an untouched run as tampered, which is the loudest
     possible false accusation and would make the signal worthless.
+
+    Always re-hashes — a caller asking this question wants an answer, not a row read. Callers that
+    need to tell the four Nones apart read `evidence_seal_view` and branch on its `status`.
     """
     return evidence_seal_view(run_id).verified

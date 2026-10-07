@@ -37,6 +37,21 @@ __all__ = [
 _grading_lock = threading.Lock()
 _grading_in_flight: set[str] = set()
 
+# Runs THIS process sealed and has not yet graded. At XORCISE_TELEMETRY_DRAIN_SECONDS=0 —
+# the whole test suite, and a documented operator mode — seal_terminal seals synchronously, so the
+# grade that follows a moment later finds the run already sealed and cannot tell "something else
+# sealed this" (a regrade, or a grade re-driven after a restart: the case the seal exists for) from
+# "I sealed this myself". It assumed the former, which cost a second hash of the whole run on every
+# zero-drain finalisation AND could make a FIRST grade log that the evidence no longer matched —
+# `seal()` narrows the admission race but does not close it, so a straggler landing between the
+# seal and the verification moved evidence this very pass had sealed.
+#
+# Consumed by the first grade that follows the seal, so a later regrade of the same run in the same
+# process is verified normally. Its own lock: this is unrelated to the de-dup slot above, and
+# sharing one mutex between two sets would only invite a reader to assume they are.
+_sealed_here_lock = threading.Lock()
+_sealed_here: set[str] = set()
+
 
 def seal_terminal(run_id: str, trigger: str, now: datetime, detail: str | None = None) -> str:
     """Fast sync phase: transition immediately and begin the telemetry drain window.
@@ -66,33 +81,52 @@ def _seal_telemetry(run_id: str) -> None:
     """Idempotently freeze the RAW OTLP record, keeping the OTel import lazy.
 
     Both seal paths (zero-drain and post-drain) funnel through here, so recording the evidence
-    digest in one place covers them together. Sealing must happen even if hashing does not — see
-    evidence_seal.seal_with_digest.
+    digest — and the mark saying this process is the one that took it — happens in one place for
+    both. Sealing must happen even if hashing does not — see evidence_seal.seal_with_digest.
     """
     from xorcise.core.rest.evidence_seal import seal_with_digest
 
     seal_with_digest(run_id)
+    with _sealed_here_lock:
+        _sealed_here.add(run_id)
+
+
+def _claim_sealed_here(run_id: str) -> bool:
+    """Did this process seal this run with no grade since? Clears the mark either way.
+
+    Clearing is the load-bearing half: a mark left behind would suppress the verification on the
+    next regrade of that run in this process, which is exactly the pass the seal exists for.
+    """
+    with _sealed_here_lock:
+        if run_id not in _sealed_here:
+            return False
+        _sealed_here.discard(run_id)
+        return True
 
 
 def _drain_and_seal_telemetry(run_id: str) -> bool:
     """Wait one configurable grace period, unless another finalizer already sealed the run.
 
-    Returns True when the run was ALREADY sealed on arrival — this grade is scoring evidence a
-    previous pass sealed (a regrade, or a grade re-driven after a restart), which is the one case
-    where re-verifying the seal can tell us anything. A run we seal ourselves a moment earlier
-    cannot have moved since.
+    Returns True when the run was sealed by SOMETHING OTHER than this finalisation — a regrade, or
+    a grade re-driven after a restart — which is the one case where re-verifying the seal can tell
+    us anything. A run this process sealed itself a moment earlier cannot have moved since, so
+    asking buys nothing and costs a second hash of the whole run (see `_sealed_here`): "already
+    sealed on arrival" alone could not tell the two apart at a zero drain interval, where
+    seal_terminal seals before the grade is even scheduled.
     """
     from xorcise.core.config import get_settings
     from xorcise.core.otel.store import SqliteSealStore
 
-    seals = SqliteSealStore()
-    if seals.is_sealed(run_id):
-        return True
-    delay = get_settings().telemetry_drain_seconds
-    if delay > 0:
-        time.sleep(delay)
-    _seal_telemetry(run_id)
-    return False
+    already_sealed = SqliteSealStore().is_sealed(run_id)
+    if not already_sealed:
+        delay = get_settings().telemetry_drain_seconds
+        if delay > 0:
+            time.sleep(delay)
+        _seal_telemetry(run_id)
+    # Claimed on BOTH paths: the mark the line above just left is ours too, and leaving it behind
+    # would silence the verification on the next regrade of this run.
+    sealed_by_us = _claim_sealed_here(run_id)
+    return already_sealed and not sealed_by_us
 
 
 def grade_and_record(run_id: str) -> None:
