@@ -14,6 +14,7 @@ module would take out the page the missions live on. Every path below therefore 
 from __future__ import annotations
 
 import logging
+import time
 
 from xorcise.core.config import Settings
 from xorcise.core.contracts.announcements import AnnouncementsResponse
@@ -23,11 +24,47 @@ log = logging.getLogger(__name__)
 _NONE = AnnouncementsResponse()
 
 
+# One remote fetch per window per install, rather than one per browser document load.
+#
+# The client does not poll — `queries.ts` pins one request per document load and no refetch on
+# focus, reconnect, remount or navigation. But that is a statement about one TAB: three open tabs
+# refreshed were three remote requests, so "no polling" described what a reader costs over time
+# and not what an install costs the hosted service. This is the other half of it.
+#
+# Keyed by catalog URL so pointing the app at a different remote cannot serve the previous one's
+# banners. The TTL is deliberately short: an incident banner is the case that matters most, and a
+# reader who refreshes should not wait minutes to see one.
+#
+# Failures are cached too, at the same TTL, and that is the trade-off worth naming: a remote that
+# is down already degrades to an empty response, and retrying it on every page load is exactly the
+# hammering this exists to stop — but it does mean a banner published during an outage can take up
+# to one window to appear after the remote recovers.
+#
+# No lock around the fetch. Two tabs racing a cold cache make two requests and the second write
+# wins, which costs one extra round trip and never serves a wrong answer; holding a lock across a
+# network call would serialise every page load in the app behind one remote.
+_ANNOUNCEMENTS_TTL_SECONDS = 120.0
+_announcements_cache: dict[str, tuple[float, AnnouncementsResponse]] = {}
+
+
+def _cached(url: str) -> AnnouncementsResponse | None:
+    hit = _announcements_cache.get(url)
+    if hit is None or (time.monotonic() - hit[0]) >= _ANNOUNCEMENTS_TTL_SECONDS:
+        return None
+    return hit[1]
+
+
+def _remember(url: str, response: AnnouncementsResponse) -> None:
+    _announcements_cache[url] = (time.monotonic(), response)
+
+
+def reset_announcements_cache() -> None:
+    """Drop the memoised response — for tests, and for anything that changes the catalog config."""
+    _announcements_cache.clear()
+
+
 def list_announcements(settings: Settings) -> AnnouncementsResponse:
     """The active remote announcements, or an empty response — never an exception."""
-    # There is no cache here: every call is a fresh remote fetch. The browser asks once per
-    # document load (`queries.ts` pins that), so "the app does not poll" is a statement about
-    # one TAB and not about one install — three open tabs refreshed are three remote requests.
     # Short-circuit BEFORE any network call. `catalog_enabled`/`catalog_url` are the operator's
     # "disconnect the remote catalog" switch, and it would not mean much if the app still
     # phoned home for banners after it was thrown.
@@ -47,7 +84,12 @@ def list_announcements(settings: Settings) -> AnnouncementsResponse:
         # onto every role's boot path and fail the role-isolation topology test.
         from xorcise.core.rest.catalog_view import build_catalog_source
 
-        return AnnouncementsResponse(announcements=build_catalog_source(settings).announcements())
+        cached = _cached(settings.catalog_url)
+        if cached is not None:
+            return cached
+        fresh = AnnouncementsResponse(announcements=build_catalog_source(settings).announcements())
+        _remember(settings.catalog_url, fresh)
+        return fresh
     except Exception as exc:  # noqa: BLE001
         # BROAD ON PURPOSE — do not narrow this, and do not delete it as redundant with the
         # narrow catch in HttpCatalogSource.announcements(): that one absorbs the EXPECTED

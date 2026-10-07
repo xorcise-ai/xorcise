@@ -35,10 +35,15 @@ def _client() -> TestClient:
 
 def _settings(monkeypatch, **env: str) -> None:
     from xorcise.core.config import get_settings
+    from xorcise.core.rest.announcements_view import reset_announcements_cache
 
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     get_settings.cache_clear()
+    # The announcements response is memoised per catalog URL, so a test that changes the config
+    # without dropping it would be served the previous test's answer. Reset here rather than in
+    # each test: this helper is already the one place that resets config-derived state.
+    reset_announcements_cache()
 
 
 def _explode(settings):  # noqa: ANN001 — a stand-in for the factory, signature-compatible
@@ -152,3 +157,80 @@ def test_the_response_is_never_cached(migrated_home, monkeypatch):
     _settings(monkeypatch, XORCISE_CATALOG_URL="")
     r = _client().get("/api/announcements")
     assert r.headers["cache-control"] == "no-store"
+
+
+# ── one remote fetch per window per install, not one per document load (#137 review) ──────────
+
+
+def _counting(monkeypatch, calls: list[str]) -> None:
+    """Point the factory at a source that records which catalog it was asked for."""
+    from xorcise.core.rest import announcements_view
+
+    class _Counter:
+        def __init__(self, url: str) -> None:
+            self._url = url
+
+        def announcements(self) -> tuple[Announcement, ...]:
+            calls.append(self._url)
+            return ()
+
+    monkeypatch.setattr(
+        "xorcise.core.rest.catalog_view.build_catalog_source",
+        lambda s: _Counter(s.catalog_url),
+    )
+    announcements_view.reset_announcements_cache()
+
+
+def _live_settings(monkeypatch, url: str):
+    from xorcise.core.config import get_settings
+
+    _settings(monkeypatch, XORCISE_CATALOG_URL=url, XORCISE_USE_STUBS="0")
+    return get_settings()
+
+
+def test_a_second_page_load_inside_the_window_does_not_hit_the_remote(
+    migrated_home, monkeypatch
+) -> None:
+    from xorcise.core.rest.announcements_view import list_announcements
+
+    calls: list[str] = []
+    _counting(monkeypatch, calls)
+    settings = _live_settings(monkeypatch, "https://catalog.example")
+
+    list_announcements(settings)
+    list_announcements(settings)
+    list_announcements(settings)
+
+    assert calls == ["https://catalog.example"], "three document loads, one remote request"
+
+
+def test_the_window_expires(migrated_home, monkeypatch) -> None:
+    from xorcise.core.rest import announcements_view
+    from xorcise.core.rest.announcements_view import list_announcements
+
+    calls: list[str] = []
+    _counting(monkeypatch, calls)
+    settings = _live_settings(monkeypatch, "https://catalog.example")
+
+    import time
+
+    list_announcements(settings)
+    later = time.monotonic() + announcements_view._ANNOUNCEMENTS_TTL_SECONDS + 1
+    monkeypatch.setattr(time, "monotonic", lambda: later)
+    list_announcements(settings)
+
+    assert len(calls) == 2, "a request after the window must reach the remote again"
+
+
+def test_a_different_catalog_is_not_served_the_previous_one_s_banners(
+    migrated_home, monkeypatch
+) -> None:
+    from xorcise.core.rest.announcements_view import list_announcements
+
+    calls: list[str] = []
+    _counting(monkeypatch, calls)
+
+    list_announcements(_live_settings(monkeypatch, "https://one.example"))
+    list_announcements(_live_settings(monkeypatch, "https://two.example"))
+
+    assert calls == ["https://one.example", "https://two.example"]
