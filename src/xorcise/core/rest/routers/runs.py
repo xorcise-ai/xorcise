@@ -56,7 +56,9 @@ class RunResultView(BaseModel):
     models_reported: tuple[str, ...] = ()
     # How many further distinct names the fold saw past its cap. The list above is agent-controlled
     # and served on every /result, so it is bounded (otel.run_stats.MODELS_MAX) — without this a
-    # truncated list would read as the whole truth.
+    # truncated list would read as the whole truth. Distinct is counted before the names are
+    # clipped for display, so the list above can repeat a name this count tells apart; and the
+    # count itself saturates at the fold's tracking bound (contracts.reporting.RunStats).
     models_reported_truncated: int = 0
 
 

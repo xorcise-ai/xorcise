@@ -96,9 +96,16 @@ class RunStats(BaseModel):
     # attributed to a model afterwards; the telemetry carried it the whole time. Empty when the
     # run's telemetry never named a model — an honest unknown, never a placeholder name. Still
     # harness-self-reported, so it stays display/comparison provenance like the rest of RunStats.
+    # Each name is clipped to otel.run_stats.MODEL_NAME_MAX for display, so two names differing
+    # only past that length render alike and this tuple CAN repeat one. They are still counted as
+    # two, though: as two entries here, or in `models_truncated` once the cap is reached.
     models: tuple[str, ...] = ()
     # How many DISTINCT further names the fold saw and dropped, so a capped list reads as capped
-    # rather than as the whole truth. 0 whenever the run stayed inside the cap.
+    # rather than as the whole truth. 0 whenever the run stayed inside the cap. Distinct is decided
+    # on the name the harness reported, before the display clip, so two names that read alike in
+    # `models` are still counted as two. The count is not a total: the fold can only hold so many
+    # distinct names at once (otel.run_stats._MODELS_TRACK_MAX), and it saturates there — past that
+    # many, len(models) + models_truncated is the fold's tracking bound, not how many the run named.
     models_truncated: int = 0
     # The event projection this snapshot was folded under — "<adapter_name>@<adapter_version>",
     # e.g. "generic@2+normalizer.3" (otel.run_stats.projection_key). The projection is versioned

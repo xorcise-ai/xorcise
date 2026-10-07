@@ -204,10 +204,12 @@ def agent_model_line(declared: str, observed: Sequence[str], dropped: int = 0) -
     actually running. Almost nobody declares one, which is why this read "not disclosed" on
     essentially every run while the telemetry had the answer all along.
 
-    When both exist and DISAGREE, both are shown. Silently preferring either would misattribute the
-    result, and the disagreement is itself the interesting fact. "named" rather than "reported",
-    because the common disagreement is a family name against an exact one (`claude-fable-5` vs
-    `claude-fable-5-1`, or a Bedrock ARN) — a difference in precision, not a contradiction.
+    When both exist and the telemetry says anything the declared name does not already account for
+    — a different name, a further name beside it, or names the cap dropped — both halves are shown.
+    Silently preferring either would misattribute the result, and the disagreement is itself the
+    interesting fact. "named" rather than "reported", because the common disagreement is a family
+    name against an exact one (`claude-fable-5` vs `claude-fable-5-1`, or a Bedrock ARN) — a
+    difference in precision, not a contradiction.
 
     `dropped` is how many further distinct names the fold saw past its cap (RunStats.models is
     bounded — see otel.run_stats.MODELS_MAX); a capped list has to read as capped.
@@ -219,7 +221,11 @@ def agent_model_line(declared: str, observed: Sequence[str], dropped: int = 0) -
     declared = declared.strip()
     seen = [str(m).strip() for m in observed if str(m).strip()]
     named = ", ".join(seen) + (f" (+{dropped} more)" if dropped > 0 else "")
-    if declared and seen and declared not in seen:
+    # The telemetry adds nothing only when it named the declared name and nothing else. Asking
+    # `declared not in seen` instead collapsed a declared name that MATCHED one of SEVERAL observed
+    # names down to `declared (disclosed)`, hiding the run's other models — and the `(+N more)`
+    # marker with them (#128 review).
+    if declared and seen and (seen != [declared] or dropped > 0):
         return f"{declared} (disclosed); telemetry named {named}"
     if declared:
         return f"{declared} (disclosed)"

@@ -5,6 +5,7 @@ distinct token-key schema, and all three must yield non-zero input/output."""
 from __future__ import annotations
 
 import json
+import tracemalloc
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -15,6 +16,7 @@ from xorcise.core.contracts.agent_event import AgentEvent, AgentEventKind, RawTr
 from xorcise.core.otel.adapters import normalize_run
 from xorcise.core.otel.adapters.base import AdapterContext
 from xorcise.core.otel.run_stats import (
+    _MODELS_TRACK_MAX,
     MODEL_NAME_MAX,
     MODELS_MAX,
     fold_run_stats,
@@ -390,3 +392,57 @@ def test_a_run_within_the_cap_reports_nothing_dropped() -> None:
         [_with_model(AgentEventKind.metric, "gpt-5.5")], created_at=_T0, completed_at=None
     )
     assert stats.models_truncated == 0
+
+
+def test_names_that_agree_up_to_the_clip_length_are_counted_as_the_names_they_are() -> None:
+    """The fold clipped each name BEFORE deduping it, so ten names sharing their first 119
+    characters collapsed into one entry and `models_truncated` said nothing was dropped — a run
+    that used ten models read as a run that used one (#128 review). Dedupe on the RAW name; the
+    clip is a display bound and belongs at emission."""
+    shared = "x" * MODEL_NAME_MAX
+    stats = fold_run_stats(
+        [_with_model(AgentEventKind.metric, f"{shared}-{i}") for i in range(10)],
+        created_at=_T0,
+        completed_at=None,
+    )
+    assert len(stats.models) == MODELS_MAX
+    assert stats.models_truncated == 10 - MODELS_MAX
+    assert all(len(m) <= MODEL_NAME_MAX for m in stats.models), "emission still bounds the name"
+
+
+def test_the_dropped_count_saturates_where_the_fold_stops_tracking() -> None:
+    """`models_truncated` counts the distinct names the fold actually HELD, and it only holds
+    `_MODELS_TRACK_MAX` of them — counting further would need the unbounded set back. So past that
+    many names the count stops rising and `len(models) + models_truncated` reads as the tracking
+    bound rather than as how many names the run named. The contract comment says exactly this;
+    nothing pinned it (#128 review)."""
+    stats = fold_run_stats(
+        [_with_model(AgentEventKind.metric, f"model-{i}") for i in range(_MODELS_TRACK_MAX + 100)],
+        created_at=_T0,
+        completed_at=None,
+    )
+    assert len(stats.models) == MODELS_MAX
+    assert stats.models_truncated == _MODELS_TRACK_MAX - MODELS_MAX
+
+
+def test_counting_long_names_apart_does_not_make_the_fold_hold_them() -> None:
+    """Two bounds, and the fix for one must not spend the other. `_MODELS_TRACK_MAX` bounds how
+    many distinct names the fold holds; that is worth nothing if each held name can itself be
+    200 000 characters, which is what deduping on the RAW name made it. Both must hold: these
+    names differ only past the display clip, so all of them must still COUNT as distinct, while
+    what the fold retains per name stays bounded (#128 review)."""
+    shared = "z" * 20_000
+    names = [f"{shared}-{i:04d} " for i in range(_MODELS_TRACK_MAX)]  # padded: strip() copies
+    events = [_with_model(AgentEventKind.metric, n) for n in names]
+
+    tracemalloc.start()
+    before = tracemalloc.get_traced_memory()[0]
+    stats = fold_run_stats(events, created_at=_T0, completed_at=None)
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+
+    assert stats.models_truncated == _MODELS_TRACK_MAX - MODELS_MAX, "still counted apart"
+    held_mb = (peak - before) / 1e6
+    # Retaining the raw names costs 512 x 20 KB = 10.2 MB here; the key and the display string are
+    # both clipped, so the real cost is a couple of hundred KB.
+    assert held_mb < 1.0, f"the fold held {held_mb:.1f} MB of model names"
