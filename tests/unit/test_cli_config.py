@@ -11,7 +11,7 @@ import pytest
 from typer.testing import CliRunner
 
 import xorcise.core.cli.app  # noqa: F401  -- registers the command groups
-from tests._helpers import invoke_cli_with_stdin
+from tests._helpers import CliArgvRejected, invoke_cli_with_stdin
 from xorcise.core.cli._shared import app
 
 pytestmark = pytest.mark.unit
@@ -514,10 +514,14 @@ def test_a_closed_stdin_is_no_key_rather_than_a_crash(monkeypatch, capsys):
     monkeypatch.setattr(cfg_cmd, "RestClient", lambda: _NoServer())
 
     assert invoke_cli_with_stdin(["config", "set-model", "--key-stdin", "--name", "m"], None) == 2
-    assert "stdin" in capsys.readouterr().err.lower()
+    # The guard's OWN sentence, where this asserted only exit 2 and the word "stdin" — click
+    # answers a renamed flag with "No such option: --key-stdinX (Possible options:
+    # --key-stdin)", which carries both. The harness now rejects that argv before the
+    # assertion is reached; this is the second lock, not the first.
+    assert "nothing was read" in capsys.readouterr().err
 
 
-def test_a_bare_cr_in_the_piped_key_is_refused(monkeypatch):
+def test_a_bare_cr_in_the_piped_key_is_refused(monkeypatch, capsys):
     """The same one-line rule, for the carriage return a CR-separated key file carries.
 
     Reachable in production: nothing translates a CR on the way into the real process, so this
@@ -531,15 +535,21 @@ def test_a_bare_cr_in_the_piped_key_is_refused(monkeypatch):
 
     stdin = io.StringIO("sk-abc\rsk-def")
     assert invoke_cli_with_stdin(["config", "set-model", "--key-stdin", "--name", "m"], stdin) == 2
+    assert "spans more than one line" in capsys.readouterr().err
 
 
-# ── the real-stdin harness must be able to express a PASS too (#125 review) ───────────────────
+# ── the real-stdin harness must be able to express a PASS, and only a PASS (#125 review) ──────
 #
 # Every test above it asserts a refusal, so `invoke_cli_with_stdin` only ever saw click's
 # `Exit(2)`. A success returns None through `standalone_mode=False`, and `int(None)` raises —
 # so the harness could not have expressed "this input is accepted" at all, and a guard that
-# refused EVERY key would have passed the whole section. These two pin the other outcomes:
-# the accepted key, and a parser error arriving as its exit code rather than as a traceback.
+# refused EVERY key would have passed the whole section.
+#
+# The mirror image is just as bad, and is why argv click never parsed does NOT come back as an
+# exit code: a parser error exits 2 as well, so `--key-stdinX` satisfied both refusals above —
+# their loose `"stdin" in err` included, because click answers a renamed flag with "Possible
+# options: --key-stdin". Two layers now separate them: the harness refuses to report a rejected
+# argv as an exit code at all, and each refusal asserts the one sentence its own guard writes.
 
 
 def test_a_single_line_key_on_a_real_stdin_is_accepted(monkeypatch):
@@ -560,12 +570,20 @@ def test_a_single_line_key_on_a_real_stdin_is_accepted(monkeypatch):
     assert rec.json["key"] == "sk-real"
 
 
-def test_the_real_stdin_harness_reports_a_usage_error_as_its_exit_code(monkeypatch, capsys):
-    """A click UsageError must come back as 2, the same as `fail()`'s Exit — otherwise a
-    mistyped flag in one of these tests surfaces as a traceback instead of a verdict."""
+def test_the_real_stdin_harness_will_not_pass_off_a_rejected_argv_as_a_refusal(monkeypatch):
+    """A renamed or deleted `--key-stdin` must FAIL the tests above, not satisfy them.
+
+    Checked: with the parser's error mapped onto its exit code, `--key-stdinX` returned 2 and
+    printed "No such option: --key-stdinX (Possible options: --key-stdin)" — which passed the
+    `== 2` and the `"stdin" in err` those two refusals asserted at the time, so the section
+    went green against a flag the CLI does not have. Only the command's own outcome is an exit
+    code now; argv click rejected is a failure that names itself."""
     from xorcise.core.cli.commands import config as cfg_cmd
 
     monkeypatch.setattr(cfg_cmd, "RestClient", lambda: _NoServer())
 
-    assert invoke_cli_with_stdin(["config", "set-model", "--no-such-flag"], None) == 2
-    assert "no-such-flag" in capsys.readouterr().err
+    with pytest.raises(CliArgvRejected) as rejected:
+        invoke_cli_with_stdin(["config", "set-model", "--key-stdinX", "--name", "m"], None)
+
+    # The message click would have printed, so the failure still says what was wrong with argv.
+    assert "--key-stdinX" in str(rejected.value)

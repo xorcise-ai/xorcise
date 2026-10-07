@@ -67,6 +67,19 @@ def install_mission(home: Path, slug: str = "c1") -> None:
     (root / INSTALLED_FILE).write_text(InstalledMission(slug, root, manifest, ref).to_record())
 
 
+class CliArgvRejected(AssertionError):
+    """click rejected argv, so the command never ran and there is no verdict to report.
+
+    Kept OFF the exit-code channel deliberately. A parser error exits 2 — the code these
+    commands choose for a usage error, and the code every refusal test here asserts — so
+    returning it conflates "the guard refused this input" with "that flag does not exist".
+    Measured: mapped to its code, `config set-model --key-stdinX` returned 2 and printed
+    "No such option: --key-stdinX (Possible options: --key-stdin)", which passed the `== 2`
+    and the then-current `"stdin" in stderr` of the closed-stdin test alike — click's own
+    suggestion line carries the word. A renamed or deleted flag read as a passing guard.
+    """
+
+
 def invoke_cli_with_stdin(argv: list[str], stdin: object) -> int:
     """Run the real CLI parser with an EXACT ``sys.stdin``; returns the exit code.
 
@@ -77,10 +90,12 @@ def invoke_cli_with_stdin(argv: list[str], stdin: object) -> int:
     ``False`` defaults, where calling a Typer command function directly would hand it
     ``OptionInfo`` objects and prove nothing.
 
-    All three outcomes are expressible, so a test can assert a PASS and not only a refusal:
-    ``standalone_mode=False`` returns click's ``Exit.exit_code`` for `fail()`, ``None`` for a
-    command that simply finished (0 here — ``int(None)`` used to raise instead), and raises the
-    parser's own errors, which are mapped to the code they would have exited with.
+    The exit code is the COMMAND's own outcome, and a test can now assert a pass and not only
+    a refusal: ``standalone_mode=False`` returns click's ``Exit.exit_code`` for `fail()` and
+    ``None`` for a command that simply finished (0 here — ``int(None)`` used to raise instead,
+    so a guard that refused every key would have passed the whole section). Anything click
+    raises out of the parser is NOT that, and arrives as `CliArgvRejected`; anything else
+    propagates untouched.
     """
     import sys
 
@@ -93,17 +108,18 @@ def invoke_cli_with_stdin(argv: list[str], stdin: object) -> int:
     try:
         rv = command.main(args=argv, prog_name="xorcise", standalone_mode=False)
     except Exception as exc:
-        # Matched on the ClickException CONTRACT (knows its exit code, knows how to print
-        # itself) rather than on the class: typer vendors its own click, so the parser raises
-        # `typer._click.exceptions.NoSuchOption`, which is NOT a subclass of the installed
-        # `click.ClickException` — an `except click.ClickException` here would catch nothing
-        # and a mistyped flag would surface as a traceback instead of exit 2. Anything that
-        # does not answer to that contract is a real bug and must still reach the test.
+        # Identified by the ClickException CONTRACT — carries an exit code, and a `show()` that
+        # would have printed it — rather than by the class: typer vendors its own click, so the
+        # parser raises `typer._click.exceptions.NoSuchOption`, which is NOT a subclass of the
+        # installed `click.ClickException`, and `except click.ClickException` would catch none
+        # of it. `show` is a probe here and is never called: the message goes into the failure
+        # instead, because RETURNING `exc.exit_code` hands back 2 — the same code, and in the
+        # closed-stdin case the same "stdin" in the text, as the refusals these tests assert.
+        # Anything that fails the probe is some other bug and must reach the test untouched.
         code, show = getattr(exc, "exit_code", None), getattr(exc, "show", None)
         if code is None or not callable(show):
             raise
-        show()  # the same stderr the user would have seen
-        return int(code)
+        raise CliArgvRejected(f"click rejected {argv} (exit {int(code)}): {exc}") from exc
     finally:
         sys.stdin = real
     return 0 if rv is None else int(rv)
