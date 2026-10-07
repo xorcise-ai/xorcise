@@ -60,7 +60,7 @@ def test_a_non_string_content_is_no_text_rather_than_its_repr():
     `str(None)` turned that into the literal word "None", and the judge then shipped that word back
     to the model as the reply it was asked to repair. Anything that is not a string carries no
     text, and the empty string is what the judge's repair path reads as "no previous reply"
-    (_EMPTY_REPLY_REPAIR_MESSAGE). This client is shared by grade_judge, terrain attribution and
+    (_EMPTY_REPLY_PREFACE). This client is shared by grade_judge, terrain attribution and
     the two `config` live tests, so the line is bound here rather than through one caller."""
 
     def reply_with(content: object) -> str:
