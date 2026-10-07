@@ -81,6 +81,37 @@ def _warn_if_foreign_instance(base_url: str) -> None:
         )
 
 
+class DocumentUnavailable(Exception):
+    """One document fetch answered with an HTTP error STATUS — one request's problem, not the
+    service's.
+
+    Raised only by `get_text_or_unavailable`; nothing else in this client's behaviour changes.
+    Carries the status and the server's own `detail` so a batch can say WHICH request failed and
+    why without re-deriving either from the message.
+    """
+
+    def __init__(self, path: str, status_code: int, detail: str) -> None:
+        super().__init__(f"{status_code} {detail}".strip())
+        self.path = path
+        self.status_code = status_code
+        self.detail = detail
+
+
+def _error_detail(resp: httpx.Response) -> str:
+    """The server's own sentence for an error response, or its reason phrase.
+
+    A second reading of what `_send` extracts, rather than a refactor of it: this whole fetch
+    variant is additive, and reshaping the one error path every other command goes through is
+    not a change worth making for it.
+    """
+    try:
+        body = resp.json()
+    except ValueError:  # non-JSON error body (e.g. a bare text/plain 500)
+        return resp.text.strip() or resp.reason_phrase
+    detail = str(body.get("detail", "")) if isinstance(body, dict) else ""
+    return detail or resp.reason_phrase
+
+
 class RestClient:
     def __init__(self, base_url: str | None = None) -> None:
         self.base_url = base_url or default_base_url()
@@ -141,6 +172,39 @@ class RestClient:
             t,
             self.base_url,
         )
+
+    def get_text_or_unavailable(self, path: str, timeout: float | None = None) -> str:
+        """`get_text`, except that an error STATUS raises DocumentUnavailable instead of exiting.
+
+        Opt-in, and only for a caller that fetches one document per item of a BATCH: a 404 or a
+        500 on one run's report is THAT run's problem, and `_send`'s exit — the right answer for
+        a single-run command — costs such a caller every item it had not reached yet.
+
+        Transport failures are deliberately NOT redirected. An unreachable or unresponsive
+        service is service-wide, and retrying it per item turns one outage into N identical
+        errors, so those still go through the shared handler and exit.
+        """
+        t = timeout or _DEFAULT_TIMEOUT_SECONDS
+        url = f"{self.base_url}{path}"
+        try:
+            resp = httpx.get(url, timeout=t, trust_env=False)
+        except httpx.HTTPError as exc:
+            # Hand the SAME failure to the shared handler so it gets the clean, operation-aware
+            # message and exit — replaying the exception rather than re-issuing the request,
+            # which on a batch-sized timeout would cost the operator a second full wait.
+            # Rebound first: Python unbinds an `except ... as` name at the end of the clause, so
+            # a closure over it is a trap even where (as here) it is called before that happens.
+            failure = exc
+
+            def replay() -> httpx.Response:
+                raise failure
+
+            return self._call_text(replay, t, self.base_url)
+        if resp.is_error:
+            raise DocumentUnavailable(path, resp.status_code, _error_detail(resp))
+        # Non-error: hand the response back to the shared path so nothing (the foreign-instance
+        # warning) is skipped by taking this route.
+        return self._call_text(lambda: resp, t, self.base_url)
 
     def post(self, path: str, json: dict[str, Any], timeout: float | None = None) -> Any:
         t = timeout or _DEFAULT_TIMEOUT_SECONDS

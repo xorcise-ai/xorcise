@@ -882,6 +882,11 @@ def _export_server(
 
     monkeypatch.setattr("xorcise.core.cli.rest_client.RestClient.get", fake_get)
     monkeypatch.setattr("xorcise.core.cli.rest_client.RestClient.get_text", fake_get_text)
+    # The export fetches through the batch-safe variant (an error STATUS on one run must not
+    # exit the process); stubbed identically so these tests still describe one fetch surface.
+    monkeypatch.setattr(
+        "xorcise.core.cli.rest_client.RestClient.get_text_or_unavailable", fake_get_text
+    )
     return seen
 
 
@@ -952,7 +957,8 @@ def test_genuine_only_agrees_with_the_leaderboard_on_every_trigger():
     from xorcise.core.cli.commands.results import _flatten
     from xorcise.core.cli.commands.run import select_runs_for_export
 
-    # Every trigger the server writes, plus the legacy synonym and an absent one.
+    # Every trigger the server writes, plus `completed` (which it never writes, and which both
+    # surfaces keep for parity — see COMPLETED_TRIGGERS) and an absent one.
     for trigger in ("done", "completed", "operator", "timeout", "deploy_failed", "crashed", ""):
         row = _run_row("r", trigger=trigger)
 
@@ -971,8 +977,8 @@ def test_genuine_only_help_names_what_it_actually_drops():
     assert "budget kills" not in text
 
 
-def test_export_writes_all_three_artefacts_per_run(tmp_path, monkeypatch):
-    """The command's contract: one directory per run holding the same bytes the three single-run
+def test_export_writes_the_whole_bundle_per_run(tmp_path, monkeypatch):
+    """The command's contract: one directory per run holding the same bytes the single-run
     commands produce, so there is no second export format to keep in sync."""
     first, second = _rid("ab"), _rid("cd")
     _export_server(monkeypatch, [_run_row(first), _run_row(second)])
@@ -982,6 +988,7 @@ def test_export_writes_all_three_artefacts_per_run(tmp_path, monkeypatch):
     assert result.exit_code == 0
     for rid in (first, second):
         assert (tmp_path / rid[:8] / "report.md").read_text().startswith("body-of:")
+        assert (tmp_path / rid[:8] / "result.json").exists()
         assert (tmp_path / rid[:8] / "traces.otlp.jsonl").exists()
         assert (tmp_path / rid[:8] / "events.jsonl").exists()
     assert "exported 2 run(s)" in result.stdout
@@ -1000,7 +1007,9 @@ def test_export_skips_a_failing_run_instead_of_abandoning_the_batch(tmp_path, mo
 
     result = runner.invoke(app, ["run", "export", "--out", str(tmp_path)])
 
-    assert result.exit_code == 0
+    # The batch finished — but a run that was asked for is missing, and exit 0 would have left a
+    # script no way to tell ninety-nine runs from a hundred.
+    assert result.exit_code == 1
     assert (tmp_path / good[:8] / "report.md").exists()
     assert "exported 1 run(s)" in result.stdout
 
@@ -1418,3 +1427,272 @@ def test_a_service_wide_failure_stops_the_export_instead_of_becoming_a_skip(tmp_
     assert result.exit_code == 1
     # Stopped at the first run rather than retrying the outage for every selected run.
     assert len(seen["paths"]) == 1, f"retried a service-wide failure per run: {seen['paths']}"
+
+
+# ── the batch's promises must hold against the SERVER too (#140, third review) ───────────────
+#
+# Round 2 made one bad run a skip rather than an abort — but only for failures raised inside the
+# command. `RestClient._send` exits the process on EVERY error status, so a 404 or a 500 on ONE
+# run's document still took the whole batch with it. These tests drive the export through the
+# REAL client with httpx stubbed, because that promise is a property of the client's error
+# handling and a stub that replaces `get_text` can only assert what the stub was told to do.
+
+
+def _httpx_export_server(
+    monkeypatch,
+    rows: list[dict[str, Any]],
+    *,
+    status_for=None,  # noqa: ANN001 — test stub
+    raise_for=None,  # noqa: ANN001 — test stub
+    agents: list[dict[str, Any]] | None = None,
+) -> list[str]:
+    """Stub `httpx.get` so `run export` runs through the real RestClient. Returns paths fetched."""
+    import httpx
+
+    seen: list[str] = []
+
+    def reply(url: str, *, status: int = 200, body: Any = None, text: str = "") -> httpx.Response:
+        request = httpx.Request("GET", url)
+        if body is not None:
+            return httpx.Response(status, json=body, request=request)
+        return httpx.Response(status, text=text, request=request)
+
+    def fake_get(url: str, timeout: float | None = None, trust_env: bool = True):  # noqa: ANN202
+        path = url.split("/api", 1)[1]
+        if path == "/system":  # the foreign-instance probe, not part of the export
+            return reply(url, body={})
+        seen.append(path)
+        if path == "/runs":
+            return reply(url, body=rows)
+        if path in ("/agents", "/missions"):
+            return reply(url, body=agents or [] if path == "/agents" else [])
+        if raise_for is not None and raise_for(path):
+            raise httpx.ConnectError("connection refused")
+        status = status_for(path) if status_for is not None else 200
+        if status != 200:
+            return reply(url, status=status, body={"detail": "the server said no"})
+        return reply(url, text=f"body-of:{path}")
+
+    monkeypatch.setattr("xorcise.core.cli.rest_client.httpx.get", fake_get)
+    return seen
+
+
+def test_one_runs_server_error_does_not_cost_the_rest_of_the_batch(tmp_path, monkeypatch):
+    """A per-run 404/500 is THIS run's problem. `_send` exits for it, and the export re-raises
+    that exit — so one run whose report 500s aborted the other ninety-nine, which is exactly the
+    promise the docstring makes."""
+    bad, good = _rid("ab"), _rid("cd")
+    _httpx_export_server(
+        monkeypatch,
+        [_run_row(bad), _run_row(good)],
+        status_for=lambda path: 500 if (bad in path and "report" in path) else 200,
+    )
+
+    result = runner.invoke(app, ["run", "export", "--out", str(tmp_path)])
+
+    assert (tmp_path / good[:8] / "report.md").exists(), _plain(result.stderr)
+    assert "exported 1 run(s)" in result.stdout
+    assert "the server said no" in _plain(result.stderr)
+    # The skipped run is still a failure to export a run that was asked for — see the exit
+    # contract below.
+    assert result.exit_code == 1
+
+
+def test_an_unreachable_service_still_stops_at_the_first_run(tmp_path, monkeypatch):
+    """The other half of the distinction: a transport failure IS service-wide. Retrying it per
+    run turns one outage into N identical errors, so it must still exit on the first one."""
+    first, second = _rid("ab"), _rid("cd")
+    seen = _httpx_export_server(
+        monkeypatch,
+        [_run_row(first), _run_row(second)],
+        raise_for=lambda path: True,
+    )
+
+    result = runner.invoke(app, ["run", "export", "--out", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert "cannot reach the XORCISE service" in _plain(result.stderr)
+    # /runs, then the first document fetch — and nothing after it.
+    assert len([p for p in seen if p != "/runs"]) == 1, f"retried the outage per run: {seen}"
+
+
+def test_an_empty_filter_value_is_a_usage_error_not_a_silent_match_all(tmp_path, monkeypatch):
+    """`--agent ""` from an unset shell variable passed the truthiness gate, skipped resolution
+    and exported EVERY run — the hazard `_require_value` already refuses for ids."""
+    for flag in ("--agent", "--mission"):
+        _export_server(
+            monkeypatch,
+            [_run_row(_rid("ab"), agent="agent-1")],
+            agents=[{"id": "agent-1", "name": "Alpha"}],
+            missions=[{"mission_id": "m1", "name": "M One"}],
+        )
+
+        result = runner.invoke(app, ["run", "export", "--out", str(tmp_path), flag, ""])
+
+        assert result.exit_code == 2, f"{flag}: {_plain(result.stderr)}"
+        assert list(tmp_path.iterdir()) == [], flag
+
+
+def test_an_agent_deregistered_between_the_two_lookups_fails_loud(tmp_path, monkeypatch):
+    """`resolve_agent_name` returns a name it read out of /agents, so the "treat the canonical
+    name as an id" fallback was dead — except in the one state that CAN reach it, where it
+    selected nothing and reported it as "no finished runs matched the filters"."""
+    rid = _rid("ab")
+    calls = {"agents": 0}
+
+    def fake_get(self, path: str, timeout: float | None = None) -> Any:  # noqa: ANN001 — stub
+        if path == "/runs":
+            return [_run_row(rid, agent="agent-1")]
+        if path == "/agents":
+            calls["agents"] += 1
+            return [{"id": "agent-1", "name": "Alpha"}] if calls["agents"] == 1 else []
+        raise AssertionError(f"unexpected GET {path}")
+
+    monkeypatch.setattr("xorcise.core.cli.rest_client.RestClient.get", fake_get)
+
+    result = runner.invoke(app, ["run", "export", "--out", str(tmp_path), "--agent", "Alpha"])
+
+    assert result.exit_code == 1
+    assert "Alpha" in _plain(result.stderr)
+    assert "no longer registered" in _plain(result.stderr)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_run_left_ungraded_leaves_the_export_incomplete_not_successful(tmp_path, monkeypatch):
+    """Exit 0 must mean the tree holds every run the filters selected. One run still grading and
+    the rest written exited 0, so a script consuming <out>/*/ could not tell ninety-nine runs
+    from a hundred."""
+    done, grading = _rid("ab"), _rid("cd")
+    _export_server(
+        monkeypatch,
+        [_run_row(done), _run_row(grading)],
+        text=lambda path: (
+            '{"run_id": "x", "status": "grading"}'
+            if (grading in path and "report" in path)
+            else "payload"
+        ),
+    )
+
+    result = runner.invoke(app, ["run", "export", "--out", str(tmp_path)])
+
+    # 3 is the in-progress code, and a caller retrying it converges once grading finishes.
+    assert result.exit_code == 3
+    assert (tmp_path / done[:8] / "report.md").exists()
+    assert not (tmp_path / grading[:8]).exists()
+
+
+def test_a_write_that_fails_part_way_publishes_no_run_directory(tmp_path, monkeypatch):
+    """Fetching every document before the first mkdir covers a failed FETCH. It does not cover a
+    write that fails PART WAY — a full disk on a multi-megabyte trace — which left a directory
+    holding a truncated file, and anything globbing <out>/*/ reads that as an exported run."""
+    from pathlib import Path
+
+    rid = _rid("ab")
+    _export_server(monkeypatch, [_run_row(rid)])
+    real_write_text = Path.write_text
+
+    def blow_up(self, data, **kwargs):  # noqa: ANN001, ANN202 — test stub
+        if self.name == "events.jsonl":
+            raise OSError(28, "No space left on device")
+        return real_write_text(self, data, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", blow_up)
+
+    result = runner.invoke(app, ["run", "export", "--out", str(tmp_path)])
+
+    assert result.exit_code == 1
+    leftover = list(tmp_path.iterdir())
+    assert leftover == [], f"a half-written run was published: {leftover}"
+
+
+def test_a_prefix_collision_names_the_directory_an_earlier_export_orphaned(tmp_path, monkeypatch):
+    """When two ids collide both runs move to their full ids — leaving the <id8>/ directory a
+    PREVIOUS export wrote still sitting there, still looking like an exported run."""
+    first, second = "aaaaaaaa" + "b" * 24, "aaaaaaaa" + "c" * 24
+    stale = tmp_path / "aaaaaaaa"
+    stale.mkdir()
+    (stale / "report.md").write_text("an earlier export", encoding="utf-8")
+    _export_server(monkeypatch, [_run_row(first), _run_row(second)])
+
+    result = runner.invoke(app, ["run", "export", "--out", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert (tmp_path / first / "report.md").exists()
+    assert "earlier export" in _plain(result.stderr)
+    assert str(stale) in _plain(result.stderr)
+    # Named, never removed: this command deletes nothing it did not write.
+    assert (stale / "report.md").read_text() == "an earlier export"
+
+
+def test_the_bundle_carries_the_evidence_seal_a_consumer_can_check(tmp_path, monkeypatch):
+    """The point of the seal is that a consumer can tie a grade to evidence that has not
+    changed. In the tree it existed only as sixteen characters of prose inside report.md."""
+    import json as _json
+
+    rid = _rid("ab")
+    envelope = _json.dumps({"evidence_digest": "d" * 64, "evidence_verified": True})
+    _export_server(
+        monkeypatch,
+        [_run_row(rid)],
+        text=lambda path: envelope if path.endswith("/result") else "payload",
+    )
+
+    result = runner.invoke(app, ["run", "export", "--out", str(tmp_path)])
+
+    assert result.exit_code == 0
+    body = _json.loads((tmp_path / rid[:8] / "result.json").read_text())
+    assert body["evidence_digest"] == "d" * 64
+    assert body["evidence_verified"] is True
+
+
+def test_run_status_prints_the_evidence_seal(monkeypatch):
+    """/result has carried the digest since #116 and this view printed neither field."""
+    payload = _grade_payload()
+    payload["evidence_digest"] = "a" * 64
+    payload["evidence_verified"] = True
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.get_run_result", lambda self, p: payload
+    )
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.get_or_none", lambda self, p, timeout=None: None
+    )
+
+    res = runner.invoke(app, ["run", "status", RID])
+
+    assert res.exit_code == 0
+    assert "a" * 16 in res.stdout
+    assert "verified" in res.stdout
+
+
+def test_run_status_calls_a_mismatched_seal_what_it_is(capsys):
+    """A mismatch says the rest of the output may not be trustworthy — one sentence, shared with
+    the report so the two surfaces cannot drift into two verdicts."""
+    from xorcise.core.cli.commands import run as run_cmd
+    from xorcise.core.reporting.render import _SEAL_MISMATCH
+
+    run_cmd._render_result(_graded(evidence_digest="a" * 64, evidence_verified=False))
+
+    out = _plain(capsys.readouterr().out)
+    assert "MISMATCH" in out
+    assert _SEAL_MISMATCH in out
+
+
+def test_run_status_says_nothing_about_a_seal_a_run_never_had(capsys):
+    """A line saying "unknown" on every pre-#116 run trains readers to ignore it — the rule the
+    report's Conditions table already follows."""
+    from xorcise.core.cli.commands import run as run_cmd
+
+    run_cmd._render_result(_graded())
+
+    assert "seal" not in capsys.readouterr().out.lower()
+
+
+def test_the_genuine_set_keeps_a_trigger_no_server_has_ever_written():
+    """`completed` is NOT a legacy synonym: every terminal_trigger write goes through
+    `mark_terminal`, the only literals passed are done / operator / timeout / deploy_failed /
+    crashed, and the initial commit already had this same set. It stays for parity with
+    run_state_label and the GUI map — so no surface can disagree about one trigger."""
+    from xorcise.core.cli._ux import COMPLETED_TRIGGERS, run_state_label
+
+    assert "completed" in COMPLETED_TRIGGERS
+    assert run_state_label("terminal", "completed") == run_state_label("terminal", "done")

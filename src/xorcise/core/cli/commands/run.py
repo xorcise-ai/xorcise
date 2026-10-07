@@ -8,6 +8,7 @@ import time
 from collections import Counter
 from collections.abc import Sequence
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -36,8 +37,8 @@ from xorcise.core.cli._ux import (
     short_id,
     ux_table,
 )
-from xorcise.core.cli.rest_client import RestClient
-from xorcise.core.reporting.render import agent_model_line
+from xorcise.core.cli.rest_client import DocumentUnavailable, RestClient
+from xorcise.core.reporting.render import _SEAL_MISMATCH, agent_model_line
 
 run_app = typer.Typer(
     help="Create and manage evaluation runs.",
@@ -107,6 +108,43 @@ def _render_telemetry(telemetry: dict[str, Any] | None) -> None:
         console.print(f"[warn]warning[/]: {escape(str(w.get('message', '')))}")
 
 
+def _render_evidence_seal(r: dict[str, Any]) -> None:
+    """The run's evidence seal, printed where the score is read.
+
+    /result has carried `evidence_digest` and `evidence_verified` since #116 and this view
+    printed neither, so the digest reached an operator only as prose inside report.md — a grade
+    tied to its evidence for a reader of the report and for nobody looking at `run status`.
+
+    Silent on a run with no digest (sealed before the feature, or never sealed): a line reading
+    "unknown" on every old run trains people to ignore it, which is the opposite of the point —
+    the rule the report's Conditions table already follows. Short-form digest for the same
+    reason it uses one: enough to compare two views of a run by eye, with the full value in the
+    seal store for an actual verification.
+
+    `verified` is a TRISTATE, and null is never an accusation: a build that cannot re-derive the
+    scheme has not found a mismatch.
+    """
+    digest = str(r.get("evidence_digest") or "")
+    if not digest:
+        return
+    verified = r.get("evidence_verified")
+    short = f"{digest[:16]}…"
+    if verified is True:
+        console.print(
+            f"evidence seal: {short} verified — the graded evidence is unchanged since sealing"
+        )
+    elif verified is False:
+        # The report's own sentence, imported rather than re-worded for the same reason
+        # agent_model_line is: two spellings of "this run's evidence changed" is how two
+        # surfaces start disagreeing about the same run (#128 review).
+        console.print(f"[err]evidence seal: {short} MISMATCH[/] — {escape(_SEAL_MISMATCH)}")
+    else:
+        console.print(
+            f"evidence seal: {short} recorded, but this build could not verify it — "
+            "treat as unknown, not altered"
+        )
+
+
 def _render_result(
     r: dict[str, Any], *, verbose: bool = False, telemetry: dict[str, Any] | None = None
 ) -> None:
@@ -173,6 +211,7 @@ def _render_result(
     )
     console.print(f"budget: {cond.get('budget_seconds', 0)}s")
     console.print(f"sandbox: {escape(str(cond.get('sandbox_ref') or '—'))}")
+    _render_evidence_seal(r)
     _render_telemetry(telemetry)
     # Partial banner — only shown when the result was graded on incomplete data.
     if r.get("partial"):
@@ -622,6 +661,40 @@ def export_directory_names(run_ids: Sequence[str]) -> dict[str, str]:
     return {rid: (rid[:8] if counts[rid[:8]] == 1 else rid) for rid in run_ids}
 
 
+def _document_name(path: str) -> str:
+    """`/runs/<id>/otlp.jsonl` → `otlp.jsonl` — which document failed, without the id again."""
+    return path.rsplit("/", 1)[-1].split("?", 1)[0]
+
+
+def _publish(bodies: dict[str, str], target: Path) -> None:
+    """Write one run's bundle through a staging directory, then move each file into place.
+
+    Fetching every document before the first mkdir covers a failed FETCH. It does not cover a
+    write that fails PART WAY — a full disk on a multi-megabyte trace is the realistic one —
+    which left a directory holding a truncated file, and anything globbing `<out>/*/` reads that
+    as an exported run. Staging is a sibling of the target, so each move is a rename on the same
+    filesystem and a file appears whole or not at all.
+
+    Per FILE, not per directory: re-exporting overwrites a run's own files and leaves anything
+    else already in its directory alone, and replacing the whole directory would delete it. The
+    staging name is dot-prefixed so a `<out>/*/` glob never sees it even mid-write.
+    """
+    import os
+    import shutil
+    import tempfile
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".xorcise-export-", dir=target.parent))
+    try:
+        for name, body in bodies.items():
+            (staging / name).write_text(body, encoding="utf-8")
+        target.mkdir(parents=True, exist_ok=True)
+        for name in bodies:
+            os.replace(staging / name, target / name)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
 @run_app.command("export")
 def run_export(
     out: str = typer.Option(
@@ -650,36 +723,48 @@ def run_export(
         ),
     ),
 ) -> None:
-    """Export a SET of runs — report, raw OTLP and normalized events — into one directory tree.
+    """Export a SET of runs — report, result, raw OTLP and normalized events — into one tree.
 
     Analysis and hand-off operate on a group of runs, not one: a mission, an agent, a date range. \
 Each selected run becomes `<out>/<run-id8>/` holding `report.md` (or .html), \
-`traces.otlp.jsonl` and `events.jsonl` — the same bytes the three single-run commands \
-produce, so nothing here is a second format to keep in sync.
+`result.json` (the scores and the evidence seal, machine-readable), `traces.otlp.jsonl` \
+and `events.jsonl` — the same bytes the single-run commands produce, so nothing here is \
+a second format to keep in sync.
 
     Only finished runs are exported; an active one has no sealed record yet. \
-A run whose files cannot be fetched is reported and skipped rather than \
-aborting the batch, so one bad run never costs you the other ninety-nine.
+A run whose documents cannot be fetched — including a 404 or a 500 on that one run — is \
+reported and skipped rather than aborting the batch, so one bad run never costs you the \
+other ninety-nine.
 
-    Re-exporting is safe but not a clean slate: a run's three files are overwritten in place \
+    Exit codes say what the tree holds: 0 every selected run was exported · 1 at least one \
+could not be, and the rest are still on disk · 2 nothing matched the filters · 3 nothing \
+failed, but some runs are still grading — re-run once grading finishes.
+
+    Re-exporting is safe but not a clean slate: a run's own files are overwritten in place \
 and anything else already in its directory is left alone. Export into a fresh directory \
 when you need the tree to contain only this export.
     """
-    from pathlib import Path
-
     client = RestClient()
     agent_id = None
-    if agent:
+    # `is not None`, not truthiness: `--agent ""` from an unset shell variable skipped resolution
+    # and exported EVERY run. An empty value is a missing one, and the resolvers refuse it as the
+    # usage error it is — the same guard `_require_value` applies to ids.
+    if agent is not None:
         # Resolve exactly as `run create` does — exact, case-insensitive, unique prefix, then a
         # did-you-mean, failing loud. The old exact case-sensitive match fell through to "treat it
         # as an id", so `--agent alpha` against a registered `Alpha` selected nothing and reported
         # it as "no runs matched" — a typo dressed up as an empty result.
         canonical = resolve_agent_name(client, agent)
+        # resolve_agent_name returns a name it read out of /agents, so the id is in this map
+        # unless the agent was deregistered between the two reads. The old fallback used the
+        # canonical NAME as an id, which can only ever match no run and then reports the race as
+        # "no finished runs matched the filters".
         agent_id = next(
-            (aid for aid, known in agent_names_by_id(client).items() if known == canonical),
-            canonical,
+            (aid for aid, known in agent_names_by_id(client).items() if known == canonical), None
         )
-    if mission:
+        if agent_id is None:
+            fail(f"agent '{canonical}' is no longer registered", see=("xorcise agent list",))
+    if mission is not None:
         # Run rows carry the slug, but `run list` shows the display name and `run create --mission`
         # accepts it — so the name is what people have. resolve_mission takes either.
         mission = str(resolve_mission(client, mission)["mission_id"])
@@ -706,6 +791,16 @@ when you need the tree to contain only this export.
 
     fmt = format.value if isinstance(format, ReportFormat) else str(format)
     dir_names = export_directory_names([str(row["run_id"]) for row in selected])
+    # A run that collided onto a shared prefix is written under its full id — but an EARLIER
+    # export of either run wrote `<id8>/`, and that directory is still sitting there, still
+    # reading as an exported run to anything globbing `<out>/*/`. Name it. Never delete it: this
+    # command removes nothing it did not write, and the directory may not be an export at all.
+    for prefix in sorted({rid[:8] for rid, name in dir_names.items() if name != rid[:8]}):
+        if (root / prefix).is_dir():
+            err_console.print(
+                f"[warn]stale[/] {escape(str(root / prefix))}: left by an earlier export of a "
+                "run whose id now shares this prefix — both are written under their full ids"
+            )
     written = 0
     skipped: list[tuple[str, str]] = []
     pending: list[str] = []  # terminal but not yet graded — a retry, not a failure
@@ -716,7 +811,7 @@ when you need the tree to contain only this export.
             continue
         target = root / dir_names[rid]
         try:
-            report = client.get_text(
+            report = client.get_text_or_unavailable(
                 f"/runs/{rid}/report?format={fmt}", timeout=_EXPORT_FETCH_TIMEOUT_SECONDS
             )
             # Terminal does not mean graded. /report answers 202 with a JSON envelope while
@@ -732,16 +827,29 @@ when you need the tree to contain only this export.
             # every fetch is done before the first mkdir.
             bodies = {
                 f"report.{fmt}": report,
-                "traces.otlp.jsonl": client.get_text(
+                # The machine-readable half of the bundle: the envelope `run status --json`
+                # prints, carrying the grade AND the evidence seal (evidence_digest +
+                # evidence_verified). Without it the seal reaches the tree only as sixteen
+                # characters of prose inside the rendered report, which ties a grade to its
+                # evidence for a reader and for nothing else.
+                "result.json": client.get_text_or_unavailable(
+                    f"/runs/{rid}/result", timeout=_EXPORT_FETCH_TIMEOUT_SECONDS
+                ),
+                "traces.otlp.jsonl": client.get_text_or_unavailable(
                     f"/runs/{rid}/otlp.jsonl", timeout=_EXPORT_FETCH_TIMEOUT_SECONDS
                 ),
-                "events.jsonl": client.get_text(
+                "events.jsonl": client.get_text_or_unavailable(
                     f"/runs/{rid}/events.jsonl", timeout=_EXPORT_FETCH_TIMEOUT_SECONDS
                 ),
             }
-            target.mkdir(parents=True, exist_ok=True)
-            for name, body in bodies.items():
-                (target / name).write_text(body, encoding="utf-8")
+            _publish(bodies, target)
+        except DocumentUnavailable as exc:
+            # ONE run's document answered 4xx/5xx. `_send` exits the process for any error
+            # status — right for a single-run command, fatal to a batch — so this used to take
+            # the ninety-nine runs after it. Transport failures still come through as typer.Exit
+            # below, because an unreachable service really is everyone's problem.
+            skipped.append((short_id(rid), f"{_document_name(exc.path)}: {exc}"))
+            continue
         except typer.Exit:
             # RestClient exits on a service-wide failure (unreachable, auth). That is not a
             # per-run problem: retrying it for every remaining run turns one outage into N
@@ -758,11 +866,15 @@ when you need the tree to contain only this export.
         err_console.print(f"[warn]not yet graded[/] {rid}: re-run the export once grading finishes")
     for rid, why in skipped:
         err_console.print(f"[warn]skipped[/] {rid}: {escape(why)}")
-    if not written:
-        # Nothing landed. Distinguish the two reasons, because they want different next actions:
-        # everything still grading is "come back shortly" (exit 3, the in-progress code `run
-        # status` and `run report` already use), while genuine failures are a failed export.
-        raise typer.Exit(3 if pending and not skipped else 1)
+    # Exit 0 means the tree holds EVERY run the filters selected: a script that consumed it
+    # otherwise could not tell ninety-nine runs from a hundred, and a skipped run was silent.
+    # A failure outranks "not ready" — a skipped run needs a person, a pending one only needs
+    # time (3 is the in-progress code `run status` and `run report` already use, and a caller
+    # retrying it converges once grading finishes rather than looping forever).
+    if skipped:
+        raise typer.Exit(1)
+    if pending:
+        raise typer.Exit(3)
 
 
 @run_app.command("report")
@@ -781,8 +893,6 @@ disclosed conditions — one self-contained file. The report is available once \
 the run has finished; while it is still running or being graded, that is what \
 this reports.
     """
-    from pathlib import Path
-
     client = RestClient()
     run_id = _resolve_id(client, run_id)
     # A still-active run has no report yet — say it's still running (exit 3), instead
@@ -852,8 +962,6 @@ JSONL instead, see `xorcise run events export`.
     client = RestClient()
     run_id = _resolve_id(client, run_id)
     if export:
-        from pathlib import Path
-
         # Conservative labeling: checked BEFORE the download, so a run that seals mid-flight
         # can only be over-labeled partial (harmless) — never under-labeled complete.
         active = client.get_run_result(run_id).get("status") == "active"
@@ -953,8 +1061,6 @@ def run_events_export(
 one event per line with clean bodies (debug/inspection). Works mid-run as a partial \
 snapshot. For the raw OTLP stream instead, see `xorcise run traces --export`.
     """
-    from pathlib import Path
-
     client = RestClient()
     run_id = _resolve_id(client, run_id)
     body = client.get_text(f"/runs/{run_id}/events.jsonl")
