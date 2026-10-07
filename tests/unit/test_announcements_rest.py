@@ -40,9 +40,9 @@ def _settings(monkeypatch, **env: str) -> None:
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     get_settings.cache_clear()
-    # The announcements response is memoised per catalog URL, so a test that changes the config
-    # without dropping it would be served the previous test's answer. Reset here rather than in
-    # each test: this helper is already the one place that resets config-derived state.
+    # The announcements memo is dropped around every test by an autouse fixture in
+    # tests/conftest.py, so it is not reset here — but a test that changes the catalog URL
+    # MID-test still needs it, which is why this helper keeps calling it.
     reset_announcements_cache()
 
 
