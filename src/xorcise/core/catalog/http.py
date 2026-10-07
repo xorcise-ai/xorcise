@@ -54,22 +54,34 @@ _ANNOUNCEMENTS_TIMEOUT = 3.0
 # exists so the REMOTE cannot choose how much work the local app does on its page-load path.
 # Comfortably above any legitimate response, so it can never truncate a well-formed one.
 _MAX_ANNOUNCEMENT_ROWS = 8
-# How many BYTES of the response we are willing to read, enforced WHILE STREAMING and therefore
-# before anything is decoded. The row and string limits below cannot do this job: they run on
-# an object that is already in memory, so on their own they bound what we keep and not what the
-# remote costs us — one valid announcement beside an ignored 50 MB field was read in full and
-# served. A maximal legitimate response is two rows of a 600-character body, comfortably under
-# 2 KiB, so this is ~30x any real one and still too small to hurt.
+# How many BYTES OFF THE WIRE we are willing to read, counted while streaming. The row and
+# string limits below cannot do this job: they run on an object that is already in memory, so on
+# their own they bound what we keep and not what the remote costs us — one valid announcement
+# beside an ignored 50 MB field was read in full and served. A maximal legitimate response is two
+# rows of a 600-character body, comfortably under 2 KiB, so this is ~30x any real one.
+#
+# WIRE bytes, via `iter_raw`, is the whole point: `iter_bytes` runs the content decoder first, so
+# a counter behind it is counting what the REMOTE chose to expand to, not what it sent. Measured
+# against a gzipped body, 407,698 bytes on the wire produced a 33,578,960-byte first chunk — a
+# 512x overshoot already allocated before any limit could look at it. We ask for `identity` and
+# refuse a body that arrives encoded anyway, so the two counts cannot diverge.
 _MAX_ANNOUNCEMENT_BYTES = 64 * 1024
 # An OVERALL wall-clock budget for the whole call. `timeout=` is not one: HTTPX's timeout is
 # PER-OPERATION (per connect, per read), so a remote that sends a byte just inside it holds
 # this page-load call open for as long as it likes — a server trickling chunks 1.5 s apart ran
 # for 13.5 s against the 3 s "timeout" above. This is the bound that actually ends the call.
 #
-# What it promises precisely: the deadline is tested between reads, and a read already in
-# flight cannot be interrupted, so the call returns within the deadline PLUS at most one
-# _ANNOUNCEMENTS_TIMEOUT. 8 s worst case, not 5 — bounded, which is the property that was
-# missing, rather than exact.
+# What it promises, precisely, because the earlier wording here claimed more than it holds:
+# the deadline is tested once the response HEADERS are in and then between body reads, and a
+# read already in flight cannot be interrupted. So from the first byte of the body onward the
+# call returns within the deadline plus at most one _ANNOUNCEMENTS_TIMEOUT.
+#
+# It does NOT bound the connect-and-headers phase, and nothing synchronous here can: every
+# individual read is inside _ANNOUNCEMENTS_TIMEOUT, so a remote dribbling one header just under
+# it is never late by httpx's reckoning and never reaches a check of ours. Measured at 22.5 s
+# with one header every 2.5 s, rising linearly with header count (h11 caps total header BYTES at
+# ~16 KiB, which bounds the data but not the time). Tracked separately; a true total bound needs
+# a watchdog outside the calling thread, which costs more on a page-load path than it buys.
 _ANNOUNCEMENTS_DEADLINE = 5.0
 
 
@@ -200,18 +212,35 @@ class HttpCatalogSource(CatalogSource):
         SERVER-side defect an operator should see — one warning, not one per item.
 
         The response is STREAMED rather than fetched whole, because every limit in this method
-        is worthless if it only runs on an object that is already in memory: a byte cap and a
-        wall-clock deadline are the only two bounds the remote cannot choose for us, and both
-        have to be applied while the bytes are still arriving. See `_read_bounded`.
+        is worthless if it only runs on an object that is already in memory. Two bounds are
+        applied while the bytes are still arriving: a cap on WIRE bytes, and a wall-clock
+        deadline covering the body. Neither is complete on its own — see `_read_bounded` for what
+        each one does and does not cover, and `_ANNOUNCEMENTS_DEADLINE` for the phase the
+        deadline cannot reach.
         """
         deadline = time.monotonic() + _ANNOUNCEMENTS_DEADLINE
         try:
             with self._client.stream(
-                "GET", f"{self._base}/v1/announcements/active", timeout=_ANNOUNCEMENTS_TIMEOUT
+                "GET",
+                f"{self._base}/v1/announcements/active",
+                timeout=_ANNOUNCEMENTS_TIMEOUT,
+                # So the byte cap counts the same bytes the remote sent. httpx advertises gzip
+                # by default, which would let the remote pick how far past the cap one chunk
+                # expands; `_read_bounded` refuses a body that comes back encoded regardless.
+                headers={"Accept-Encoding": "identity"},
             ) as resp:
                 if resp.status_code == 404:
                     return ()  # a deployment that predates announcements — normal, not an error
                 resp.raise_for_status()
+                if time.monotonic() > deadline:
+                    # The headers alone outlasted the budget. Checked here because the body loop
+                    # below would otherwise start afresh on an already-spent deadline.
+                    log.warning(
+                        "catalog took longer than %.0fs to answer with its announcements; "
+                        "the fetch was abandoned",
+                        _ANNOUNCEMENTS_DEADLINE,
+                    )
+                    return ()
                 raw = _read_bounded(resp, deadline)
             if raw is None:
                 return ()  # over a bound; `_read_bounded` has already said which
@@ -341,7 +370,31 @@ def _read_bounded(resp: httpx.Response, deadline: float) -> bytes | None:
     buffered read has already paid for every byte and every second by the time any limit could
     look at them. There is no check after the loop — a body that arrived complete is already
     in hand, and refusing to parse 64 KiB we are holding would cost more than it saves.
+
+    The encoding check above is what makes the byte count a WIRE count, and it has to come
+    first. `iter_bytes` runs the content decoder before it yields, so behind a compressed body
+    the counter sees whatever the remote chose to expand to, not what it sent — measured at a
+    33,578,960-byte first chunk from 407,698 bytes on the wire, a 512x overshoot already
+    allocated before any limit could look at it. Refusing every non-identity encoding leaves the
+    decoder an identity decoder, so from here the two counts are the same number.
+
+    (`iter_raw` would make that structural rather than conditional, but it cannot be used: an
+    `httpx.MockTransport` response built from in-memory content reports its stream as already
+    consumed and raises `StreamConsumed`, which is how every test for this source is written.
+    The equivalence above is the thing to keep true — if the refusal is ever relaxed, this count
+    stops being a wire count on the same line.)
+
+    The deadline covers this loop, not the connect-and-headers phase that precedes it — see
+    `_ANNOUNCEMENTS_DEADLINE` for why nothing synchronous here can bound that.
     """
+    encoding = resp.headers.get("content-encoding", "").strip().lower()
+    if encoding and encoding != "identity":
+        log.warning(
+            "catalog encoded its announcements as %r despite a request for identity; "
+            "the fetch was abandoned",
+            encoding,
+        )
+        return None
     chunks: list[bytes] = []
     size = 0
     for chunk in resp.iter_bytes():

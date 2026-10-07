@@ -436,3 +436,76 @@ def test_the_parser_leaves_other_tones_dismissible_as_published() -> None:
     for tone in ("information", "maintenance", "resolved"):
         ann = _announcement_from_remote({**_GOOD, "tone": tone, "dismissible": True})
         assert ann is not None and ann.dismissible is True, tone
+
+
+# ── the byte cap must bound the WIRE, not what the remote expands to (#137 review) ────────────
+#
+# The cap counted bytes handed back by `iter_bytes`, which runs the content decoder first — so a
+# compressed body let the REMOTE choose how far past the cap one chunk went. Measured against a
+# gzipped pad: 407,698 bytes on the wire produced a 33,578,960-byte first chunk, already
+# allocated before any limit could look at it, and an 81 MB peak for a 204 KB response.
+
+
+def test_a_compressed_body_is_refused_rather_than_decoded(caplog) -> None:
+    """The fetch asks for `identity`; a body that comes back encoded anyway is the remote
+    choosing our allocation, so it is refused before a decoder ever sees it."""
+    import gzip
+    import json as _json
+
+    bomb = gzip.compress(_json.dumps({"announcements": [], "pad": "A" * 20_000_000}).encode())
+    assert len(bomb) < 64 * 1024, "the point is that it is SMALL on the wire"
+
+    def h(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=bomb,
+            headers={"content-encoding": "gzip", "content-type": "application/json"},
+        )
+
+    with caplog.at_level("WARNING"):
+        assert _source(h).announcements() == ()
+    assert any("despite a request for identity" in r.message for r in caplog.records)
+
+
+def test_the_fetch_asks_for_an_unencoded_body() -> None:
+    """Without this header httpx advertises gzip, and the cap silently stops being a wire cap."""
+    seen: list[str] = []
+
+    def h(req: httpx.Request) -> httpx.Response:
+        seen.append(req.headers.get("accept-encoding", ""))
+        return httpx.Response(200, json={"announcements": []})
+
+    _source(h).announcements()
+    assert seen == ["identity"]
+
+
+def test_headers_that_outlast_the_budget_stop_the_fetch_before_the_body(monkeypatch) -> None:
+    """The deadline used to be tested only inside the body loop, which does not start until the
+    headers are complete — so a slow header phase was never looked at, and the body then began
+    afresh on an already-spent budget.
+
+    Asserts the body was never READ, not merely that the call returned (): the body loop carries
+    its own deadline check, so a test that only asserts the empty result passes with this guard
+    removed and proves nothing.
+    """
+    import time
+
+    import xorcise.core.catalog.http as http_mod
+
+    clock = iter([0.0] + [99.0] * 8)
+    monkeypatch.setattr(time, "monotonic", lambda: next(clock))
+    entered = False
+    real = http_mod._read_bounded
+
+    def spy(resp: httpx.Response, deadline: float) -> bytes | None:
+        nonlocal entered
+        entered = True
+        return real(resp, deadline)
+
+    monkeypatch.setattr(http_mod, "_read_bounded", spy)
+
+    def h(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"announcements": []})
+
+    assert _source(h).announcements() == ()
+    assert not entered, "the body phase must not start on an already-spent deadline"
