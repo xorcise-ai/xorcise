@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -16,6 +17,7 @@ from xorcise.core.cli._shared import app
 from xorcise.core.cli.commands import lifecycle
 
 runner = CliRunner()
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 # --- banner gating -----------------------------------------------------------
@@ -974,7 +976,13 @@ def test_no_in_product_pointer_teaches_the_key_on_argv(monkeypatch):
     place it appears: a user arriving from the root epilog, `up`'s banner, `config show` or a
     missing-input error copies the example in front of them, and that example put the key in
     ~/.zsh_history and in /proc/<pid>/cmdline. `--key ''` is deliberately still allowed — it
-    clears the key rather than setting one, and no secret travels with it."""
+    clears the key rather than setting one, and no secret travels with it.
+
+    The rendered surfaces are a fixed LIST, and the next example will be written somewhere the
+    list does not reach — so the `--help` screens are rendered here too, and the CLI source and
+    the README are read whole. That catches a `--key sk-…` added to an option help string, an
+    epilog, a docstring `--help` renders, or the quickstart, without anyone remembering to come
+    back and extend this test (#125 review)."""
     from xorcise.core.cli._errors import _EXAMPLES
     from xorcise.core.cli._shared import GOLDEN_PATH
     from xorcise.core.cli.rest_client import RestClient
@@ -1006,6 +1014,16 @@ def test_no_in_product_pointer_teaches_the_key_on_argv(monkeypatch):
             app, ["config", "set-terrain-model"]
         ).output,
     }
+    # The help screens the list above never rendered — where an option's own help text, and the
+    # command docstring beside it, are the first thing a user reads.
+    for screen in (["--help"], ["config", "--help"]):
+        pointers[f"xorcise {' '.join(screen)}"] = runner.invoke(app, screen).output
+    for setter in ("set-model", "set-terrain-model"):
+        pointers[f"{setter} --help"] = runner.invoke(app, ["config", setter, "--help"]).output
+    # And the text itself, so a pointer added on a surface nobody listed here is still caught.
+    for path in [*sorted((_REPO_ROOT / "src" / "xorcise").rglob("*.py")), _REPO_ROOT / "README.md"]:
+        pointers[str(path.relative_to(_REPO_ROOT))] = path.read_text(encoding="utf-8")
+
     offenders = sorted(where for where, text in pointers.items() if _sets_a_key_on_argv(text))
     assert not offenders, f"these still teach the key on argv: {offenders}"
 

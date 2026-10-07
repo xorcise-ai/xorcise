@@ -346,7 +346,16 @@ def confirm_or_abort(question: str, *, assume_yes: bool) -> None:
     """TTY-gated confirmation for destructive commands.
 
     --yes and non-interactive stdin both skip the prompt (a prompt would hang CI
-    or an agent harness; scripts keep their historical no-prompt behaviour)."""
+    or an agent harness; scripts keep their historical no-prompt behaviour).
+
+    A CLOSED fd 0 now counts as non-interactive, and that is a real behaviour change, not just
+    a crash fix (#125): the bare `.isatty()` this used to call raised on the `None` CPython
+    leaves at `xorcise agent rm a <&-`, so the command died one line short of the destructive
+    call. It now proceeds unprompted — what `</dev/null` has always done, and the posture every
+    caller of this seam was scripted against — so `mission uninstall`, `run terminate`,
+    `run regrade`, `run delete` and `agent rm` all changed with it. Where a missing terminal
+    must STOP the command instead of waving it through, use `confirm_gate` below: it fails
+    closed, and `down --purge` is the case that needs it."""
     if assume_yes or not _stdin_is_interactive():
         return
     if not typer.confirm(question):

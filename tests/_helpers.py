@@ -72,10 +72,16 @@ def invoke_cli_with_stdin(argv: list[str], stdin: object) -> int:
 
     CliRunner always builds its own text stream from ``input=``, so the two inputs that matter
     here are the two it cannot express: the ``None`` CPython leaves when fd 0 is CLOSED
-    (`xorcise … <&-`), and a bare CR, which the runner's universal-newline translation rewrites.
+    (`xorcise … <&-`), and a bare CR, which only the runner's stream rewrites into ``\\n``.
     Everything else still goes through click — the options arrive with their true ``None``/
     ``False`` defaults, where calling a Typer command function directly would hand it
-    ``OptionInfo`` objects and prove nothing."""
+    ``OptionInfo`` objects and prove nothing.
+
+    All three outcomes are expressible, so a test can assert a PASS and not only a refusal:
+    ``standalone_mode=False`` returns click's ``Exit.exit_code`` for `fail()`, ``None`` for a
+    command that simply finished (0 here — ``int(None)`` used to raise instead), and raises the
+    parser's own errors, which are mapped to the code they would have exited with.
+    """
     import sys
 
     import typer.main
@@ -85,6 +91,19 @@ def invoke_cli_with_stdin(argv: list[str], stdin: object) -> int:
     command = typer.main.get_command(app)
     real, sys.stdin = sys.stdin, stdin
     try:
-        return int(command.main(args=argv, prog_name="xorcise", standalone_mode=False))
+        rv = command.main(args=argv, prog_name="xorcise", standalone_mode=False)
+    except Exception as exc:
+        # Matched on the ClickException CONTRACT (knows its exit code, knows how to print
+        # itself) rather than on the class: typer vendors its own click, so the parser raises
+        # `typer._click.exceptions.NoSuchOption`, which is NOT a subclass of the installed
+        # `click.ClickException` — an `except click.ClickException` here would catch nothing
+        # and a mistyped flag would surface as a traceback instead of exit 2. Anything that
+        # does not answer to that contract is a real bug and must still reach the test.
+        code, show = getattr(exc, "exit_code", None), getattr(exc, "show", None)
+        if code is None or not callable(show):
+            raise
+        show()  # the same stderr the user would have seen
+        return int(code)
     finally:
         sys.stdin = real
+    return 0 if rv is None else int(rv)
