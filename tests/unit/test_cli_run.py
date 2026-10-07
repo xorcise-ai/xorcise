@@ -978,8 +978,9 @@ def test_genuine_only_help_names_what_it_actually_drops():
 
 
 def test_export_writes_the_whole_bundle_per_run(tmp_path, monkeypatch):
-    """The command's contract: one directory per run holding the same bytes the single-run
-    commands produce, so there is no second export format to keep in sync."""
+    """The command's contract: one directory per run holding all four documents. Report, traces
+    and events are the bytes the single-run commands write; `result.json` is the server's
+    /result envelope verbatim, which no single-run command writes to disk."""
     first, second = _rid("ab"), _rid("cd")
     _export_server(monkeypatch, [_run_row(first), _run_row(second)])
 
@@ -1444,6 +1445,7 @@ def _httpx_export_server(
     *,
     status_for=None,  # noqa: ANN001 — test stub
     raise_for=None,  # noqa: ANN001 — test stub
+    raises=None,  # noqa: ANN001 — test stub: the transport failure to raise (default: refused)
     agents: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """Stub `httpx.get` so `run export` runs through the real RestClient. Returns paths fetched."""
@@ -1467,7 +1469,7 @@ def _httpx_export_server(
         if path in ("/agents", "/missions"):
             return reply(url, body=agents or [] if path == "/agents" else [])
         if raise_for is not None and raise_for(path):
-            raise httpx.ConnectError("connection refused")
+            raise raises or httpx.ConnectError("connection refused")
         status = status_for(path) if status_for is not None else 200
         if status != 200:
             return reply(url, status=status, body={"detail": "the server said no"})
@@ -1516,6 +1518,82 @@ def test_an_unreachable_service_still_stops_at_the_first_run(tmp_path, monkeypat
     assert len([p for p in seen if p != "/runs"]) == 1, f"retried the outage per run: {seen}"
 
 
+def test_a_service_wide_status_is_one_error_not_one_per_run(tmp_path, monkeypatch):
+    """An error STATUS is not automatically this document's problem. Credentials, a rate limit
+    and a gateway/unavailable answer are the service's answer to EVERY request — reported per
+    run they became N identical skips and N further requests, which is the shape the transport
+    rule already exists to prevent. "database is locked" on the shared SQLite file reaches these
+    read paths as exactly such a status."""
+    rows = [_run_row(_rid("ab")), _run_row(_rid("cd")), _run_row(_rid("ef"))]
+    seen = _httpx_export_server(monkeypatch, rows, status_for=lambda path: 503)
+
+    result = runner.invoke(app, ["run", "export", "--out", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert len([p for p in seen if p != "/runs"]) == 1, f"retried the outage per run: {seen}"
+    assert "skipped" not in _plain(result.stderr)
+
+
+def test_a_transport_failure_still_says_what_the_tree_already_holds(tmp_path, monkeypatch):
+    """Exit 1 promises "whatever was written is on disk", and the command never said what that
+    was: the client's exit propagated straight out of the loop, so the summary line never
+    printed and the runs it did export were left unstated."""
+    done, dead = _rid("ab"), _rid("cd")
+    _httpx_export_server(
+        monkeypatch, [_run_row(done), _run_row(dead)], raise_for=lambda path: dead in path
+    )
+
+    result = runner.invoke(app, ["run", "export", "--out", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert (tmp_path / done[:8] / "report.md").exists()
+    assert "exported 1 run(s)" in result.stdout
+    assert dead[:8] in _plain(result.stderr)
+    assert "stopped" in _plain(result.stderr)
+
+
+def test_one_runs_read_timeout_stops_the_export_rather_than_skipping_that_run(
+    tmp_path, monkeypatch
+):
+    """The realistic slow-document case — a multi-megabyte trace outlasting the per-document
+    timeout — and the one the docstring used to promise against with "one bad run never costs
+    you the other ninety-nine". It does cost them, deliberately: nothing at this layer can tell
+    a stalled document from a stalled service, and reading it as this run's problem would spend
+    the whole timeout again on every run left. So the promise is stated for the case it holds
+    (an error status about one document) and the export stops here — after saying what it wrote.
+    """
+    import httpx
+
+    done, slow = _rid("ab"), _rid("cd")
+    _httpx_export_server(
+        monkeypatch,
+        [_run_row(done), _run_row(slow)],
+        raise_for=lambda path: slow in path,
+        raises=httpx.ReadTimeout("timed out"),
+    )
+
+    result = runner.invoke(app, ["run", "export", "--out", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert (tmp_path / done[:8] / "report.md").exists()
+    assert "exported 1 run(s)" in result.stdout
+    assert "did not respond" in _plain(result.stderr)
+    assert "stopped" in _plain(result.stderr)
+
+
+def test_an_empty_since_is_a_usage_error_not_the_whole_history(tmp_path, monkeypatch):
+    """The same hazard as `--agent ""`, one line away in the same command: `--since "$FROM"`
+    with an unset FROM passed the truthiness gate, set no floor and exported every run ever
+    recorded with exit 0."""
+    _export_server(monkeypatch, [_run_row(_rid("ab")), _run_row(_rid("cd"))])
+
+    result = runner.invoke(app, ["run", "export", "--out", str(tmp_path), "--since", ""])
+
+    assert result.exit_code == 2
+    assert "missing --since" in _plain(result.stderr)
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_an_empty_filter_value_is_a_usage_error_not_a_silent_match_all(tmp_path, monkeypatch):
     """`--agent ""` from an unset shell variable passed the truthiness gate, skipped resolution
     and exported EVERY run — the hazard `_require_value` already refuses for ids."""
@@ -1533,10 +1611,12 @@ def test_an_empty_filter_value_is_a_usage_error_not_a_silent_match_all(tmp_path,
         assert list(tmp_path.iterdir()) == [], flag
 
 
-def test_an_agent_deregistered_between_the_two_lookups_fails_loud(tmp_path, monkeypatch):
+def test_an_agent_that_stops_matching_between_the_two_lookups_fails_loud(tmp_path, monkeypatch):
     """`resolve_agent_name` returns a name it read out of /agents, so the "treat the canonical
     name as an id" fallback was dead — except in the one state that CAN reach it, where it
-    selected nothing and reported it as "no finished runs matched the filters"."""
+    selected nothing and reported it as "no finished runs matched the filters". The state is a
+    name that stopped being this agent's between the reads: a deregistration, or a RENAME (the
+    id stays, the name moves), which the message must not call a deregistration."""
     rid = _rid("ab")
     calls = {"agents": 0}
 
@@ -1554,14 +1634,16 @@ def test_an_agent_deregistered_between_the_two_lookups_fails_loud(tmp_path, monk
 
     assert result.exit_code == 1
     assert "Alpha" in _plain(result.stderr)
-    assert "no longer registered" in _plain(result.stderr)
+    assert "deregistered or renamed" in _plain(result.stderr)
     assert list(tmp_path.iterdir()) == []
 
 
-def test_a_run_left_ungraded_leaves_the_export_incomplete_not_successful(tmp_path, monkeypatch):
-    """Exit 0 must mean the tree holds every run the filters selected. One run still grading and
-    the rest written exited 0, so a script consuming <out>/*/ could not tell ninety-nine runs
-    from a hundred."""
+def test_exit_three_stays_reserved_for_the_all_pending_export(tmp_path, monkeypatch):
+    """Exit 3 belongs to "nothing was exported, every selected run is still grading" — the one
+    state a retry-on-3 loop converges out of. Widened to the MIXED case it never converges: one
+    run stuck in grading makes every export of that filter exit 3 for good, and `run export
+    --out d && …` starts failing on the commonest case there is, a batch that has only just
+    finished (grading is async). The pending run is named on stderr instead."""
     done, grading = _rid("ab"), _rid("cd")
     _export_server(
         monkeypatch,
@@ -1575,10 +1657,11 @@ def test_a_run_left_ungraded_leaves_the_export_incomplete_not_successful(tmp_pat
 
     result = runner.invoke(app, ["run", "export", "--out", str(tmp_path)])
 
-    # 3 is the in-progress code, and a caller retrying it converges once grading finishes.
-    assert result.exit_code == 3
+    assert result.exit_code == 0
     assert (tmp_path / done[:8] / "report.md").exists()
     assert not (tmp_path / grading[:8]).exists()
+    assert grading[:8] in _plain(result.stderr)
+    assert "graded" in _plain(result.stderr).lower()
 
 
 def test_a_write_that_fails_part_way_publishes_no_run_directory(tmp_path, monkeypatch):
@@ -1605,9 +1688,10 @@ def test_a_write_that_fails_part_way_publishes_no_run_directory(tmp_path, monkey
     assert leftover == [], f"a half-written run was published: {leftover}"
 
 
-def test_a_prefix_collision_names_the_directory_an_earlier_export_orphaned(tmp_path, monkeypatch):
-    """When two ids collide both runs move to their full ids — leaving the <id8>/ directory a
-    PREVIOUS export wrote still sitting there, still looking like an exported run."""
+def test_a_prefix_collision_names_the_directory_it_leaves_untouched(tmp_path, monkeypatch):
+    """When two ids collide both runs move to their full ids — leaving whatever sits at <id8>/
+    there, still reading as an exported run to anything globbing <out>/*/. The notice claims no
+    provenance for it: the guard is `is_dir()`, so it may not be an export at all."""
     first, second = "aaaaaaaa" + "b" * 24, "aaaaaaaa" + "c" * 24
     stale = tmp_path / "aaaaaaaa"
     stale.mkdir()
@@ -1618,7 +1702,7 @@ def test_a_prefix_collision_names_the_directory_an_earlier_export_orphaned(tmp_p
 
     assert result.exit_code == 0
     assert (tmp_path / first / "report.md").exists()
-    assert "earlier export" in _plain(result.stderr)
+    assert "full ids" in _plain(result.stderr)
     assert str(stale) in _plain(result.stderr)
     # Named, never removed: this command deletes nothing it did not write.
     assert (stale / "report.md").read_text() == "an earlier export"
@@ -1678,8 +1762,10 @@ def test_run_status_calls_a_mismatched_seal_what_it_is(capsys):
 
 
 def test_run_status_says_nothing_about_a_seal_a_run_never_had(capsys):
-    """A line saying "unknown" on every pre-#116 run trains readers to ignore it — the rule the
-    report's Conditions table already follows."""
+    """A line saying "unknown" on every pre-#116 run trains readers to ignore it. The report's
+    Conditions table drops its row for the same reason — though not by the same rule: it also
+    speaks for `evidence_digest_unavailable`, which /result does not carry, so this surface is
+    the narrower of the two."""
     from xorcise.core.cli.commands import run as run_cmd
 
     run_cmd._render_result(_graded())

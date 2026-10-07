@@ -81,6 +81,14 @@ def _warn_if_foreign_instance(base_url: str) -> None:
         )
 
 
+#: Error statuses that are never about the document that was asked for. Credentials, a rate
+#: limit and a gateway/unavailable answer are the service's answer to the NEXT request too, so
+#: handing them back as a per-item failure turns one outage into N identical lines and N further
+#: requests — the same hazard the transport rule below exists to prevent. Everything else (404,
+#: 409, 410, 422, 500, …) is read as this request's.
+SERVICE_WIDE_STATUSES = frozenset({401, 403, 429, 502, 503, 504})
+
+
 class DocumentUnavailable(Exception):
     """One document fetch answered with an HTTP error STATUS — one request's problem, not the
     service's.
@@ -174,15 +182,20 @@ class RestClient:
         )
 
     def get_text_or_unavailable(self, path: str, timeout: float | None = None) -> str:
-        """`get_text`, except that an error STATUS raises DocumentUnavailable instead of exiting.
+        """`get_text`, except that an error status ABOUT THIS DOCUMENT raises DocumentUnavailable
+        instead of exiting.
 
         Opt-in, and only for a caller that fetches one document per item of a BATCH: a 404 or a
         500 on one run's report is THAT run's problem, and `_send`'s exit — the right answer for
         a single-run command — costs such a caller every item it had not reached yet.
 
-        Transport failures are deliberately NOT redirected. An unreachable or unresponsive
-        service is service-wide, and retrying it per item turns one outage into N identical
-        errors, so those still go through the shared handler and exit.
+        Two kinds of failure are deliberately NOT redirected: a SERVICE_WIDE_STATUSES status
+        (auth, rate limit, gateway, unavailable) and a transport failure (unreachable, or no
+        response inside the timeout). A status in that set genuinely is the same answer for the
+        next request. A transport failure may not be — a read timeout can be one oversized
+        document on a healthy service — but nothing at this layer can tell that from a stalled
+        service, and reading it per item costs the caller the WHOLE timeout again for every item
+        it has left. Both go through the shared handler and exit.
         """
         t = timeout or _DEFAULT_TIMEOUT_SECONDS
         url = f"{self.base_url}{path}"
@@ -200,10 +213,11 @@ class RestClient:
                 raise failure
 
             return self._call_text(replay, t, self.base_url)
-        if resp.is_error:
+        if resp.is_error and resp.status_code not in SERVICE_WIDE_STATUSES:
             raise DocumentUnavailable(path, resp.status_code, _error_detail(resp))
-        # Non-error: hand the response back to the shared path so nothing (the foreign-instance
-        # warning) is skipped by taking this route.
+        # Everything left — a success, or a service-wide status — goes back through the shared
+        # path, so nothing (the foreign-instance warning, the error message and exit) is skipped
+        # by taking this route.
         return self._call_text(lambda: resp, t, self.base_url)
 
     def post(self, path: str, json: dict[str, Any], timeout: float | None = None) -> Any:
