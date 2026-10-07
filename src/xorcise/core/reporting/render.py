@@ -127,16 +127,29 @@ def _elapsed_seconds(ctx: RunReportContext) -> float | None:
     return (ctx.run.completed_at - ctx.run.created_at).total_seconds()
 
 
-# How far the harness clock may disagree with the server's, IN EITHER DIRECTION, before a window
-# built on it stops being reportable. The window's two endpoints come from the producer's clock
-# and everything it is checked against (created_at, elapsed) comes from the server's, so the pair
-# can disagree by ordinary NTP-class skew with nothing actually wrong; a minute absorbs that while
-# still catching the hour-scale disagreements that are a broken clock, not a long run.
+# The slack allowed to EACH of the two checks below before a window stops being reportable. The
+# window's endpoints come from the producer's clock and everything they are checked against
+# (created_at, elapsed, render time) comes from the server's, so the two can disagree by ordinary
+# NTP-class skew with nothing actually wrong; a minute absorbs that while still catching the
+# hour-scale disagreements that are a broken clock rather than a long run.
 #
 # It is NOT slack for the lag between an event happening and the run being closed out, which this
 # comment used to claim (#134 review): that lag only ever enlarges ELAPSED, so it loosens the
-# upper bound on its own and can never make an honest window look too big.
+# length check on its own and can never make an honest window look too big.
 _PRODUCER_CLOCK_GRACE_SECONDS = 60.0
+
+
+def _utc(value: datetime) -> datetime:
+    """A stored timestamp read as UTC when it carries no offset.
+
+    `TimingStats` has no timezone validator and `get_stats` re-parses the snapshot out of a JSON
+    column, so an offset-less value there arrives naive — and the window is the only place in this
+    module that subtracts a producer timestamp from a server one, which raises on a mixed pair.
+    `rest.report_assembly` says it of a missing agent name — "a report must never 500" — and a
+    stored timestamp's missing offset is the same kind of defect: readable, not fatal. Same
+    reading every other boundary in this codebase gives a stored datetime
+    (`runs.repository._utc`, `otel.store.sqlite._utc`)."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 def _telemetry_window(ctx: RunReportContext) -> tuple[float | None, str | None]:
@@ -161,12 +174,19 @@ def _telemetry_window(ctx: RunReportContext) -> tuple[float | None, str | None]:
     Earlier this used the last event's START, which reported a run whose telemetry is one
     60-second span as `0.0s` — a minute of work rendered as none.
 
-    Withheld rather than shown wrong whenever the producer's clock cannot be reconciled with the
-    server's, in BOTH directions: a window that ends before it starts, one that starts before the
-    run did, one longer than the run lasted, and one with no wall clock to check against at all.
-    A skewed harness clock otherwise renders `Duration 1m 0s` beside `Telemetry window 1h 0m 0s`,
-    and milliseconds fed to a nanosecond parser put the first event at the epoch and render half a
-    million hours in the headline table. None of those are a measurement.
+    Withheld rather than shown wrong where the server's own record of the run contradicts it. Two
+    things are checked, and they are checked against different quantities: WHERE the telemetry
+    starts (a first event dated more than the grace before the run was created) and HOW LONG it
+    runs (a window longer than the run has lasted, plus that same grace). A third shape, a last
+    event dated before the first, bounds no span at all. A skewed harness clock otherwise renders
+    `Duration 1m 0s` beside `Telemetry window 1h 0m 0s`, and milliseconds fed to a nanosecond
+    parser put every event at the epoch and render half a million hours in the headline table.
+
+    What is deliberately NOT refused is a producer clock running uniformly AHEAD of the server's.
+    Both endpoints are then offset by the same amount, so the difference between them is still a
+    correct measurement of the span, and the row says whose clock it came from. So these are two
+    bounds on two quantities — not a two-sided bound on clock offset, which is what an earlier
+    draft of this docstring and the constant above both claimed (#134 review).
     """
     if ctx.stats is None:
         return (None, None)
@@ -174,31 +194,39 @@ def _telemetry_window(ctx: RunReportContext) -> tuple[float | None, str | None]:
     last = ctx.stats.timing.last_event_end_ts or ctx.stats.timing.last_event_ts
     if first is None or last is None:
         return (None, None)
+    first, last = _utc(first), _utc(last)
     if last < first:
         return (None, "withheld — the harness dated the last event before the first")
     window = (last - first).total_seconds()
+    # Both clock checks run BEFORE the zero-span return below, because a window can be zero AND
+    # provably corrupt at the same time: milliseconds fed to a nanosecond parser land every event
+    # in 1970, and a run with one such event has nothing to measure and a broken clock. Ordered
+    # the other way, the one input class this first check was added to catch was swallowed in
+    # silence (#134 review).
+    #
+    # A producer clock running behind the server's dates the first event before the run existed.
+    # The window that follows is as unbelievable as one that overruns the end — and, unlike that
+    # one, small enough to pass for a measurement.
+    if (ctx.run.created_at - first).total_seconds() > _PRODUCER_CLOCK_GRACE_SECONDS:
+        return (None, "withheld — the harness dated the first event before the run started")
+    lasted = _elapsed_seconds(ctx)
+    if lasted is None:
+        # No completed_at, hence no TimingStats.elapsed_seconds either. `/report` 409s on exactly
+        # that run (rest/routers/runs.py:run_report) so no API caller reaches this, but the
+        # renderers are exported from `xorcise.core.reporting` and an UNCHECKED window is the one
+        # shape this function exists to refuse. It is not unbounded either: the run cannot have
+        # been open longer than the clock this report is being stamped with says it has, which is
+        # a valid bound on any plausible window (#134 review) — the same bound `run-live.tsx`
+        # already ticks for an unfinished run.
+        lasted = ((ctx.generated_at or datetime.now(UTC)) - ctx.run.created_at).total_seconds()
+    if window > lasted + _PRODUCER_CLOCK_GRACE_SECONDS:
+        return (None, "withheld — the harness reported more telemetry than the run has lasted")
     if window == 0.0:
         # `last_event_end_ts` falls back to the last event's START when nothing reported a
         # duration (TimingStats), so a zero-length window is an extent NOBODY MEASURED, not an
         # extent of zero — and "0.0s" reads as "the agent did nothing", the same misreading that
         # dropping `max(0.0, …)` was meant to end. Nothing was withheld; there is simply no span.
         return (None, None)
-    # The lower bound is the symmetric twin of the elapsed check below, and needs only created_at,
-    # so it still holds for a run that has no elapsed. A producer clock running BEHIND the
-    # server's dates the first event before the run existed; the window that follows is as
-    # unbelievable as one that overruns the end, and small enough to pass for a measurement.
-    if (ctx.run.created_at - first).total_seconds() > _PRODUCER_CLOCK_GRACE_SECONDS:
-        return (None, "withheld — the harness dated the first event before the run started")
-    elapsed = _elapsed_seconds(ctx)
-    if elapsed is None:
-        # Elapsed is unknown only for a run that was never closed out (no completed_at, hence no
-        # TimingStats.elapsed_seconds either), and `/report` 409s on exactly that run
-        # (rest/routers/runs.py:run_report), so no API caller reaches this. The renderers are
-        # exported from `xorcise.core.reporting` though, and an UNCHECKED window is the one shape
-        # this function exists to refuse — so it is refused here rather than assumed away.
-        return (None, "withheld — the run has no wall clock to check the window against")
-    if window > elapsed + _PRODUCER_CLOCK_GRACE_SECONDS:
-        return (None, "withheld — the harness reported more telemetry than the run lasted")
     return (window, None)
 
 
@@ -288,11 +316,13 @@ def _metadata_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
         *([("Platform", ctx.conditions.platform)] if ctx.conditions.platform else []),
         ("Started", _ts(ctx.run.created_at)),
         ("Duration", _duration(_elapsed_seconds(ctx))),
-        # Only when telemetry actually bounds a span. Sits beside Duration because the pair is the
-        # point: they agree on a healthy run and diverge loudly on a crashed one — and carries the
-        # same "(reported by the harness)" mark as the model row, because unlike every other row
-        # in this table it is the producer's clock, not the server's. A span that cannot be
-        # believed says so here instead of vanishing.
+        # The span when the server's own record of the run corroborates it, the reason it is
+        # withheld when that record contradicts it, and absent when there is no span to report —
+        # a withheld span says so here rather than vanishing into a row that would look like a run
+        # with no telemetry at all. Sits beside Duration because the pair is the point: they agree
+        # on a healthy run and diverge loudly on a crashed one — and carries the same "(reported
+        # by the harness)" mark as the model row, because unlike every other row in this table it
+        # is the producer's clock, not the server's.
         *_telemetry_window_row(ctx),
         ("Run ID", ctx.run.run_id),
         ("Status", _status_line(ctx)),

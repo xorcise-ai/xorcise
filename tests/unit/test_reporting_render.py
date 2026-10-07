@@ -708,9 +708,11 @@ def test_a_capped_model_list_says_how_many_it_is_not_showing() -> None:
 # first event in 1970 and render a window of half a million hours in the headline table.
 #
 # Third round of the same review: withholding is now DISCLOSED rather than silent — an absent row
-# could not be told apart from a run that recorded no telemetry at all — and the guard is
-# SYMMETRIC, because a producer clock running behind the server's dates the first event before the
-# run was created and yields a window small enough to pass for a measurement.
+# could not be told apart from a run that recorded no telemetry at all — and a second bound was
+# added, on WHERE the telemetry starts: a producer clock running behind the server's dates the
+# first event before the run was created and yields a window small enough to pass for a
+# measurement. The two bounds are on different quantities (start position, and length), and
+# neither refuses a producer clock uniformly ahead of the server's — see `_telemetry_window`.
 
 
 def _at(**over: float) -> datetime:
@@ -739,7 +741,7 @@ def test_a_window_longer_than_the_run_itself_is_withheld_rather_than_shown() -> 
     assert "1h 0m 0s" not in md, "the hour that is the clock fault must not reach the table"
     assert (
         "| Telemetry window | withheld — the harness reported more telemetry than the run "
-        "lasted |" in md
+        "has lasted |" in md
     )
 
 
@@ -804,23 +806,39 @@ def test_a_sub_tenth_second_window_is_not_rounded_down_to_nothing() -> None:
     assert "| Telemetry window | under 0.1s (reported by the harness) |" in md
 
 
-def test_a_window_the_runs_wall_clock_cannot_check_is_withheld() -> None:
-    """The comparison was skipped when elapsed was unknown, so the one shape the guard exists to
-    refuse — an unchecked window — rendered. `/report` cannot reach it (it 409s on a run that is
-    not terminal, and only a terminal run has the completed_at elapsed is made from), but the
-    renderers are exported from `xorcise.core.reporting` and nothing in them said so."""
+def test_an_unfinished_run_is_checked_against_the_clock_the_report_is_rendered_on() -> None:
+    """The comparison used to skip itself when elapsed was unknown, so the one shape the guard
+    exists to refuse — an unchecked window — rendered. A run with no `completed_at` is not
+    unbounded, though: it cannot have run for longer than the report's own clock says it has been
+    open, which is the bound used here (#134 review). One minute open, an hour of telemetry."""
     md = render_markdown(
         _ctx(
             run=_run(state="active", completed_at=None, terminal_trigger=None),
             stats=_timing_window(_at(), _at(hours=1), elapsed=None),
+            generated_at=_at(minutes=1),
         )
     )
 
     assert "1h 0m 0s" not in md
     assert (
-        "| Telemetry window | withheld — the run has no wall clock to check the window "
-        "against |" in md
+        "| Telemetry window | withheld — the harness reported more telemetry than the run "
+        "has lasted |" in md
     )
+
+
+def test_an_unfinished_run_still_shows_a_window_its_own_clock_supports() -> None:
+    """Withholding every window on a run with no `completed_at` would suppress sane ones, and
+    would assert the run has no clock to check against when it has one: created→now. The report
+    already holds that clock — it stamps itself with it."""
+    md = render_markdown(
+        _ctx(
+            run=_run(state="active", completed_at=None, terminal_trigger=None),
+            stats=_timing_window(_at(), _at(seconds=1), elapsed=None),
+            generated_at=_at(minutes=1),
+        )
+    )
+
+    assert "| Telemetry window | 1.0s (reported by the harness) |" in md
 
 
 def test_the_html_report_discloses_a_withheld_window_too() -> None:
@@ -829,4 +847,44 @@ def test_the_html_report_discloses_a_withheld_window_too() -> None:
     doc = render_html(_ctx(stats=_timing_window(_at(), _at(hours=1), elapsed=60.0)))
 
     assert "1h 0m 0s" not in doc
-    assert "withheld — the harness reported more telemetry than the run lasted" in doc
+    assert "withheld — the harness reported more telemetry than the run has lasted" in doc
+
+
+def test_a_corrupt_snapshot_whose_window_is_zero_is_disclosed_not_silently_omitted() -> None:
+    """Milliseconds fed to a nanosecond parser land EVERY event in 1970, so a single-event run
+    corrupted that way has a zero-length window AND a provably broken clock. The zero-span return
+    used to run first and swallow it, leaving the one input class the lower bound was added to
+    catch indistinguishable from a run that recorded no telemetry (#134 review)."""
+    epoch = datetime(1970, 1, 1, 0, 28, 20, tzinfo=UTC)
+    md = render_markdown(_ctx(stats=_timing_window(epoch, epoch, elapsed=60.0)))
+
+    assert (
+        "| Telemetry window | withheld — the harness dated the first event before the run "
+        "started |" in md
+    )
+
+
+def test_a_window_exactly_a_minute_longer_than_the_run_is_still_shown() -> None:
+    """The length bound's grace is inclusive at the boundary, as the start bound's is. Only the
+    lower one was pinned, so a later tightening of this one would have gone unnoticed."""
+    md = render_markdown(_ctx(stats=_timing_window(_at(), _at(seconds=1860), elapsed=1800.0)))
+
+    assert "| Telemetry window | 31m 0s (reported by the harness) |" in md
+
+
+def test_a_producer_timestamp_with_no_timezone_does_not_500_the_report() -> None:
+    """The window is the only place in this module that subtracts a STATS timestamp from a RUN-ROW
+    one, and `TimingStats` has no timezone validator — an offset-less value in `stats_json` parses
+    naive and the subtraction raises. A report must never 500 (rest.report_assembly), so the two
+    producer timestamps are read as UTC, the same way every other boundary in this codebase reads
+    a stored datetime."""
+    naive = RunStats.model_validate_json(
+        '{"timing":{"elapsed_seconds":1800.0,"first_event_ts":"2026-07-24T10:00:00",'
+        '"last_event_ts":"2026-07-24T10:00:01"}}'
+    )
+    assert naive.timing.first_event_ts is not None
+    assert naive.timing.first_event_ts.tzinfo is None, "fixture must actually be naive"
+
+    md = render_markdown(_ctx(stats=naive))
+
+    assert "| Telemetry window | 1.0s (reported by the harness) |" in md
