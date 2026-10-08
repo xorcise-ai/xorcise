@@ -25,18 +25,29 @@ const ANNOUNCEMENTS_KEY = ["announcements"] as const;
  * that changes in a minor release. Written out, a future upgrade that flips one cannot quietly
  * turn this feature into a poller — it has to delete a line somebody wrote on purpose.
  *
- * `retry: false` is part of the same contract rather than an error-handling choice: the
- * endpoint answers `200 {"announcements": []}` for a disabled, unreachable, slow or malformed
- * remote, so a non-200 is not a condition a retry can improve, and a retry would be a second
- * request.
+ * `retry` is BOUNDED rather than off, and the reasoning that had it off was backwards.
+ * `routers/announcements.py` returns `list_announcements(...)` unconditionally, and that
+ * absorbs every remote problem into `200 {"announcements": []}`. So a non-200 or a transport
+ * error reaching this hook is never the remote being unreachable — by construction it can only
+ * be the LOCAL server: not up yet, restarting, or erroring. That is exactly the condition a
+ * retry improves. Treating it as "the remote is unreachable, already handled" conflated two
+ * different signals arriving on one channel, and left a tab silently blind for the life of the
+ * document after a single blip — `xorcise down && xorcise up` underneath it was enough (#162).
  *
- * `retryOnMount: false` is the one that is easy to miss, and the counter test is what found
- * it. `refetchOnMount` only governs a query that HAS data; a query that has never loaded and
- * is sitting on an error is refetched by every newly mounting observer regardless. This
- * feature mounts two observers at different moments — the shell banner immediately, the
- * catalog banner when the Remote tab first renders — so against a failing endpoint the
- * default issued a second request as the catalog opened. Off, the failure is absorbed once
- * and stays absorbed, which is the same promise the success path makes.
+ * Silently matters: an absent banner is indistinguishable from nothing being published, so the
+ * reader cannot tell a broken feature from a quiet one. For something whose job is incident
+ * banners that is the wrong way to fail.
+ *
+ * Bounded is the other half. Three attempts ride out a restart; after that it stays absorbed
+ * and stops, so a server that is genuinely gone does not turn this into a poller. The cost is
+ * at most two extra requests, only on a document load whose first request already failed.
+ *
+ * `retryOnMount: false` stays, and is the one that is easy to miss. `refetchOnMount` only
+ * governs a query that HAS data; a query sitting on an error is refetched by every newly
+ * mounting observer regardless. This feature mounts two observers at different moments — the
+ * shell banner immediately, the catalog banner when the Remote tab first renders — so against
+ * a failing endpoint the default issued a fresh request as the catalog opened, on top of the
+ * retries above. Off, the bounded attempts are the whole budget.
  */
 export function useAnnouncements() {
   return useQuery({
@@ -49,7 +60,15 @@ export function useAnnouncements() {
     refetchOnReconnect: false,
     refetchInterval: false,
     refetchIntervalInBackground: false,
-    retry: false,
+    // Bounded: enough to outlast a restart, not enough to poll. See the note above for why a
+    // failure that reaches this hook is always local, and therefore always worth one more try.
+    //
+    // `retryDelay` is deliberately NOT pinned here, unlike every other knob in this block. The
+    // library's exponential backoff is the right shape for riding out a restart, and the reason
+    // the others are written out — that a library default could quietly turn this into a poller
+    // — does not apply to a delay when the attempt COUNT is already bounded above. Leaving it
+    // unset also lets a caller's QueryClient collapse it, which is what the tests do.
+    retry: 2,
     retryOnMount: false,
   });
 }
