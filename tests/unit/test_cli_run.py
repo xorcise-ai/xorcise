@@ -1854,3 +1854,43 @@ def test_a_recorded_seal_says_it_was_not_checked_rather_than_unverifiable(capsys
     assert "a" * 16 in out
     assert "not checked here" in out
     assert "could not verify" not in out, "nobody asked; that is not a failure to answer"
+
+
+_NOT_GRADED = {
+    "run_id": RID,
+    "status": "not_graded",
+    "terminal_trigger": "deploy_failed",
+    "detail": "not ready within the readiness window",
+}
+
+
+def test_run_status_says_an_environment_failure_was_not_graded(monkeypatch):
+    """#109: final, not progress — exit 0 so a poll stops, and say why there is no score."""
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.get_run_result",
+        lambda self, p, verify=False: _NOT_GRADED,
+    )
+    res = runner.invoke(app, ["run", "status", RID])
+    assert res.exit_code == 0
+    assert "not graded" in res.stdout
+    assert "deploy_failed" in res.stdout
+    assert "not ready within the readiness window" in res.stdout
+
+
+def test_run_report_writes_nothing_for_an_environment_failure(monkeypatch, tmp_path):
+    """There will never be a report: say why and exit 1, never write the envelope as one."""
+    import json as _json
+
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.get_text",
+        lambda self, p: _json.dumps(_NOT_GRADED),
+    )
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.get_run_result",
+        lambda self, rid: _NOT_GRADED,
+    )
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["run", "report", RID])
+    assert result.exit_code == 1
+    assert "not graded" in result.output
+    assert list(tmp_path.iterdir()) == []

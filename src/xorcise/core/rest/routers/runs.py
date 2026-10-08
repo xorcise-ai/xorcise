@@ -23,6 +23,7 @@ from xorcise.core.contracts.errors import (
 from xorcise.core.contracts.grading import GradeResult
 from xorcise.core.contracts.reporting import ResultConditions, RunStats
 from xorcise.core.contracts.run import (
+    UNGRADED_TRIGGERS,
     RunCreate,
     RunCreatedEntry,
     RunEntry,
@@ -40,6 +41,29 @@ from xorcise.core.rest.run_create import (
 )
 
 router = APIRouter(prefix="/runs", tags=["runs"])
+
+
+def _not_graded(run_id: str) -> JSONResponse | None:
+    """The FINAL answer for a run that ended on an environment failure, else None.
+
+    Such a run is terminal and has no result by design (#109) — the agent never had a fair
+    attempt, so nothing of its was graded. Without this, every read of it fell through to the
+    "terminal-but-ungraded" branch: a 202 "grading" that never resolves, plus a re-drive of the
+    grade it must not have. 200, not 202: this is an answer, not progress — a poll loop must stop.
+    Carries the trigger and the recorded reason so the caller can say WHY there is no score."""
+    is_term, trigger, _ = runs.terminal_state(run_id)
+    if not is_term or trigger not in UNGRADED_TRIGGERS:
+        return None
+    run = runs.get(run_id)
+    return JSONResponse(
+        status_code=200,
+        content={
+            "run_id": run_id,
+            "status": "not_graded",
+            "terminal_trigger": trigger,
+            "detail": run.terminal_detail if run is not None else None,
+        },
+    )
 
 
 class RunResultView(BaseModel):
@@ -239,7 +263,8 @@ def regrade_run(run_id: str, background: BackgroundTasks) -> JSONResponse:
     Drops the recorded result and schedules a fresh grade off the request thread (the judge can be
     slow); the new result surfaces via the SAME `202 grading → grade` poll the initial grade uses,
     so the client needs no new state machine. De-duplicated, so a double click grades once. 404 if
-    the run is unknown; 409 if it has not reached a terminal state (nothing is sealed to grade yet).
+    the run is unknown; 409 if it has not reached a terminal state (nothing is sealed to grade yet),
+    or if it ended on an environment failure (`deploy_failed` / `crashed`), which is never graded.
     """
     run = runs.get(run_id)
     if run is None:
@@ -249,6 +274,15 @@ def regrade_run(run_id: str, background: BackgroundTasks) -> JSONResponse:
             status_code=409,
             detail=(
                 f"run '{run_id}' has not finished (state: {run.state}) — nothing to re-evaluate yet"
+            ),
+        )
+    if run.terminal_trigger in UNGRADED_TRIGGERS:
+        # Re-grading would record exactly the phantom score the terminal path declined to (#109).
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"run '{run_id}' ended {run.terminal_trigger} — its environment failed, so the "
+                f"agent never had a fair attempt and there is nothing to grade"
             ),
         )
     from xorcise.core.rest.run_terminate import ensure_graded_async
@@ -734,6 +768,10 @@ def run_result(
     transient state, NOT a failure. Unknown run → 404; terminal-but-ungraded → 202
     {"status": "grading"}; still-active run → 409 (no result to read yet).
 
+    A run that ended on an environment failure (`deploy_failed` / `crashed`) is never graded — the
+    agent never had a fair attempt — so it answers a FINAL 200 {"status": "not_graded",
+    "terminal_trigger", "detail"} instead of a "grading" that would never resolve.
+
     A terminal-ungraded run also RE-DRIVES grading here (ensure_graded_async): if the grade was
     lost to a server restart or a hung judge call, polling the result heals it rather than spinning
     at "grading" forever (de-duplicated, so the poll loop triggers one grade, not one per poll).
@@ -742,6 +780,8 @@ def run_result(
     if grade is None:
         if runs.get(run_id) is None:
             raise HTTPException(status_code=404, detail=f"no run '{run_id}'")
+        if (not_graded := _not_graded(run_id)) is not None:
+            return not_graded
         if runs.terminal_state(run_id)[0]:
             from xorcise.core.rest.run_terminate import ensure_graded_async
 
@@ -796,7 +836,8 @@ def run_report(run_id: str, background: BackgroundTasks, format: str = "md") -> 
 
     Mirrors /result's state ladder exactly, so a caller polling for a report sees the same
     transitions it already handles: unknown run → 404; terminal-but-ungraded → 202
-    {"status": "grading"}; still-active run → 409. An unsupported `format` → 422.
+    {"status": "grading"}; ended on an environment failure → 200 {"status": "not_graded"};
+    still-active run → 409. An unsupported `format` → 422.
     Content-Disposition is `attachment`, so a browser downloads rather than renders it.
     """
     if format not in ("md", "html"):
@@ -809,6 +850,8 @@ def run_report(run_id: str, background: BackgroundTasks, format: str = "md") -> 
     if ctx is None:
         if runs.get(run_id) is None:
             raise HTTPException(status_code=404, detail=f"no run '{run_id}'")
+        if (not_graded := _not_graded(run_id)) is not None:
+            return not_graded
         if runs.terminal_state(run_id)[0]:
             from xorcise.core.rest.run_terminate import ensure_graded_async
 
@@ -845,6 +888,8 @@ def run_stats(run_id: str, background: BackgroundTasks) -> RunStats | JSONRespon
     if run is None:
         raise HTTPException(status_code=404, detail=f"no run '{run_id}'")
     if reporting.get_result(run_id) is None:
+        if (not_graded := _not_graded(run_id)) is not None:
+            return not_graded
         if runs.terminal_state(run_id)[0]:
             from xorcise.core.rest.run_terminate import ensure_graded_async
 

@@ -3,9 +3,10 @@
 CLI half of the Results page's agent leaderboard: fold GET /runs (terminal runs) plus each run's
 GET /runs/{id}/result into one row per agent, entirely client-side — no new backend surface.
 
-Scoring mirrors the GUI aggregation (frontend summarize-runs.ts): a PARTIAL run (timeout
-/ budget / operator kill) did not end on the agent's own terms, so it never counts toward the
-score aggregates — but it still counts in the run totals and the partial rate.
+Scoring mirrors the GUI aggregation (frontend summarize-runs.ts): a PARTIAL run (budget timeout
+or operator kill) did not end on the agent's own terms, so it never counts toward the score
+aggregates — but it still counts in the run totals and the partial rate. A run whose environment
+failed (deploy_failed / crashed) has no score at all: it counts in the run totals and nowhere else.
 """
 
 from __future__ import annotations
@@ -24,11 +25,7 @@ from xorcise.core.cli._ux import (
 )
 from xorcise.core.cli.commands.run import judge_degraded
 from xorcise.core.cli.rest_client import RestClient
-
-# How a terminal run ended, per the run-control vocabulary (mirrors the GUI's run-state map).
-# The "finished on the agent's own terms" half is COMPLETED_TRIGGERS, shared from _ux so this
-# view and `run export --genuine-only` cannot drift into two definitions of a genuine run.
-_PARTIAL_TRIGGERS = frozenset({"timeout", "budget"})
+from xorcise.core.contracts.run import PARTIAL_TRIGGERS
 
 
 def _agent_names(client: RestClient) -> dict[str, str]:
@@ -44,7 +41,10 @@ def _flatten(run: dict[str, Any], result: dict[str, Any] | None) -> dict[str, An
     # (always present) so an ungraded run still classifies.
     partial = (result or {}).get("partial")
     if partial is None:
-        partial = trigger in _PARTIAL_TRIGGERS
+        # The server's own rule, imported rather than restated: a private copy here listed a
+        # "budget" trigger nothing writes and missed "operator", so an operator kill on an
+        # ungraded run counted as genuine (#159).
+        partial = trigger in PARTIAL_TRIGGERS
     return {
         "agent_id": run.get("agent_id"),
         "overall": grade.get("overall"),
@@ -127,8 +127,9 @@ def leaderboard(
 
     Aggregates every finished run and its recorded result: runs, scored runs, \
 average and best overall, completion + partial rate, and the last run. \
-Partial runs (timeout / budget / kill) are excluded from the score \
-aggregates but still counted in the totals.
+Partial runs (budget timeout or operator stop) are excluded from the score \
+aggregates but still counted in the totals; runs whose environment failed \
+are never graded and count only in the totals.
     """
     client = RestClient()
     runs: list[dict[str, Any]] = client.get("/runs")

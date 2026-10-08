@@ -303,3 +303,51 @@ def test_terminate_run_absent_run_returns_empty_no_seal_no_record(migrated_home)
     assert result == ""
     assert SqliteSealStore().is_sealed("ghost-run") is False
     assert len(reporting.agent_history("a1")) == baseline
+
+
+@pytest.mark.parametrize("trigger", ["deploy_failed", "crashed"])
+def test_environment_failure_is_sealed_and_torn_down_but_never_graded(
+    migrated_home, monkeypatch, trigger
+) -> None:
+    """#109: a run whose environment failed (the readiness gate's deploy_failed, the boot
+    reconcile's crashed) never gave the agent a fair attempt, so a 0.00 recorded against it is
+    a phantom score — it averaged into the leaderboard as though the agent had tried and failed.
+    No result is recorded; the evidence is still sealed and the environment still released."""
+    import xorcise.core.rest.run_teardown as run_teardown
+    from xorcise.core.otel.store import SqliteSealStore
+    from xorcise.core.rest.run_terminate import terminate_run
+
+    torn: list[str] = []
+    monkeypatch.setattr(run_teardown, "teardown_run", lambda rid: torn.append(rid))
+
+    r = runs.create_run(agent_id="a1", mission="c", budget_seconds=600)
+    assert terminate_run(r.run_id, trigger, _now()) == trigger
+    assert reporting.get_result(r.run_id) is None
+    assert reporting.agent_history("a1") == []
+    assert SqliteSealStore().is_sealed(r.run_id) is True
+    assert torn == [r.run_id]
+
+
+def test_boot_regrade_sweep_leaves_a_crashed_run_ungraded(migrated_home) -> None:
+    """#109, the boot path: reconcile marks an unrecoverable run `crashed` WITHOUT grading — and
+    the orphaned-grade sweep that runs right after it on the same boot read "terminal, no result"
+    as a grade lost to a restart and graded it anyway, recording the phantom 0.00 reconcile had
+    just declined to record."""
+    from xorcise.core.rest.run_terminate import regrade_orphaned_terminal_runs
+
+    r = runs.create_run(agent_id="a1", mission="c", budget_seconds=600)
+    runs.mark_terminal(r.run_id, "crashed", _now())
+    assert regrade_orphaned_terminal_runs() == 0
+    assert reporting.get_result(r.run_id) is None
+
+
+@pytest.mark.parametrize("trigger", ["deploy_failed", "crashed"])
+def test_ensure_graded_async_does_not_redrive_an_ungraded_run(migrated_home, trigger) -> None:
+    """The read-path self-heal must not grade what the terminal path deliberately did not."""
+    from xorcise.core.rest.run_terminate import ensure_graded_async
+
+    r = runs.create_run(agent_id="a1", mission="c", budget_seconds=600)
+    runs.mark_terminal(r.run_id, trigger, _now())
+    scheduled: list[object] = []
+    assert ensure_graded_async(r.run_id, scheduled.append) is False
+    assert scheduled == []

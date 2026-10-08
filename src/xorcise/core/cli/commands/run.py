@@ -484,6 +484,10 @@ def run_status(
         # block is additive so existing consumers keep working.
         emit_json({**r, "telemetry": telemetry} if telemetry is not None else r)
         return
+    if r.get("status") == "not_graded":
+        # Final, not progress: exit 0 so a `while … run status` poll stops here.
+        _print_not_graded(run_id, r)
+        return
     if r.get("status") == "grading":
         # Terminal but not graded yet — grading is async after /complete.
         console.print(
@@ -532,6 +536,9 @@ pass --no-wait to return on the ack.
             f"[value]xorcise run status {short_id(run_id)}[/value] shortly"
         )
         raise typer.Exit(3)
+    if r.get("status") == "not_graded":
+        _print_not_graded(run_id, r)
+        return
     _render_result(r)
 
 
@@ -571,6 +578,9 @@ the fresh grade lands and prints it; pass --no-wait to return on the ack.
             f"[value]xorcise run status {short_id(run_id)}[/value] shortly"
         )
         raise typer.Exit(3)
+    if r.get("status") == "not_graded":
+        _print_not_graded(run_id, r)
+        return
     _render_result(r, verbose=verbose)
 
 
@@ -616,6 +626,34 @@ def _is_grading_envelope(body: str) -> bool:
     """
     head = body.lstrip()[:200]
     return head.startswith("{") and '"grading"' in head
+
+
+def _not_graded_envelope(body: str) -> dict[str, Any] | None:
+    """The server's final "not graded" answer for a run whose environment failed, else None.
+
+    Unlike "grading" this is not a state to wait out: a deploy_failed or crashed run is never
+    graded (#109), so `run report` and the bulk export must say why instead of writing it to disk.
+    Parsed rather than sniffed, because the envelope carries the trigger and the reason."""
+    if not body.lstrip().startswith("{"):
+        return None
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return None
+    if isinstance(parsed, dict) and parsed.get("status") == "not_graded":
+        return parsed
+    return None
+
+
+def _print_not_graded(run_id: str, envelope: dict[str, Any]) -> None:
+    """Say plainly that a run has no score and why — never a 0.00 that reads as a real attempt."""
+    trigger = envelope.get("terminal_trigger") or "an environment failure"
+    console.print(
+        f"[warn]not graded[/] — run {short_id(run_id)} ended {escape(str(trigger))}: its "
+        "environment failed, so the agent never had a fair attempt and no score was recorded"
+    )
+    if envelope.get("detail"):
+        console.print(f"  [dim]{escape(str(envelope['detail']))}[/dim]")
 
 
 def select_runs_for_export(
@@ -892,6 +930,9 @@ when you need the tree to contain only this export.
     written = 0
     skipped: list[tuple[str, str]] = []
     pending: list[str] = []  # terminal but not yet graded — a retry, not a failure
+    # Environment failures (deploy_failed / crashed): never graded, so there is no report to
+    # export — named, but neither a failure to fix nor a state to wait out.
+    ungraded: list[tuple[str, str]] = []
     stopped: tuple[str, int] | None = None  # the run in hand when a service-wide failure ended it
     for row in selected:
         rid = str(row["run_id"])
@@ -909,6 +950,9 @@ when you need the tree to contain only this export.
             # {"status":"grading"}. Skip the run instead; it exports cleanly once graded.
             if _is_grading_envelope(report):
                 pending.append(short_id(rid))
+                continue
+            if (not_graded := _not_graded_envelope(report)) is not None:
+                ungraded.append((short_id(rid), str(not_graded.get("terminal_trigger") or "")))
                 continue
             # Fetch all FOUR before creating the directory. Writing the report first left a
             # directory holding report.md alone whenever a later document failed — and anything
@@ -966,11 +1010,16 @@ when you need the tree to contain only this export.
     console.print(f"exported {written} run(s) to {root}")
     for rid in pending:
         err_console.print(f"[warn]not yet graded[/] {rid}: re-run the export once grading finishes")
+    for rid, trigger in ungraded:
+        err_console.print(
+            f"[warn]not graded[/] {rid}: ended {escape(trigger)} — its environment failed, so it "
+            "has no score or report to export"
+        )
     for rid, why in skipped:
         err_console.print(f"[warn]skipped[/] {rid}: {escape(why)}")
     if stopped is not None:
         rid, code = stopped
-        remaining = len(selected) - written - len(skipped) - len(pending) - 1
+        remaining = len(selected) - written - len(skipped) - len(pending) - len(ungraded) - 1
         err_console.print(
             f"[warn]stopped[/] at {rid}: {remaining} further run(s) were not attempted — a "
             "failure this command cannot pin on one document is not retried per run"
@@ -1026,6 +1075,10 @@ this reports.
             f"ready yet; re-run [value]xorcise run report {short_id(run_id)}[/value] shortly"
         )
         raise typer.Exit(3)
+    # Final: there is no report to write, ever — exit 1, since the file asked for was not made.
+    if (not_graded := _not_graded_envelope(body)) is not None:
+        _print_not_graded(run_id, not_graded)
+        raise typer.Exit(1)
     path = Path(out) if out else Path(f"xorcise-run-{run_id[:8]}.{fmt}")
     try:
         path.write_text(body, encoding="utf-8")

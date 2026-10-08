@@ -636,3 +636,47 @@ def test_a_scored_degraded_run_is_still_counted():
 
     assert summary["avg_overall"] == pytest.approx(0.5)
     assert summary["judge_degraded"] == 1
+
+
+@pytest.mark.parametrize("trigger", ["done", "operator", "timeout", "deploy_failed", "crashed"])
+def test_leaderboard_partial_fallback_agrees_with_the_server_for_every_trigger(
+    migrated_home, trigger
+) -> None:
+    """#159: the leaderboard's fallback for a run with no recorded partial flag must classify every
+    trigger the server can write exactly as the server's own grading does. A private copy of the
+    rule listed a "budget" trigger nothing writes and missed "operator"."""
+    from datetime import UTC, datetime
+
+    from xorcise.core import reporting, runs
+    from xorcise.core.cli.commands.results import _flatten
+    from xorcise.core.rest.run_terminate import terminate_run
+
+    run = runs.create_run(agent_id="a1", mission="m", budget_seconds=60)
+    terminate_run(run.run_id, trigger, datetime(2026, 10, 8, tzinfo=UTC))
+    recorded = reporting.get_result(run.run_id)
+    server_partial = reporting.result_partial(run.run_id)[0] if recorded is not None else False
+
+    cli_partial = _flatten({"terminal_trigger": trigger, "agent_id": "a1"}, None)["partial"]
+    assert cli_partial == server_partial
+
+
+def test_leaderboard_counts_an_environment_failure_in_the_totals_only(monkeypatch):
+    """#109: a deploy_failed run is never graded — /result answers "not_graded" — so it counts as
+    a run, and lowers the completion rate, but never enters Avg/Best as a phantom 0.00."""
+    _wire(
+        monkeypatch,
+        runs=[_run("r1", "a1", "done"), _run("r2", "a1", "deploy_failed")],
+        results={
+            "r1": {"grade": {"overall": 0.8}, "partial": False},
+            "r2": {"run_id": "r2", "status": "not_graded", "terminal_trigger": "deploy_failed"},
+        },
+        agents=[{"id": "a1", "name": "alpha"}],
+    )
+    result = runner.invoke(app, ["leaderboard", "--json"])
+    assert result.exit_code == 0
+    import json
+
+    (row,) = json.loads(result.stdout)
+    assert row["runs"] == 2 and row["scored"] == 1
+    assert row["avg_overall"] == 0.8
+    assert row["completion_rate"] == 0.5 and row["partial_rate"] == 0.0

@@ -730,3 +730,52 @@ def test_run_report_active_run_is_409(migrated_home):
     r = _client().get(f"/api/runs/{run.run_id}/report")
     assert r.status_code == 409
     assert "not terminal yet" in r.json()["detail"]
+
+
+def _environment_failed_run(home: Path, name: str, trigger: str) -> str:
+    from datetime import UTC, datetime
+
+    from xorcise.core import agents, runs
+
+    if not (home / "missions" / "c1").exists():
+        _install_mission(home, "c1")
+    agent = agents.register(name, endpoint="http://env")
+    run = runs.create_run(
+        agent_id=agent.id, mission="c1", run_id=f"run-{name}", run_control_key="K"
+    )
+    runs.mark_terminal(run.run_id, trigger, datetime.now(UTC), "environment never came up")
+    return run.run_id
+
+
+def test_environment_failure_answers_not_graded_on_every_read(migrated_home, monkeypatch):
+    """#109: a deploy_failed / crashed run is never graded, so /result, /report and /stats must
+    give a FINAL answer naming why — not the 202 "grading" a poll loop would wait on forever —
+    and must not re-drive the grade the terminal path deliberately skipped."""
+    import xorcise.core.rest.run_terminate as rt
+
+    redriven: list[str] = []
+    monkeypatch.setattr(rt, "grade_and_record", redriven.append)
+    for trigger in ("deploy_failed", "crashed"):
+        run_id = _environment_failed_run(migrated_home, f"envfail-{trigger}", trigger)
+        expected = {
+            "run_id": run_id,
+            "status": "not_graded",
+            "terminal_trigger": trigger,
+            "detail": "environment never came up",
+        }
+        for path in ("result", "report", "stats"):
+            r = _client().get(f"/api/runs/{run_id}/{path}")
+            assert r.status_code == 200, (trigger, path)
+            assert r.json() == expected, (trigger, path)
+    assert redriven == []
+
+
+def test_regrade_refuses_an_environment_failure(migrated_home):
+    """Re-grading would record exactly the phantom 0.00 the terminal path declined to."""
+    from xorcise.core import reporting
+
+    run_id = _environment_failed_run(migrated_home, "envfail-regrade", "deploy_failed")
+    r = _client().post(f"/api/runs/{run_id}/regrade")
+    assert r.status_code == 409
+    assert "deploy_failed" in r.json()["detail"]
+    assert reporting.get_result(run_id) is None

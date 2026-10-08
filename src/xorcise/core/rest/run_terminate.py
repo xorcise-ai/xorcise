@@ -14,6 +14,7 @@ from collections.abc import Callable
 from datetime import datetime
 
 from xorcise.core import reporting, runs
+from xorcise.core.contracts.run import PARTIAL_TRIGGERS, UNGRADED_TRIGGERS
 from xorcise.core.runcontrol.errors import MissionOverError
 
 log = logging.getLogger(__name__)
@@ -183,8 +184,9 @@ def ensure_graded_async(run_id: str, schedule: Callable[[Callable[[], None]], No
     dependency and unit tests can drive it synchronously."""
     if runs.get(run_id) is None:
         return False
-    if not runs.terminal_state(run_id)[0]:
-        return False
+    is_term, trigger, _ = runs.terminal_state(run_id)
+    if not is_term or trigger in UNGRADED_TRIGGERS:
+        return False  # nothing to grade yet — or, for an environment failure, ever
     if reporting.get_result(run_id) is not None:
         return False
     # Read-only fast path: the slot itself is claimed by grade_and_record (so EVERY scheduling
@@ -205,7 +207,15 @@ def regrade_orphaned_terminal_runs() -> int:
     a grading crash). Returns the count re-graded, for the boot log + tests."""
     healed = 0
     for run in runs.list_runs():
-        if runs.terminal_state(run.run_id)[0] and reporting.get_result(run.run_id) is None:
+        is_term, trigger, _ = runs.terminal_state(run.run_id)
+        # An environment failure is terminal and ungraded BY DESIGN, not by a lost grade. Reconcile
+        # aborts a crashed run without grading earlier on this very boot, and this sweep used to
+        # read that as a lost grade and record the phantom 0.00 reconcile had declined to (#109).
+        if (
+            is_term
+            and trigger not in UNGRADED_TRIGGERS
+            and reporting.get_result(run.run_id) is None
+        ):
             log.info("regrade: %s is terminal but ungraded (grade lost to a stop)", run.run_id)
             grade_and_record(run.run_id)
             healed += 1
@@ -260,6 +270,13 @@ def _grade_run(run_id: str) -> None:
         # Keep OTLP open for a bounded grace period, then freeze the exact input the grader sees.
         if _drain_and_seal_telemetry(run_id):
             _warn_if_evidence_moved(run_id)
+        if recorded in UNGRADED_TRIGGERS:
+            # The environment failed, so the agent never had a fair attempt: there is nothing of
+            # the agent's to grade, and a 0.00 would average into its track record as though it
+            # had tried and failed (#109). Sealed above and released by the finally below — the
+            # evidence of WHY is the run's terminal_detail, not a score.
+            log.info("not grading %s: it ended %s (the environment failed)", run_id, recorded)
+            return
         # Lazy: grade_assembly keeps otel off the import path (plane-isolation invariant).
         # model=None → build_eval_judge reads the BYOM key from settings; returns None when
         # unconfigured so the judge half degrades cleanly.
@@ -302,7 +319,7 @@ def _grade_run(run_id: str) -> None:
         # a run that did not end on the agent's own terms is "partial" and must not count
         # as a genuine result against the agent — a budget "timeout" or an operator's manual kill.
         # Only the agent's own "done" completion is a full result.
-        partial = recorded in ("timeout", "operator")
+        partial = recorded in PARTIAL_TRIGGERS
         # Per-run telemetry snapshot (run-report): fold the event projection once here and
         # persist it beside the grade. Agent-self-reported display data — never an observed fact,
         # never a grading input. Best-effort: a fold/projection failure must never break

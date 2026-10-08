@@ -7,6 +7,25 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+# How a terminal run ended — the ONE vocabulary every surface classifies by. Every terminal_trigger
+# write goes through runs.mark_terminal, and these five are the only literals ever passed to it: a
+# budget kill is recorded as "timeout" (there is no "budget" trigger). Server grading, the CLI
+# leaderboard and `run export --genuine-only` all import from here, because two copies of this
+# rule is how the leaderboard came to disagree with the server about which runs count (#159).
+
+#: The agent's environment failed, so the agent never had a fair attempt: the readiness gate's
+#: close-out (`deploy_failed`) and the boot reconcile's abort (`crashed`). Never graded — a 0.00
+#: here is a phantom score against the agent for our own infrastructure failure (#109).
+UNGRADED_TRIGGERS: frozenset[str] = frozenset({"deploy_failed", "crashed"})
+
+#: Graded, but the run did not end on the agent's own terms — a budget timeout or an operator's
+#: kill. Recorded with `partial=True` and left out of every score aggregate.
+PARTIAL_TRIGGERS: frozenset[str] = frozenset({"timeout", "operator"})
+
+#: Finished on the agent's own terms. `completed` has never been written by any server; it stays
+#: for parity with run_state_label and the GUI's run-state map, which both accept it.
+COMPLETED_TRIGGERS: frozenset[str] = frozenset({"done", "completed"})
+
 
 class RunCreate(BaseModel):
     """Create request: the registered agent's name + the mission ref.
