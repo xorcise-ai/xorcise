@@ -179,10 +179,42 @@ describe("the announcements query fires exactly once per document load", () => {
     expect(calls).toBe(1);
   });
 
-  it("does not retry a failing endpoint, against the app's real QueryClient", async () => {
-    // `retry: false` is part of the same contract, not error handling: the backend answers
-    // 200 with an empty list for every failure it can absorb, so a non-200 is not a condition
-    // a retry improves — it is just a second request.
+  it("recovers when the local server was only briefly unavailable", async () => {
+    // The failure this exists for: `xorcise down && xorcise up` under an open tab, or the UI
+    // loading a moment before the REST plane is ready. Without a retry that tab shows no
+    // announcements for the life of the document — silently, because an absent banner is
+    // indistinguishable from nothing being published (#162).
+    let calls = 0;
+    server.use(
+      http.get("*/api/announcements", () => {
+        calls += 1;
+        if (calls === 1) return HttpResponse.json({ detail: "server restarting" }, { status: 500 });
+        return HttpResponse.json({
+          announcements: [
+            {
+              id: "a1",
+              revision: 1,
+              placement: "catalog",
+              tone: "information",
+              body_md: "back after the restart",
+              dismissible: true,
+            } satisfies Announcement,
+          ],
+        });
+      }),
+    );
+
+    serveCatalog();
+    renderWithProductionClient(bothPlacements);
+
+    expect(await screen.findByTestId("announcement-banner-catalog")).toBeInTheDocument();
+    expect(calls).toBeGreaterThan(1);
+  });
+
+  it("stops after a bounded number of attempts against an endpoint that stays down", async () => {
+    // Bounded, not unbounded: a few attempts ride out a restart, and then it stays absorbed.
+    // This is the half of the contract that keeps the feature from becoming a poller against a
+    // server that is genuinely gone.
     //
     // Rendered through `makeQueryClient()`, the client the app actually ships, because that
     // is the one that sets `retry: 1`. The test harness's client sets `retry: false` itself,
@@ -201,17 +233,21 @@ describe("the announcements query fires exactly once per document load", () => {
 
     // The catalog renders, so the page is alive; the banner simply never appears.
     expect(await screen.findByRole("tab", { name: /XORCISE Remote/i })).toBeInTheDocument();
-    await waitFor(() => expect(calls).toBe(1));
+    await waitFor(() => expect(calls).toBeGreaterThan(1));
 
     await act(async () => {
       window.dispatchEvent(new Event("focus"));
       window.dispatchEvent(new Event("online"));
     });
 
-    // The retry the default would have scheduled is due by now if it was ever scheduled.
+    await flushRetries();
+    const settled = calls;
     await flushRetries();
 
-    expect(calls).toBe(1);
+    // No further attempts once the bounded retries are spent — focus and reconnect above must
+    // not restart it either.
+    expect(calls).toBe(settled);
+    expect(settled).toBeLessThanOrEqual(4);
     expect(screen.queryByTestId("announcement-banner-application")).not.toBeInTheDocument();
     expect(screen.queryByTestId("announcement-banner-catalog")).not.toBeInTheDocument();
   });
