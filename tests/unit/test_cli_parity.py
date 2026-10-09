@@ -661,8 +661,9 @@ def test_leaderboard_partial_fallback_agrees_with_the_server_for_every_trigger(
 
 
 def test_leaderboard_counts_an_environment_failure_in_the_totals_only(monkeypatch):
-    """#109: a deploy_failed run is never graded — /result answers "not_graded" — so it counts as
-    a run, and lowers the completion rate, but never enters Avg/Best as a phantom 0.00."""
+    """#109: a deploy_failed run is never graded — /result answers "not_graded". It counts in Runs
+    and its own infra_failed count, and nowhere else: not in Avg/Best as a phantom 0.00, and not in
+    the completion or partial rate, which are over the agent's attempts — and it was not one."""
     _wire(
         monkeypatch,
         runs=[_run("r1", "a1", "done"), _run("r2", "a1", "deploy_failed")],
@@ -679,4 +680,7 @@ def test_leaderboard_counts_an_environment_failure_in_the_totals_only(monkeypatc
     (row,) = json.loads(result.stdout)
     assert row["runs"] == 2 and row["scored"] == 1
     assert row["avg_overall"] == 0.8
-    assert row["completion_rate"] == 0.5 and row["partial_rate"] == 0.0
+    assert row["infra_failed"] == 1
+    assert row["completion_rate"] == 1.0 and row["partial_rate"] == 0.0
+    table = runner.invoke(app, ["leaderboard"])
+    assert "Infra failed" in table.stdout

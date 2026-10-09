@@ -19,7 +19,7 @@ export type RunResultView = S["RunResultView"];
 export type RunStats = S["RunStats"];
 
 /** The FINAL answer /result, /report and /stats give for a run whose environment failed
- *  (`deploy_failed` / `crashed`): never graded, because the agent never had a fair attempt.
+ *  (`deploy_failed` / `crashed`): never graded, because the failure is not the agent's.
  *  Not in the generated schema — like the 202 "grading" placeholder it is a bare JSON body. */
 export type NotGradedView = {
   run_id: string;

@@ -1070,8 +1070,8 @@ export interface paths {
          *     transient state, NOT a failure. Unknown run → 404; terminal-but-ungraded → 202
          *     {"status": "grading"}; still-active run → 409 (no result to read yet).
          *
-         *     A run that ended on an environment failure (`deploy_failed` / `crashed`) is never graded — the
-         *     agent never had a fair attempt — so it answers a FINAL 200 {"status": "not_graded",
+         *     A run cut short by an environment failure (`deploy_failed` / `crashed`) is never graded — the
+         *     failure is not the agent's — so it answers a FINAL 200 {"status": "not_graded",
          *     "terminal_trigger", "detail"} instead of a "grading" that would never resolve.
          *
          *     A terminal-ungraded run also RE-DRIVES grading here (ensure_graded_async): if the grade was

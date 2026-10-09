@@ -24,7 +24,6 @@ from xorcise.core.cli._resolve import (
 )
 from xorcise.core.cli._shared import EXIT_CODES_EPILOG, app, console, emit_json, err_console
 from xorcise.core.cli._ux import (
-    COMPLETED_TRIGGERS,
     DASH,
     confirm_or_abort,
     fail,
@@ -38,6 +37,7 @@ from xorcise.core.cli._ux import (
     ux_table,
 )
 from xorcise.core.cli.rest_client import DocumentUnavailable, RestClient
+from xorcise.core.contracts.run import COMPLETED_TRIGGERS
 from xorcise.core.reporting.render import _SEAL_MISMATCH, agent_model_line
 
 run_app = typer.Typer(
@@ -649,8 +649,8 @@ def _print_not_graded(run_id: str, envelope: dict[str, Any]) -> None:
     """Say plainly that a run has no score and why — never a 0.00 that reads as a real attempt."""
     trigger = envelope.get("terminal_trigger") or "an environment failure"
     console.print(
-        f"[warn]not graded[/] — run {short_id(run_id)} ended {escape(str(trigger))}: its "
-        "environment failed, so the agent never had a fair attempt and no score was recorded"
+        f"[warn]not graded[/] — run {short_id(run_id)} ended {escape(str(trigger))}: it was cut "
+        "short by an environment failure, so it is not scored or counted in any average"
     )
     if envelope.get("detail"):
         console.print(f"  [dim]{escape(str(envelope['detail']))}[/dim]")
@@ -838,6 +838,10 @@ bundled seal is RECORDED, not verified: checking it re-hashes a run's whole evid
 batch would pay once per run, so `evidence_verified` is null throughout. Use \
 `xorcise run status <id>` or the report to get a verdict on one run.
 
+    A run cut short by an environment failure (deploy_failed / crashed) is never graded, so its \
+directory has no report: `result.json` holds the server's "not_graded" answer with the reason, \
+beside the traces and events that show what went wrong. Such runs are named on stderr.
+
     Only finished runs are exported; an active one has no sealed record yet. \
 A run whose OWN document answers an error — a 404 or a 500 on that run's report, result, \
 trace or events — is reported and skipped rather than aborting the batch, so one bad run does \
@@ -930,8 +934,9 @@ when you need the tree to contain only this export.
     written = 0
     skipped: list[tuple[str, str]] = []
     pending: list[str] = []  # terminal but not yet graded — a retry, not a failure
-    # Environment failures (deploy_failed / crashed): never graded, so there is no report to
-    # export — named, but neither a failure to fix nor a state to wait out.
+    # Runs cut short by an environment failure (deploy_failed / crashed): never graded, so there
+    # is no report — but their traces and events are exactly the evidence of what went wrong, so
+    # they ARE exported, without report.<fmt>. Named in the summary; not a failure, not pending.
     ungraded: list[tuple[str, str]] = []
     stopped: tuple[str, int] | None = None  # the run in hand when a service-wide failure ended it
     for row in selected:
@@ -951,15 +956,13 @@ when you need the tree to contain only this export.
             if _is_grading_envelope(report):
                 pending.append(short_id(rid))
                 continue
-            if (not_graded := _not_graded_envelope(report)) is not None:
-                ungraded.append((short_id(rid), str(not_graded.get("terminal_trigger") or "")))
-                continue
-            # Fetch all FOUR before creating the directory. Writing the report first left a
+            not_graded = _not_graded_envelope(report)
+            # Fetch every document before creating the directory. Writing the report first left a
             # directory holding report.md alone whenever a later document failed — and anything
             # globbing <out>/*/ reads that as an exported run. Dict values evaluate in order, so
             # every fetch is done before the first mkdir.
-            bodies = {
-                f"report.{fmt}": report,
+            bodies: dict[str, str] = {} if not_graded is not None else {f"report.{fmt}": report}
+            bodies |= {
                 # The machine-readable half of the bundle: the server's /result envelope as it
                 # returns it, carrying the grade AND the evidence seal (evidence_digest +
                 # evidence_verified). Without it the seal reaches the tree only as sixteen
@@ -984,6 +987,8 @@ when you need the tree to contain only this export.
                 ),
             }
             _publish(bodies, target)
+            if not_graded is not None:
+                ungraded.append((short_id(rid), str(not_graded.get("terminal_trigger") or "")))
         except DocumentUnavailable as exc:
             # ONE run's document answered an error status that is about that document (a 404, a
             # 500). `_send` exits the process for any error status — right for a single-run
@@ -1012,14 +1017,14 @@ when you need the tree to contain only this export.
         err_console.print(f"[warn]not yet graded[/] {rid}: re-run the export once grading finishes")
     for rid, trigger in ungraded:
         err_console.print(
-            f"[warn]not graded[/] {rid}: ended {escape(trigger)} — its environment failed, so it "
-            "has no score or report to export"
+            f"[warn]not graded[/] {rid}: ended {escape(trigger)} — cut short by an environment "
+            "failure, so it has no score; exported without a report"
         )
     for rid, why in skipped:
         err_console.print(f"[warn]skipped[/] {rid}: {escape(why)}")
     if stopped is not None:
         rid, code = stopped
-        remaining = len(selected) - written - len(skipped) - len(pending) - len(ungraded) - 1
+        remaining = len(selected) - written - len(skipped) - len(pending) - 1
         err_console.print(
             f"[warn]stopped[/] at {rid}: {remaining} further run(s) were not attempted — a "
             "failure this command cannot pin on one document is not retried per run"

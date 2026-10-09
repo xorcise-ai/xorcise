@@ -338,6 +338,11 @@ describe("ResultsView", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText(/grading in progress/i)).not.toBeInTheDocument();
     expect(screen.queryByText("Overall")).not.toBeInTheDocument();
+    // The evidence and the delete stay reachable; re-grading (refused) does not.
+    expect(screen.getByRole("button", { name: /delete/i })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /re-evaluate/i }),
+    ).not.toBeInTheDocument();
     expect(polls).toBe(1);
   });
 

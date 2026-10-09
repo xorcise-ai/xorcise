@@ -451,6 +451,7 @@ def test_run_state_labels_mirror_the_gui_vocabulary():
     assert run_state_label("terminal", "done") == "Completed"
     assert run_state_label("terminal", "timeout") == "Timed out"
     assert run_state_label("terminal", "crashed") == "Crashed"
+    assert run_state_label("terminal", "deploy_failed") == "Deploy failed"
     assert run_state_label("terminal", "operator") == "Terminated"
     assert run_state_label("terminal", "budget") == "Partial"
     assert run_state_label("terminal", "error") == "Failed"

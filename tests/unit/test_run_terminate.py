@@ -305,40 +305,60 @@ def test_terminate_run_absent_run_returns_empty_no_seal_no_record(migrated_home)
     assert len(reporting.agent_history("a1")) == baseline
 
 
-@pytest.mark.parametrize("trigger", ["deploy_failed", "crashed"])
-def test_environment_failure_is_sealed_and_torn_down_but_never_graded(
-    migrated_home, monkeypatch, trigger
-) -> None:
-    """#109: a run whose environment failed (the readiness gate's deploy_failed, the boot
-    reconcile's crashed) never gave the agent a fair attempt, so a 0.00 recorded against it is
-    a phantom score — it averaged into the leaderboard as though the agent had tried and failed.
-    No result is recorded; the evidence is still sealed and the environment still released."""
+def test_deploy_failure_is_finalised_but_never_graded(migrated_home, monkeypatch) -> None:
+    """#109: a run cut short by an environment failure is not graded — its score could not count
+    in any aggregate, so the judge call buys nothing. Only the grade is skipped: the evidence is
+    sealed, the environment released and the events artifact exported, exactly as for a graded
+    run. Driven the way production drives it: the readiness gate calls terminate_run."""
+    import xorcise.core.rest.events_export as events_export
     import xorcise.core.rest.run_teardown as run_teardown
     from xorcise.core.otel.store import SqliteSealStore
     from xorcise.core.rest.run_terminate import terminate_run
 
     torn: list[str] = []
+    exported: list[str] = []
     monkeypatch.setattr(run_teardown, "teardown_run", lambda rid: torn.append(rid))
+    monkeypatch.setattr(events_export, "export_run_events", exported.append)
 
     r = runs.create_run(agent_id="a1", mission="c", budget_seconds=600)
-    assert terminate_run(r.run_id, trigger, _now()) == trigger
+    assert terminate_run(r.run_id, "deploy_failed", _now()) == "deploy_failed"
     assert reporting.get_result(r.run_id) is None
     assert reporting.agent_history("a1") == []
     assert SqliteSealStore().is_sealed(r.run_id) is True
     assert torn == [r.run_id]
+    assert exported == [r.run_id]
 
 
-def test_boot_regrade_sweep_leaves_a_crashed_run_ungraded(migrated_home) -> None:
-    """#109, the boot path: reconcile marks an unrecoverable run `crashed` WITHOUT grading — and
-    the orphaned-grade sweep that runs right after it on the same boot read "terminal, no result"
-    as a grade lost to a restart and graded it anyway, recording the phantom 0.00 reconcile had
-    just declined to record."""
+def test_boot_sweep_finalises_a_crashed_run_once_without_grading_it(
+    migrated_home, monkeypatch
+) -> None:
+    """#109, the boot path production actually takes: reconcile marks an unrecoverable run
+    `crashed` with a bare mark_terminal — no seal — and the orphaned-grade sweep runs next.
+
+    The sweep used to read "terminal, no result" as a lost grade and record a 0.00 against the
+    agent. It must not grade — but it is also the ONLY thing that ever seals a crashed run, so
+    skipping the run outright left it unsealed: late OTLP kept landing in a terminal run's record
+    and no evidence digest was taken. It finalises the run, once."""
+    import xorcise.core.rest.events_export as events_export
+    import xorcise.core.rest.run_teardown as run_teardown
+    from xorcise.core.otel.store import SqliteSealStore
     from xorcise.core.rest.run_terminate import regrade_orphaned_terminal_runs
 
+    torn: list[str] = []
+    exported: list[str] = []
+    monkeypatch.setattr(run_teardown, "teardown_run", lambda rid: torn.append(rid))
+    monkeypatch.setattr(events_export, "export_run_events", exported.append)
+
     r = runs.create_run(agent_id="a1", mission="c", budget_seconds=600)
-    runs.mark_terminal(r.run_id, "crashed", _now())
-    assert regrade_orphaned_terminal_runs() == 0
+    runs.mark_terminal(r.run_id, "crashed", _now())  # what reconcile._reconcile_one does
+    assert regrade_orphaned_terminal_runs() == 0  # nothing GRADED
     assert reporting.get_result(r.run_id) is None
+    assert SqliteSealStore().is_sealed(r.run_id) is True
+    assert exported == [r.run_id]
+
+    regrade_orphaned_terminal_runs()  # the next boot: already finalised, left alone
+    assert torn == [r.run_id]
+    assert exported == [r.run_id]
 
 
 @pytest.mark.parametrize("trigger", ["deploy_failed", "crashed"])

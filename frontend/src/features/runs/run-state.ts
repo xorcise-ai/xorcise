@@ -28,6 +28,38 @@ export function runStateMeta(
   return { label: state, variant: "muted" };
 }
 
+// How a terminal run counts, by its trigger — the same vocabulary as the server's
+// contracts/run.py, which is what grades and marks a result partial. Shared by every aggregate
+// (Results agents + missions, the Agents list, the dashboard) so none can re-derive it: four
+// private copies once listed a "budget" trigger nothing writes and missed "operator" (#159).
+const PARTIAL_TRIGGERS = new Set(["timeout", "operator"]);
+const UNGRADED_TRIGGERS = new Set(["deploy_failed", "crashed"]);
+const COMPLETED_TRIGGERS = new Set(["done", "completed"]);
+
+export interface RunCounting {
+  /** Did not end on the agent's own terms — excluded from Average / Best. */
+  partial: boolean;
+  /** Finished on the agent's own terms. */
+  completed: boolean;
+  /** Cut short by an environment failure: never graded, and not one of the agent's attempts,
+   *  so it is left out of every score AND rate and disclosed as its own count (#109). */
+  infraFailed: boolean;
+}
+
+/** Classify one terminal run for the aggregates. The result's recorded `partial` flag is
+ *  authoritative when present; the trigger is the fallback for a run still grading. */
+export function classifyRun(
+  trigger: string | null | undefined,
+  recordedPartial?: boolean | null,
+): RunCounting {
+  const t = trigger ?? "";
+  return {
+    partial: recordedPartial ?? PARTIAL_TRIGGERS.has(t),
+    completed: COMPLETED_TRIGGERS.has(t),
+    infraFailed: UNGRADED_TRIGGERS.has(t),
+  };
+}
+
 export function isTerminal(run: Pick<RunEntry, "state">): boolean {
   return run.state === "terminal";
 }

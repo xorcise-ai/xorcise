@@ -13,7 +13,7 @@ import { cn } from "@/components/ui/cn";
 import { Page, PageBody, PageHead, PageTitle } from "@/components/layout/page";
 import { useRuns } from "@/features/runs/queries";
 import { Facet } from "@/features/runs/run-filters";
-import { isTerminal } from "@/features/runs/run-state";
+import { classifyRun, isTerminal } from "@/features/runs/run-state";
 import { useRunResults } from "@/features/results/queries";
 import { PerformanceSummary } from "@/features/results/performance-summary";
 import {
@@ -106,16 +106,14 @@ export function AgentList() {
 
   const rows: AgentRunRow[] = terminal.map((r, i) => {
     const view = results[i]?.data;
-    const trigger = r.terminal_trigger;
-    const partial =
-      view?.partial ?? (trigger === "timeout" || trigger === "budget");
-    const completedOnOwnTerms = trigger === "done" || trigger === "completed";
+    // One shared classification (run-state.ts classifyRun): the result view's partial flag is
+    // authoritative; the trigger is the fallback while a result is still grading.
+    const counting = classifyRun(r.terminal_trigger, view?.partial);
     return {
       agentId: r.agent_id,
       agentName: r.agent_id, // name isn't needed here; cards key off the agent list
       overall: view?.grade?.overall ?? null,
-      partial,
-      completed: completedOnOwnTerms,
+      ...counting,
       when: r.completed_at ?? r.created_at,
     };
   });

@@ -5,8 +5,9 @@ GET /runs/{id}/result into one row per agent, entirely client-side — no new ba
 
 Scoring mirrors the GUI aggregation (frontend summarize-runs.ts): a PARTIAL run (budget timeout
 or operator kill) did not end on the agent's own terms, so it never counts toward the score
-aggregates — but it still counts in the run totals and the partial rate. A run whose environment
-failed (deploy_failed / crashed) has no score at all: it counts in the run totals and nowhere else.
+aggregates — but it still counts in the run totals and the partial rate. A run cut short by an
+environment failure (deploy_failed / crashed) has no score at all and is not one of the agent's
+attempts: it counts in the run totals and its own `infra_failed` count, and nowhere else.
 """
 
 from __future__ import annotations
@@ -17,7 +18,6 @@ import typer
 
 from xorcise.core.cli._shared import app, console, emit_json
 from xorcise.core.cli._ux import (
-    COMPLETED_TRIGGERS,
     DASH,
     humanize_when,
     print_table,
@@ -25,7 +25,7 @@ from xorcise.core.cli._ux import (
 )
 from xorcise.core.cli.commands.run import judge_degraded
 from xorcise.core.cli.rest_client import RestClient
-from xorcise.core.contracts.run import PARTIAL_TRIGGERS
+from xorcise.core.contracts.run import COMPLETED_TRIGGERS, PARTIAL_TRIGGERS, UNGRADED_TRIGGERS
 
 
 def _agent_names(client: RestClient) -> dict[str, str]:
@@ -54,6 +54,8 @@ def _flatten(run: dict[str, Any], result: dict[str, Any] | None) -> dict[str, An
         # but carries the condition so the ranking can disclose what it is made of.
         "judge_degraded": judge_degraded(grade),
         "completed": trigger in COMPLETED_TRIGGERS,
+        # Cut short by an environment failure: never graded, and not an attempt by the agent.
+        "infra_failed": trigger in UNGRADED_TRIGGERS,
         "when": run.get("completed_at") or run.get("created_at") or "",
     }
 
@@ -71,6 +73,11 @@ def summarize_by_agent(rows: list[dict[str, Any]], names: dict[str, str]) -> lis
     for agent_id, agent_rows in grouped.items():
         scored = [r["overall"] for r in agent_rows if not r["partial"] and r["overall"] is not None]
         total = len(agent_rows)
+        # The rates are over the agent's ATTEMPTS. A run our infrastructure cut short is not one:
+        # counting it would lower the agent's completion rate for a failure that is ours (#109).
+        # It stays in `runs` and is disclosed as its own count instead.
+        infra_failed = sum(1 for r in agent_rows if r.get("infra_failed"))
+        attempts = total - infra_failed
         summaries.append(
             {
                 "agent_id": agent_id,
@@ -89,11 +96,12 @@ def summarize_by_agent(rows: list[dict[str, Any]], names: dict[str, str]) -> lis
                     for r in agent_rows
                     if r.get("judge_degraded") and not r["partial"] and r["overall"] is not None
                 ),
+                "infra_failed": infra_failed,
                 "completion_rate": (
-                    sum(1 for r in agent_rows if r["completed"]) / total if total else None
+                    sum(1 for r in agent_rows if r["completed"]) / attempts if attempts else None
                 ),
                 "partial_rate": (
-                    sum(1 for r in agent_rows if r["partial"]) / total if total else None
+                    sum(1 for r in agent_rows if r["partial"]) / attempts if attempts else None
                 ),
                 "last_run": max((r["when"] for r in agent_rows if r["when"]), default=None),
             }
@@ -128,8 +136,9 @@ def leaderboard(
     Aggregates every finished run and its recorded result: runs, scored runs, \
 average and best overall, completion + partial rate, and the last run. \
 Partial runs (budget timeout or operator stop) are excluded from the score \
-aggregates but still counted in the totals; runs whose environment failed \
-are never graded and count only in the totals.
+aggregates but still counted in the totals. Runs cut short by an environment \
+failure are never graded: they count in Runs and are shown as Infra failed, \
+but are left out of every score and rate.
     """
     client = RestClient()
     runs: list[dict[str, Any]] = client.get("/runs")
@@ -154,6 +163,7 @@ are never graded and count only in the totals.
         "Best",
         "Completed",
         "Partial",
+        "Infra failed",
         "No judge",
         "Last run",
         title="Leaderboard",
@@ -168,10 +178,16 @@ are never graded and count only in the totals.
             _score(s["best_overall"]),
             _rate(s["completion_rate"]),
             _rate(s["partial_rate"]),
+            str(s["infra_failed"]) if s.get("infra_failed") else DASH,
             f"[warn]{degraded}[/warn]" if degraded else DASH,
             humanize_when(s["last_run"]),
         )
     print_table(table)
+    if any(s.get("infra_failed") for s in summaries):
+        console.print(
+            "[dim]'Infra failed' counts runs cut short by an environment failure — never graded, "
+            "and left out of Completed/Partial, which are over the agent's own attempts.[/dim]"
+        )
     if any(s.get("judge_degraded") for s in summaries):
         # The scores stay in the averages above, so without this line an agent ranked partly on
         # unjudged runs is indistinguishable from one graded end to end.

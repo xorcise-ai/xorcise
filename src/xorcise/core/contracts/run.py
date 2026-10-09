@@ -13,9 +13,11 @@ from pydantic import BaseModel
 # leaderboard and `run export --genuine-only` all import from here, because two copies of this
 # rule is how the leaderboard came to disagree with the server about which runs count (#159).
 
-#: The agent's environment failed, so the agent never had a fair attempt: the readiness gate's
-#: close-out (`deploy_failed`) and the boot reconcile's abort (`crashed`). Never graded — a 0.00
-#: here is a phantom score against the agent for our own infrastructure failure (#109).
+#: The run was cut short by an environment failure: the readiness gate's close-out
+#: (`deploy_failed`) and the boot reconcile's abort (`crashed`). Either can land before the lab is
+#: up or mid-run, after the agent has worked for a while. Never graded: the failure is ours, not
+#: the agent's, so no score from such a run may count in any aggregate — and a score that cannot
+#: count is not worth a judge call. A 0.00 here was a phantom score against the agent (#109).
 UNGRADED_TRIGGERS: frozenset[str] = frozenset({"deploy_failed", "crashed"})
 
 #: Graded, but the run did not end on the agent's own terms — a budget timeout or an operator's

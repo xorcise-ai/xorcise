@@ -14,7 +14,7 @@ from collections.abc import Callable
 from datetime import datetime
 
 from xorcise.core import reporting, runs
-from xorcise.core.contracts.run import PARTIAL_TRIGGERS, UNGRADED_TRIGGERS
+from xorcise.core.contracts.run import PARTIAL_TRIGGERS, UNGRADED_TRIGGERS, RunEntry
 from xorcise.core.runcontrol.errors import MissionOverError
 
 log = logging.getLogger(__name__)
@@ -204,18 +204,30 @@ def regrade_orphaned_terminal_runs() -> int:
     stopped between seal and the background grade_and_record completing. Run once on boot (nothing
     else revisits a terminal run), so a run wedged at "grading" heals on the next start without an
     operator touching it. Idempotent + self-defending (grade_and_record records a zero fallback on
-    a grading crash). Returns the count re-graded, for the boot log + tests."""
+    a grading crash). Returns the count re-graded, for the boot log + tests.
+
+    A run that ended on an environment failure is never graded; if it is not sealed yet (a
+    `crashed` run, which reconcile closes out without finalising) it is finalised here — sealed,
+    released, events exported — but not counted, since nothing was graded."""
+    from xorcise.core.otel.store import SqliteSealStore
+
+    seals = SqliteSealStore()
     healed = 0
     for run in runs.list_runs():
         is_term, trigger, _ = runs.terminal_state(run.run_id)
-        # An environment failure is terminal and ungraded BY DESIGN, not by a lost grade. Reconcile
-        # aborts a crashed run without grading earlier on this very boot, and this sweep used to
-        # read that as a lost grade and record the phantom 0.00 reconcile had declined to (#109).
-        if (
-            is_term
-            and trigger not in UNGRADED_TRIGGERS
-            and reporting.get_result(run.run_id) is None
-        ):
+        if not is_term:
+            continue
+        if trigger in UNGRADED_TRIGGERS:
+            # An environment failure is ungraded BY DESIGN, not by a lost grade (#109) — but it
+            # still needs the rest of finalisation. Reconcile marks a run `crashed` with a bare
+            # mark_terminal, so this sweep is the only thing that ever seals one: without it late
+            # OTLP keeps landing in a terminal run's record and no evidence digest is taken. The
+            # seal doubles as the "finalised" mark, so each such run is finalised exactly once.
+            if not seals.is_sealed(run.run_id):
+                log.info("regrade: finalising %s (ended %s; not graded)", run.run_id, trigger)
+                grade_and_record(run.run_id)
+            continue
+        if reporting.get_result(run.run_id) is None:
             log.info("regrade: %s is terminal but ungraded (grade lost to a stop)", run.run_id)
             grade_and_record(run.run_id)
             healed += 1
@@ -248,6 +260,84 @@ def _warn_if_evidence_moved(run_id: str) -> None:
         )
 
 
+def _record_grade(run_id: str, run: RunEntry, recorded: str | None) -> None:
+    """Grade a sealed run and record the result. Raises on a store failure — the caller's
+    `finally` is what guarantees the environment is released either way."""
+    # Lazy: grade_assembly keeps otel off the import path (plane-isolation invariant).
+    # model=None → build_eval_judge reads the BYOM key from settings; returns None when
+    # unconfigured so the judge half degrades cleanly.
+    from xorcise.core.rest import grade_assembly
+
+    try:
+        judge = grade_assembly.build_eval_judge()
+        result = judge.grade(grade_assembly.grade_request_for(run_id))
+    except Exception as exc:
+        # Defensive: a grading crash (e.g. a legacy installed manifest whose check op predates
+        # ingest validation) must STILL record a result — otherwise /result 202s "grading"
+        # forever (nothing ever re-schedules this) and the environment leaks. Mirror the judge
+        # half's degrade: zero score, status + reason disclosed on the result.
+        log.exception("grading failed for %s; recording a zero fallback result", run_id)
+        from xorcise.core.contracts.grading import GradeResult, ScoreBreakdown
+
+        result = GradeResult(
+            run_id=run_id,
+            overall=0.0,
+            breakdown=ScoreBreakdown(),
+            trace_ref=run_id,
+            judge_status="unavailable",
+            judge_detail=f"grading failed: {exc}",
+        )
+    from xorcise.core.config import get_settings
+    from xorcise.core.contracts.reporting import ResultConditions
+
+    _s = get_settings()
+    conditions = ResultConditions(
+        model=run.model,
+        judge_model=_s.model_name if _s.model_configured() else None,
+        budget_seconds=run.budget_seconds,
+        sandbox_ref=run.sandbox_ref,
+        agent_version=run.agent_version,
+        install_revision=run.install_revision,
+        mission_version=run.mission_version,
+        mission_base_version=run.mission_base_version,
+        platform=run.platform,
+    )
+    # a run that did not end on the agent's own terms is "partial" and must not count
+    # as a genuine result against the agent — a budget "timeout" or an operator's manual kill.
+    # Only the agent's own "done" completion is a full result.
+    partial = recorded in PARTIAL_TRIGGERS
+    # Per-run telemetry snapshot (run-report): fold the event projection once here and
+    # persist it beside the grade. Agent-self-reported display data — never an observed fact,
+    # never a grading input. Best-effort: a fold/projection failure must never break
+    # finalization, so it logs and records the result with no snapshot (lazy imports keep the
+    # otel display plane off this module's import path — plane-isolation invariant).
+    stats = None
+    try:
+        from xorcise.core.otel.run_stats import fold_run_stats, projection_key
+        from xorcise.core.rest import events_view
+
+        view = events_view._full_view(run_id)
+        stats = fold_run_stats(
+            view.events,
+            created_at=run.created_at,
+            completed_at=run.completed_at,
+            # Which adapter + normalizer rendered these events: a later classifier change
+            # makes this snapshot stale, and current_run_stats re-folds it on read.
+            projection=projection_key(view.adapter_name, view.adapter_version),
+        )
+    except Exception:  # best-effort — a telemetry snapshot must never break finalization
+        log.warning("run-stats fold failed for %s", run_id, exc_info=True)
+    reporting.record_result(
+        run_id,
+        run.agent_id,
+        result,
+        conditions,
+        partial=partial,
+        partial_trigger=(recorded if partial else None),
+        stats=stats,
+    )
+
+
 def _grade_run(run_id: str) -> None:
     run = runs.get(run_id)
     if run is None:
@@ -271,85 +361,13 @@ def _grade_run(run_id: str) -> None:
         if _drain_and_seal_telemetry(run_id):
             _warn_if_evidence_moved(run_id)
         if recorded in UNGRADED_TRIGGERS:
-            # The environment failed, so the agent never had a fair attempt: there is nothing of
-            # the agent's to grade, and a 0.00 would average into its track record as though it
-            # had tried and failed (#109). Sealed above and released by the finally below — the
-            # evidence of WHY is the run's terminal_detail, not a score.
-            log.info("not grading %s: it ended %s (the environment failed)", run_id, recorded)
-            return
-        # Lazy: grade_assembly keeps otel off the import path (plane-isolation invariant).
-        # model=None → build_eval_judge reads the BYOM key from settings; returns None when
-        # unconfigured so the judge half degrades cleanly.
-        from xorcise.core.rest import grade_assembly
-
-        try:
-            judge = grade_assembly.build_eval_judge()
-            result = judge.grade(grade_assembly.grade_request_for(run_id))
-        except Exception as exc:
-            # Defensive: a grading crash (e.g. a legacy installed manifest whose check op predates
-            # ingest validation) must STILL record a result — otherwise /result 202s "grading"
-            # forever (nothing ever re-schedules this) and the environment leaks. Mirror the judge
-            # half's degrade: zero score, status + reason disclosed on the result.
-            log.exception("grading failed for %s; recording a zero fallback result", run_id)
-            from xorcise.core.contracts.grading import GradeResult, ScoreBreakdown
-
-            result = GradeResult(
-                run_id=run_id,
-                overall=0.0,
-                breakdown=ScoreBreakdown(),
-                trace_ref=run_id,
-                judge_status="unavailable",
-                judge_detail=f"grading failed: {exc}",
-            )
-        from xorcise.core.config import get_settings
-        from xorcise.core.contracts.reporting import ResultConditions
-
-        _s = get_settings()
-        conditions = ResultConditions(
-            model=run.model,
-            judge_model=_s.model_name if _s.model_configured() else None,
-            budget_seconds=run.budget_seconds,
-            sandbox_ref=run.sandbox_ref,
-            agent_version=run.agent_version,
-            install_revision=run.install_revision,
-            mission_version=run.mission_version,
-            mission_base_version=run.mission_base_version,
-            platform=run.platform,
-        )
-        # a run that did not end on the agent's own terms is "partial" and must not count
-        # as a genuine result against the agent — a budget "timeout" or an operator's manual kill.
-        # Only the agent's own "done" completion is a full result.
-        partial = recorded in PARTIAL_TRIGGERS
-        # Per-run telemetry snapshot (run-report): fold the event projection once here and
-        # persist it beside the grade. Agent-self-reported display data — never an observed fact,
-        # never a grading input. Best-effort: a fold/projection failure must never break
-        # finalization, so it logs and records the result with no snapshot (lazy imports keep the
-        # otel display plane off this module's import path — plane-isolation invariant).
-        stats = None
-        try:
-            from xorcise.core.otel.run_stats import fold_run_stats, projection_key
-            from xorcise.core.rest import events_view
-
-            view = events_view._full_view(run_id)
-            stats = fold_run_stats(
-                view.events,
-                created_at=run.created_at,
-                completed_at=run.completed_at,
-                # Which adapter + normalizer rendered these events: a later classifier change
-                # makes this snapshot stale, and current_run_stats re-folds it on read.
-                projection=projection_key(view.adapter_name, view.adapter_version),
-            )
-        except Exception:  # best-effort — a telemetry snapshot must never break finalization
-            log.warning("run-stats fold failed for %s", run_id, exc_info=True)
-        reporting.record_result(
-            run_id,
-            run.agent_id,
-            result,
-            conditions,
-            partial=partial,
-            partial_trigger=(recorded if partial else None),
-            stats=stats,
-        )
+            # Cut short by an environment failure: whatever the agent managed, the score could not
+            # count in any aggregate, so the judge call it costs buys nothing (#109). Only the
+            # grade is skipped — the seal above, the teardown below and the events export after
+            # it run as for any other terminal run; those are what explain the failure.
+            log.info("not grading %s: it ended %s (an environment failure)", run_id, recorded)
+        else:
+            _record_grade(run_id, run, recorded)
     finally:
         # release the run's environment (container + tailnet nodes) once graded — in a finally
         # so neither a result-store failure nor anything before it can leak it. Idempotent and

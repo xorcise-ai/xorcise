@@ -43,25 +43,24 @@ from xorcise.core.rest.run_create import (
 router = APIRouter(prefix="/runs", tags=["runs"])
 
 
-def _not_graded(run_id: str) -> JSONResponse | None:
-    """The FINAL answer for a run that ended on an environment failure, else None.
+def _not_graded(run: RunEntry) -> JSONResponse | None:
+    """The FINAL answer for a run cut short by an environment failure, else None.
 
-    Such a run is terminal and has no result by design (#109) — the agent never had a fair
-    attempt, so nothing of its was graded. Without this, every read of it fell through to the
+    Such a run is terminal and has no result by design (#109) — the failure is not the agent's,
+    so nothing was graded. Without this, every read of it fell through to the
     "terminal-but-ungraded" branch: a 202 "grading" that never resolves, plus a re-drive of the
     grade it must not have. 200, not 202: this is an answer, not progress — a poll loop must stop.
-    Carries the trigger and the recorded reason so the caller can say WHY there is no score."""
-    is_term, trigger, _ = runs.terminal_state(run_id)
-    if not is_term or trigger not in UNGRADED_TRIGGERS:
+    Carries the trigger and the recorded reason so the caller can say WHY there is no score.
+    Takes the run every caller has already loaded for its 404, so the answer costs no read."""
+    if run.state != "terminal" or run.terminal_trigger not in UNGRADED_TRIGGERS:
         return None
-    run = runs.get(run_id)
     return JSONResponse(
         status_code=200,
         content={
-            "run_id": run_id,
+            "run_id": run.run_id,
             "status": "not_graded",
-            "terminal_trigger": trigger,
-            "detail": run.terminal_detail if run is not None else None,
+            "terminal_trigger": run.terminal_trigger,
+            "detail": run.terminal_detail,
         },
     )
 
@@ -281,8 +280,8 @@ def regrade_run(run_id: str, background: BackgroundTasks) -> JSONResponse:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"run '{run_id}' ended {run.terminal_trigger} — its environment failed, so the "
-                f"agent never had a fair attempt and there is nothing to grade"
+                f"run '{run_id}' ended {run.terminal_trigger} — it was cut short by an "
+                f"environment failure, and such a run is never graded"
             ),
         )
     from xorcise.core.rest.run_terminate import ensure_graded_async
@@ -768,8 +767,8 @@ def run_result(
     transient state, NOT a failure. Unknown run → 404; terminal-but-ungraded → 202
     {"status": "grading"}; still-active run → 409 (no result to read yet).
 
-    A run that ended on an environment failure (`deploy_failed` / `crashed`) is never graded — the
-    agent never had a fair attempt — so it answers a FINAL 200 {"status": "not_graded",
+    A run cut short by an environment failure (`deploy_failed` / `crashed`) is never graded — the
+    failure is not the agent's — so it answers a FINAL 200 {"status": "not_graded",
     "terminal_trigger", "detail"} instead of a "grading" that would never resolve.
 
     A terminal-ungraded run also RE-DRIVES grading here (ensure_graded_async): if the grade was
@@ -778,9 +777,9 @@ def run_result(
     """
     grade = reporting.get_result(run_id)
     if grade is None:
-        if runs.get(run_id) is None:
+        if (run := runs.get(run_id)) is None:
             raise HTTPException(status_code=404, detail=f"no run '{run_id}'")
-        if (not_graded := _not_graded(run_id)) is not None:
+        if (not_graded := _not_graded(run)) is not None:
             return not_graded
         if runs.terminal_state(run_id)[0]:
             from xorcise.core.rest.run_terminate import ensure_graded_async
@@ -848,9 +847,9 @@ def run_report(run_id: str, background: BackgroundTasks, format: str = "md") -> 
 
     ctx = assemble_report(run_id)
     if ctx is None:
-        if runs.get(run_id) is None:
+        if (run := runs.get(run_id)) is None:
             raise HTTPException(status_code=404, detail=f"no run '{run_id}'")
-        if (not_graded := _not_graded(run_id)) is not None:
+        if (not_graded := _not_graded(run)) is not None:
             return not_graded
         if runs.terminal_state(run_id)[0]:
             from xorcise.core.rest.run_terminate import ensure_graded_async
@@ -888,7 +887,7 @@ def run_stats(run_id: str, background: BackgroundTasks) -> RunStats | JSONRespon
     if run is None:
         raise HTTPException(status_code=404, detail=f"no run '{run_id}'")
     if reporting.get_result(run_id) is None:
-        if (not_graded := _not_graded(run_id)) is not None:
+        if (not_graded := _not_graded(run)) is not None:
             return not_graded
         if runs.terminal_state(run_id)[0]:
             from xorcise.core.rest.run_terminate import ensure_graded_async

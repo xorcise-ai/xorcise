@@ -89,7 +89,13 @@ export function ResultsView({ runId }: { runId: string | null }) {
   // A run whose environment failed (deploy_failed / crashed) is never graded — a final answer,
   // not a wait, so it gets its own state rather than a "Grading in progress" that never ends.
   if (isNotGraded(view))
-    return <NotGradedState view={view} name={run.data?.name} />;
+    return (
+      <NotGradedState
+        view={view}
+        name={run.data?.name}
+        onDeleted={() => router.push("/runs")}
+      />
+    );
   const r = view.grade as GradeResult | undefined;
   const conditions = view.conditions;
 
@@ -301,42 +307,66 @@ function RunMetaBar({ run, agentName }: { run: RunEntry; agentName: string }) {
   );
 }
 
-// A run whose environment failed before the agent had a fair attempt — the readiness gate's
+// A run cut short by an environment failure — the readiness gate's
 // deploy_failed or the boot reconcile's crashed. The server never grades it, so there is no
 // scorecard to show: say why instead, with the reason recorded when it ended. role="status", not
 // "alert" — the run is over and nothing here needs acting on.
 function NotGradedState({
   view,
   name,
+  onDeleted,
 }: {
   view: NotGradedView;
   name?: string;
+  onDeleted: () => void;
 }) {
+  // The page chrome stays: the trace download and Delete matter MOST here — the traces are the
+  // evidence of what failed, and a run that will never be scored is the likeliest to be cleared
+  // away. Re-evaluate and the report download are left out: the server refuses the first (409)
+  // and has no report to serve for the second.
   return (
-    <div
-      role="status"
-      className="flex h-full min-h-[24rem] flex-col items-center justify-center gap-3 p-4 text-center"
-    >
-      <AlertTriangle className="size-8 text-text-tertiary" />
-      <p className="text-body font-bold text-heading">Not graded</p>
-      <p className="max-w-md text-body text-text-secondary">
-        {name ? `“${name}”` : "This run"} ended{" "}
-        <span className="font-mono">{view.terminal_trigger}</span>: its
-        environment failed, so the agent never had a fair attempt. No score was
-        recorded, and it is not counted in any average.
-      </p>
-      {view.detail && (
-        <pre className="max-h-72 w-full max-w-2xl overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-deepest p-3 text-left font-mono text-dense text-foreground">
-          {view.detail}
-        </pre>
-      )}
-      <Link
-        href="/runs"
-        className="font-medium text-primary underline underline-offset-2"
-      >
-        Back to runs
-      </Link>
-    </div>
+    <Page className="gap-3">
+      <PageHead>
+        <PageTitle
+          eyebrow="Run Result"
+          subtitle={
+            <span className="font-mono text-text-tertiary">{view.run_id}</span>
+          }
+        >
+          {name ?? "Result"}
+        </PageTitle>
+        <div className="flex flex-wrap items-center gap-2">
+          <DownloadTraces runId={view.run_id} />
+          <DeleteRunButton runId={view.run_id} onDeleted={onDeleted} />
+        </div>
+      </PageHead>
+      <PageBody>
+        <div
+          role="status"
+          className="mx-auto flex w-full max-w-4xl flex-col items-center gap-3 p-4 text-center"
+        >
+          <AlertTriangle className="size-8 text-text-tertiary" />
+          <p className="text-body font-bold text-heading">Not graded</p>
+          <p className="max-w-md text-body text-text-secondary">
+            This run ended{" "}
+            <span className="font-mono">{view.terminal_trigger}</span>: it was
+            cut short by an environment failure, so it is not scored and is not
+            counted in any average.
+          </p>
+          {view.detail && (
+            <pre className="max-h-72 w-full max-w-2xl overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-deepest p-3 text-left font-mono text-dense text-foreground">
+              {view.detail}
+            </pre>
+          )}
+          <Link
+            href={`/runs/live?id=${encodeURIComponent(view.run_id)}`}
+            className="font-medium text-primary underline underline-offset-2"
+          >
+            View trace →
+          </Link>
+        </div>
+      </PageBody>
+    </Page>
   );
 }
 

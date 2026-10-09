@@ -21,10 +21,6 @@ from rich.table import Table
 
 from xorcise.core.cli._shared import console, err_console
 
-# Re-exported: the leaderboard and `run export --genuine-only` read the trigger vocabulary through
-# here, beside run_state_label; the definition itself lives in the contracts leaf (see there).
-from xorcise.core.contracts.run import COMPLETED_TRIGGERS as COMPLETED_TRIGGERS
-
 if TYPE_CHECKING:
     from rich.console import Console
     from rich.progress import Progress
@@ -205,6 +201,10 @@ def run_state_label(state: str | None, trigger: str | None = None) -> str:
             "budget": "Partial",
             "error": "Failed",
             "crashed": "Crashed",
+            # The readiness gate's close-out: without this `run list` said only "Ended", which is
+            # the one surface that did not say why such a run has no score (the GUI's run-state
+            # map already labels it).
+            "deploy_failed": "Deploy failed",
             "operator": "Terminated",
         }.get(trigger or "", "Ended")
     return (state or DASH).title()
@@ -217,6 +217,7 @@ _STATE_STYLES = {
     "Partial": "warn",
     "Timed out": "err",
     "Crashed": "err",
+    "Deploy failed": "err",
     "Failed": "err",
 }
 

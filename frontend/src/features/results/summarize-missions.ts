@@ -3,8 +3,9 @@
 // entirely client-side: every value comes from data the Results feature already loads, so
 // no new backend field is introduced. Deliberately kept separate from summarizeByAgent()
 // in summarize-runs.ts (whose API + tests are locked) while sharing the same accounting:
-// partial runs (timeout / budget / kill) did NOT finish on the agent's own terms and so are
-// excluded from Average / Best (parity with the shared run accounting), but still count toward Runs / rates.
+// partial runs (timeout / operator kill) did NOT finish on the agent's own terms and so are
+// excluded from Average / Best (parity with the shared run accounting), but still count toward
+// Runs / rates. A run cut short by an environment failure counts toward Runs only (infraFailed).
 
 /** One terminal run flattened for per-mission rollup. */
 export interface MissionRunRow {
@@ -12,6 +13,7 @@ export interface MissionRunRow {
   overall: number | null; // recorded overall score, when graded
   partial: boolean; // did NOT finish on the agent's own terms
   completed: boolean; // finished on the agent's own terms (done / completed)
+  infraFailed?: boolean; // cut short by an environment failure — not an attempt (classifyRun)
   when: string; // ISO timestamp used for "last run"
 }
 
@@ -22,8 +24,9 @@ export interface MissionPerformanceSummary {
   scored: number; // non-partial runs carrying a recorded score
   avgOverall: number | null;
   bestOverall: number | null;
-  completionRate: number | null; // completed / runs
-  partialRate: number | null; // partial / runs
+  completionRate: number | null; // completed / attempts (runs minus infraFailed)
+  partialRate: number | null; // partial / attempts
+  infraFailed?: number; // runs cut short by an environment failure — in `runs`, in no rate
   lastRun: string | null; // most recent run timestamp (ISO)
 }
 
@@ -50,6 +53,8 @@ export function summarizeByMission(
       .map((r) => r.overall as number);
     const completed = chalRows.filter((r) => r.completed).length;
     const partial = chalRows.filter((r) => r.partial).length;
+    const infraFailed = chalRows.filter((r) => r.infraFailed).length;
+    const attempts = runs - infraFailed;
     const lastRun =
       [...chalRows]
         .map((r) => r.when)
@@ -64,8 +69,9 @@ export function summarizeByMission(
         ? scoredOveralls.reduce((a, b) => a + b, 0) / scoredOveralls.length
         : null,
       bestOverall: scoredOveralls.length ? Math.max(...scoredOveralls) : null,
-      completionRate: runs ? completed / runs : null,
-      partialRate: runs ? partial / runs : null,
+      completionRate: attempts ? completed / attempts : null,
+      partialRate: attempts ? partial / attempts : null,
+      infraFailed,
       lastRun,
     };
   });
