@@ -2,7 +2,12 @@ import { useMemo } from "react";
 import { useRuns } from "@/features/runs/queries";
 import { useAgents } from "@/features/agents/queries";
 import { useRunResults } from "@/features/results/queries";
-import { isTerminal, runPresentation, type RunTone } from "@/features/runs/run-state";
+import {
+  classifyRun,
+  isTerminal,
+  runPresentation,
+  type RunTone,
+} from "@/features/runs/run-state";
 import {
   summarizeByAgent,
   summarizeRuns,
@@ -84,11 +89,11 @@ export function useFleetPerformance(): FleetPerformance {
 
     terminal.forEach((r, i) => {
       const view = results[i]?.data;
-      const trigger = r.terminal_trigger;
-      // Same classification as completed-runs.tsx / results-missions.tsx: a run that
-      // did not end on the agent's own terms is "partial" and is excluded from Average/Best.
-      const partial = view?.partial ?? (trigger === "timeout" || trigger === "budget");
-      const completed = trigger === "done" || trigger === "completed";
+      // The shared classification (run-state.ts classifyRun), as every other aggregate uses.
+      const { partial, completed, infraFailed } = classifyRun(
+        r.terminal_trigger,
+        view?.partial,
+      );
       const overall = view?.grade?.overall ?? null;
       // Assistance level: the run result's recorded intel count (0 = unassisted), fed to
       // assistMixByMission so the mission leaderboard can flag an assisted/unassisted blend.
@@ -100,9 +105,10 @@ export function useFleetPerformance(): FleetPerformance {
         overall,
         partial,
         completed,
+        infraFailed,
         when,
       });
-      chalRows.push({ mission: r.mission, overall, partial, completed, when });
+      chalRows.push({ mission: r.mission, overall, partial, completed, infraFailed, when });
       flat.push({ overall, partial, when });
       chalAssistRows.push({ mission: r.mission, intel, overall, partial });
       mix[runPresentation(r.state, r.terminal_trigger).tone] += 1;

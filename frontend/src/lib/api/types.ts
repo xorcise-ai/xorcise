@@ -17,6 +17,24 @@ export type RunCreatedEntry = S["RunCreatedEntry"];
 export type GradeResult = S["GradeResult"];
 export type RunResultView = S["RunResultView"];
 export type RunStats = S["RunStats"];
+
+/** The FINAL answer /result, /report and /stats give for a run whose environment failed
+ *  (`deploy_failed` / `crashed`): never graded, because the failure is not the agent's.
+ *  Not in the generated schema — like the 202 "grading" placeholder it is a bare JSON body. */
+export type NotGradedView = {
+  run_id: string;
+  status: "not_graded";
+  terminal_trigger: string;
+  detail: string | null;
+};
+
+export function isNotGraded(data: unknown): data is NotGradedView {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    (data as { status?: unknown }).status === "not_graded"
+  );
+}
 export type RunArtifact = S["RunArtifactView"];
 export type RunEnvironment = S["RunEnvironmentView"];
 export type ResultConditions = S["ResultConditions"];

@@ -1793,7 +1793,8 @@ def test_the_genuine_set_keeps_a_trigger_no_server_has_ever_written():
     `mark_terminal`, the only literals passed are done / operator / timeout / deploy_failed /
     crashed, and the initial commit already had this same set. It stays for parity with
     run_state_label and the GUI map — so no surface can disagree about one trigger."""
-    from xorcise.core.cli._ux import COMPLETED_TRIGGERS, run_state_label
+    from xorcise.core.cli._ux import run_state_label
+    from xorcise.core.contracts.run import COMPLETED_TRIGGERS
 
     assert "completed" in COMPLETED_TRIGGERS
     assert run_state_label("terminal", "completed") == run_state_label("terminal", "done")
@@ -1854,3 +1855,70 @@ def test_a_recorded_seal_says_it_was_not_checked_rather_than_unverifiable(capsys
     assert "a" * 16 in out
     assert "not checked here" in out
     assert "could not verify" not in out, "nobody asked; that is not a failure to answer"
+
+
+_NOT_GRADED = {
+    "run_id": RID,
+    "status": "not_graded",
+    "terminal_trigger": "deploy_failed",
+    "detail": "not ready within the readiness window",
+}
+
+
+def test_run_status_says_an_environment_failure_was_not_graded(monkeypatch):
+    """#109: final, not progress — exit 0 so a poll stops, and say why there is no score."""
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.get_run_result",
+        lambda self, p, verify=False: _NOT_GRADED,
+    )
+    res = runner.invoke(app, ["run", "status", RID])
+    assert res.exit_code == 0
+    assert "not graded" in res.stdout
+    assert "deploy_failed" in res.stdout
+    assert "not ready within the readiness window" in res.stdout
+
+
+def test_run_report_writes_nothing_for_an_environment_failure(monkeypatch, tmp_path):
+    """There will never be a report: say why and exit 1, never write the envelope as one."""
+    import json as _json
+
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.get_text",
+        lambda self, p: _json.dumps(_NOT_GRADED),
+    )
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.get_run_result",
+        lambda self, rid: _NOT_GRADED,
+    )
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["run", "report", RID])
+    assert result.exit_code == 1
+    assert "not graded" in result.output
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_an_environment_failure_exports_its_evidence_without_a_report(tmp_path, monkeypatch):
+    """A run cut short by an environment failure is never graded, so there is no report — but its
+    traces and events are exactly the evidence of what went wrong, and dropping the whole run from
+    the export lost them (#109). Everything but the report is written; `result.json` carries the
+    not-graded answer with the reason. Not a failure and not pending: exit 0."""
+    import json as _json
+
+    envelope = _json.dumps(_NOT_GRADED)
+    _export_server(
+        monkeypatch,
+        [_run_row(_rid("ef"))],
+        text=lambda path: envelope if ("report" in path or "result" in path) else "payload",
+    )
+
+    result = runner.invoke(app, ["run", "export", "--out", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    (run_dir,) = [d for d in tmp_path.iterdir() if d.is_dir()]
+    assert sorted(f.name for f in run_dir.iterdir()) == [
+        "events.jsonl",
+        "result.json",
+        "traces.otlp.jsonl",
+    ]
+    assert _json.loads((run_dir / "result.json").read_text())["status"] == "not_graded"
+    assert "not graded" in (result.stdout + result.stderr)

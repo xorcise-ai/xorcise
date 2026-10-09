@@ -1005,7 +1005,8 @@ export interface paths {
          *     Drops the recorded result and schedules a fresh grade off the request thread (the judge can be
          *     slow); the new result surfaces via the SAME `202 grading → grade` poll the initial grade uses,
          *     so the client needs no new state machine. De-duplicated, so a double click grades once. 404 if
-         *     the run is unknown; 409 if it has not reached a terminal state (nothing is sealed to grade yet).
+         *     the run is unknown; 409 if it has not reached a terminal state (nothing is sealed to grade yet),
+         *     or if it ended on an environment failure (`deploy_failed` / `crashed`), which is never graded.
          */
         post: operations["regrade_run_api_runs__run_id__regrade_post"];
         delete?: never;
@@ -1031,7 +1032,8 @@ export interface paths {
          *
          *     Mirrors /result's state ladder exactly, so a caller polling for a report sees the same
          *     transitions it already handles: unknown run → 404; terminal-but-ungraded → 202
-         *     {"status": "grading"}; still-active run → 409. An unsupported `format` → 422.
+         *     {"status": "grading"}; ended on an environment failure → 200 {"status": "not_graded"};
+         *     still-active run → 409. An unsupported `format` → 422.
          *     Content-Disposition is `attachment`, so a browser downloads rather than renders it.
          */
         get: operations["run_report_api_runs__run_id__report_get"];
@@ -1067,6 +1069,10 @@ export interface paths {
          *     grading runs asynchronously after /complete, so a terminal-but-ungraded run is a normal
          *     transient state, NOT a failure. Unknown run → 404; terminal-but-ungraded → 202
          *     {"status": "grading"}; still-active run → 409 (no result to read yet).
+         *
+         *     A run cut short by an environment failure (`deploy_failed` / `crashed`) is never graded — the
+         *     failure is not the agent's — so it answers a FINAL 200 {"status": "not_graded",
+         *     "terminal_trigger", "detail"} instead of a "grading" that would never resolve.
          *
          *     A terminal-ungraded run also RE-DRIVES grading here (ensure_graded_async): if the grade was
          *     lost to a server restart or a hung judge call, polling the result heals it rather than spinning

@@ -13,7 +13,12 @@ import { Card, CardContent } from "@/components/ui/card";
 import { StatTile, StatTileRow } from "@/components/ui/stat-tile";
 import { ApiError } from "@/lib/api/client";
 import { fullTime, formatDuration } from "@/lib/api/format";
-import type { GradeResult, RunEntry } from "@/lib/api/types";
+import {
+  isNotGraded,
+  type GradeResult,
+  type NotGradedView,
+  type RunEntry,
+} from "@/lib/api/types";
 import { useRun } from "@/features/runs/queries";
 import { useAgents } from "@/features/agents/queries";
 import { DeleteRunButton } from "@/features/runs/delete-run-dialog";
@@ -81,6 +86,16 @@ export function ResultsView({ runId }: { runId: string | null }) {
   // run completes, so the endpoint returns 202 {status:"grading"},
   // which api.get surfaces as a gradeless body. Treat `grade` as possibly absent
   // and render a graceful state instead of crashing on r.overall.
+  // A run whose environment failed (deploy_failed / crashed) is never graded — a final answer,
+  // not a wait, so it gets its own state rather than a "Grading in progress" that never ends.
+  if (isNotGraded(view))
+    return (
+      <NotGradedState
+        view={view}
+        name={run.data?.name}
+        onDeleted={() => router.push("/runs")}
+      />
+    );
   const r = view.grade as GradeResult | undefined;
   const conditions = view.conditions;
 
@@ -289,6 +304,69 @@ function RunMetaBar({ run, agentName }: { run: RunEntry; agentName: string }) {
         </StatTileRow>
       </CardContent>
     </Card>
+  );
+}
+
+// A run cut short by an environment failure — the readiness gate's
+// deploy_failed or the boot reconcile's crashed. The server never grades it, so there is no
+// scorecard to show: say why instead, with the reason recorded when it ended. role="status", not
+// "alert" — the run is over and nothing here needs acting on.
+function NotGradedState({
+  view,
+  name,
+  onDeleted,
+}: {
+  view: NotGradedView;
+  name?: string;
+  onDeleted: () => void;
+}) {
+  // The page chrome stays: the trace download and Delete matter MOST here — the traces are the
+  // evidence of what failed, and a run that will never be scored is the likeliest to be cleared
+  // away. Re-evaluate and the report download are left out: the server refuses the first (409)
+  // and has no report to serve for the second.
+  return (
+    <Page className="gap-3">
+      <PageHead>
+        <PageTitle
+          eyebrow="Run Result"
+          subtitle={
+            <span className="font-mono text-text-tertiary">{view.run_id}</span>
+          }
+        >
+          {name ?? "Result"}
+        </PageTitle>
+        <div className="flex flex-wrap items-center gap-2">
+          <DownloadTraces runId={view.run_id} />
+          <DeleteRunButton runId={view.run_id} onDeleted={onDeleted} />
+        </div>
+      </PageHead>
+      <PageBody>
+        <div
+          role="status"
+          className="mx-auto flex w-full max-w-4xl flex-col items-center gap-3 p-4 text-center"
+        >
+          <AlertTriangle className="size-8 text-text-tertiary" />
+          <p className="text-body font-bold text-heading">Not graded</p>
+          <p className="max-w-md text-body text-text-secondary">
+            This run ended{" "}
+            <span className="font-mono">{view.terminal_trigger}</span>: it was
+            cut short by an environment failure, so it is not scored and is not
+            counted in any average.
+          </p>
+          {view.detail && (
+            <pre className="max-h-72 w-full max-w-2xl overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-deepest p-3 text-left font-mono text-dense text-foreground">
+              {view.detail}
+            </pre>
+          )}
+          <Link
+            href={`/runs/live?id=${encodeURIComponent(view.run_id)}`}
+            className="font-medium text-primary underline underline-offset-2"
+          >
+            View trace →
+          </Link>
+        </div>
+      </PageBody>
+    </Page>
   );
 }
 

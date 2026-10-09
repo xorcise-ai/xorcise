@@ -315,6 +315,37 @@ describe("ResultsView", () => {
     expect(screen.queryByText("Overall")).not.toBeInTheDocument();
   });
 
+  it("says an environment failure was not graded instead of waiting on a grade forever", async () => {
+    // #109: a deploy_failed / crashed run is never graded; the server answers a FINAL
+    // {status:"not_graded"} carrying the trigger + the recorded reason.
+    let polls = 0;
+    server.use(
+      http.get("*/api/runs/r1/result", () => {
+        polls += 1;
+        return HttpResponse.json({
+          run_id: "r1",
+          status: "not_graded",
+          terminal_trigger: "deploy_failed",
+          detail: "not ready within the readiness window",
+        });
+      }),
+    );
+    renderWithProviders(<ResultsView runId="r1" />);
+    expect(await screen.findByText(/not graded/i)).toBeInTheDocument();
+    expect(screen.getByText("deploy_failed")).toBeInTheDocument();
+    expect(
+      screen.getByText("not ready within the readiness window"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/grading in progress/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("Overall")).not.toBeInTheDocument();
+    // The evidence and the delete stay reachable; re-grading (refused) does not.
+    expect(screen.getByRole("button", { name: /delete/i })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /re-evaluate/i }),
+    ).not.toBeInTheDocument();
+    expect(polls).toBe(1);
+  });
+
   // ═══ Re-evaluate (re-grade the saved evidence) ═══
 
   it("re-evaluates a run: POSTs regrade and flips to the re-evaluating state", async () => {

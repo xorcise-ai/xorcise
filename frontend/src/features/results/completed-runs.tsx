@@ -8,7 +8,7 @@ import { Reveal } from "@/components/ui/reveal";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/components/ui/cn";
 import { useRuns } from "@/features/runs/queries";
-import { isTerminal } from "@/features/runs/run-state";
+import { classifyRun, isTerminal } from "@/features/runs/run-state";
 import { useAgents } from "@/features/agents/queries";
 import { HarnessGlyph } from "@/features/agents/harnesses";
 import { useRunResults } from "./queries";
@@ -54,18 +54,14 @@ export function CompletedRuns() {
 
   const rows: AgentRunRow[] = completed.map((r, i) => {
     const view = results[i]?.data;
-    const trigger = r.terminal_trigger;
-    // The result view carries the authoritative partial flag; fall back to the run's own
-    // trigger (always present) so a still-loading / unrecorded result still classifies.
-    const partial =
-      view?.partial ?? (trigger === "timeout" || trigger === "budget");
-    const completedOnOwnTerms = trigger === "done" || trigger === "completed";
+    // One shared classification (run-state.ts classifyRun): the result view's partial flag is
+    // authoritative; the trigger is the fallback while a result is still grading.
+    const counting = classifyRun(r.terminal_trigger, view?.partial);
     return {
       agentId: r.agent_id,
       agentName: agentNameById.get(r.agent_id) ?? r.agent_id.slice(0, 8),
       overall: view?.grade?.overall ?? null,
-      partial,
-      completed: completedOnOwnTerms,
+      ...counting,
       when: r.completed_at ?? r.created_at,
     };
   });
