@@ -37,7 +37,6 @@ from xorcise.core.cli._ux import (
     ux_table,
 )
 from xorcise.core.cli.rest_client import DocumentUnavailable, RestClient
-from xorcise.core.contracts.run import COMPLETED_TRIGGERS
 from xorcise.core.reporting.render import _SEAL_MISMATCH, agent_model_line
 
 run_app = typer.Typer(
@@ -675,7 +674,8 @@ def select_runs_for_export(
     agent id. The caller resolves what the operator typed (a display name, a prefix) before getting
     here, so a typo fails with the candidates rather than as a silently empty selection.
 
-    `genuine_only` keeps only the runs the agent finished itself (COMPLETED_TRIGGERS); every other
+    `genuine_only` keeps only the runs the agent finished itself (the server's `outcome` is
+    "completed"); every other
     trigger the server writes — an operator kill, a budget timeout, a deploy failure, a crash — is
     the platform ending the run, which is not agent performance.
 
@@ -721,7 +721,7 @@ def select_runs_for_export(
             continue
         if agent_id and str(row.get("agent_id") or "") != agent_id:
             continue
-        if genuine_only and str(row.get("terminal_trigger") or "") not in COMPLETED_TRIGGERS:
+        if genuine_only and row.get("outcome") != "completed":
             continue
         if floor is not None:
             at = created(row)

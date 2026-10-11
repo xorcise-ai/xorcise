@@ -25,7 +25,6 @@ from xorcise.core.cli._ux import (
 )
 from xorcise.core.cli.commands.run import judge_degraded
 from xorcise.core.cli.rest_client import RestClient
-from xorcise.core.contracts.run import COMPLETED_TRIGGERS, PARTIAL_TRIGGERS, UNGRADED_TRIGGERS
 
 
 def _agent_names(client: RestClient) -> dict[str, str]:
@@ -34,28 +33,24 @@ def _agent_names(client: RestClient) -> dict[str, str]:
 
 
 def _flatten(run: dict[str, Any], result: dict[str, Any] | None) -> dict[str, Any]:
-    """One terminal run flattened for the roll-up (the GUI's AgentRunRow)."""
-    trigger = run.get("terminal_trigger")
+    """One terminal run flattened for the roll-up (the GUI's AgentRunRow).
+
+    How the run counts is the server's answer (`outcome` on the run), not re-derived here from its
+    trigger: a private copy of that rule listed a "budget" trigger nothing writes and missed
+    "operator", so an operator kill counted as genuine (#159)."""
+    outcome = run.get("outcome")
     grade = (result or {}).get("grade") or {}
-    # The result view carries the authoritative partial flag; fall back to the run's own trigger
-    # (always present) so an ungraded run still classifies.
-    partial = (result or {}).get("partial")
-    if partial is None:
-        # The server's own rule, imported rather than restated: a private copy here listed a
-        # "budget" trigger nothing writes and missed "operator", so an operator kill on an
-        # ungraded run counted as genuine (#159).
-        partial = trigger in PARTIAL_TRIGGERS
     return {
         "agent_id": run.get("agent_id"),
         "overall": grade.get("overall"),
-        "partial": bool(partial),
+        "partial": outcome == "partial",
         # A judge that never ran still produces a real number (0.5 * deterministic) which averages
         # in as though it were graded. The roll-up keeps that number — the math is intentional —
         # but carries the condition so the ranking can disclose what it is made of.
         "judge_degraded": judge_degraded(grade),
-        "completed": trigger in COMPLETED_TRIGGERS,
+        "completed": outcome == "completed",
         # Cut short by an environment failure: never graded, and not an attempt by the agent.
-        "infra_failed": trigger in UNGRADED_TRIGGERS,
+        "infra_failed": outcome == "infra_failed",
         "when": run.get("completed_at") or run.get("created_at") or "",
     }
 

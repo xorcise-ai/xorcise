@@ -35,9 +35,9 @@ export function ResultsByMission() {
 
   const rows: MissionRunRow[] = completed.map((r, i) => {
     const view = results[i]?.data;
-    // One shared classification (run-state.ts classifyRun): the result view's partial flag is
-    // authoritative; the trigger is the fallback while a result is still grading.
-    const counting = classifyRun(r.terminal_trigger, view?.partial);
+    // The server's classification of the run (run-state.ts classifyRun) — the same answer
+    // whether or not the result has been graded yet.
+    const counting = classifyRun(r.outcome);
     return {
       mission: r.mission,
       overall: view?.grade?.overall ?? null,

@@ -2586,6 +2586,12 @@ export interface components {
              * @default
              */
             name: string;
+            /**
+             * Outcome
+             * @description How this run counts in every aggregate (`run_outcome`), derived from terminal_trigger on
+             *     every read and never persisted. Clients read this instead of re-deriving it (#159).
+             */
+            readonly outcome: ("completed" | "partial" | "infra_failed") | null;
             /** Platform */
             platform?: string | null;
             /** Platform Digest */
@@ -2661,6 +2667,12 @@ export interface components {
              * @default
              */
             name: string;
+            /**
+             * Outcome
+             * @description How this run counts in every aggregate (`run_outcome`), derived from terminal_trigger on
+             *     every read and never persisted. Clients read this instead of re-deriving it (#159).
+             */
+            readonly outcome: ("completed" | "partial" | "infra_failed") | null;
             /** Platform */
             platform?: string | null;
             /** Platform Digest */

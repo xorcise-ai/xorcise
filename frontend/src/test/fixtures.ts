@@ -28,6 +28,7 @@ export const runFixture = (over: Partial<RunEntry> = {}): RunEntry => ({
   created_at: "2026-06-29T10:00:00Z",
   completed_at: null,
   terminal_trigger: null,
+  outcome: null,
   budget_seconds: 600,
   source_agent: "generic",
   intel_policy: "all",

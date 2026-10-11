@@ -18,6 +18,7 @@ import xorcise.core.cli.app  # noqa: F401 — registers commands/callback on the
 from xorcise.core.cli._shared import app
 from xorcise.core.cli.commands.results import summarize_by_agent
 from xorcise.core.cli.rest_client import RestClient
+from xorcise.core.contracts.run import run_outcome
 
 pytestmark = pytest.mark.unit
 
@@ -430,6 +431,8 @@ def _run(
         "created_at": when,
         "completed_at": when,
         "terminal_trigger": trigger,
+        # What the server ships on every run (RunEntry.outcome) — the leaderboard reads it.
+        "outcome": run_outcome(trigger),
     }
 
 
@@ -548,7 +551,7 @@ def test_flatten_carries_whether_the_judge_actually_ran():
     from xorcise.core.cli.commands.results import _flatten
 
     row = _flatten(
-        {"agent_id": "a1", "terminal_trigger": "done", "created_at": "2026-07-01T10:00:00"},
+        {"agent_id": "a1", "outcome": "completed", "created_at": "2026-07-01T10:00:00"},
         {"grade": {"overall": 0.5, "judge_status": "unavailable"}, "partial": False},
     )
 
@@ -559,7 +562,7 @@ def test_flatten_does_not_call_a_healthy_or_partial_judge_degraded():
     """`partial` already has its own disclosure (coverage); it is not the same condition."""
     from xorcise.core.cli.commands.results import _flatten
 
-    base_run = {"agent_id": "a1", "terminal_trigger": "done", "created_at": "2026-07-01T10:00:00"}
+    base_run = {"agent_id": "a1", "outcome": "completed", "created_at": "2026-07-01T10:00:00"}
     ok = _flatten(base_run, {"grade": {"overall": 0.9, "judge_status": "ok"}, "partial": False})
     part = _flatten(
         base_run, {"grade": {"overall": 0.7, "judge_status": "partial"}, "partial": False}
@@ -639,12 +642,12 @@ def test_a_scored_degraded_run_is_still_counted():
 
 
 @pytest.mark.parametrize("trigger", ["done", "operator", "timeout", "deploy_failed", "crashed"])
-def test_leaderboard_partial_fallback_agrees_with_the_server_for_every_trigger(
+def test_leaderboard_partial_agrees_with_the_server_for_every_trigger(
     migrated_home, trigger
 ) -> None:
-    """#159: the leaderboard's fallback for a run with no recorded partial flag must classify every
-    trigger the server can write exactly as the server's own grading does. A private copy of the
-    rule listed a "budget" trigger nothing writes and missed "operator"."""
+    """#159: the leaderboard must classify every trigger the server can write exactly as the
+    server's own grading does. A private copy of the rule listed a "budget" trigger nothing writes
+    and missed "operator"; it now reads the run's `outcome`, so this drives the real wire shape."""
     from datetime import UTC, datetime
 
     from xorcise.core import reporting, runs
@@ -656,7 +659,10 @@ def test_leaderboard_partial_fallback_agrees_with_the_server_for_every_trigger(
     recorded = reporting.get_result(run.run_id)
     server_partial = reporting.result_partial(run.run_id)[0] if recorded is not None else False
 
-    cli_partial = _flatten({"terminal_trigger": trigger, "agent_id": "a1"}, None)["partial"]
+    entry = runs.get(run.run_id)
+    assert entry is not None
+    wire = entry.model_dump(mode="json")  # what GET /runs returns
+    cli_partial = _flatten(wire, None)["partial"]
     assert cli_partial == server_partial
 
 

@@ -31,6 +31,7 @@ const RUNS = [
     mission: "c1",
     state: "terminal",
     terminal_trigger: "done",
+    outcome: "completed",
     completed_at: "2026-06-29T10:05:00Z",
   }),
   runFixture({
@@ -39,6 +40,7 @@ const RUNS = [
     mission: "c2",
     state: "terminal",
     terminal_trigger: "done",
+    outcome: "completed",
     completed_at: "2026-06-29T11:05:00Z",
   }),
   runFixture({
@@ -47,6 +49,7 @@ const RUNS = [
     mission: "c1",
     state: "terminal",
     terminal_trigger: "timeout",
+    outcome: "partial",
     completed_at: "2026-06-29T12:05:00Z",
   }),
 ];
@@ -116,6 +119,7 @@ describe("Dashboard fleet performance", () => {
             mission: "c1",
             state: "terminal",
             terminal_trigger: "done",
+            outcome: "completed",
             completed_at: "2026-06-29T10:05:00Z",
           }),
           runFixture({
@@ -124,6 +128,7 @@ describe("Dashboard fleet performance", () => {
             mission: "c1",
             state: "terminal",
             terminal_trigger: "done",
+            outcome: "completed",
             completed_at: "2026-06-29T11:05:00Z",
           }),
         ]),

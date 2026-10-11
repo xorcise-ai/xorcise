@@ -6,6 +6,7 @@ from typer.testing import CliRunner
 
 import xorcise.core.cli.app  # noqa: F401  -- importing registers the command groups
 from xorcise.core.cli._shared import app
+from xorcise.core.contracts.run import run_outcome
 
 runner = CliRunner()
 
@@ -844,6 +845,7 @@ def _run_row(
         "run_id": rid,
         "state": state,
         "terminal_trigger": trigger,
+        "outcome": run_outcome(trigger),  # the server's classification, as GET /runs ships it
         "mission": mission,
         "agent_id": agent,
         "created_at": created,

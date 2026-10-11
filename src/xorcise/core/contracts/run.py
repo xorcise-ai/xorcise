@@ -5,13 +5,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 
 # How a terminal run ended — the ONE vocabulary every surface classifies by. Every terminal_trigger
 # write goes through runs.mark_terminal, and these five are the only literals ever passed to it: a
-# budget kill is recorded as "timeout" (there is no "budget" trigger). Server grading, the CLI
-# leaderboard and `run export --genuine-only` all import from here, because two copies of this
-# rule is how the leaderboard came to disagree with the server about which runs count (#159).
+# budget kill is recorded as "timeout" (there is no "budget" trigger). The server classifies a run
+# once (`run_outcome`) and ships the answer as `RunEntry.outcome`; no client restates these sets,
+# because a private copy is how the leaderboard and the GUI came to disagree with the server about
+# which runs count (#159).
 
 #: The run was cut short by an environment failure: the readiness gate's close-out
 #: (`deploy_failed`) and the boot reconcile's abort (`crashed`). Either can land before the lab is
@@ -27,6 +28,23 @@ PARTIAL_TRIGGERS: frozenset[str] = frozenset({"timeout", "operator"})
 #: Finished on the agent's own terms. `completed` has never been written by any server; it stays
 #: for parity with run_state_label and the GUI's run-state map, which both accept it.
 COMPLETED_TRIGGERS: frozenset[str] = frozenset({"done", "completed"})
+
+#: How a terminal run counts in every aggregate. The three sets above are disjoint, so a run has
+#: at most one: `completed` (the agent finished), `partial` (graded, but left out of Average / Best)
+#: or `infra_failed` (never graded, and not one of the agent's attempts — in no score and no rate).
+RunOutcome = Literal["completed", "partial", "infra_failed"]
+
+
+def run_outcome(terminal_trigger: str | None) -> RunOutcome | None:
+    """Classify a run by how it ended. None for a run that has not ended, or for a trigger outside
+    the vocabulary — an attempt that neither completed nor was cut short."""
+    if terminal_trigger in COMPLETED_TRIGGERS:
+        return "completed"
+    if terminal_trigger in PARTIAL_TRIGGERS:
+        return "partial"
+    if terminal_trigger in UNGRADED_TRIGGERS:
+        return "infra_failed"
+    return None
 
 
 class RunCreate(BaseModel):
@@ -84,6 +102,13 @@ class RunEntry(BaseModel):
     # the first export lands. Derived at read time by the delivery layer from the RAW stores —
     # never persisted on the run row. Clients use it to warn on an inactive/stalled agent.
     last_telemetry_at: datetime | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def outcome(self) -> RunOutcome | None:
+        """How this run counts in every aggregate (`run_outcome`), derived from terminal_trigger on
+        every read and never persisted. Clients read this instead of re-deriving it (#159)."""
+        return run_outcome(self.terminal_trigger)
 
 
 class RunEnvironmentView(BaseModel):

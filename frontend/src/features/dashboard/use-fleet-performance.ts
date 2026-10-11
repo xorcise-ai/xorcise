@@ -89,11 +89,8 @@ export function useFleetPerformance(): FleetPerformance {
 
     terminal.forEach((r, i) => {
       const view = results[i]?.data;
-      // The shared classification (run-state.ts classifyRun), as every other aggregate uses.
-      const { partial, completed, infraFailed } = classifyRun(
-        r.terminal_trigger,
-        view?.partial,
-      );
+      // The server's classification (run-state.ts classifyRun), as every other aggregate uses.
+      const { partial, completed, infraFailed } = classifyRun(r.outcome);
       const overall = view?.grade?.overall ?? null;
       // Assistance level: the run result's recorded intel count (0 = unassisted), fed to
       // assistMixByMission so the mission leaderboard can flag an assisted/unassisted blend.

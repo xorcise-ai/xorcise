@@ -65,6 +65,7 @@ describe("AgentList", () => {
             agent_id: "agent-1",
             state: "terminal",
             terminal_trigger: "done",
+            outcome: "completed",
             completed_at: "2026-06-29T10:10:00Z",
           }),
         ]),

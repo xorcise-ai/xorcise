@@ -3168,6 +3168,24 @@
             "title": "Name",
             "type": "string"
           },
+          "outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "completed",
+                  "partial",
+                  "infra_failed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How this run counts in every aggregate (`run_outcome`), derived from terminal_trigger on\nevery read and never persisted. Clients read this instead of re-deriving it (#159).",
+            "readOnly": true,
+            "title": "Outcome"
+          },
           "platform": {
             "anyOf": [
               {
@@ -3247,7 +3265,8 @@
           "mission",
           "state",
           "created_at",
-          "run_control_key"
+          "run_control_key",
+          "outcome"
         ],
         "title": "RunCreatedEntry",
         "type": "object"
@@ -3372,6 +3391,24 @@
             "title": "Name",
             "type": "string"
           },
+          "outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "completed",
+                  "partial",
+                  "infra_failed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How this run counts in every aggregate (`run_outcome`), derived from terminal_trigger on\nevery read and never persisted. Clients read this instead of re-deriving it (#159).",
+            "readOnly": true,
+            "title": "Outcome"
+          },
           "platform": {
             "anyOf": [
               {
@@ -3446,7 +3483,8 @@
           "agent_id",
           "mission",
           "state",
-          "created_at"
+          "created_at",
+          "outcome"
         ],
         "title": "RunEntry",
         "type": "object"

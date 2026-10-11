@@ -36,6 +36,7 @@ function seedRuns() {
           mission: "sqli-login",
           state: "terminal",
           terminal_trigger: "done",
+          outcome: "completed",
         }),
         runFixture({
           run_id: "live-1",

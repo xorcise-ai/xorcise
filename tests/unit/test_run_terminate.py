@@ -93,6 +93,37 @@ def test_operator_termination_recorded_partial(migrated_home) -> None:
     assert reporting.result_partial(r.run_id) == (True, "operator")
 
 
+@pytest.mark.parametrize(
+    ("trigger", "outcome"),
+    [
+        ("done", "completed"),
+        ("timeout", "partial"),
+        ("operator", "partial"),
+        ("deploy_failed", "infra_failed"),
+        ("crashed", "infra_failed"),
+    ],
+)
+def test_run_outcome_agrees_with_what_grading_recorded(migrated_home, trigger, outcome) -> None:
+    """`RunEntry.outcome` is the one classification every client reads, so it must say exactly
+    what grading did with the run: `partial` iff the result is recorded partial, `infra_failed` iff
+    nothing was graded. Clients used to prefer the result's partial flag and fall back to their own
+    copy of the trigger rule (#159); they no longer need either."""
+    from xorcise.core.rest.run_terminate import terminate_run
+
+    r = runs.create_run(agent_id="a1", mission="c", budget_seconds=600)
+    assert r.outcome is None  # not ended yet
+    terminate_run(r.run_id, trigger, _now())
+
+    run = runs.get(r.run_id)
+    assert run is not None
+    assert run.outcome == outcome
+    assert run.model_dump(mode="json")["outcome"] == outcome  # on the wire, not only in Python
+    graded = reporting.get_result(r.run_id) is not None
+    assert graded == (outcome != "infra_failed")
+    if graded:
+        assert reporting.result_partial(r.run_id)[0] == (outcome == "partial")
+
+
 def test_agent_self_completion_not_partial(migrated_home) -> None:
     """Regression: an agent's own "done" completion stays a full (non-partial) result."""
     from xorcise.core.rest.run_terminate import terminate_run

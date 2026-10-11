@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { runStateMeta, isTerminal, runPresentation, classifyRun } from "./run-state";
 import { summarizeByAgent } from "@/features/results/summarize-runs";
 import { summarizeByMission } from "@/features/results/summarize-missions";
+import type { RunEntry } from "@/lib/api/types";
 
 describe("runStateMeta", () => {
   it("maps created and active", () => {
@@ -63,38 +64,38 @@ describe("runPresentation deploy_failed", () => {
   });
 });
 
-// #159: the GUI's aggregates must classify every trigger the server can write exactly as the
-// server does (contracts/run.py). Four private copies of this rule once listed a "budget" trigger
-// nothing writes and missed "operator", so an operator kill counted as genuine while grading.
+// #159: the GUI's aggregates read the server's classification (RunEntry.outcome) and never derive
+// it from the trigger. Four private copies of the trigger rule once listed a "budget" trigger
+// nothing writes and missed "operator", so an operator kill counted as genuine while grading. The
+// trigger → outcome mapping itself is tested on the server (test_run_terminate.py).
 describe("classifyRun", () => {
   it.each([
-    ["done", { partial: false, completed: true, infraFailed: false }],
-    ["timeout", { partial: true, completed: false, infraFailed: false }],
-    ["operator", { partial: true, completed: false, infraFailed: false }],
-    ["deploy_failed", { partial: false, completed: false, infraFailed: true }],
-    ["crashed", { partial: false, completed: false, infraFailed: true }],
-  ])("classifies %s like the server", (trigger, expected) => {
-    expect(classifyRun(trigger)).toEqual(expected);
-  });
-
-  it("prefers the result's recorded partial flag over the trigger", () => {
-    expect(classifyRun("done", true).partial).toBe(true);
-    expect(classifyRun("timeout", false).partial).toBe(false);
+    ["completed", { partial: false, completed: true, infraFailed: false }],
+    ["partial", { partial: true, completed: false, infraFailed: false }],
+    ["infra_failed", { partial: false, completed: false, infraFailed: true }],
+    [null, { partial: false, completed: false, infraFailed: false }],
+  ] as const)("spreads the server outcome %s", (outcome, expected) => {
+    expect(classifyRun(outcome)).toEqual(expected);
   });
 });
 
 // #109: a run our infrastructure cut short is not one of the agent's attempts — it stays in Runs,
 // is disclosed as infraFailed, and moves neither score nor rate.
 describe("environment failures in the aggregates", () => {
-  const row = (trigger: string, overall: number | null) => ({
+  const row = (outcome: RunEntry["outcome"], overall: number | null) => ({
     agentId: "a1",
     agentName: "alpha",
     mission: "m1",
     overall,
-    ...classifyRun(trigger),
+    ...classifyRun(outcome),
     when: "2026-10-09T00:00:00Z",
   });
-  const rows = [row("done", 0.8), row("timeout", 0.2), row("crashed", null), row("deploy_failed", null)];
+  const rows = [
+    row("completed", 0.8),
+    row("partial", 0.2),
+    row("infra_failed", null),
+    row("infra_failed", null),
+  ];
 
   it("leaves them out of the agent rates but in Runs", () => {
     const [s] = summarizeByAgent(rows);
