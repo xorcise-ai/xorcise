@@ -54,6 +54,42 @@ def test_upgrade_adds_trace_seal_evidence_digest_column(tmp_path, monkeypatch):
     assert "evidence_digest" in cols
 
 
+def test_upgrade_drops_results_recorded_for_environment_failures(tmp_path, monkeypatch):
+    """0005 (#109): a deploy_failed or crashed run was graded as a genuine 0.00 by earlier builds.
+    The upgrade removes those results — and only those: the run rows stay, and every other run's
+    result (including a partial one) is untouched."""
+    from datetime import UTC, datetime
+
+    from alembic import command
+
+    from xorcise.core import reporting, runs
+    from xorcise.core.contracts.grading import GradeResult, ScoreBreakdown
+    from xorcise.core.db.migrate import _alembic_config
+
+    monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
+    config.get_settings.cache_clear()
+    db.get_engine.cache_clear()
+    db.upgrade()
+    now = datetime(2026, 10, 8, tzinfo=UTC)
+    ids: dict[str, str] = {}
+    for trigger in ("deploy_failed", "crashed", "done", "timeout"):
+        run = runs.create_run(agent_id="a1", mission="m", budget_seconds=60)
+        runs.mark_terminal(run.run_id, trigger, now)
+        # What an earlier build recorded for every one of them.
+        grade = GradeResult(run_id=run.run_id, overall=0.0, breakdown=ScoreBreakdown())
+        reporting.record_result(run.run_id, "a1", grade, partial=trigger == "timeout")
+        ids[trigger] = run.run_id
+
+    command.downgrade(_alembic_config(), "0004_trace_seal_evidence_digest")
+    db.upgrade()
+
+    assert reporting.get_result(ids["deploy_failed"]) is None
+    assert reporting.get_result(ids["crashed"]) is None
+    assert reporting.get_result(ids["done"]) is not None
+    assert reporting.get_result(ids["timeout"]) is not None
+    assert {r.run_id for r in runs.list_runs()} == set(ids.values())
+
+
 def test_upgrade_is_idempotent(tmp_path, monkeypatch):
     monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
     config.get_settings.cache_clear()
@@ -82,7 +118,7 @@ def test_head_revision_is_the_latest_migration(tmp_path, monkeypatch):
     monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
     config.get_settings.cache_clear()
     db.get_engine.cache_clear()
-    assert db.head_revision() == "0004_trace_seal_evidence_digest"
+    assert db.head_revision() == "0005_drop_environment_failure_results"
 
 
 def test_boot_state_fresh_on_empty_db(tmp_path, monkeypatch):

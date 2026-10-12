@@ -16,6 +16,16 @@ describe("resultPollInterval", () => {
     expect(resultPollInterval(graded)).toBe(false);
   });
 
+  it("stops on a final not_graded answer (an environment failure is never graded)", () => {
+    const notGraded = {
+      run_id: "r1",
+      status: "not_graded",
+      terminal_trigger: "deploy_failed",
+      detail: null,
+    } as unknown as RunResultView;
+    expect(resultPollInterval(notGraded)).toBe(false);
+  });
+
   it("stops when there is no body (error path — a 404 stays a hard stop)", () => {
     expect(resultPollInterval(undefined)).toBe(false);
   });

@@ -8,7 +8,7 @@ import { Reveal } from "@/components/ui/reveal";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/components/ui/cn";
 import { useRuns } from "@/features/runs/queries";
-import { isTerminal } from "@/features/runs/run-state";
+import { classifyRun, isTerminal } from "@/features/runs/run-state";
 import { useRunResults } from "./queries";
 import {
   summarizeByMission,
@@ -35,17 +35,13 @@ export function ResultsByMission() {
 
   const rows: MissionRunRow[] = completed.map((r, i) => {
     const view = results[i]?.data;
-    const trigger = r.terminal_trigger;
-    // The result view carries the authoritative partial flag; fall back to the run's own
-    // trigger (always present) so a still-loading result still classifies (mirrors the Agents view).
-    const partial =
-      view?.partial ?? (trigger === "timeout" || trigger === "budget");
-    const completedOnOwnTerms = trigger === "done" || trigger === "completed";
+    // The server's classification of the run (run-state.ts classifyRun) — the same answer
+    // whether or not the result has been graded yet.
+    const counting = classifyRun(r.outcome);
     return {
       mission: r.mission,
       overall: view?.grade?.overall ?? null,
-      partial,
-      completed: completedOnOwnTerms,
+      ...counting,
       when: r.completed_at ?? r.created_at,
     };
   });
@@ -109,6 +105,7 @@ function MissionPerformanceCard({
           bestOverall: summary.bestOverall,
           completionRate: summary.completionRate,
           partialRate: summary.partialRate,
+          infraFailed: summary.infraFailed,
           lastRun: summary.lastRun,
         }}
         columns={3}

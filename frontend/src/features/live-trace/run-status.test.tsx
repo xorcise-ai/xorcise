@@ -6,7 +6,7 @@ import { runPhase } from "./run-phase";
 
 describe("BackendStatusBulb", () => {
   it("shows the phase label + help text", () => {
-    const phase = runPhase({ state: "created", terminal_trigger: null }, 0);
+    const phase = runPhase(runFixture({ state: "created" }), 0);
     render(<BackendStatusBulb phase={phase} />);
     expect(screen.getByText("Awaiting agent")).toBeInTheDocument();
     expect(screen.getByText(/OpenTelemetry/i)).toBeInTheDocument();

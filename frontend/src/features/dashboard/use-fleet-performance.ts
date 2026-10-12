@@ -1,8 +1,13 @@
 import { useMemo } from "react";
+import type { RunEntry } from "@/lib/api/types";
 import { useRuns } from "@/features/runs/queries";
 import { useAgents } from "@/features/agents/queries";
 import { useRunResults } from "@/features/results/queries";
-import { isTerminal, runPresentation, type RunTone } from "@/features/runs/run-state";
+import {
+  classifyRun,
+  isTerminal,
+  type RunTone,
+} from "@/features/runs/run-state";
 import {
   summarizeByAgent,
   summarizeRuns,
@@ -21,8 +26,15 @@ import {
   type AssistMix,
 } from "@/features/results/summarize-assist";
 
-/** Terminal runs bucketed by their §10 status tone (completed / partial / failed / other). */
+/** Terminal runs bucketed by how they count (the server's outcome), in the §10 palette:
+ *  green = completed, amber = partial, red = cut short by an environment failure, muted = other. */
 export type ToneMix = Record<RunTone, number>;
+
+const OUTCOME_TONE: Record<NonNullable<RunEntry["outcome"]>, RunTone> = {
+  completed: "green",
+  partial: "amber",
+  infra_failed: "red",
+};
 
 export interface FleetPerformance {
   isLoading: boolean;
@@ -30,8 +42,11 @@ export interface FleetPerformance {
   resultsLoading: boolean;
   /** Total terminal (evaluated) runs across the fleet. */
   evaluated: number;
-  /** Terminal runs by status tone (green = completed, amber = partial, red = failed/timeout). */
+  /** Terminal runs by outcome (green = completed, amber = partial, red = infra failure). */
   mix: ToneMix;
+  /** The agents' attempts: terminal runs minus the ones an environment failure cut short. The
+   *  pass rate is over these, like every other rate (#109). */
+  attempts: number;
   /** Agent ids that are still registered (a leaderboard row links to a profile only for these). */
   registeredAgentIds: Set<string>;
   agentSummaries: AgentPerformanceSummary[];
@@ -84,11 +99,8 @@ export function useFleetPerformance(): FleetPerformance {
 
     terminal.forEach((r, i) => {
       const view = results[i]?.data;
-      const trigger = r.terminal_trigger;
-      // Same classification as completed-runs.tsx / results-missions.tsx: a run that
-      // did not end on the agent's own terms is "partial" and is excluded from Average/Best.
-      const partial = view?.partial ?? (trigger === "timeout" || trigger === "budget");
-      const completed = trigger === "done" || trigger === "completed";
+      // The server's classification (run-state.ts classifyRun), as every other aggregate uses.
+      const { partial, completed, infraFailed } = classifyRun(r.outcome);
       const overall = view?.grade?.overall ?? null;
       // Assistance level: the run result's recorded intel count (0 = unassisted), fed to
       // assistMixByMission so the mission leaderboard can flag an assisted/unassisted blend.
@@ -100,12 +112,15 @@ export function useFleetPerformance(): FleetPerformance {
         overall,
         partial,
         completed,
+        infraFailed,
         when,
       });
-      chalRows.push({ mission: r.mission, overall, partial, completed, when });
+      chalRows.push({ mission: r.mission, overall, partial, completed, infraFailed, when });
       flat.push({ overall, partial, when });
       chalAssistRows.push({ mission: r.mission, intel, overall, partial });
-      mix[runPresentation(r.state, r.terminal_trigger).tone] += 1;
+      // By outcome, not by the status tone: a timeout's tone is red, but it is a partial run,
+      // and the bar's Partial segment was always empty when it keyed on tone.
+      mix[r.outcome ? OUTCOME_TONE[r.outcome] : "muted"] += 1;
     });
 
     // Per-agent score trend (reuses the locked summarizeRuns fold: non-partial scored, by time).
@@ -124,6 +139,7 @@ export function useFleetPerformance(): FleetPerformance {
       resultsLoading,
       evaluated: terminal.length,
       mix,
+      attempts: terminal.length - mix.red,
       registeredAgentIds,
       agentSummaries: summarizeByAgent(agentRows),
       missionSummaries: summarizeByMission(chalRows),

@@ -13,7 +13,12 @@ import { Card, CardContent } from "@/components/ui/card";
 import { StatTile, StatTileRow } from "@/components/ui/stat-tile";
 import { ApiError } from "@/lib/api/client";
 import { fullTime, formatDuration } from "@/lib/api/format";
-import type { GradeResult, RunEntry } from "@/lib/api/types";
+import {
+  isNotGraded,
+  type GradeResult,
+  type NotGradedView,
+  type RunEntry,
+} from "@/lib/api/types";
 import { useRun } from "@/features/runs/queries";
 import { useAgents } from "@/features/agents/queries";
 import { DeleteRunButton } from "@/features/runs/delete-run-dialog";
@@ -81,6 +86,16 @@ export function ResultsView({ runId }: { runId: string | null }) {
   // run completes, so the endpoint returns 202 {status:"grading"},
   // which api.get surfaces as a gradeless body. Treat `grade` as possibly absent
   // and render a graceful state instead of crashing on r.overall.
+  // A run whose environment failed (deploy_failed / crashed) is never graded — a final answer,
+  // not a wait, so it gets its own state rather than a "Grading in progress" that never ends.
+  if (isNotGraded(view))
+    return (
+      <NotGradedState
+        view={view}
+        name={run.data?.name}
+        onDeleted={() => router.push("/runs")}
+      />
+    );
   const r = view.grade as GradeResult | undefined;
   const conditions = view.conditions;
 
@@ -166,25 +181,14 @@ export function ResultsView({ runId }: { runId: string | null }) {
                   className="mt-0.5 size-4 shrink-0 text-primary"
                 />
                 <div>
+                  {/* The run's status wording (RunEntry.status) — the heading and sentence the
+                      run page and `xorcise run status` show for the same run (#165). */}
                   <p className="text-body font-medium text-foreground">
-                    {view.partial_trigger === "operator"
-                      ? "Partial — stopped early"
-                      : "Partial — timed out"}
+                    Partial — {run.data?.status.label ?? "did not finish"}
                   </p>
                   <p className="mt-2 max-w-[70ch] text-body text-text-secondary">
-                    {view.partial_trigger === "operator"
-                      ? "This run was terminated by the operator before it finished."
-                      : "This run did not finish before its deadline."}
-                    {view.partial_trigger ? (
-                      <>
-                        {" "}
-                        (
-                        <span className="font-mono text-text-tertiary">
-                          {view.partial_trigger}
-                        </span>
-                        )
-                      </>
-                    ) : null}{" "}
+                    {run.data?.status.detail ??
+                      "This run did not finish on the agent's own terms."}{" "}
                     Scores below reflect only what was completed.
                   </p>
                 </div>
@@ -289,6 +293,69 @@ function RunMetaBar({ run, agentName }: { run: RunEntry; agentName: string }) {
         </StatTileRow>
       </CardContent>
     </Card>
+  );
+}
+
+// A run cut short by an environment failure — the readiness gate's
+// deploy_failed or the boot reconcile's crashed. The server never grades it, so there is no
+// scorecard to show: say why instead, with the reason recorded when it ended. role="status", not
+// "alert" — the run is over and nothing here needs acting on.
+function NotGradedState({
+  view,
+  name,
+  onDeleted,
+}: {
+  view: NotGradedView;
+  name?: string;
+  onDeleted: () => void;
+}) {
+  // The page chrome stays: the trace download and Delete matter MOST here — the traces are the
+  // evidence of what failed, and a run that will never be scored is the likeliest to be cleared
+  // away. Re-evaluate and the report download are left out: the server refuses the first (409)
+  // and has no report to serve for the second.
+  return (
+    <Page className="gap-3">
+      <PageHead>
+        <PageTitle
+          eyebrow="Run Result"
+          subtitle={
+            <span className="font-mono text-text-tertiary">{view.run_id}</span>
+          }
+        >
+          {name ?? "Result"}
+        </PageTitle>
+        <div className="flex flex-wrap items-center gap-2">
+          <DownloadTraces runId={view.run_id} />
+          <DeleteRunButton runId={view.run_id} onDeleted={onDeleted} />
+        </div>
+      </PageHead>
+      <PageBody>
+        <div
+          role="status"
+          className="mx-auto flex w-full max-w-4xl flex-col items-center gap-3 p-4 text-center"
+        >
+          <AlertTriangle className="size-8 text-text-tertiary" />
+          <p className="text-body font-bold text-heading">
+            Not graded — {view.run_status.label}
+          </p>
+          {/* The server's sentence (run_status.detail) — what `xorcise run status` prints. */}
+          <p className="max-w-md text-body text-text-secondary">
+            {view.run_status.detail}
+          </p>
+          {view.detail && (
+            <pre className="max-h-72 w-full max-w-2xl overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-deepest p-3 text-left font-mono text-dense text-foreground">
+              {view.detail}
+            </pre>
+          )}
+          <Link
+            href={`/runs/live?id=${encodeURIComponent(view.run_id)}`}
+            className="font-medium text-primary underline underline-offset-2"
+          >
+            View trace →
+          </Link>
+        </div>
+      </PageBody>
+    </Page>
   );
 }
 

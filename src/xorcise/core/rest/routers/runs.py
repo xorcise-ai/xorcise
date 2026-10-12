@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Response
 from fastapi.responses import JSONResponse
@@ -23,6 +24,9 @@ from xorcise.core.contracts.errors import (
 from xorcise.core.contracts.grading import GradeResult
 from xorcise.core.contracts.reporting import ResultConditions, RunStats
 from xorcise.core.contracts.run import (
+    UNGRADED_TRIGGERS,
+    GradingView,
+    NotGradedView,
     RunCreate,
     RunCreatedEntry,
     RunEntry,
@@ -40,6 +44,40 @@ from xorcise.core.rest.run_create import (
 )
 
 router = APIRouter(prefix="/runs", tags=["runs"])
+
+
+def _not_graded(run: RunEntry) -> JSONResponse | None:
+    """The FINAL answer for a run cut short by an environment failure, else None.
+
+    Such a run is terminal and has no result by design (#109) — the failure is not the agent's,
+    so nothing was graded. Without this, every read of it fell through to the
+    "terminal-but-ungraded" branch: a 202 "grading" that never resolves, plus a re-drive of the
+    grade it must not have. 200, not 202: this is an answer, not progress — a poll loop must stop.
+    Carries the trigger and the recorded reason so the caller can say WHY there is no score.
+    Takes the run every caller has already loaded for its 404, so the answer costs no read."""
+    if run.state != "terminal" or run.terminal_trigger not in UNGRADED_TRIGGERS:
+        return None
+    view = NotGradedView(
+        run_id=run.run_id,
+        terminal_trigger=run.terminal_trigger,
+        run_status=run.status,
+        detail=run.terminal_detail,
+    )
+    return JSONResponse(status_code=200, content=view.model_dump(mode="json"))
+
+
+def _grading(run_id: str) -> JSONResponse:
+    """The 202 while a terminal run's grade is still being recorded (GradingView)."""
+    return JSONResponse(status_code=202, content=GradingView(run_id=run_id).model_dump(mode="json"))
+
+
+# The non-200 answers /result, /report and /stats share, declared so the OpenAPI schema says what
+# a client will actually receive — generated clients used to see only the graded 200 body.
+_RESULT_STATES: dict[int | str, dict[str, Any]] = {
+    202: {"model": GradingView, "description": "Terminal, grade not recorded yet — poll again."},
+    404: {"description": "No such run."},
+    409: {"description": "The run has not ended yet — there is nothing to read."},
+}
 
 
 class RunResultView(BaseModel):
@@ -239,7 +277,8 @@ def regrade_run(run_id: str, background: BackgroundTasks) -> JSONResponse:
     Drops the recorded result and schedules a fresh grade off the request thread (the judge can be
     slow); the new result surfaces via the SAME `202 grading → grade` poll the initial grade uses,
     so the client needs no new state machine. De-duplicated, so a double click grades once. 404 if
-    the run is unknown; 409 if it has not reached a terminal state (nothing is sealed to grade yet).
+    the run is unknown; 409 if it has not reached a terminal state (nothing is sealed to grade yet),
+    or if it ended on an environment failure (`deploy_failed` / `crashed`), which is never graded.
     """
     run = runs.get(run_id)
     if run is None:
@@ -251,13 +290,22 @@ def regrade_run(run_id: str, background: BackgroundTasks) -> JSONResponse:
                 f"run '{run_id}' has not finished (state: {run.state}) — nothing to re-evaluate yet"
             ),
         )
+    if run.terminal_trigger in UNGRADED_TRIGGERS:
+        # Re-grading would record exactly the phantom score the terminal path declined to (#109).
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"run '{run_id}' ended {run.terminal_trigger} — it was cut short by an "
+                f"environment failure, and such a run is never graded"
+            ),
+        )
     from xorcise.core.rest.run_terminate import ensure_graded_async
 
     # Drop the old result so a fresh grade records over it, then re-drive grading (idempotent +
     # guarded — the same path a poll uses to heal an ungraded run).
     reporting.delete_result(run_id)
     ensure_graded_async(run_id, background.add_task)
-    return JSONResponse(status_code=202, content={"run_id": run_id, "status": "grading"})
+    return _grading(run_id)
 
 
 @router.get("/{run_id}/prompt")
@@ -714,7 +762,11 @@ def run_artifacts(run_id: str) -> list[RunArtifactView]:
     ]
 
 
-@router.get("/{run_id}/result", response_model=RunResultView)
+@router.get(
+    "/{run_id}/result",
+    response_model=RunResultView | NotGradedView,
+    responses=_RESULT_STATES,
+)
 def run_result(
     run_id: str, background: BackgroundTasks, verify: bool = False
 ) -> RunResultView | JSONResponse:
@@ -734,19 +786,26 @@ def run_result(
     transient state, NOT a failure. Unknown run → 404; terminal-but-ungraded → 202
     {"status": "grading"}; still-active run → 409 (no result to read yet).
 
+    A run cut short by an environment failure (`deploy_failed` / `crashed`) is never graded — the
+    failure is not the agent's — so it answers a FINAL 200 {"status": "not_graded",
+    "terminal_trigger", "run_status", "detail"} instead of a "grading" that would never resolve.
+    `run_status` is the run's status wording (label, tone, why it ended).
+
     A terminal-ungraded run also RE-DRIVES grading here (ensure_graded_async): if the grade was
     lost to a server restart or a hung judge call, polling the result heals it rather than spinning
     at "grading" forever (de-duplicated, so the poll loop triggers one grade, not one per poll).
     """
     grade = reporting.get_result(run_id)
     if grade is None:
-        if runs.get(run_id) is None:
+        if (run := runs.get(run_id)) is None:
             raise HTTPException(status_code=404, detail=f"no run '{run_id}'")
+        if (not_graded := _not_graded(run)) is not None:
+            return not_graded
         if runs.terminal_state(run_id)[0]:
             from xorcise.core.rest.run_terminate import ensure_graded_async
 
             ensure_graded_async(run_id, background.add_task)
-            return JSONResponse(status_code=202, content={"run_id": run_id, "status": "grading"})
+            return _grading(run_id)
         raise HTTPException(
             status_code=409, detail=f"run '{run_id}' is not terminal yet — no result"
         )
@@ -786,7 +845,18 @@ def run_result(
     )
 
 
-@router.get("/{run_id}/report")
+@router.get(
+    "/{run_id}/report",
+    responses={
+        **_RESULT_STATES,
+        200: {
+            "description": "The report as `text/markdown` or `text/html` — or, for a run cut short "
+            "by an environment failure, the not-graded answer as JSON.",
+            "content": {"text/markdown": {}, "text/html": {}},
+            "model": NotGradedView,
+        },
+    },
+)
 def run_report(run_id: str, background: BackgroundTasks, format: str = "md") -> Response:
     """The run's full result as a downloadable Markdown or HTML document (run report).
 
@@ -796,7 +866,8 @@ def run_report(run_id: str, background: BackgroundTasks, format: str = "md") -> 
 
     Mirrors /result's state ladder exactly, so a caller polling for a report sees the same
     transitions it already handles: unknown run → 404; terminal-but-ungraded → 202
-    {"status": "grading"}; still-active run → 409. An unsupported `format` → 422.
+    {"status": "grading"}; ended on an environment failure → 200 {"status": "not_graded"};
+    still-active run → 409. An unsupported `format` → 422.
     Content-Disposition is `attachment`, so a browser downloads rather than renders it.
     """
     if format not in ("md", "html"):
@@ -807,13 +878,15 @@ def run_report(run_id: str, background: BackgroundTasks, format: str = "md") -> 
 
     ctx = assemble_report(run_id)
     if ctx is None:
-        if runs.get(run_id) is None:
+        if (run := runs.get(run_id)) is None:
             raise HTTPException(status_code=404, detail=f"no run '{run_id}'")
+        if (not_graded := _not_graded(run)) is not None:
+            return not_graded
         if runs.terminal_state(run_id)[0]:
             from xorcise.core.rest.run_terminate import ensure_graded_async
 
             ensure_graded_async(run_id, background.add_task)
-            return JSONResponse(status_code=202, content={"run_id": run_id, "status": "grading"})
+            return _grading(run_id)
         raise HTTPException(
             status_code=409, detail=f"run '{run_id}' is not terminal yet — no report"
         )
@@ -829,7 +902,11 @@ def run_report(run_id: str, background: BackgroundTasks, format: str = "md") -> 
     )
 
 
-@router.get("/{run_id}/stats", response_model=RunStats)
+@router.get(
+    "/{run_id}/stats",
+    response_model=RunStats | NotGradedView,
+    responses=_RESULT_STATES,
+)
 def run_stats(run_id: str, background: BackgroundTasks) -> RunStats | JSONResponse:
     """Per-run telemetry snapshot (tokens / counts / timing) for the run report.
 
@@ -845,11 +922,13 @@ def run_stats(run_id: str, background: BackgroundTasks) -> RunStats | JSONRespon
     if run is None:
         raise HTTPException(status_code=404, detail=f"no run '{run_id}'")
     if reporting.get_result(run_id) is None:
+        if (not_graded := _not_graded(run)) is not None:
+            return not_graded
         if runs.terminal_state(run_id)[0]:
             from xorcise.core.rest.run_terminate import ensure_graded_async
 
             ensure_graded_async(run_id, background.add_task)
-            return JSONResponse(status_code=202, content={"run_id": run_id, "status": "grading"})
+            return _grading(run_id)
         raise HTTPException(
             status_code=409, detail=f"run '{run_id}' is not terminal yet — no stats"
         )

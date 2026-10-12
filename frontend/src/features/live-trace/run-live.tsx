@@ -272,7 +272,7 @@ export function RunLive({ runId }: { runId: string | null }) {
     agents.data?.find((a) => a.id === r.agent_id)?.name ?? r.agent_id.slice(0, 8);
   // Shared §10/§17 status vocabulary + the state-appropriate action (View result / View Partial
   // Result), reused from the Run History cards so the two surfaces read identically.
-  const view = runPresentation(r.state, r.terminal_trigger);
+  const view = runPresentation(r);
   const resultHref = `/runs/result?id=${encodeURIComponent(r.run_id)}`;
   // The timeout banner used to offer "Inspect Final Activity". It could not work: the handler only
   // ran `setActiveTab("trace")` below 1280px and did nothing at all above it, so it was either a
@@ -346,10 +346,11 @@ export function RunLive({ runId }: { runId: string | null }) {
                   {terminate.isPending ? "Terminating…" : "Terminate"}
                 </Button>
               )}
-              {/* Terminal → the result is always reachable (secondary action, §17). The timeout
-                  case gets its own dedicated message + actions below, so it's excluded here to
-                  avoid a duplicate button. */}
-              {terminal && r.terminal_trigger !== "timeout" && (
+              {/* A completed run's result (secondary action, §17) — and, for a terminal run whose
+                  ending is unknown, the way to whatever was recorded. Every other ending explains
+                  itself in the banner below, which carries "View partial result" when there is
+                  one — and an environment failure has no result to view at all. */}
+              {terminal && (r.outcome === "completed" || r.outcome == null) && (
                 <Link
                   href={resultHref}
                   className={buttonVariants({ variant: "outline", size: "sm" })}
@@ -414,45 +415,29 @@ export function RunLive({ runId }: { runId: string | null }) {
         </CardContent>
       </Card>
 
-      {/* ─── Timeout message (§12) — shown when the run hit its configured time limit ─── */}
-      {r.terminal_trigger === "timeout" && (
-        <Card className="shrink-0 border-err/30 bg-err/5 p-4">
-          <p className="text-body font-semibold text-err">Run timed out</p>
-          <p className="mt-2 max-w-[68ch] text-body text-text-secondary">
-            The agent reached the configured time limit before completing the
-            mission.
-          </p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <Link
-              href={resultHref}
-              className={buttonVariants({ variant: "outline", size: "sm" })}
-            >
-              View partial result
-              <ExternalLink className="size-3" />
-            </Link>
-            <Link
-              href="/runs/new"
-              className={buttonVariants({ variant: "ghost", size: "sm" })}
-            >
-              Run again
-            </Link>
-          </div>
-        </Card>
-      )}
-
-      {/* ─── Deploy failure — the readiness gate closed the run out because its environment died
-           or never became ready. terminal_detail is the gate's verdict plus the evidence it
-           captured (the outer container's log tail, the inner daemon's) BEFORE releasing the
-           environment — the only copy of why `compose up` or the inner daemon failed. ─── */}
-      {r.terminal_trigger === "deploy_failed" && (
-        <Card className="shrink-0 border-err/30 bg-err/5 p-4">
-          <p className="text-body font-semibold text-err">
-            The mission environment never became ready
+      {/* ─── Why the run ended — every ending but the agent's own completion. The heading and
+           sentence are the server's (RunEntry.status), the wording `xorcise run status` prints,
+           so the two surfaces explain a run identically (#165). terminal_detail, when present, is
+           the evidence captured before the environment was released (the readiness gate's
+           verdict and the containers' log tails) — the only copy of why a deploy failed. ─── */}
+      {terminal && r.status.detail && (
+        <Card
+          data-testid="run-ending"
+          className={cn(
+            "shrink-0 p-4",
+            view.tone === "red" ? "border-err/30 bg-err/5" : "border-border",
+          )}
+        >
+          <p
+            className={cn(
+              "text-body font-semibold",
+              view.tone === "red" ? "text-err" : "text-foreground",
+            )}
+          >
+            {r.status.label}
           </p>
           <p className="mt-2 max-w-[68ch] text-body text-text-secondary">
-            It died at deploy or did not come up within the readiness window, so
-            the run was closed out before the agent could work against it. What
-            the environment said before it was released:
+            {r.status.detail}
           </p>
           {r.terminal_detail && (
             <pre
@@ -463,6 +448,15 @@ export function RunLive({ runId }: { runId: string | null }) {
             </pre>
           )}
           <div className="mt-3 flex flex-wrap gap-2">
+            {r.outcome === "partial" && (
+              <Link
+                href={resultHref}
+                className={buttonVariants({ variant: "outline", size: "sm" })}
+              >
+                View partial result
+                <ExternalLink className="size-3" />
+              </Link>
+            )}
             <Link
               href="/runs/new"
               className={buttonVariants({ variant: "ghost", size: "sm" })}

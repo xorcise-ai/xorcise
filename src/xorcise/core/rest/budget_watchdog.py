@@ -12,11 +12,13 @@ import contextlib
 from collections.abc import Callable
 from datetime import datetime
 
+from xorcise.core.contracts.run import TerminalTrigger
+
 
 class BudgetWatchdog:
     def __init__(
         self,
-        terminate: Callable[[str, str, datetime], object],
+        terminate: Callable[[str, TerminalTrigger, datetime], object],
         list_active: Callable[[], list[tuple[str, datetime]]],
         now_fn: Callable[[], datetime],
         interval: float,

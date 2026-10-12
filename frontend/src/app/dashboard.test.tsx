@@ -93,7 +93,7 @@ describe("Dashboard", () => {
       http.get("*/api/runs", () =>
         HttpResponse.json([
           runFixture({ run_id: "r1", state: "active" }),
-          runFixture({ run_id: "r2", state: "terminal", terminal_trigger: "done" }),
+          runFixture({ run_id: "r2", state: "terminal", terminal_trigger: "done", outcome: "completed" }),
         ]),
       ),
     );

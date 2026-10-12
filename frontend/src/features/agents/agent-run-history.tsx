@@ -62,12 +62,15 @@ export function buildAgentRunRows(
     .map((h): AgentRunRow => {
       const run = runById.get(h.run_id);
       const cat = run ? catById.get(run.mission) : undefined;
+      // A history row whose run has since been deleted still carries the run's status (the
+      // server joins it), so it reads exactly as the run did — no invented trigger (#165).
       const status = run
-        ? runPresentation(run.state, run.terminal_trigger)
-        : runPresentation(
-            "terminal",
-            h.partial ? (h.partial_trigger ?? "budget") : "done",
-          );
+        ? runPresentation(run)
+        : runPresentation({
+            state: "terminal",
+            status: h.status,
+            outcome: h.partial ? "partial" : "completed",
+          });
       return {
         runId: h.run_id,
         missionName: cat?.name ?? run?.mission ?? "Unknown mission",

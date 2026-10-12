@@ -66,7 +66,7 @@ const toneAccent: Record<RunTone, string> = {
 };
 
 export function RunCard({ run }: { run: RunEntry }) {
-  const view = runPresentation(run.state, run.terminal_trigger);
+  const view = runPresentation(run);
   const accent = toneAccent[view.tone];
   const active = !isTerminal(run);
   const harness = harnessLabel(run.source_agent);

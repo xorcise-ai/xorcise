@@ -69,7 +69,7 @@ export function ResultsAllRuns() {
     .map((r) => {
       const view = viewById.get(r.run_id);
       const grade = view?.grade;
-      const status = runPresentation(r.state, r.terminal_trigger);
+      const status = runPresentation(r);
       return {
         runId: r.run_id,
         agentName: agentName(r.agent_id),

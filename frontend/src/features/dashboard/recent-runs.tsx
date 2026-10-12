@@ -104,7 +104,7 @@ export function RecentRuns() {
           <Reveal className="flex min-h-0 flex-1 flex-col">
             <ul className="min-h-0 flex-1 divide-y divide-border overflow-y-auto">
               {recent.map((run) => {
-                const view = runPresentation(run.state, run.terminal_trigger);
+                const view = runPresentation(run);
                 const score = scoreById.get(run.run_id);
                 const href =
                   view.action.target === "result"

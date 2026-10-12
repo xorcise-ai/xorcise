@@ -1005,7 +1005,8 @@ export interface paths {
          *     Drops the recorded result and schedules a fresh grade off the request thread (the judge can be
          *     slow); the new result surfaces via the SAME `202 grading → grade` poll the initial grade uses,
          *     so the client needs no new state machine. De-duplicated, so a double click grades once. 404 if
-         *     the run is unknown; 409 if it has not reached a terminal state (nothing is sealed to grade yet).
+         *     the run is unknown; 409 if it has not reached a terminal state (nothing is sealed to grade yet),
+         *     or if it ended on an environment failure (`deploy_failed` / `crashed`), which is never graded.
          */
         post: operations["regrade_run_api_runs__run_id__regrade_post"];
         delete?: never;
@@ -1031,7 +1032,8 @@ export interface paths {
          *
          *     Mirrors /result's state ladder exactly, so a caller polling for a report sees the same
          *     transitions it already handles: unknown run → 404; terminal-but-ungraded → 202
-         *     {"status": "grading"}; still-active run → 409. An unsupported `format` → 422.
+         *     {"status": "grading"}; ended on an environment failure → 200 {"status": "not_graded"};
+         *     still-active run → 409. An unsupported `format` → 422.
          *     Content-Disposition is `attachment`, so a browser downloads rather than renders it.
          */
         get: operations["run_report_api_runs__run_id__report_get"];
@@ -1067,6 +1069,11 @@ export interface paths {
          *     grading runs asynchronously after /complete, so a terminal-but-ungraded run is a normal
          *     transient state, NOT a failure. Unknown run → 404; terminal-but-ungraded → 202
          *     {"status": "grading"}; still-active run → 409 (no result to read yet).
+         *
+         *     A run cut short by an environment failure (`deploy_failed` / `crashed`) is never graded — the
+         *     failure is not the agent's — so it answers a FINAL 200 {"status": "not_graded",
+         *     "terminal_trigger", "run_status", "detail"} instead of a "grading" that would never resolve.
+         *     `run_status` is the run's status wording (label, tone, why it ended).
          *
          *     A terminal-ungraded run also RE-DRIVES grading here (ensure_graded_async): if the grade was
          *     lost to a server restart or a hung judge call, polling the result heals it rather than spinning
@@ -1405,10 +1412,12 @@ export interface components {
          */
         AgentEventKind: "message" | "thinking" | "terminal_command" | "terminal_output" | "file_edit" | "file_read" | "browser_action" | "browser_observation" | "tool_call" | "tool_result" | "mcp_call" | "mcp_result" | "finding" | "flag" | "error" | "status" | "metric" | "unclassified" | "unknown";
         /**
-         * AgentHistoryEntry
-         * @description One recorded result in an agent's track record (the 50/50 breakdown).
+         * AgentHistoryView
+         * @description A history row plus the run's status wording (contracts.run.run_status), joined here because
+         *     contracts never import one another. A row whose run has since been deleted still reads exactly
+         *     as the run did — the GUI used to invent a "budget" trigger for it instead (#165).
          */
-        AgentHistoryEntry: {
+        AgentHistoryView: {
             /** Agent Id */
             agent_id: string;
             /**
@@ -1440,6 +1449,7 @@ export interface components {
             partial_trigger?: string | null;
             /** Run Id */
             run_id: string;
+            status: components["schemas"]["RunStatus"];
             /** Trace Ref */
             trace_ref?: string | null;
         };
@@ -1971,6 +1981,21 @@ export interface components {
             /** Transcript Items */
             transcript_items?: number | null;
         };
+        /**
+         * GradingView
+         * @description The 202 /result, /report and /stats give while a terminal run's grade is still being
+         *     recorded — transient progress, not a failure: poll again.
+         */
+        GradingView: {
+            /** Run Id */
+            run_id: string;
+            /**
+             * Status
+             * @default grading
+             * @constant
+             */
+            status: "grading";
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -2321,6 +2346,30 @@ export interface components {
             headscale_url?: string | null;
         };
         /**
+         * NotGradedView
+         * @description The FINAL answer /result, /report and /stats give for a run cut short by an environment
+         *     failure (`deploy_failed` / `crashed`): such a run is never graded (#109). A 200, not a 202 —
+         *     an answer, not progress — so a poll loop stops on it.
+         */
+        NotGradedView: {
+            /** Detail */
+            detail?: string | null;
+            /** Run Id */
+            run_id: string;
+            run_status: components["schemas"]["RunStatus"];
+            /**
+             * Status
+             * @default not_graded
+             * @constant
+             */
+            status: "not_graded";
+            /**
+             * Terminal Trigger
+             * @enum {string}
+             */
+            terminal_trigger: "done" | "timeout" | "operator" | "deploy_failed" | "crashed";
+        };
+        /**
          * PlaneStatus
          * @description One module's reachability, tagged with the service role that owns it.
          *
@@ -2580,6 +2629,12 @@ export interface components {
              * @default
              */
             name: string;
+            /**
+             * Outcome
+             * @description How this run counts in every aggregate (`run_outcome`), derived from terminal_trigger on
+             *     every read and never persisted. Clients read this instead of re-deriving it (#159).
+             */
+            readonly outcome: ("completed" | "partial" | "infra_failed") | null;
             /** Platform */
             platform?: string | null;
             /** Platform Digest */
@@ -2597,10 +2652,15 @@ export interface components {
             source_agent: string;
             /** State */
             state: string;
+            /**
+             * @description How this run is shown (`run_status`): label, tone and why it ended. Clients render this
+             *     instead of mapping the trigger themselves, so the CLI and the GUI agree (#165).
+             */
+            readonly status: components["schemas"]["RunStatus"];
             /** Terminal Detail */
             terminal_detail?: string | null;
             /** Terminal Trigger */
-            terminal_trigger?: string | null;
+            terminal_trigger?: ("done" | "timeout" | "operator" | "deploy_failed" | "crashed") | null;
         };
         /**
          * RunEntry
@@ -2655,6 +2715,12 @@ export interface components {
              * @default
              */
             name: string;
+            /**
+             * Outcome
+             * @description How this run counts in every aggregate (`run_outcome`), derived from terminal_trigger on
+             *     every read and never persisted. Clients read this instead of re-deriving it (#159).
+             */
+            readonly outcome: ("completed" | "partial" | "infra_failed") | null;
             /** Platform */
             platform?: string | null;
             /** Platform Digest */
@@ -2670,10 +2736,15 @@ export interface components {
             source_agent: string;
             /** State */
             state: string;
+            /**
+             * @description How this run is shown (`run_status`): label, tone and why it ended. Clients render this
+             *     instead of mapping the trigger themselves, so the CLI and the GUI agree (#165).
+             */
+            readonly status: components["schemas"]["RunStatus"];
             /** Terminal Detail */
             terminal_detail?: string | null;
             /** Terminal Trigger */
-            terminal_trigger?: string | null;
+            terminal_trigger?: ("done" | "timeout" | "operator" | "deploy_failed" | "crashed") | null;
         };
         /**
          * RunEnvironmentView
@@ -2821,6 +2892,22 @@ export interface components {
              *     }
              */
             tokens: components["schemas"]["TokenStats"];
+        };
+        /**
+         * RunStatus
+         * @description How a run is SHOWN — the one wording the CLI, the GUI and the report all render, so the two
+         *     surfaces cannot describe the same run differently (#165).
+         */
+        RunStatus: {
+            /** Detail */
+            detail?: string | null;
+            /** Label */
+            label: string;
+            /**
+             * Tone
+             * @enum {string}
+             */
+            tone: "ok" | "active" | "err" | "muted";
         };
         /**
          * RunTelemetryView
@@ -3336,7 +3423,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AgentHistoryEntry"][];
+                    "application/json": components["schemas"]["AgentHistoryView"][];
                 };
             };
             /** @description Validation Error */
@@ -4667,14 +4754,39 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description The report as `text/markdown` or `text/html` — or, for a run cut short by an environment failure, the not-graded answer as JSON. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["NotGradedView"];
+                    "text/html": unknown;
+                    "text/markdown": unknown;
                 };
+            };
+            /** @description Terminal, grade not recorded yet — poll again. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GradingView"];
+                };
+            };
+            /** @description No such run. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The run has not ended yet — there is nothing to read. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -4706,8 +4818,31 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RunResultView"];
+                    "application/json": components["schemas"]["RunResultView"] | components["schemas"]["NotGradedView"];
                 };
+            };
+            /** @description Terminal, grade not recorded yet — poll again. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GradingView"];
+                };
+            };
+            /** @description No such run. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The run has not ended yet — there is nothing to read. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -4737,8 +4872,31 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RunStats"];
+                    "application/json": components["schemas"]["RunStats"] | components["schemas"]["NotGradedView"];
                 };
+            };
+            /** @description Terminal, grade not recorded yet — poll again. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GradingView"];
+                };
+            };
+            /** @description No such run. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The run has not ended yet — there is nothing to read. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

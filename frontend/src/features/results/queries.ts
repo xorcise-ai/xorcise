@@ -5,7 +5,12 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { api } from "@/lib/api/client";
-import type { RunResultView, RunArtifact, RunStats } from "@/lib/api/types";
+import {
+  isNotGraded,
+  type RunResultView,
+  type RunArtifact,
+  type RunStats,
+} from "@/lib/api/types";
 
 /** How often the results view re-polls a terminal-but-ungraded run (202 {status:"grading"}). */
 const RESULT_POLL_MS = 3000;
@@ -13,10 +18,12 @@ const RESULT_POLL_MS = 3000;
 /** Poll while the fetched body is gradeless — grading runs async server-side, so the 202
  *  "grading" body only flips to a real result on a refetch; without polling the "Grading in
  *  progress" spinner never resolves. Stops once the grade lands. An errored query has no data
- *  (a 404 = no result at all) and stays a hard stop. Exported for tests. */
+ *  (a 404 = no result at all) and stays a hard stop, as does a "not_graded" body: a run whose
+ *  environment failed is never graded, so there is nothing to wait for. Exported for tests. */
 export function resultPollInterval(
   data: RunResultView | undefined,
 ): number | false {
+  if (isNotGraded(data)) return false;
   return data && !data.grade ? RESULT_POLL_MS : false;
 }
 
@@ -74,6 +81,8 @@ export function useRunStats(runId: string) {
     select: (data) => (data && "tokens" in data ? data : undefined),
     refetchInterval: (q) => {
       const d = q.state.data;
+      // A run whose environment failed answers a final "not_graded" — no snapshot, ever.
+      if (isNotGraded(d)) return false;
       return d && !("tokens" in d) ? RESULT_POLL_MS : false;
     },
   });

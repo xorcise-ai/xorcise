@@ -79,7 +79,7 @@ describe("RunNotificationsWatcher", () => {
 
     fireEvent.click(screen.getByText("refetch"));
     expect(
-      await screen.findByText(/Run timed out — midnight recon/),
+      await screen.findByText(/Timed out — midnight recon/),
     ).toBeInTheDocument();
     expect(useToastStore.getState().toasts).toHaveLength(1);
     const link = screen.getByRole("link", { name: /view partial result/i });

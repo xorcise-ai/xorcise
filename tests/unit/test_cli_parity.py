@@ -18,6 +18,7 @@ import xorcise.core.cli.app  # noqa: F401 — registers commands/callback on the
 from xorcise.core.cli._shared import app
 from xorcise.core.cli.commands.results import summarize_by_agent
 from xorcise.core.cli.rest_client import RestClient
+from xorcise.core.contracts.run import run_outcome
 
 pytestmark = pytest.mark.unit
 
@@ -430,6 +431,8 @@ def _run(
         "created_at": when,
         "completed_at": when,
         "terminal_trigger": trigger,
+        # What the server ships on every run (RunEntry.outcome) — the leaderboard reads it.
+        "outcome": run_outcome(trigger),
     }
 
 
@@ -548,7 +551,7 @@ def test_flatten_carries_whether_the_judge_actually_ran():
     from xorcise.core.cli.commands.results import _flatten
 
     row = _flatten(
-        {"agent_id": "a1", "terminal_trigger": "done", "created_at": "2026-07-01T10:00:00"},
+        {"agent_id": "a1", "outcome": "completed", "created_at": "2026-07-01T10:00:00"},
         {"grade": {"overall": 0.5, "judge_status": "unavailable"}, "partial": False},
     )
 
@@ -559,7 +562,7 @@ def test_flatten_does_not_call_a_healthy_or_partial_judge_degraded():
     """`partial` already has its own disclosure (coverage); it is not the same condition."""
     from xorcise.core.cli.commands.results import _flatten
 
-    base_run = {"agent_id": "a1", "terminal_trigger": "done", "created_at": "2026-07-01T10:00:00"}
+    base_run = {"agent_id": "a1", "outcome": "completed", "created_at": "2026-07-01T10:00:00"}
     ok = _flatten(base_run, {"grade": {"overall": 0.9, "judge_status": "ok"}, "partial": False})
     part = _flatten(
         base_run, {"grade": {"overall": 0.7, "judge_status": "partial"}, "partial": False}
@@ -636,3 +639,54 @@ def test_a_scored_degraded_run_is_still_counted():
 
     assert summary["avg_overall"] == pytest.approx(0.5)
     assert summary["judge_degraded"] == 1
+
+
+@pytest.mark.parametrize("trigger", ["done", "operator", "timeout", "deploy_failed", "crashed"])
+def test_leaderboard_partial_agrees_with_the_server_for_every_trigger(
+    migrated_home, trigger
+) -> None:
+    """#159: the leaderboard must classify every trigger the server can write exactly as the
+    server's own grading does. A private copy of the rule listed a "budget" trigger nothing writes
+    and missed "operator"; it now reads the run's `outcome`, so this drives the real wire shape."""
+    from datetime import UTC, datetime
+
+    from xorcise.core import reporting, runs
+    from xorcise.core.cli.commands.results import _flatten
+    from xorcise.core.rest.run_terminate import terminate_run
+
+    run = runs.create_run(agent_id="a1", mission="m", budget_seconds=60)
+    terminate_run(run.run_id, trigger, datetime(2026, 10, 8, tzinfo=UTC))
+    recorded = reporting.get_result(run.run_id)
+    server_partial = reporting.result_partial(run.run_id)[0] if recorded is not None else False
+
+    entry = runs.get(run.run_id)
+    assert entry is not None
+    wire = entry.model_dump(mode="json")  # what GET /runs returns
+    cli_partial = _flatten(wire, None)["partial"]
+    assert cli_partial == server_partial
+
+
+def test_leaderboard_counts_an_environment_failure_in_the_totals_only(monkeypatch):
+    """#109: a deploy_failed run is never graded — /result answers "not_graded". It counts in Runs
+    and its own infra_failed count, and nowhere else: not in Avg/Best as a phantom 0.00, and not in
+    the completion or partial rate, which are over the agent's attempts — and it was not one."""
+    _wire(
+        monkeypatch,
+        runs=[_run("r1", "a1", "done"), _run("r2", "a1", "deploy_failed")],
+        results={
+            "r1": {"grade": {"overall": 0.8}, "partial": False},
+            "r2": {"run_id": "r2", "status": "not_graded", "terminal_trigger": "deploy_failed"},
+        },
+        agents=[{"id": "a1", "name": "alpha"}],
+    )
+    result = runner.invoke(app, ["leaderboard", "--json"])
+    assert result.exit_code == 0
+    import json
+
+    (row,) = json.loads(result.stdout)
+    assert row["runs"] == 2 and row["scored"] == 1
+    assert row["avg_overall"] == 0.8
+    assert row["infra_failed"] == 1
+    assert row["completion_rate"] == 1.0 and row["partial_rate"] == 0.0
+    table = runner.invoke(app, ["leaderboard"])
+    assert "Infra failed" in table.stdout

@@ -89,6 +89,17 @@ export function PerformanceSummary(props: PerformanceSummaryProps) {
   }
 
   const { summary } = props;
+  // Runs cut short by an environment failure: in Runs, but in no score or rate (they were not
+  // the agent's attempts — #109). Disclosed only when there are some, so the rates above are
+  // never read as covering runs they leave out.
+  const infraFailed = summary.infraFailed ?? 0;
+  const infraNote =
+    infraFailed > 0 ? (
+      <p className="text-caption text-text-tertiary">
+        {infraFailed} run{infraFailed === 1 ? "" : "s"} cut short by an
+        environment failure — not graded, and left out of these figures.
+      </p>
+    ) : null;
   const headline: { label: string; value: string; tone?: Tone }[] = [
     { label: "Runs", value: String(summary.runs) },
     { label: "Average", value: pct(summary.avgOverall), tone: "primary" },
@@ -124,6 +135,7 @@ export function PerformanceSummary(props: PerformanceSummaryProps) {
               {shortTime(summary.lastRun)}
             </span>
           </p>
+          {infraNote}
         </div>
       </div>
     );
@@ -137,8 +149,8 @@ export function PerformanceSummary(props: PerformanceSummaryProps) {
       { label: "Last run", value: shortTime(summary.lastRun), small: true },
     ];
 
-  return (
-    <dl className={cn(grid, className)}>
+  const grid6 = (cls: string) => (
+    <dl className={cls}>
       {tiles.map((t) => (
         <StatTile
           key={t.label}
@@ -149,5 +161,12 @@ export function PerformanceSummary(props: PerformanceSummaryProps) {
         />
       ))}
     </dl>
+  );
+  if (!infraNote) return grid6(cn(grid, className));
+  return (
+    <div className={cn("space-y-2", className)}>
+      {grid6(grid)}
+      {infraNote}
+    </div>
   );
 }

@@ -1,4 +1,5 @@
 import type { RunEntry, RunEnvironment } from "@/lib/api/types";
+import { runTone } from "@/features/runs/run-state";
 
 export type Tone = "amber" | "green" | "red" | "muted";
 
@@ -28,7 +29,7 @@ export interface RunPhase {
  * Server states: "created" → "active" → "terminal" (trigger says how it ended).
  */
 export function runPhase(
-  run: Pick<RunEntry, "state" | "terminal_trigger">,
+  run: Pick<RunEntry, "state" | "status" | "outcome">,
   eventCount: number,
   /** The mission environment's observed state, when known. Without it the phase falls back to
    *  the agent-only reading, so callers that don't poll the environment are unaffected. */
@@ -39,31 +40,18 @@ export function runPhase(
   stalledSeconds?: number | null,
 ): RunPhase {
   if (run.state === "terminal") {
-    const t = run.terminal_trigger;
-    if (t === "done" || t === "completed")
-      return {
-        key: "solved",
-        label: "Complete",
-        helpText: "The run finished and a result was recorded.",
-        tone: "green",
-        active: false,
-      };
-    if (t === "error" || t === "timeout" || t === "budget")
-      return {
-        key: "failed",
-        label: t,
-        helpText:
-          t === "error"
-            ? "The run ended on an error."
-            : `The run hit its ${t} limit before finishing.`,
-        tone: "red",
-        active: false,
-      };
+    // The server's status wording (RunEntry.status) — the same label and sentence the CLI prints
+    // and the run page's banner shows, never a raw trigger like "deploy_failed" (#165).
+    const tone = runTone(run.status);
     return {
-      key: "ended",
-      label: t ?? "terminal",
-      helpText: "The run is no longer active.",
-      tone: "muted",
+      key: run.outcome === "completed" ? "solved" : tone === "red" ? "failed" : "ended",
+      label: run.status.label,
+      helpText:
+        run.status.detail ??
+        (run.outcome === "completed"
+          ? "The run finished and a result was recorded."
+          : "The run is no longer active."),
+      tone,
       active: false,
     };
   }

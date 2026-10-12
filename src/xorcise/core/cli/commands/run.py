@@ -24,7 +24,6 @@ from xorcise.core.cli._resolve import (
 )
 from xorcise.core.cli._shared import EXIT_CODES_EPILOG, app, console, emit_json, err_console
 from xorcise.core.cli._ux import (
-    COMPLETED_TRIGGERS,
     DASH,
     confirm_or_abort,
     fail,
@@ -33,11 +32,12 @@ from xorcise.core.cli._ux import (
     kind_label,
     next_step,
     print_table,
-    run_state_markup,
+    run_status_markup,
     short_id,
     ux_table,
 )
 from xorcise.core.cli.rest_client import DocumentUnavailable, RestClient
+from xorcise.core.contracts.run import run_status as status_wording
 from xorcise.core.reporting.render import _SEAL_MISMATCH, agent_model_line
 
 run_app = typer.Typer(
@@ -253,10 +253,12 @@ def _render_result(
     _render_telemetry(telemetry)
     # Partial banner — only shown when the result was graded on incomplete data.
     if r.get("partial"):
-        trig = r.get("partial_trigger") or "partial"
-        console.print(
-            f"[bold yellow]⚠ PARTIAL[/] — result graded on incomplete data (trigger: {trig})"
-        )
+        # The status wording the server ships on the run (contracts.run.run_status) — the same
+        # label and sentence the GUI's result page shows for this run (#165).
+        status = status_wording("terminal", r.get("partial_trigger"))
+        console.print(f"[bold yellow]⚠ PARTIAL[/] — {escape(status.label)}")
+        if status.detail:
+            console.print(f"  {escape(status.detail)}")
     if verbose:
         # The per-check (deterministic) + per-criterion (judge) detail. Both arrays
         # are already in the REST response; the default view stays compact.
@@ -358,7 +360,7 @@ def list_runs(
         harness = kind_label(r.get("source_agent") or None)
         mission_id = str(r.get("mission") or r.get("mission_id") or DASH)
         mission = mission_names.get(mission_id, mission_id)
-        state = run_state_markup(r.get("state"), r.get("terminal_trigger"))
+        state = run_status_markup(r)
         if verbose is True:
             state += f" [dim]({r.get('state')}/{r.get('terminal_trigger') or '—'})[/dim]"
         score = _run_score(client, r)
@@ -484,6 +486,10 @@ def run_status(
         # block is additive so existing consumers keep working.
         emit_json({**r, "telemetry": telemetry} if telemetry is not None else r)
         return
+    if r.get("status") == "not_graded":
+        # Final, not progress: exit 0 so a `while … run status` poll stops here.
+        _print_not_graded(run_id, r)
+        return
     if r.get("status") == "grading":
         # Terminal but not graded yet — grading is async after /complete.
         console.print(
@@ -520,8 +526,8 @@ pass --no-wait to return on the ack.
     run_id = _resolve_id(client, run_id)
     confirm_or_abort(f"Terminate run {short_id(run_id)}? (it will be graded as-is)", assume_yes=yes)
     entry = client.post(f"/runs/{run_id}/terminate", json={})
-    trigger = entry.get("terminal_trigger") or "operator"
-    console.print(f"run {run_id} → {entry.get('state')} (trigger: {trigger})")
+    label = (entry.get("status") or {}).get("label") or entry.get("state")
+    console.print(f"run {run_id} → {escape(str(label))}")
     if not wait:
         return
     console.print("[warn]grading…[/] (waiting for the result)")
@@ -532,6 +538,9 @@ pass --no-wait to return on the ack.
             f"[value]xorcise run status {short_id(run_id)}[/value] shortly"
         )
         raise typer.Exit(3)
+    if r.get("status") == "not_graded":
+        _print_not_graded(run_id, r)
+        return
     _render_result(r)
 
 
@@ -571,6 +580,9 @@ the fresh grade lands and prints it; pass --no-wait to return on the ack.
             f"[value]xorcise run status {short_id(run_id)}[/value] shortly"
         )
         raise typer.Exit(3)
+    if r.get("status") == "not_graded":
+        _print_not_graded(run_id, r)
+        return
     _render_result(r, verbose=verbose)
 
 
@@ -618,6 +630,37 @@ def _is_grading_envelope(body: str) -> bool:
     return head.startswith("{") and '"grading"' in head
 
 
+def _not_graded_envelope(body: str) -> dict[str, Any] | None:
+    """The server's final "not graded" answer for a run whose environment failed, else None.
+
+    Unlike "grading" this is not a state to wait out: a deploy_failed or crashed run is never
+    graded (#109), so `run report` and the bulk export must say why instead of writing it to disk.
+    Parsed rather than sniffed, because the envelope carries the trigger and the reason."""
+    if not body.lstrip().startswith("{"):
+        return None
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return None
+    if isinstance(parsed, dict) and parsed.get("status") == "not_graded":
+        return parsed
+    return None
+
+
+def _print_not_graded(run_id: str, envelope: dict[str, Any]) -> None:
+    """Say plainly that a run has no score and why — never a 0.00 that reads as a real attempt.
+
+    The sentence is the server's (`run_status.detail`, contracts.run.run_status), the same one the
+    GUI shows on the run and result pages."""
+    status = envelope.get("run_status") or {}
+    label = status.get("label") or envelope.get("terminal_trigger") or "ended"
+    console.print(f"[warn]not graded[/] — run {short_id(run_id)}: {escape(str(label))}")
+    if status.get("detail"):
+        console.print(f"  {escape(str(status['detail']))}")
+    if envelope.get("detail"):
+        console.print(f"  [dim]{escape(str(envelope['detail']))}[/dim]")
+
+
 def select_runs_for_export(
     runs: Sequence[dict[str, Any]],
     *,
@@ -637,7 +680,8 @@ def select_runs_for_export(
     agent id. The caller resolves what the operator typed (a display name, a prefix) before getting
     here, so a typo fails with the candidates rather than as a silently empty selection.
 
-    `genuine_only` keeps only the runs the agent finished itself (COMPLETED_TRIGGERS); every other
+    `genuine_only` keeps only the runs the agent finished itself (the server's `outcome` is
+    "completed"); every other
     trigger the server writes — an operator kill, a budget timeout, a deploy failure, a crash — is
     the platform ending the run, which is not agent performance.
 
@@ -683,7 +727,7 @@ def select_runs_for_export(
             continue
         if agent_id and str(row.get("agent_id") or "") != agent_id:
             continue
-        if genuine_only and str(row.get("terminal_trigger") or "") not in COMPLETED_TRIGGERS:
+        if genuine_only and row.get("outcome") != "completed":
             continue
         if floor is not None:
             at = created(row)
@@ -800,6 +844,10 @@ bundled seal is RECORDED, not verified: checking it re-hashes a run's whole evid
 batch would pay once per run, so `evidence_verified` is null throughout. Use \
 `xorcise run status <id>` or the report to get a verdict on one run.
 
+    A run cut short by an environment failure (deploy_failed / crashed) is never graded, so its \
+directory has no report: `result.json` holds the server's "not_graded" answer with the reason, \
+beside the traces and events that show what went wrong. Such runs are named on stderr.
+
     Only finished runs are exported; an active one has no sealed record yet. \
 A run whose OWN document answers an error — a 404 or a 500 on that run's report, result, \
 trace or events — is reported and skipped rather than aborting the batch, so one bad run does \
@@ -892,6 +940,10 @@ when you need the tree to contain only this export.
     written = 0
     skipped: list[tuple[str, str]] = []
     pending: list[str] = []  # terminal but not yet graded — a retry, not a failure
+    # Runs cut short by an environment failure (deploy_failed / crashed): never graded, so there
+    # is no report — but their traces and events are exactly the evidence of what went wrong, so
+    # they ARE exported, without report.<fmt>. Named in the summary; not a failure, not pending.
+    ungraded: list[tuple[str, str]] = []
     stopped: tuple[str, int] | None = None  # the run in hand when a service-wide failure ended it
     for row in selected:
         rid = str(row["run_id"])
@@ -910,12 +962,13 @@ when you need the tree to contain only this export.
             if _is_grading_envelope(report):
                 pending.append(short_id(rid))
                 continue
-            # Fetch all FOUR before creating the directory. Writing the report first left a
+            not_graded = _not_graded_envelope(report)
+            # Fetch every document before creating the directory. Writing the report first left a
             # directory holding report.md alone whenever a later document failed — and anything
             # globbing <out>/*/ reads that as an exported run. Dict values evaluate in order, so
             # every fetch is done before the first mkdir.
-            bodies = {
-                f"report.{fmt}": report,
+            bodies: dict[str, str] = {} if not_graded is not None else {f"report.{fmt}": report}
+            bodies |= {
                 # The machine-readable half of the bundle: the server's /result envelope as it
                 # returns it, carrying the grade AND the evidence seal (evidence_digest +
                 # evidence_verified). Without it the seal reaches the tree only as sixteen
@@ -940,6 +993,8 @@ when you need the tree to contain only this export.
                 ),
             }
             _publish(bodies, target)
+            if not_graded is not None:
+                ungraded.append((short_id(rid), str(not_graded.get("terminal_trigger") or "")))
         except DocumentUnavailable as exc:
             # ONE run's document answered an error status that is about that document (a 404, a
             # 500). `_send` exits the process for any error status — right for a single-run
@@ -966,6 +1021,11 @@ when you need the tree to contain only this export.
     console.print(f"exported {written} run(s) to {root}")
     for rid in pending:
         err_console.print(f"[warn]not yet graded[/] {rid}: re-run the export once grading finishes")
+    for rid, trigger in ungraded:
+        err_console.print(
+            f"[warn]not graded[/] {rid}: ended {escape(trigger)} — cut short by an environment "
+            "failure, so it has no score; exported without a report"
+        )
     for rid, why in skipped:
         err_console.print(f"[warn]skipped[/] {rid}: {escape(why)}")
     if stopped is not None:
@@ -1026,6 +1086,10 @@ this reports.
             f"ready yet; re-run [value]xorcise run report {short_id(run_id)}[/value] shortly"
         )
         raise typer.Exit(3)
+    # Final: there is no report to write, ever — exit 1, since the file asked for was not made.
+    if (not_graded := _not_graded_envelope(body)) is not None:
+        _print_not_graded(run_id, not_graded)
+        raise typer.Exit(1)
     path = Path(out) if out else Path(f"xorcise-run-{run_id[:8]}.{fmt}")
     try:
         path.write_text(body, encoding="utf-8")

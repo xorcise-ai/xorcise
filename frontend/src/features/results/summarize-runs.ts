@@ -44,8 +44,9 @@ export interface AgentRunRow {
   agentId: string;
   agentName: string;
   overall: number | null; // recorded overall score, when graded
-  partial: boolean; // did NOT finish on the agent's own terms (timeout / budget / kill)
+  partial: boolean; // did NOT finish on the agent's own terms (timeout / operator kill)
   completed: boolean; // finished on the agent's own terms (done / completed)
+  infraFailed?: boolean; // cut short by an environment failure — not an attempt (classifyRun)
   when: string; // ISO timestamp used for "last run"
 }
 
@@ -57,8 +58,9 @@ export interface AgentPerformanceSummary {
   scored: number; // non-partial runs carrying a recorded score
   avgOverall: number | null;
   bestOverall: number | null;
-  completionRate: number | null; // completed / runs
-  partialRate: number | null; // partial / runs
+  completionRate: number | null; // completed / attempts (runs minus infraFailed)
+  partialRate: number | null; // partial / attempts
+  infraFailed?: number; // runs cut short by an environment failure — in `runs`, in no rate
   lastRun: string | null; // most recent run timestamp (ISO)
 }
 
@@ -66,8 +68,9 @@ export interface AgentPerformanceSummary {
  * Group flattened runs into one summary per agent, ranked best-average-first
  * (report §14: "Which agent is performing best?"). Agents with no scored runs sink
  * to the bottom; ties break on run count, then name. Score aggregates count only
- * non-partial scored runs (parity with {@link summarizeRuns}); `runs`,
- * `completionRate` and `partialRate` count every terminal run.
+ * non-partial scored runs (parity with {@link summarizeRuns}). `runs` counts every terminal
+ * run; `completionRate` and `partialRate` count the agent's attempts only — a run cut short by
+ * an environment failure is not one, so it is counted in `infraFailed` instead (#109).
  */
 export function summarizeByAgent(rows: AgentRunRow[]): AgentPerformanceSummary[] {
   const byAgent = new Map<string, AgentRunRow[]>();
@@ -85,6 +88,8 @@ export function summarizeByAgent(rows: AgentRunRow[]): AgentPerformanceSummary[]
       .map((r) => r.overall as number);
     const completed = agentRows.filter((r) => r.completed).length;
     const partial = agentRows.filter((r) => r.partial).length;
+    const infraFailed = agentRows.filter((r) => r.infraFailed).length;
+    const attempts = runs - infraFailed;
     const lastRun =
       [...agentRows]
         .map((r) => r.when)
@@ -100,8 +105,9 @@ export function summarizeByAgent(rows: AgentRunRow[]): AgentPerformanceSummary[]
         ? scoredOveralls.reduce((a, b) => a + b, 0) / scoredOveralls.length
         : null,
       bestOverall: scoredOveralls.length ? Math.max(...scoredOveralls) : null,
-      completionRate: runs ? completed / runs : null,
-      partialRate: runs ? partial / runs : null,
+      completionRate: attempts ? completed / attempts : null,
+      partialRate: attempts ? partial / attempts : null,
+      infraFailed,
       lastRun,
     };
   });

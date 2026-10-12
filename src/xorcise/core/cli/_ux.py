@@ -13,10 +13,11 @@ import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import typer
 from rich import box
+from rich.markup import escape
 from rich.table import Table
 
 from xorcise.core.cli._shared import console, err_console
@@ -166,7 +167,7 @@ def size_label(size_bytes: int | None) -> str:
 
     Decimal units, mirroring the GUI's formatBytes (frontend missions/queries.ts) so the
     CLI and the console quote the same mission with the same number — the parity rule
-    run_state_label follows for run outcomes.
+    run_status_markup follows for run outcomes.
 
     None means UNKNOWN, not zero: an installed mission carries no size (it is already
     downloaded) and a catalog predating the size fields serves none. Rendering "0 B"
@@ -184,60 +185,19 @@ def size_label(size_bytes: int | None) -> str:
     return f"{max(0, round(n))} B"
 
 
-#: Terminal triggers meaning the AGENT ended the run on its own terms, as opposed to the platform
-#: stopping it. The server writes exactly five triggers — `done` (the agent's own /complete),
-#: `operator` (a manual terminate), `timeout` (the budget watchdog and the gate backstop),
-#: `deploy_failed` (the readiness gate) and `crashed` (the boot reconcile) — so anything NOT in
-#: here is a run the agent never finished.
-#:
-#: `completed` is NOT a legacy synonym: no server has ever written it. Every terminal_trigger
-#: write goes through runs.mark_terminal, those five are the only literals passed to it, and the
-#: initial commit already had this same set. It stays only for parity with run_state_label and
-#: the GUI's run-state map, which both accept it — so no surface can disagree about one trigger.
-#:
-#: Lives here, beside run_state_label, because both the leaderboard and `run export --genuine-only`
-#: draw this exact line: two definitions of "a real run" is how two surfaces start disagreeing.
-COMPLETED_TRIGGERS = frozenset({"done", "completed"})
+# The server's status tone (contracts.run.RunTone) → the theme style that renders it.
+_TONE_STYLES = {"ok": "ok", "active": "accent", "err": "err", "muted": "dim"}
 
 
-def run_state_label(state: str | None, trigger: str | None = None) -> str:
-    """Server-side run state (+ terminal trigger) → the user-facing result word.
+def run_status_markup(run: dict[str, Any]) -> str:
+    """The run's status label in its colour, for table cells.
 
-    Mirrors the GUI's runPresentation vocabulary (frontend run-state.ts) so both
-    surfaces describe the same run the same way."""
-    if state == "created":
-        return "Created"
-    if state == "active":
-        return "Running"
-    if state == "terminal":
-        return {
-            "done": "Completed",
-            "completed": "Completed",
-            "timeout": "Timed out",
-            "budget": "Partial",
-            "error": "Failed",
-            "crashed": "Crashed",
-            "operator": "Terminated",
-        }.get(trigger or "", "Ended")
-    return (state or DASH).title()
-
-
-# Status words → semantic theme styles (functional colours stay status-only).
-_STATE_STYLES = {
-    "Completed": "ok",
-    "Running": "accent",
-    "Partial": "warn",
-    "Timed out": "err",
-    "Crashed": "err",
-    "Failed": "err",
-}
-
-
-def run_state_markup(state: str | None, trigger: str | None = None) -> str:
-    """The state label wrapped in its status colour, for table cells."""
-    label = run_state_label(state, trigger)
-    style = _STATE_STYLES.get(label, "dim")
-    return f"[{style}]{label}[/{style}]"
+    The label and tone are the server's (`status` on every run, contracts.run.run_status) — the
+    same wording the GUI renders, so the two surfaces cannot describe one run differently (#165)."""
+    status = run.get("status") or {}
+    label = str(status.get("label") or (run.get("state") or DASH))
+    style = _TONE_STYLES.get(str(status.get("tone")), "dim")
+    return f"[{style}]{escape(label)}[/{style}]"
 
 
 # Prose is wrapped to the terminal, capped for readability — 200-char lines on a

@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from xorcise.core.contracts.control import MissionRef
 from xorcise.core.contracts.mission import EnvironmentSpec, MissionManifest, MissionMetadata
+from xorcise.core.contracts.run import TerminalTrigger, run_status
 from xorcise.core.missions.runtime import INSTALLED_FILE, InstalledMission
 from xorcise.core.roles.boot.role_all import build_rest_app
 
@@ -730,3 +731,108 @@ def test_run_report_active_run_is_409(migrated_home):
     r = _client().get(f"/api/runs/{run.run_id}/report")
     assert r.status_code == 409
     assert "not terminal yet" in r.json()["detail"]
+
+
+def _environment_failed_run(home: Path, name: str, trigger: TerminalTrigger) -> str:
+    from datetime import UTC, datetime
+
+    from xorcise.core import agents, runs
+
+    if not (home / "missions" / "c1").exists():
+        _install_mission(home, "c1")
+    agent = agents.register(name, endpoint="http://env")
+    run = runs.create_run(
+        agent_id=agent.id, mission="c1", run_id=f"run-{name}", run_control_key="K"
+    )
+    runs.mark_terminal(run.run_id, trigger, datetime.now(UTC), "environment never came up")
+    return run.run_id
+
+
+def test_openapi_declares_every_answer_the_result_reads_give(migrated_home) -> None:
+    """/result, /report and /stats answer 202 "grading" and 200 "not_graded" as raw JSON bodies,
+    which the schema generator cannot see: a client generated from the OpenAPI document expected
+    only the graded body and failed on either. Both are declared now, as real models."""
+    spec = _client().get("/openapi.json").json()
+
+    def refs(node: object) -> set[str]:
+        found: set[str] = set()
+        if isinstance(node, dict):
+            if isinstance(node.get("$ref"), str):
+                found.add(node["$ref"].rsplit("/", 1)[-1])
+            for value in node.values():
+                found |= refs(value)
+        elif isinstance(node, list):
+            for value in node:
+                found |= refs(value)
+        return found
+
+    for path, graded in (("result", "RunResultView"), ("stats", "RunStats"), ("report", None)):
+        responses = spec["paths"][f"/api/runs/{{run_id}}/{path}"]["get"]["responses"]
+        ok = refs(responses["200"])
+        assert "NotGradedView" in ok, path
+        if graded:
+            assert graded in ok, path
+        assert refs(responses["202"]) == {"GradingView"}, path
+        assert {"404", "409"} <= set(responses), path
+
+
+def test_the_not_graded_and_grading_bodies_are_the_declared_models(migrated_home) -> None:
+    """What the routes send must parse as what the schema declares — the models are the contract,
+    not documentation beside a hand-built dict."""
+    from datetime import UTC, datetime
+
+    from xorcise.core import agents, runs
+    from xorcise.core.contracts.run import GradingView, NotGradedView
+
+    run_id = _environment_failed_run(migrated_home, "declared", "crashed")
+    body = _client().get(f"/api/runs/{run_id}/result").json()
+    assert NotGradedView.model_validate(body).model_dump(mode="json") == body
+
+    agent = agents.get("declared")
+    assert agent is not None
+    graded_later = runs.create_run(agent_id=agent.id, mission="c1", run_control_key="K")
+    runs.mark_terminal(graded_later.run_id, "done", datetime.now(UTC))
+    import xorcise.core.rest.run_terminate as rt
+
+    rt._grading_in_flight.add(graded_later.run_id)  # a grade in flight: the read answers 202
+    try:
+        r = _client().get(f"/api/runs/{graded_later.run_id}/result")
+    finally:
+        rt._grading_in_flight.discard(graded_later.run_id)
+    assert r.status_code == 202
+    assert GradingView.model_validate(r.json()).model_dump(mode="json") == r.json()
+
+
+def test_environment_failure_answers_not_graded_on_every_read(migrated_home, monkeypatch):
+    """#109: a deploy_failed / crashed run is never graded, so /result, /report and /stats must
+    give a FINAL answer naming why — not the 202 "grading" a poll loop would wait on forever —
+    and must not re-drive the grade the terminal path deliberately skipped."""
+    import xorcise.core.rest.run_terminate as rt
+
+    redriven: list[str] = []
+    monkeypatch.setattr(rt, "grade_and_record", redriven.append)
+    for trigger in ("deploy_failed", "crashed"):
+        run_id = _environment_failed_run(migrated_home, f"envfail-{trigger}", trigger)
+        expected = {
+            "run_id": run_id,
+            "status": "not_graded",
+            "terminal_trigger": trigger,
+            "run_status": run_status("terminal", trigger).model_dump(),
+            "detail": "environment never came up",
+        }
+        for path in ("result", "report", "stats"):
+            r = _client().get(f"/api/runs/{run_id}/{path}")
+            assert r.status_code == 200, (trigger, path)
+            assert r.json() == expected, (trigger, path)
+    assert redriven == []
+
+
+def test_regrade_refuses_an_environment_failure(migrated_home):
+    """Re-grading would record exactly the phantom 0.00 the terminal path declined to."""
+    from xorcise.core import reporting
+
+    run_id = _environment_failed_run(migrated_home, "envfail-regrade", "deploy_failed")
+    r = _client().post(f"/api/runs/{run_id}/regrade")
+    assert r.status_code == 409
+    assert "deploy_failed" in r.json()["detail"]
+    assert reporting.get_result(run_id) is None

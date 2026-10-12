@@ -1,0 +1,66 @@
+{
+  "active/": {
+    "outcome": null,
+    "status": {
+      "detail": null,
+      "label": "Running",
+      "tone": "active"
+    }
+  },
+  "created/": {
+    "outcome": null,
+    "status": {
+      "detail": null,
+      "label": "Created",
+      "tone": "active"
+    }
+  },
+  "terminal/": {
+    "outcome": null,
+    "status": {
+      "detail": null,
+      "label": "Ended",
+      "tone": "muted"
+    }
+  },
+  "terminal/crashed": {
+    "outcome": "infra_failed",
+    "status": {
+      "detail": "The run's environment was gone when the server restarted, so the run was cut short. It is not graded or counted in any average.",
+      "label": "Crashed",
+      "tone": "err"
+    }
+  },
+  "terminal/deploy_failed": {
+    "outcome": "infra_failed",
+    "status": {
+      "detail": "The mission environment failed \u2014 it never became ready, or exited while the run was live \u2014 so the run was cut short. It is not graded or counted in any average.",
+      "label": "Deploy failed",
+      "tone": "err"
+    }
+  },
+  "terminal/done": {
+    "outcome": "completed",
+    "status": {
+      "detail": null,
+      "label": "Completed",
+      "tone": "ok"
+    }
+  },
+  "terminal/operator": {
+    "outcome": "partial",
+    "status": {
+      "detail": "An operator stopped this run before it finished, so the result is partial.",
+      "label": "Stopped",
+      "tone": "muted"
+    }
+  },
+  "terminal/timeout": {
+    "outcome": "partial",
+    "status": {
+      "detail": "The agent reached its time budget before completing the mission, so the result is partial.",
+      "label": "Timed out",
+      "tone": "err"
+    }
+  }
+}

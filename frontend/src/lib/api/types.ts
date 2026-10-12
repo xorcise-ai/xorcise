@@ -6,17 +6,35 @@ type S = components["schemas"];
 
 export type AgentEntry = S["AgentEntry"];
 export type AgentDeclaration = S["AgentDeclaration"];
-export type AgentHistoryEntry = S["AgentHistoryEntry"];
+export type AgentHistoryEntry = S["AgentHistoryView"];
 export type CatalogEntry = S["CatalogEntry"];
 export type CatalogStatus = S["CatalogStatus"];
 export type Announcement = S["Announcement"];
 export type AnnouncementsResponse = S["AnnouncementsResponse"];
 export type RunEntry = S["RunEntry"];
+/** How a run is shown — label, tone and why it ended — computed once by the server
+ *  (contracts.run.run_status) so the GUI and the CLI word every run identically (#165). */
+export type RunStatus = S["RunStatus"];
 export type RunCreate = S["RunCreate"];
 export type RunCreatedEntry = S["RunCreatedEntry"];
 export type GradeResult = S["GradeResult"];
 export type RunResultView = S["RunResultView"];
 export type RunStats = S["RunStats"];
+
+/** The FINAL answer /result, /report and /stats give for a run cut short by an environment
+ *  failure (`deploy_failed` / `crashed`): never graded, because the failure is not the agent's.
+ *  Declared in the OpenAPI schema (contracts.run.NotGradedView), so this is the generated type. */
+export type NotGradedView = S["NotGradedView"];
+/** The 202 /result, /report and /stats give while a terminal run's grade is being recorded. */
+export type GradingView = S["GradingView"];
+
+export function isNotGraded(data: unknown): data is NotGradedView {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    (data as { status?: unknown }).status === "not_graded"
+  );
+}
 export type RunArtifact = S["RunArtifactView"];
 export type RunEnvironment = S["RunEnvironmentView"];
 export type ResultConditions = S["ResultConditions"];

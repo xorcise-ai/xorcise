@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from sqlalchemy import select
 
-from xorcise.core.contracts.run import RunEntry
+from xorcise.core.contracts.run import RunEntry, TerminalTrigger, as_terminal_trigger
 from xorcise.core.db import session_scope
 from xorcise.core.runs.models import RunRow
 
@@ -34,7 +34,7 @@ def _to_entry(row: RunRow) -> RunEntry:
         state=row.state,
         created_at=_utc_required(row.created_at),
         budget_seconds=row.budget_seconds,
-        terminal_trigger=row.terminal_trigger,
+        terminal_trigger=as_terminal_trigger(row.terminal_trigger),
         terminal_detail=row.terminal_detail,
         completed_at=_utc(row.completed_at),
         model=row.model,
@@ -317,7 +317,9 @@ def get_join_key(run_id: str) -> str | None:
         return row.join_key if row is not None else None
 
 
-def mark_terminal(run_id: str, trigger: str, at: datetime, detail: str | None = None) -> str:
+def mark_terminal(
+    run_id: str, trigger: TerminalTrigger, at: datetime, detail: str | None = None
+) -> str:
     """Transition a run to terminal, first-wins + idempotent. Returns the recorded trigger.
 
     The first call stamps state='terminal', terminal_trigger, completed_at and (when given) the

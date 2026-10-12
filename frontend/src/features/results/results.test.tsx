@@ -3,7 +3,7 @@ import { screen, waitFor, fireEvent } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { server } from "@/test/msw/server";
 import { renderWithProviders } from "@/test/render";
-import { runFixture } from "@/test/fixtures";
+import { runFixture, serverView } from "@/test/fixtures";
 import type { GradeResult, RunResultView } from "@/lib/api/types";
 
 vi.mock("next/link", () => ({
@@ -163,25 +163,34 @@ describe("ResultsView", () => {
     );
   });
 
-  it("shows a partial banner with the trigger when the run timed out", async () => {
+  it("shows a partial banner in the server's words when the run timed out", async () => {
     server.use(
+      http.get("*/api/runs", () =>
+        HttpResponse.json([
+          runFixture({ run_id: "r1", state: "terminal", terminal_trigger: "timeout" }),
+        ]),
+      ),
       http.get("*/api/runs/r1/result", () =>
-        HttpResponse.json(
-          resultView({ partial: true, partial_trigger: "budget_exhausted" }),
-        ),
+        HttpResponse.json(resultView({ partial: true, partial_trigger: "timeout" })),
       ),
     );
     renderWithProviders(<ResultsView runId="r1" />);
     await waitFor(() =>
-      expect(screen.getByText(/Partial — timed out/i)).toBeInTheDocument(),
+      expect(screen.getByText(/Partial — Timed out/)).toBeInTheDocument(),
     );
-    expect(screen.getByText("budget_exhausted")).toBeInTheDocument();
+    // The run's status sentence — the one `xorcise run status` prints for this run (#165).
+    expect(screen.getByText(/reached its time budget/)).toBeInTheDocument();
   });
 
   it("shows an operator-stopped partial banner, not a timeout one", async () => {
     // A manual (operator) termination is partial too, but it did NOT time out — the banner must
     // say it was stopped by the operator, not that it missed a deadline.
     server.use(
+      http.get("*/api/runs", () =>
+        HttpResponse.json([
+          runFixture({ run_id: "r1", state: "terminal", terminal_trigger: "operator" }),
+        ]),
+      ),
       http.get("*/api/runs/r1/result", () =>
         HttpResponse.json(
           resultView({ partial: true, partial_trigger: "operator" }),
@@ -190,9 +199,9 @@ describe("ResultsView", () => {
     );
     renderWithProviders(<ResultsView runId="r1" />);
     await waitFor(() =>
-      expect(screen.getByText(/Partial — stopped early/i)).toBeInTheDocument(),
+      expect(screen.getByText(/Partial — Stopped/)).toBeInTheDocument(),
     );
-    expect(screen.getByText(/terminated by the operator/i)).toBeInTheDocument();
+    expect(screen.getByText(/An operator stopped this run/)).toBeInTheDocument();
     expect(screen.queryByText(/timed out/i)).not.toBeInTheDocument();
     expect(
       screen.queryByText(/did not finish before its deadline/i),
@@ -313,6 +322,41 @@ describe("ResultsView", () => {
       expect(screen.getByText(/grading in progress/i)).toBeInTheDocument(),
     );
     expect(screen.queryByText("Overall")).not.toBeInTheDocument();
+  });
+
+  it("says an environment failure was not graded instead of waiting on a grade forever", async () => {
+    // #109: a deploy_failed / crashed run is never graded; the server answers a FINAL
+    // {status:"not_graded"} carrying the trigger + the recorded reason.
+    let polls = 0;
+    server.use(
+      http.get("*/api/runs/r1/result", () => {
+        polls += 1;
+        return HttpResponse.json({
+          run_id: "r1",
+          status: "not_graded",
+          terminal_trigger: "deploy_failed",
+          run_status: serverView("terminal", "deploy_failed").status,
+          detail: "not ready within the readiness window",
+        });
+      }),
+    );
+    renderWithProviders(<ResultsView runId="r1" />);
+    expect(await screen.findByText(/Not graded — Deploy failed/)).toBeInTheDocument();
+    // The server's sentence, not a GUI-written one.
+    expect(
+      screen.getByText(serverView("terminal", "deploy_failed").status.detail ?? ""),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("not ready within the readiness window"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/grading in progress/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("Overall")).not.toBeInTheDocument();
+    // The evidence and the delete stay reachable; re-grading (refused) does not.
+    expect(screen.getByRole("button", { name: /delete/i })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /re-evaluate/i }),
+    ).not.toBeInTheDocument();
+    expect(polls).toBe(1);
   });
 
   // ═══ Re-evaluate (re-grade the saved evidence) ═══
