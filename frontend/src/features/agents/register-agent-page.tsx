@@ -341,11 +341,17 @@ function AgentForm({
                 aria-invalid={showNameError || undefined}
                 aria-describedby={showNameError ? "agent-name-error" : undefined}
               />
-              {showNameError && (
-                <p id="agent-name-error" role="alert" className="mt-1 text-dense text-err">
-                  Name is required.
-                </p>
-              )}
+              {/* The line is reserved even while empty. The field is autofocused, so the first
+                  click on a harness card is also its blur; a message inserted then pushed the
+                  cards down between mousedown and mouseup, and the click landed on their
+                  container instead of the card. */}
+              <div className="mt-1 min-h-5">
+                {showNameError && (
+                  <p id="agent-name-error" role="alert" className="text-dense text-err">
+                    Name is required.
+                  </p>
+                )}
+              </div>
               {editing && (
                 <p className="mt-1 max-w-[68ch] text-dense text-text-tertiary">
                   Renaming keeps the agent’s history — runs stay attached.
