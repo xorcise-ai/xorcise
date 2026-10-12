@@ -3,6 +3,8 @@ import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { server } from "@/test/msw/server";
 import { renderWithProviders } from "@/test/render";
+import { ToastHost } from "@/components/ui/toast";
+import { useToastStore } from "@/stores/toasts";
 import { MissionDetail } from "./mission-detail";
 import type { CatalogEntry } from "@/lib/api/types";
 
@@ -61,6 +63,99 @@ describe("MissionDetail delete", () => {
     );
     expect(screen.queryByRole("button", { name: /^delete$/i })).toBeNull();
     expect(screen.getByRole("button", { name: /^pull$/i })).toBeInTheDocument();
+  });
+});
+
+const LAB: CatalogEntry = {
+  ...INSTALLED,
+  type: "lab",
+  image: "xorcise/mis-idor:1",
+  image_size_bytes: 722_600_000,
+};
+
+/** Serve `entry` as the only mission, record the DELETE's query string, and answer it as the
+ *  server does: a bare 204 without purge, the purge body with it. */
+function serveDelete(entry: CatalogEntry, purgeBody?: object) {
+  const sent: { query: string | null } = { query: null };
+  server.use(
+    http.get("*/api/missions", () => HttpResponse.json([entry])),
+    http.delete("*/api/missions/idor", ({ request }) => {
+      sent.query = new URL(request.url).search;
+      return purgeBody && sent.query === "?purge=true"
+        ? HttpResponse.json(purgeBody)
+        : new HttpResponse(null, { status: 204 });
+    }),
+  );
+  return sent;
+}
+
+async function openConfirm() {
+  renderWithProviders(
+    <>
+      <MissionDetail id="idor" />
+      <ToastHost />
+    </>,
+  );
+  await waitFor(() =>
+    expect(screen.getByRole("heading", { name: "IDOR" })).toBeInTheDocument(),
+  );
+  fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+}
+
+describe("MissionDetail delete, also removing the image", () => {
+  beforeEach(() => useToastStore.setState({ toasts: [] }));
+
+  it("offers the image removal unchecked, and a plain confirm keeps the image", async () => {
+    const sent = serveDelete(LAB);
+    await openConfirm();
+    const box = screen.getByRole("checkbox", { name: "Also remove its image (722.6 MB)" });
+    expect(box).not.toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: /yes, delete/i }));
+    await waitFor(() => expect(sent.query).toBe(""));
+  });
+
+  it("starts unchecked again each time the confirm opens", async () => {
+    serveDelete(LAB);
+    await openConfirm();
+    fireEvent.click(screen.getByRole("checkbox", { name: /also remove its image/i }));
+    expect(screen.getByRole("checkbox", { name: /also remove its image/i })).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+    expect(screen.getByRole("checkbox", { name: /also remove its image/i })).not.toBeChecked();
+  });
+
+  it.each([
+    ["removed", "removed xorcise/mis-idor:1", "Removed its image"],
+    ["kept", "kept xorcise/mis-idor:1: used by an active run", "Kept its image"],
+    ["none", "xorcise/mis-idor:1 is not in the local image store", "No image removed"],
+    ["failed", "conflict: image is in use", "Uninstalled, but could not remove its image"],
+  ])("ticked, purges and reports a %s image", async (outcome, detail, title) => {
+    const sent = serveDelete(LAB, {
+      mission_id: "idor",
+      image: "xorcise/mis-idor:1",
+      image_outcome: outcome,
+      detail,
+    });
+    await openConfirm();
+    fireEvent.click(screen.getByRole("checkbox", { name: /also remove its image/i }));
+    fireEvent.click(screen.getByRole("button", { name: /yes, delete/i }));
+    await waitFor(() => expect(screen.getByText(title)).toBeInTheDocument());
+    expect(sent.query).toBe("?purge=true");
+    expect(screen.getByText(detail)).toBeInTheDocument();
+  });
+
+  it("omits the size when the entry does not carry one", async () => {
+    serveDelete({ ...LAB, image_size_bytes: null });
+    await openConfirm();
+    expect(screen.getByRole("checkbox", { name: "Also remove its image" })).not.toBeChecked();
+  });
+
+  it("offers no image removal for a static mission, which has no image", async () => {
+    const sent = serveDelete({ ...INSTALLED, type: "static", image: "" });
+    await openConfirm();
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /yes, delete/i }));
+    await waitFor(() => expect(sent.query).toBe(""));
   });
 });
 

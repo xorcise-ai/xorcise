@@ -27,14 +27,17 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/components/ui/cn";
 import { Skeleton, SkeletonRows } from "@/components/ui/skeleton";
 import { Reveal } from "@/components/ui/reveal";
 import { NotFoundState } from "@/components/layout/not-found-state";
-import type { CatalogEntry, MissionManifest } from "@/lib/api/types";
+import type { CatalogEntry, MissionDeleteOut, MissionManifest } from "@/lib/api/types";
+import { useToastStore, type Toast, type ToastTone } from "@/stores/toasts";
 import {
   PullProgressBlock,
   UpdateMissionButton,
+  hasImage,
   platformLabel,
   platformTags,
   updateReason,
@@ -58,6 +61,25 @@ import { DifficultyBadge } from "./difficulty-badge";
 /** Trim a numeric weight to a tidy string (integer stays integer, else 2 dp). */
 function fmtWeight(w: number): string {
   return Number.isInteger(w) ? String(w) : String(Number(w.toFixed(2)));
+}
+
+/** What the operator is told about the image after an uninstall that also removed it, worded as
+ *  the CLI's `mission delete --purge`. Keyed by the server's `image_outcome`; the uninstall
+ *  itself stood in every case. */
+const IMAGE_OUTCOME_TOAST: Record<string, { tone: ToastTone; title: string } | undefined> = {
+  removed: { tone: "ok", title: "Removed its image" },
+  kept: { tone: "info", title: "Kept its image" },
+  none: { tone: "info", title: "No image removed" },
+  failed: { tone: "warn", title: "Uninstalled, but could not remove its image" },
+};
+
+function imageOutcomeToast(out: MissionDeleteOut): Omit<Toast, "id"> {
+  const known = IMAGE_OUTCOME_TOAST[out.image_outcome];
+  return {
+    tone: known?.tone ?? "info",
+    title: known?.title ?? `Image ${out.image_outcome}`,
+    body: out.detail ?? undefined,
+  };
 }
 
 /** The page's primary call-to-action. This page is dedicated to the mission itself, so for a
@@ -91,7 +113,9 @@ export function MissionDetail({ id }: { id: string | null }) {
   // so starting a pull in either view disables both and both render its progress.
   const pull = usePullMission(id ?? "");
   const del = useDeleteMission();
-  const [confirming, setConfirming] = useState(false);
+  const pushToast = useToastStore((s) => s.push);
+  // null while the confirm is closed; opening it always starts with the image kept.
+  const [confirm, setConfirm] = useState<{ purgeImage: boolean } | null>(null);
 
   if (!id)
     return (
@@ -129,8 +153,9 @@ export function MissionDetail({ id }: { id: string | null }) {
   // mission lists its security skills too, not just installed ones whose catalog row carries them.
   const skills = c.skills.length > 0 ? c.skills : (m?.metadata.skills ?? []);
 
-  async function confirmDelete() {
-    await del.mutateAsync(c.mission_id);
+  async function confirmDelete(purgeImage: boolean) {
+    const out = await del.mutateAsync({ id: c.mission_id, purgeImage });
+    if (out) pushToast(imageOutcomeToast(out));
     router.push("/missions");
   }
 
@@ -158,18 +183,37 @@ export function MissionDetail({ id }: { id: string | null }) {
             <h1 className="text-lead text-heading">
               {c.name}
             </h1>
-            <div className="flex shrink-0 items-center gap-2">
+            {/* Wraps so the delete confirm (question, image checkbox, two buttons) stays on
+                screen at phone width instead of being clipped past the edge. */}
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
               <CreateRunButton id={c.mission_id} installed={c.installed} />
               {c.installed ? (
-                confirming ? (
+                confirm ? (
                   <>
                     <span className="text-dense text-text-secondary">
                       Delete this mission?
                     </span>
+                    {hasImage(c) && (
+                      <Checkbox
+                        checked={confirm.purgeImage}
+                        onChange={(purgeImage) => setConfirm({ purgeImage })}
+                        disabled={del.isPending}
+                      >
+                        Also remove its image
+                        {c.image_size_bytes != null && (
+                          <>
+                            {" "}
+                            <span className="whitespace-nowrap">
+                              ({formatBytes(c.image_size_bytes)})
+                            </span>
+                          </>
+                        )}
+                      </Checkbox>
+                    )}
                     <Button
                       variant="destructive"
                       size="sm"
-                      onClick={confirmDelete}
+                      onClick={() => confirmDelete(confirm.purgeImage)}
                       disabled={del.isPending}
                     >
                       {del.isPending ? "Deleting…" : "Yes, delete"}
@@ -177,7 +221,7 @@ export function MissionDetail({ id }: { id: string | null }) {
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => setConfirming(false)}
+                      onClick={() => setConfirm(null)}
                     >
                       Cancel
                     </Button>
@@ -186,7 +230,7 @@ export function MissionDetail({ id }: { id: string | null }) {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => setConfirming(true)}
+                    onClick={() => setConfirm({ purgeImage: false })}
                   >
                     <Trash2 className="size-3.5" />
                     Delete

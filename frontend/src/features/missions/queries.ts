@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, errorDetail } from "@/lib/api/client";
 import type {
+  MissionDeleteOut,
   MissionUpdateOut,
   CatalogEntry,
   CatalogStatus,
@@ -220,8 +221,6 @@ export function pullPhaseLabel(phase: string | null): string {
   return (phase && PULL_PHASE_LABELS[phase]) || "Pulling…";
 }
 
-// Uninstall an installed mission — local or pulled. Refreshes the catalog so it drops
-// out of Your Own / falls back to not-installed in the library.
 /**
  * §35's ONE update action: an in-place, atomic server-side re-pull of an installed library
  * mission onto the catalog's current artifact. Synchronous by design — layers shared with the
@@ -237,11 +236,17 @@ export function useUpdateMission() {
   });
 }
 
+/** Uninstall an installed mission, local or pulled. Refreshes the catalog so it drops out of Your
+ *  Own / falls back to not-installed in the library. Without `purgeImage` the server answers a
+ *  bare 204 (undefined here). With it, a 200 says what became of the image; the uninstall stands
+ *  whatever the image outcome. */
 export function useDeleteMission() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) =>
-      api.del(`/missions/${encodeURIComponent(id)}`),
+    mutationFn: ({ id, purgeImage }: { id: string; purgeImage: boolean }) =>
+      api.del<MissionDeleteOut | undefined>(
+        `/missions/${encodeURIComponent(id)}${purgeImage ? "?purge=true" : ""}`,
+      ),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["missions"] }),
   });
 }

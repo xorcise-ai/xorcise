@@ -36,6 +36,13 @@ export type PlatformTag = {
   emulated: boolean | null;
 };
 
+/** Whether the mission ships a container image. A static mission ships an attachment and no
+ *  container. Keyed on the artifact as well as the type, so the answer only ever reflects
+ *  something that actually exists. */
+export function hasImage(c: Pick<CatalogEntry, "type" | "image">): boolean {
+  return c.type !== "static" && !!c.image;
+}
+
 /**
  * The platform tags to render for a mission, marking which one is the installed image.
  *
@@ -44,11 +51,10 @@ export type PlatformTag = {
  * one thing a lone "installed" badge could never tell you: WHICH arch you actually have.
  */
 export function platformTags(c: CatalogEntry): PlatformTag[] {
-  // A static mission ships an attachment and no container, so it has no architecture to claim.
-  // The catalog still sends platforms: ["linux/amd64"] for those rows, which would otherwise
-  // paint an AMD64 badge on a mission that never runs an image. Keyed on the artifact as well as
-  // the type, so a tag only ever reflects something that actually exists.
-  if (c.type === "static" || !c.image) return [];
+  // A mission with no image has no architecture to claim. The catalog still sends
+  // platforms: ["linux/amd64"] for static rows, which would otherwise paint an AMD64 badge on a
+  // mission that never runs an image.
+  if (!hasImage(c)) return [];
   const all =
     c.platform && !c.platforms.includes(c.platform)
       ? [...c.platforms, c.platform]
