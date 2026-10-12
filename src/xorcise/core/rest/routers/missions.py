@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from xorcise.core.config import get_settings
@@ -83,6 +84,15 @@ class PullJobView(BaseModel):
     detail: str | None = None
     cancel_requested: bool = False  # a cancel was requested; status stays pulling until cancelled
     entry: CatalogEntry | None = None  # the installed entry, once status == installed
+
+
+class MissionDeleteOut(BaseModel):
+    """DELETE /{id}?purge=true result. The mission is uninstalled whatever image_outcome says."""
+
+    mission_id: str
+    image: str | None  # the image the install used; None for a static mission
+    image_outcome: str  # removed | kept | failed | none
+    detail: str | None = None
 
 
 class PruneRequest(BaseModel):
@@ -462,21 +472,60 @@ def cancel_pull_job(job_id: str) -> PullJobView:
     return _pull_job_view(job)
 
 
-@router.delete("/{mission_id}", status_code=204)
-def delete_mission(mission_id: str) -> Response:
+@router.delete(
+    "/{mission_id}",
+    status_code=204,
+    responses={200: {"model": MissionDeleteOut, "description": "Uninstalled, with purge=true"}},
+)
+def delete_mission(mission_id: str, purge: bool = False) -> Response:
     """Uninstall an installed mission — local (your_own) or pulled (library).
 
     Removes the local install directory so the mission leaves Your Own / drops back to
     not-installed in the library. 404 if nothing is installed under that id. Routes the write
-    through the server's install root (single writer, parity with ingest/pull). The fused image is
-    intentionally left in the local store; pruning it is a separate concern.
+    through the server's install root (single writer, parity with ingest/pull).
+
+    Without `purge` the image stays in the local store and the answer is a bare 204 (POST
+    /missions/prune reclaims it later). With `purge=true` the image is removed too, under
+    prune's rules: it stays when it is not a XORCISE mission image or another install, an
+    active run or a container still uses it. The uninstall stands either way; the 200 body
+    says what became of the image.
     """
     from xorcise.core.missions.runtime import delete_installed
 
-    install_root = Path(get_settings().missions_root)
+    settings = get_settings()
+    install_root = Path(settings.missions_root)
+    image: str | None = None
+    if purge:
+        from xorcise.core.rest.mission_images import installed_image_ref
+
+        image = installed_image_ref(mission_id, install_root)  # before the record is gone
     if not delete_installed(mission_id, install_root):
         raise HTTPException(status_code=404, detail=f"no installed mission '{mission_id}'")
-    return Response(status_code=204)
+    if not purge:
+        return Response(status_code=204)
+    out = _purge_image(mission_id, image, install_root)
+    return JSONResponse(content=out.model_dump(), status_code=200)
+
+
+def _purge_image(mission_id: str, image: str | None, install_root: Path) -> MissionDeleteOut:
+    from xorcise.core.rest.mission_images import ImageOutcome, purge_image
+    from xorcise.core.rest.mission_pull import build_docker_driver
+
+    if image is None:
+        return MissionDeleteOut(
+            mission_id=mission_id,
+            image=None,
+            image_outcome=ImageOutcome.FAILED,
+            detail="the install record did not name a readable image",
+        )
+    driver = build_docker_driver(get_settings())
+    purge = purge_image(image, driver=driver, install_root=install_root)
+    return MissionDeleteOut(
+        mission_id=mission_id,
+        image=image or None,
+        image_outcome=purge.outcome,
+        detail=purge.detail,
+    )
 
 
 @router.get("/{mission_id}/manifest")

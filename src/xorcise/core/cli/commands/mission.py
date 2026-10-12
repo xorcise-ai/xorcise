@@ -307,12 +307,17 @@ place). Already-current installs are a no-op."""
 def delete_mission_cmd(
     mission_id: str = typer.Argument(..., help=_MISSION_HELP),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+    purge: bool = typer.Option(
+        False,
+        "--purge",
+        help="Also remove the mission's image, unless something else still uses it.",
+    ),
 ) -> None:
     """Uninstall an installed mission. Available as both `delete` and `rm`.
 
     Removes the local install so the mission leaves Your Own / drops back to \
-not-installed in the library. Recorded runs and results are kept; the fused \
-image stays in the local store.
+not-installed in the library. Recorded runs and results are kept. Its image is \
+kept for a later `xorcise mission prune` unless you pass --purge.
     """
     client = RestClient()
     entry = resolve_mission(client, mission_id)
@@ -324,11 +329,23 @@ image stays in the local store.
             f"'{entry.get('name') or mission_id}' is not installed — nothing to uninstall",
             see=("xorcise mission list --installed",),
         )
+    also = " and remove its image" if purge is True else ""
     confirm_or_abort(
-        f"Uninstall mission '{mission_id}'? (runs and results are kept)", assume_yes=yes
+        f"Uninstall mission '{mission_id}'{also}? (runs and results are kept)", assume_yes=yes
     )
-    client.delete(f"/missions/{mission_id}")
+    if purge is not True:
+        client.delete(f"/missions/{mission_id}")
+        console.print(f"deleted mission '{mission_id}'", markup=False)
+        return
+    out = client.delete(f"/missions/{mission_id}?purge=true")
     console.print(f"deleted mission '{mission_id}'", markup=False)
+    outcome, detail = out.get("image_outcome"), out.get("detail")
+    if outcome == "failed":
+        fail(
+            f"uninstalled, but could not remove image {out.get('image')}: {detail}",
+            see=("xorcise mission prune",),
+        )
+    console.print(f"no image removed: {detail}" if outcome == "none" else str(detail), markup=False)
 
 
 def _images(n: int) -> str:

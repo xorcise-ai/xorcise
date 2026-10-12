@@ -306,3 +306,52 @@ def test_prune_refuses_while_an_install_record_is_unreadable(migrated_home, monk
     assert r.status_code == 409
     assert "broken" in r.json()["detail"]
     assert driver.removed == []
+
+
+def test_delete_without_purge_is_still_204_and_keeps_the_image(migrated_home, monkeypatch):
+    install_mission(migrated_home, slug="vault")
+    driver = _seed_driver(monkeypatch, _image("sha256:v", "xorcise/mission-vault:0"))
+    r = _client().delete("/api/missions/vault")
+    assert (r.status_code, r.content) == (204, b"")
+    assert [i.id for i in driver.list_images()] == ["sha256:v"]
+
+
+def test_delete_with_purge_removes_the_image(migrated_home, monkeypatch):
+    install_mission(migrated_home, slug="vault")
+    driver = _seed_driver(monkeypatch, _image("sha256:v", "xorcise/mission-vault:0"))
+    c = _client()
+    r = c.delete("/api/missions/vault?purge=true")
+    assert r.status_code == 200
+    assert r.json() == {
+        "mission_id": "vault",
+        "image": "xorcise/mission-vault:0",
+        "image_outcome": "removed",
+        "detail": "removed xorcise/mission-vault:0",
+    }
+    assert driver.list_images() == []
+    assert c.delete("/api/missions/vault").status_code == 404  # uninstalled too
+
+
+def test_purge_keeps_an_image_an_active_run_uses(migrated_home, monkeypatch):
+    from xorcise.core.runs import create_run
+
+    install_mission(migrated_home, slug="vault")
+    create_run("agent", "vault", sandbox_ref="xorcise/mission-vault:0")
+    driver = _seed_driver(monkeypatch, _image("sha256:v", "xorcise/mission-vault:0"))
+    r = _client().delete("/api/missions/vault?purge=true")
+    assert r.status_code == 200
+    assert (r.json()["image_outcome"], r.json()["detail"]) == (
+        "kept",
+        "kept xorcise/mission-vault:0: used by an active run",
+    )
+    assert [i.id for i in driver.list_images()] == ["sha256:v"]
+
+
+def test_purge_of_a_static_mission_has_no_image_to_remove(migrated_home, monkeypatch):
+    install_mission(migrated_home, slug="notes")
+    record = migrated_home / "missions" / "notes" / "installed.json"
+    record.write_text(record.read_text().replace("xorcise/mission-notes:0", ""))
+    _seed_driver(monkeypatch)
+    r = _client().delete("/api/missions/notes?purge=true")
+    assert r.status_code == 200
+    assert (r.json()["image"], r.json()["image_outcome"]) == (None, "none")

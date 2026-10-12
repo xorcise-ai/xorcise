@@ -1669,3 +1669,84 @@ def test_mission_show_prune_points_at_the_command(monkeypatch):
     assert result.exit_code == 1
     assert "'prune' is a command, not a mission" in result.output
     assert "xorcise mission prune" in result.output
+
+
+def _fake_delete(monkeypatch, answer: object) -> list[str]:
+    paths: list[str] = []
+    monkeypatch.setattr(
+        RestClient,
+        "get",
+        lambda self, path: [{"mission_id": "vault", "name": "Vault", "installed": True}],
+    )
+
+    def fake_delete(self, path):
+        paths.append(path)
+        return answer
+
+    monkeypatch.setattr(RestClient, "delete", fake_delete)
+    return paths
+
+
+def test_mission_delete_purge_removes_the_image(monkeypatch):
+    paths = _fake_delete(
+        monkeypatch,
+        {
+            "mission_id": "vault",
+            "image": "xorcise/mission-vault:0",
+            "image_outcome": "removed",
+            "detail": "removed xorcise/mission-vault:0",
+        },
+    )
+    result = runner.invoke(app, ["mission", "delete", "vault", "--purge"])
+    assert result.exit_code == 0
+    assert paths == ["/missions/vault?purge=true"]
+    assert "deleted mission 'vault'" in result.stdout
+    assert "removed xorcise/mission-vault:0" in result.stdout
+
+
+def test_mission_delete_purge_kept_image_is_success_with_a_note(monkeypatch):
+    _fake_delete(
+        monkeypatch,
+        {
+            "mission_id": "vault",
+            "image": "xorcise/mission-vault:0",
+            "image_outcome": "kept",
+            "detail": "kept xorcise/mission-vault:0: used by an active run",
+        },
+    )
+    result = runner.invoke(app, ["mission", "delete", "vault", "--purge", "--yes"])
+    assert result.exit_code == 0
+    assert "kept xorcise/mission-vault:0: used by an active run" in result.stdout
+
+
+def test_mission_delete_purge_failed_removal_exits_1_after_uninstalling(monkeypatch):
+    _fake_delete(
+        monkeypatch,
+        {
+            "mission_id": "vault",
+            "image": "xorcise/mission-vault:0",
+            "image_outcome": "failed",
+            "detail": "in use",
+        },
+    )
+    result = runner.invoke(app, ["mission", "delete", "vault", "--purge"])
+    assert result.exit_code == 1
+    assert "deleted mission 'vault'" in result.stdout
+    assert "uninstalled, but could not remove image xorcise/mission-vault:0: in use" in (
+        result.output
+    )
+
+
+def test_mission_delete_without_purge_keeps_the_plain_path(monkeypatch):
+    paths = _fake_delete(monkeypatch, None)
+    result = runner.invoke(app, ["mission", "delete", "vault"])
+    assert result.exit_code == 0
+    assert paths == ["/missions/vault"]
+    assert result.stdout.strip().endswith("deleted mission 'vault'")
+
+
+def test_mission_delete_help_documents_purge():
+    result = runner.invoke(app, ["mission", "delete", "--help"])
+    assert result.exit_code == 0
+    assert "--purge" in result.output
+    assert "image stays in the local store" not in result.output
