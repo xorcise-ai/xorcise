@@ -355,3 +355,21 @@ def test_purge_of_a_static_mission_has_no_image_to_remove(migrated_home, monkeyp
     r = _client().delete("/api/missions/notes?purge=true")
     assert r.status_code == 200
     assert (r.json()["image"], r.json()["image_outcome"]) == (None, "none")
+
+
+def test_pull_job_refresh_repulls_an_installed_mission(migrated_home, monkeypatch):
+    _stub_catalog(monkeypatch)
+    driver = _seed_driver(monkeypatch)
+    c = _client()
+
+    def pull(**kwargs: object) -> str:
+        r = c.post("/api/missions/sqli-login/pull-jobs", **kwargs)
+        assert r.status_code == 202
+        job = c.get(f"/api/missions/pull-jobs/{r.json()['job_id']}").json()
+        return str(job["status"])
+
+    assert pull(json={}) == "installed"
+    assert pull() == "installed"  # no body: already installed, nothing pulled
+    assert driver.pulled == ["xorcise/mission-sqli-login:1"]
+    assert pull(json={"refresh": True}) == "installed"
+    assert driver.pulled == ["xorcise/mission-sqli-login:1", "xorcise/mission-sqli-login:1"]

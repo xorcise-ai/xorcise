@@ -103,13 +103,17 @@ def request_cancel(client: RestClient, job_id: str) -> None:
         client.post(f"/missions/pull-jobs/{job_id}/cancel", json={})
 
 
-def pull_to_terminal(client: RestClient, mission_id: str) -> dict[str, Any]:
-    """Start a pull job for *mission_id* and watch it to a terminal view.
+def pull_to_terminal(
+    client: RestClient, mission_id: str, *, refresh: bool = False
+) -> dict[str, Any]:
+    """Start a pull job for *mission_id* and watch it to a terminal view. `refresh` pulls
+    again even when the mission is installed and its image is local.
 
     Ctrl-C stops the pull server-side too (not just this client): request the cancel, then
     exit 130 (interrupted). The worker aborts the download and records the job 'cancelled'.
     Every other terminal state is returned for the caller to render."""
-    started = client.post(f"/missions/{mission_id}/pull-jobs", json={})
+    body = {"refresh": True} if refresh else {}
+    started = client.post(f"/missions/{mission_id}/pull-jobs", json=body)
     job_id = started["job_id"]
     try:
         return watch_pull(client, job_id)

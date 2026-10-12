@@ -237,17 +237,22 @@ def show_mission(
 @mission_app.command("pull")
 def pull_mission_cmd(
     mission_id: str = typer.Argument(..., help=_MISSION_HELP),
+    refresh: bool = typer.Option(
+        False,
+        "--refresh",
+        help="Pull again even if installed, then reinstall (picks up a re-published image).",
+    ),
 ) -> None:
     """Install a library mission so it becomes runnable (downloads its image)."""
     client = RestClient()
     entry = resolve_mission(client, mission_id)
     mission_id = str(entry["mission_id"])
-    if entry.get("installed"):
+    if entry.get("installed") and refresh is not True:
         # Safe no-op: converging on 'already installed' is success, not an error.
         console.print(f"'{entry.get('name') or mission_id}' is already installed", markup=False)
         next_step(f"xorcise run create --agent <name> --mission {mission_id}")
         return
-    view = pull_to_terminal(client, mission_id)
+    view = pull_to_terminal(client, mission_id, refresh=refresh is True)
     if view.get("status") == "installed":
         name = (view.get("entry") or {}).get("name") or entry.get("name") or mission_id
         console.print(f"installed '{name}' ({mission_id})", markup=False)

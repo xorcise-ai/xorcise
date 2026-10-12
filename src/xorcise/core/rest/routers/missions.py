@@ -64,6 +64,11 @@ class MissionUpdateOut(BaseModel):
     entry: CatalogEntry
 
 
+class PullJobRequest(BaseModel):
+    # Pull again even when installed and the image is local, then reinstall.
+    refresh: bool = False
+
+
 class PullJobStarted(BaseModel):
     job_id: str
 
@@ -371,7 +376,7 @@ def _cancel_probe(job_id: str) -> Callable[[], bool]:
     return probe
 
 
-def _run_pull(job_id: str, mission_id: str) -> None:
+def _run_pull(job_id: str, mission_id: str, refresh: bool = False) -> None:
     """Background worker: pull + install a library mission, streaming byte progress to the
     job. Any failure is recorded on the job (never crashes the worker) so the GUI poll ends
     cleanly — the same worker-boundary contract as _run_ingest. A cancel request (via the
@@ -383,6 +388,7 @@ def _run_pull(job_id: str, mission_id: str) -> None:
             build_pull_deps(get_settings()),
             progress=_job_progress_sink(job_id),
             should_cancel=_cancel_probe(job_id),
+            refresh=refresh,
         )
     except PullCancelled:  # cooperative cancel — a clean stop, not a failure
         store.finish_cancelled(job_id)
@@ -428,16 +434,23 @@ def _pull_job_view(job: PullJob) -> PullJobView:
 
 
 @router.post("/{mission_id}/pull-jobs", status_code=202)
-def start_pull_job(mission_id: str, background: BackgroundTasks) -> PullJobStarted:
+def start_pull_job(
+    mission_id: str, background: BackgroundTasks, payload: PullJobRequest | None = None
+) -> PullJobStarted:
     """Start (or join) a background pull for a library mission (202 + job_id, idempotent).
 
     The image download can take minutes — far past what a browser will hold one request open
     for — so it runs on a background task; poll GET /missions/pull-jobs/{job_id}. A POST
     while a pull for this mission is active returns the SAME job_id without starting a
-    second worker (server-side double-pull guard)."""
+    second worker (server-side double-pull guard).
+
+    The body is optional. `refresh: true` pulls again even when the mission is installed and
+    its image is local. A refresh that arrives while a pull is already active joins that pull
+    as-is: the running job does not turn into a refresh."""
     job_id, created = pull_job_store().start(mission_id)
     if created:
-        background.add_task(_run_pull, job_id, mission_id)
+        refresh = payload is not None and payload.refresh
+        background.add_task(_run_pull, job_id, mission_id, refresh)
     return PullJobStarted(job_id=job_id)
 
 

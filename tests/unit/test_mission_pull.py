@@ -48,6 +48,32 @@ def test_pull_present_image_skips_pull(tmp_path: Path) -> None:
     assert get_installed("sqli-login", tmp_path) is not None
 
 
+def test_refresh_repulls_a_present_image_and_reinstalls(tmp_path: Path) -> None:
+    d = StubDockerDriver()
+    first = pull_mission("sqli-login", _deps(tmp_path, d))
+    again = pull_mission("sqli-login", _deps(tmp_path, d), refresh=True)
+    assert d.pulled == ["xorcise/mission-sqli-login:1", "xorcise/mission-sqli-login:1"]
+    assert (first.install_revision, again.install_revision) == (1, 2)
+
+
+def test_refresh_pulls_even_when_only_the_image_is_local(tmp_path: Path) -> None:
+    d = StubDockerDriver()
+    d.present.add("xorcise/mission-sqli-login:1")
+    pull_mission("sqli-login", _deps(tmp_path, d), refresh=True)
+    assert d.pulled == ["xorcise/mission-sqli-login:1"]
+
+
+def test_refresh_never_replaces_your_own_mission(tmp_path: Path) -> None:
+    from tests._helpers import install_mission
+    from xorcise.core.missions.errors import MissionCollisionError
+
+    install_mission(tmp_path, slug="sqli-login")  # a your_own record under tmp_path/missions
+    d = StubDockerDriver()
+    with pytest.raises(MissionCollisionError):
+        pull_mission("sqli-login", _deps(tmp_path / "missions", d), refresh=True)
+    assert d.pulled == []
+
+
 def test_pull_unknown_id_raises_not_in_catalog(tmp_path: Path) -> None:
     with pytest.raises(MissionNotInCatalogError):
         pull_mission("nope", _deps(tmp_path))

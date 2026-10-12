@@ -177,8 +177,13 @@ def pull_mission(
     progress: PullProgressSink | None = None,
     should_cancel: Callable[[], bool] | None = None,
     precheck: Callable[[str | None], None] | None = None,
+    refresh: bool = False,
 ) -> InstalledMission:
     """Acquire + install a library mission. Idempotent; failure leaves it not-installed.
+
+    `refresh` (keyword-only, default False) pulls again even when the mission is installed and
+    its image is local, then reinstalls: a tag the registry re-pointed is fetched afresh. A
+    your_own install of the id still collides — refresh never replaces your own mission.
 
     `progress` (keyword-only, default None ⇒ backward-compatible for run-create's auto-pull)
     receives (phase, bytes_current, bytes_total) as the pull advances.
@@ -208,10 +213,16 @@ def pull_mission(
                 f"mission_id '{mission_id}' is already installed as your own mission; "
                 f"pulling the library version would collide. Remove your local copy first."
             )
-        return existing  # already pulled (docker-pull on a present image is a no-op)
+        if not refresh:
+            return existing  # already pulled (docker-pull on a present image is a no-op)
 
     return _acquire_and_install(
-        mission_id, deps, progress=progress, should_cancel=should_cancel, precheck=precheck
+        mission_id,
+        deps,
+        progress=progress,
+        should_cancel=should_cancel,
+        precheck=precheck,
+        force_pull=refresh,
     )
 
 
@@ -316,12 +327,13 @@ def _acquire_and_install(
     should_cancel: Callable[[], bool] | None,
     precheck: Callable[[str | None], None] | None,
     resolved: tuple[MissionDetail, str | None] | None = None,
+    force_pull: bool = False,
 ) -> InstalledMission:
     """The shared acquire spine: resolve → (precheck) → pull → bundle → atomic install.
 
     Backs pull_mission (fresh install) and update_mission (in-place re-install; it passes the
     (detail, image) it already fetched for its no-op check via `resolved`, so the catalog is
-    not asked twice)."""
+    not asked twice). `force_pull` pulls even when the image is already local (a refresh)."""
     from xorcise.core.missions import install_pulled
 
     def report(phase: str, current: int = 0, total: int = 0) -> None:
@@ -349,7 +361,7 @@ def _acquire_and_install(
         image = _image_for(deps.source, mission_id)
     manifest = detail.manifest
     ref = MissionRef(mission_id=mission_id, image=image or "")
-    if image is not None and not deps.driver.image_exists(image):
+    if image is not None and (force_pull or not deps.driver.image_exists(image)):
         # Native-first platform selection (AS1–AS5), decided BEFORE any byte moves so an
         # impossible host/mission pairing costs one error message, not a download. None ⇒ no
         # selection was possible (pre-contract catalog / operator made none): the driver's

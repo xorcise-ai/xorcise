@@ -1750,3 +1750,42 @@ def test_mission_delete_help_documents_purge():
     assert result.exit_code == 0
     assert "--purge" in result.output
     assert "image stays in the local store" not in result.output
+
+
+def _fake_pull(monkeypatch, installed: bool) -> list[tuple[str, object]]:
+    posts: list[tuple[str, object]] = []
+
+    def fake_post(self, path, json=None, timeout=None):
+        posts.append((path, json))
+        return {"job_id": "j1"}
+
+    def fake_get(self, path):
+        if path == "/missions":
+            return [{"mission_id": "sqli", "name": "SQLi", "installed": installed}]
+        assert path == "/missions/pull-jobs/j1"
+        return {"status": "installed", "phase": "done", "entry": {"name": "SQLi"}}
+
+    monkeypatch.setattr(RestClient, "post", fake_post)
+    monkeypatch.setattr(RestClient, "get", fake_get)
+    return posts
+
+
+def test_mission_pull_refresh_repulls_an_installed_mission(monkeypatch):
+    posts = _fake_pull(monkeypatch, installed=True)
+    result = runner.invoke(app, ["mission", "pull", "sqli", "--refresh"])
+    assert result.exit_code == 0
+    assert posts == [("/missions/sqli/pull-jobs", {"refresh": True})]
+    assert "installed 'SQLi' (sqli)" in result.stdout
+
+
+def test_mission_pull_without_refresh_posts_the_plain_body(monkeypatch):
+    posts = _fake_pull(monkeypatch, installed=False)
+    result = runner.invoke(app, ["mission", "pull", "sqli"])
+    assert result.exit_code == 0
+    assert posts == [("/missions/sqli/pull-jobs", {})]
+
+
+def test_mission_pull_help_documents_refresh():
+    result = runner.invoke(app, ["mission", "pull", "--help"])
+    assert result.exit_code == 0
+    assert "--refresh" in result.output
