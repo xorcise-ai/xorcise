@@ -85,6 +85,34 @@ class PullJobView(BaseModel):
     entry: CatalogEntry | None = None  # the installed entry, once status == installed
 
 
+class PruneRequest(BaseModel):
+    apply: bool = False  # false = a dry run: report what would be removed, remove nothing
+
+
+class PruneCandidateView(BaseModel):
+    image_id: str
+    tags: list[str]
+    slug: str
+    size_bytes: int
+    reason: str  # superseded | not installed
+
+
+class PruneFailureView(BaseModel):
+    image_id: str
+    tags: list[str]
+    error: str
+
+
+class PruneReport(BaseModel):
+    """What prune found (candidates) and, when applied, what it removed or could not."""
+
+    applied: bool
+    candidates: list[PruneCandidateView]
+    removed: list[str]  # image ids
+    failed: list[PruneFailureView]
+    reclaimable_bytes: int  # an upper bound: images built on one base share layers
+
+
 def _installed_entry(ic: InstalledMission) -> CatalogEntry:
     """A CatalogEntry for one just-installed mission (pull/update responses).
 
@@ -181,6 +209,45 @@ def ingest_status(job_id: str, since: int = 0) -> IngestJobView:
         slug=job.slug,
         image=job.image,
         detail=job.detail,
+    )
+
+
+@router.post("/prune")
+def prune_images(payload: PruneRequest | None = None) -> PruneReport:
+    """Find (and with apply=true, remove) the local mission images nothing uses any more.
+
+    A candidate is an image XORCISE owns — mission-base lineage AND only mission-repository
+    tags — that no install record, live run, container or in-flight pull uses. Removal is never
+    forced; an image that turns out to be in use is reported under `failed` and the rest still
+    go. 409 when an install record cannot be read: its image is unknown, so nothing is removed.
+    """
+    from xorcise.core.rest.mission_images import InstallRecordUnreadable, prune
+    from xorcise.core.rest.mission_pull import build_docker_driver
+
+    settings = get_settings()
+    apply = payload is not None and payload.apply
+    try:
+        plan = prune(build_docker_driver(settings), Path(settings.missions_root), apply=apply)
+    except InstallRecordUnreadable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return PruneReport(
+        applied=plan.applied,
+        candidates=[
+            PruneCandidateView(
+                image_id=c.image_id,
+                tags=list(c.tags),
+                slug=c.slug,
+                size_bytes=c.size_bytes,
+                reason=c.reason,
+            )
+            for c in plan.candidates
+        ],
+        removed=list(plan.removed),
+        failed=[
+            PruneFailureView(image_id=f.image_id, tags=list(f.tags), error=f.error)
+            for f in plan.failed
+        ],
+        reclaimable_bytes=plan.reclaimable_bytes,
     )
 
 

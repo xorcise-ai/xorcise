@@ -230,6 +230,16 @@ def active_cidrs() -> set[str]:
         return {r.network_cidr for r in rows if r.network_cidr}
 
 
+def active_sandbox_refs() -> set[str]:
+    """The mission image of every non-terminal run: the images that must not be removed.
+
+    A reservation not yet finalized has no sandbox_ref; its image is the installed mission's,
+    which the install record already pins."""
+    with session_scope() as s:
+        rows = s.scalars(select(RunRow).where(RunRow.state != "terminal")).all()
+        return {r.sandbox_ref for r in rows if r.sandbox_ref}
+
+
 def active_run_networks() -> list[tuple[str, tuple[str, ...]]]:
     """(run_id, entry_cidrs) for every non-terminal run with non-empty entry_cidrs.
 

@@ -58,6 +58,7 @@ __all__ = [
     "PullDeps",
     "PullError",
     "PullProgressSink",
+    "build_docker_driver",
     "build_pull_deps",
     "pull_mission",
     "update_mission",
@@ -144,19 +145,26 @@ def _real_docker_driver() -> DockerDriver:
         ) from exc
 
 
-def build_pull_deps(settings: Settings, *, use_docker: bool | None = None) -> PullDeps:
-    """Wire the pull deps. The catalog source is the real HTTP client when `catalog_url` is set,
-    else the offline stub — no silent stub fallback when a remote is configured. The
-    driver defaults to REAL on a Docker-owning role: `use_docker=None` derives from
-    settings (role + use_stubs); pass an explicit bool to override (tests inject False)."""
-    from xorcise.core.rest.catalog_view import build_catalog_source
+def build_docker_driver(settings: Settings, *, use_docker: bool | None = None) -> DockerDriver:
+    """The Docker driver for this process: REAL on a Docker-owning role unless stubs are forced.
+    `use_docker=None` derives from settings (role + use_stubs); pass an explicit bool to
+    override (tests inject False). Shared by the pull spine and image cleanup, so both always
+    act on the same image store."""
     from xorcise.core.runner.docker import StubDockerDriver
 
     real = _use_real_docker(settings) if use_docker is None else use_docker
-    driver = _real_docker_driver() if real else StubDockerDriver()
+    return _real_docker_driver() if real else StubDockerDriver()
+
+
+def build_pull_deps(settings: Settings, *, use_docker: bool | None = None) -> PullDeps:
+    """Wire the pull deps. The catalog source is the real HTTP client when `catalog_url` is set,
+    else the offline stub — no silent stub fallback when a remote is configured. The driver
+    comes from build_docker_driver."""
+    from xorcise.core.rest.catalog_view import build_catalog_source
+
     return PullDeps(
         source=build_catalog_source(settings),
-        driver=driver,
+        driver=build_docker_driver(settings, use_docker=use_docker),
         install_root=Path(settings.missions_root),
         platform_override=settings.docker_platform,
     )

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from tests._helpers import install_mission
 from xorcise.core.roles.boot.role_all import build_rest_app
+from xorcise.core.runner.docker import ImageRecord, StubDockerDriver
 
 pytestmark = pytest.mark.unit
 
@@ -206,3 +207,102 @@ def test_delete_mission_removes_a_pulled_library_install(migrated_home, monkeypa
 
 def test_delete_mission_unknown_404(migrated_home):
     assert _client().delete("/api/missions/ghost").status_code == 404
+
+
+# image cleanup: prune + delete --purge -------------------------------------------------------
+
+_LINEAGE = {"ai.xorcise.base.version": "2"}
+
+
+def _image(image_id: str, *tags: str, size: int = 1) -> ImageRecord:
+    return ImageRecord(id=image_id, tags=tags, labels=_LINEAGE, size_bytes=size)
+
+
+def _seed_driver(monkeypatch: pytest.MonkeyPatch, *images: ImageRecord) -> StubDockerDriver:
+    """Serve one seeded stub image store to every handler that builds a Docker driver."""
+    from xorcise.core.rest import mission_pull
+
+    driver = StubDockerDriver()
+    driver.images = {i.id: i for i in images}
+    monkeypatch.setattr(mission_pull, "build_docker_driver", lambda settings, **_: driver)
+    return driver
+
+
+def test_prune_dry_run_reports_candidates_and_removes_nothing(migrated_home, monkeypatch):
+    install_mission(migrated_home, slug="vault")  # pins xorcise/mission-vault:0
+    driver = _seed_driver(
+        monkeypatch,
+        _image("sha256:cur", "xorcise/mission-vault:0", size=3),
+        _image("sha256:old", "xorcise/mis-vault:1", size=5),
+        _image("sha256:gone", "xorcise/mission-gone:local", size=7),
+    )
+    r = _client().post("/api/missions/prune", json={})
+    assert r.status_code == 200
+    assert r.json() == {
+        "applied": False,
+        "candidates": [
+            {
+                "image_id": "sha256:old",
+                "tags": ["xorcise/mis-vault:1"],
+                "slug": "vault",
+                "size_bytes": 5,
+                "reason": "superseded",
+            },
+            {
+                "image_id": "sha256:gone",
+                "tags": ["xorcise/mission-gone:local"],
+                "slug": "gone",
+                "size_bytes": 7,
+                "reason": "not installed",
+            },
+        ],
+        "removed": [],
+        "failed": [],
+        "reclaimable_bytes": 12,
+    }
+    assert len(driver.list_images()) == 3
+
+
+def test_prune_without_a_body_is_a_dry_run(migrated_home, monkeypatch):
+    driver = _seed_driver(monkeypatch, _image("sha256:gone", "xorcise/mission-gone:local"))
+    r = _client().post("/api/missions/prune")
+    assert (r.status_code, r.json()["applied"]) == (200, False)
+    assert driver.removed == []
+
+
+def test_prune_apply_removes_candidates_and_reports_failures(migrated_home, monkeypatch):
+    from xorcise.core.contracts.errors import ImageInUseError
+
+    driver = _seed_driver(
+        monkeypatch,
+        _image("sha256:gone", "xorcise/mission-gone:local"),
+        _image("sha256:raced", "xorcise/mission-raced:local"),
+    )
+    remove = driver.remove_image
+
+    def remove_unless_raced(ref: str) -> None:
+        if ref == "xorcise/mission-raced:local":  # a container started after the listing
+            raise ImageInUseError(ref)
+        remove(ref)
+
+    driver.remove_image = remove_unless_raced  # type: ignore[method-assign]
+    r = _client().post("/api/missions/prune", json={"apply": True})
+    assert r.status_code == 200
+    body = r.json()
+    assert (body["applied"], body["removed"], body["failed"]) == (
+        True,
+        ["sha256:gone"],
+        [{"image_id": "sha256:raced", "tags": ["xorcise/mission-raced:local"], "error": "in use"}],
+    )
+    assert [i.id for i in driver.list_images()] == ["sha256:raced"]
+
+
+def test_prune_refuses_while_an_install_record_is_unreadable(migrated_home, monkeypatch):
+    driver = _seed_driver(monkeypatch, _image("sha256:gone", "xorcise/mission-gone:local"))
+    broken = migrated_home / "missions" / "broken"
+    broken.mkdir(parents=True)
+    (broken / "installed.json").write_text("{not json")
+    r = _client().post("/api/missions/prune", json={"apply": True})
+    assert r.status_code == 409
+    assert "broken" in r.json()["detail"]
+    assert driver.removed == []
