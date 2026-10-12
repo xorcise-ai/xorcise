@@ -1,8 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import { fireEvent } from "@testing-library/react";
+import { http, HttpResponse } from "msw";
+import { server } from "@/test/msw/server";
 import { renderWithProviders } from "@/test/render";
 import { HarnessSelector } from "./harness-selector";
+import { useHarnessDescriptors } from "./use-harnesses";
 
 describe("HarnessSelector", () => {
   it("renders the OpenHands brand mark + name", () => {
@@ -84,5 +87,72 @@ describe("HarnessSelector", () => {
       "true",
     );
     expect(screen.getByLabelText(/harness id/i)).toHaveValue("my-cli");
+  });
+
+  // #141: a free-text kind no registered harness answers to is allowed (custom harness) but is
+  // disclosed before submit, with the closest real harness one click away. The live region is
+  // always mounted, so "quiet" means it is empty, not absent.
+  describe("unrecognised custom kind", () => {
+    const status = () => screen.getByRole("status");
+
+    it("warns about a near-miss and offers the harness it resembles", async () => {
+      const onChange = vi.fn();
+      renderWithProviders(<HarnessSelector value="openhand" onChange={onChange} />);
+      await waitFor(() =>
+        expect(status()).toHaveTextContent(
+          "“openhand” isn’t a registered harness. Did you mean OpenHands?",
+        ),
+      );
+      expect(status()).toHaveTextContent(/replay with the generic adapter/i);
+
+      fireEvent.click(screen.getByRole("button", { name: "Use OpenHands" }));
+      expect(onChange).toHaveBeenCalledWith("openhands");
+    });
+
+    it("matches a prefix the way the server does", async () => {
+      renderWithProviders(<HarnessSelector value="claude" onChange={() => {}} />);
+      expect(await screen.findByRole("button", { name: "Use Claude Code CLI" })).toBeInTheDocument();
+    });
+
+    it("warns without a suggestion for an unrelated custom kind", async () => {
+      renderWithProviders(<HarnessSelector value="my-agent-cli" onChange={() => {}} />);
+      await waitFor(() =>
+        expect(status()).toHaveTextContent("“my-agent-cli” isn’t a registered harness."),
+      );
+      expect(status()).not.toHaveTextContent(/did you mean/i);
+      expect(screen.queryByRole("button", { name: /^use /i })).not.toBeInTheDocument();
+    });
+
+    it("stays quiet for a registered or blank kind", async () => {
+      const { rerender } = renderWithProviders(
+        <HarnessSelector value="openhand" onChange={() => {}} />,
+      );
+      await waitFor(() => expect(status()).toHaveTextContent(/isn’t a registered harness/));
+
+      rerender(<HarnessSelector value="generic" onChange={() => {}} />);
+      expect(status()).toBeEmptyDOMElement();
+      rerender(<HarnessSelector value="  openhands-x" onChange={() => {}} />);
+      expect(status()).toHaveTextContent("“openhands-x” isn’t a registered harness.");
+      rerender(<HarnessSelector value="   " onChange={() => {}} />);
+      expect(status()).toBeEmptyDOMElement();
+      expect(screen.getByText(/enter the trace source identifier/i)).toBeInTheDocument();
+    });
+
+    it("cannot judge, and so does not warn, once the harness list has failed", async () => {
+      server.use(http.get("*/api/harnesses", () => HttpResponse.json({}, { status: 500 })));
+      function ListState() {
+        const { status: state } = useHarnessDescriptors();
+        return <span data-testid="list-state">{state}</span>;
+      }
+      renderWithProviders(
+        <>
+          <HarnessSelector value="openhand" onChange={() => {}} />
+          <ListState />
+        </>,
+      );
+      await waitFor(() => expect(screen.getByTestId("list-state")).toHaveTextContent("error"));
+      expect(status()).toBeEmptyDOMElement();
+      expect(screen.getByText(/enter the trace source identifier/i)).toBeInTheDocument();
+    });
   });
 });
