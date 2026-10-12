@@ -545,15 +545,22 @@ def _purge_image(mission_id: str, image: str | None, install_root: Path) -> Miss
             image_outcome=ImageOutcome.FAILED,
             detail="the install record did not name a readable image",
         )
+    if not image:  # a static mission: nothing to remove, whatever state Docker is in
+        return MissionDeleteOut(
+            mission_id=mission_id,
+            image=None,
+            image_outcome=ImageOutcome.NONE,
+            detail="a static mission has no image",
+        )
     try:
         settings = get_settings()
         driver = image_store_driver(settings)
         if driver is None:
             return MissionDeleteOut(
                 mission_id=mission_id,
-                image=image or None,
+                image=image,
                 image_outcome=ImageOutcome.NONE,
-                detail=_not_managing_images(settings) if image else "a static mission has no image",
+                detail=_not_managing_images(settings),
             )
         purge = purge_image(image, driver=driver, install_root=install_root)
     except Exception as exc:  # noqa: BLE001 — the uninstall already stood; report, not 500

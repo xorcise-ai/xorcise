@@ -233,9 +233,18 @@ def pull_mission(
             force_pull=refresh,
         )
     except BaseException:  # cancels and Ctrl-C too: each leaves the tag moved
-        if previous is not None:
+        # Only while the record still describes the previous image: an install that committed
+        # and then failed (cleaning up its backup) already describes the new one.
+        if previous is not None and existing is not None and _record_unchanged(existing, deps):
             _retag(deps.driver, previous, pinned)
         raise
+
+
+def _record_unchanged(before: InstalledMission, deps: PullDeps) -> bool:
+    from xorcise.core.missions import get_installed
+
+    now = get_installed(before.slug, deps.install_root)
+    return now is not None and now.install_revision == before.install_revision
 
 
 def _retag(driver: DockerDriver, image_id: str, ref: str) -> None:

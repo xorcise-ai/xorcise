@@ -136,6 +136,28 @@ def test_a_refresh_whose_bundle_fails_puts_the_tag_back(
     assert d.image_id(_SQLI) == "sha256:v1"
 
 
+def test_a_refresh_that_fails_after_its_install_committed_keeps_the_new_tag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The record already describes the new image, so the tag must stay on it."""
+    import xorcise.core.missions as missions
+
+    d = _RepushedTag()
+    pull_mission("sqli-login", _deps(tmp_path, d))
+    real = missions.install_pulled
+
+    def committed_then_failed(**kwargs: Any) -> object:
+        real(**kwargs)
+        raise OSError("could not remove the .bak directory")
+
+    monkeypatch.setattr(missions, "install_pulled", committed_then_failed)
+    with pytest.raises(OSError):
+        pull_mission("sqli-login", _deps(tmp_path, d), refresh=True)
+    installed = get_installed("sqli-login", tmp_path)
+    assert installed is not None and installed.install_revision == 2
+    assert d.image_id(_SQLI) == "sha256:v2"
+
+
 def test_pull_unknown_id_raises_not_in_catalog(tmp_path: Path) -> None:
     with pytest.raises(MissionNotInCatalogError):
         pull_mission("nope", _deps(tmp_path))

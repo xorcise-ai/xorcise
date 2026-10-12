@@ -414,6 +414,21 @@ def test_purge_on_a_server_without_docker_uninstalls_and_says_the_image_was_not_
     assert c.delete("/api/missions/vault").status_code == 404
 
 
+def test_purge_of_a_static_mission_with_docker_down_is_not_a_failure(migrated_home, monkeypatch):
+    install_mission(migrated_home, slug="notes")
+    record = migrated_home / "missions" / "notes" / "installed.json"
+    record.write_text(record.read_text().replace("xorcise/mission-notes:0", ""))
+    _docker_unreachable(monkeypatch)
+    r = _client().delete("/api/missions/notes?purge=true")
+    assert r.status_code == 200
+    assert r.json() == {
+        "mission_id": "notes",
+        "image": None,
+        "image_outcome": "none",
+        "detail": "a static mission has no image",
+    }
+
+
 def test_pull_job_refresh_repulls_an_installed_mission(migrated_home, monkeypatch):
     import dataclasses
 
