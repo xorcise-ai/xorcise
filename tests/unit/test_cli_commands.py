@@ -1671,7 +1671,7 @@ def test_mission_show_prune_points_at_the_command(monkeypatch):
     assert "xorcise mission prune" in result.output
 
 
-def _fake_delete(monkeypatch, answer: object) -> list[str]:
+def _fake_delete(monkeypatch, answer: object, timeouts: list[object] | None = None) -> list[str]:
     paths: list[str] = []
     monkeypatch.setattr(
         RestClient,
@@ -1679,8 +1679,10 @@ def _fake_delete(monkeypatch, answer: object) -> list[str]:
         lambda self, path: [{"mission_id": "vault", "name": "Vault", "installed": True}],
     )
 
-    def fake_delete(self, path):
+    def fake_delete(self, path, timeout=None):
         paths.append(path)
+        if timeouts is not None:
+            timeouts.append(timeout)
         return answer
 
     monkeypatch.setattr(RestClient, "delete", fake_delete)
@@ -1702,6 +1704,18 @@ def test_mission_delete_purge_removes_the_image(monkeypatch):
     assert paths == ["/missions/vault?purge=true"]
     assert "deleted mission 'vault'" in result.stdout
     assert "removed xorcise/mission-vault:0" in result.stdout
+
+
+def test_mission_delete_purge_waits_long_enough_to_remove_a_large_image(monkeypatch):
+    timeouts: list[object] = []
+    _fake_delete(
+        monkeypatch,
+        {"mission_id": "vault", "image": None, "image_outcome": "none", "detail": "static"},
+        timeouts,
+    )
+    result = runner.invoke(app, ["mission", "delete", "vault", "--purge", "--yes"])
+    assert result.exit_code == 0
+    assert timeouts == [600.0]
 
 
 def test_mission_delete_purge_kept_image_is_success_with_a_note(monkeypatch):

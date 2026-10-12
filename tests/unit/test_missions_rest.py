@@ -357,6 +357,39 @@ def test_purge_of_a_static_mission_has_no_image_to_remove(migrated_home, monkeyp
     assert (r.json()["image"], r.json()["image_outcome"]) == (None, "none")
 
 
+def _docker_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    from xorcise.core.rest import mission_pull
+
+    def unreachable(settings: object, **_: object) -> StubDockerDriver:
+        raise RuntimeError("Docker daemon not reachable — start Docker")
+
+    monkeypatch.setattr(mission_pull, "build_docker_driver", unreachable)
+
+
+def test_prune_with_docker_unreachable_is_a_503_naming_the_cause(migrated_home, monkeypatch):
+    _docker_unreachable(monkeypatch)
+    r = _client().post("/api/missions/prune", json={})
+    assert (r.status_code, r.json()["detail"]) == (
+        503,
+        "Docker daemon not reachable — start Docker",
+    )
+
+
+def test_purge_with_docker_unreachable_still_reports_the_uninstall(migrated_home, monkeypatch):
+    install_mission(migrated_home, slug="vault")
+    _docker_unreachable(monkeypatch)
+    c = _client()
+    r = c.delete("/api/missions/vault?purge=true")
+    assert r.status_code == 200
+    assert r.json() == {
+        "mission_id": "vault",
+        "image": "xorcise/mission-vault:0",
+        "image_outcome": "failed",
+        "detail": "Docker daemon not reachable — start Docker",
+    }
+    assert c.delete("/api/missions/vault").status_code == 404  # the uninstall stood
+
+
 def test_pull_job_refresh_repulls_an_installed_mission(migrated_home, monkeypatch):
     _stub_catalog(monkeypatch)
     driver = _seed_driver(monkeypatch)

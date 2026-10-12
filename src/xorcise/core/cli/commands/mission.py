@@ -342,7 +342,8 @@ kept for a later `xorcise mission prune` unless you pass --purge.
         client.delete(f"/missions/{mission_id}")
         console.print(f"deleted mission '{mission_id}'", markup=False)
         return
-    out = client.delete(f"/missions/{mission_id}?purge=true")
+    # Removing a multi-GB image can outlast the default read timeout.
+    out = client.delete(f"/missions/{mission_id}?purge=true", timeout=600.0)
     console.print(f"deleted mission '{mission_id}'", markup=False)
     outcome, detail = out.get("image_outcome"), out.get("detail")
     if outcome == "failed":

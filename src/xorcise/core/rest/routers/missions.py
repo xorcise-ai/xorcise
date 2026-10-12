@@ -245,6 +245,8 @@ def prune_images(payload: PruneRequest | None = None) -> PruneReport:
         plan = prune(build_docker_driver(settings), Path(settings.missions_root), apply=apply)
     except InstallRecordUnreadable as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:  # Docker not reachable: the same 503 run create answers
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return PruneReport(
         applied=plan.applied,
         candidates=[
@@ -531,8 +533,16 @@ def _purge_image(mission_id: str, image: str | None, install_root: Path) -> Miss
             image_outcome=ImageOutcome.FAILED,
             detail="the install record did not name a readable image",
         )
-    driver = build_docker_driver(get_settings())
-    purge = purge_image(image, driver=driver, install_root=install_root)
+    try:
+        driver = build_docker_driver(get_settings())
+        purge = purge_image(image, driver=driver, install_root=install_root)
+    except Exception as exc:  # noqa: BLE001 — the uninstall already stood; report, not 500
+        return MissionDeleteOut(
+            mission_id=mission_id,
+            image=image or None,
+            image_outcome=ImageOutcome.FAILED,
+            detail=str(exc),
+        )
     return MissionDeleteOut(
         mission_id=mission_id,
         image=image or None,
