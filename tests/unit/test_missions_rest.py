@@ -224,7 +224,7 @@ def _seed_driver(monkeypatch: pytest.MonkeyPatch, *images: ImageRecord) -> StubD
 
     driver = StubDockerDriver()
     driver.images = {i.id: i for i in images}
-    monkeypatch.setattr(mission_pull, "build_docker_driver", lambda settings, **_: driver)
+    monkeypatch.setattr(mission_pull, "image_store_driver", lambda settings: driver)
     return driver
 
 
@@ -360,10 +360,10 @@ def test_purge_of_a_static_mission_has_no_image_to_remove(migrated_home, monkeyp
 def _docker_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
     from xorcise.core.rest import mission_pull
 
-    def unreachable(settings: object, **_: object) -> StubDockerDriver:
+    def unreachable(settings: object) -> StubDockerDriver:
         raise RuntimeError("Docker daemon not reachable — start Docker")
 
-    monkeypatch.setattr(mission_pull, "build_docker_driver", unreachable)
+    monkeypatch.setattr(mission_pull, "image_store_driver", unreachable)
 
 
 def test_prune_with_docker_unreachable_is_a_503_naming_the_cause(migrated_home, monkeypatch):
@@ -390,9 +390,41 @@ def test_purge_with_docker_unreachable_still_reports_the_uninstall(migrated_home
     assert c.delete("/api/missions/vault").status_code == 404  # the uninstall stood
 
 
+_NOT_MANAGED = "this server does not manage Docker images"
+
+
+def test_prune_on_a_server_without_docker_says_so_instead_of_reporting_a_clean_disk(
+    migrated_home,
+):
+    r = _client().post("/api/missions/prune", json={})
+    assert r.status_code == 409
+    assert r.json()["detail"].startswith(_NOT_MANAGED)
+
+
+def test_purge_on_a_server_without_docker_uninstalls_and_says_the_image_was_not_seen(
+    migrated_home,
+):
+    install_mission(migrated_home, slug="vault")
+    c = _client()
+    r = c.delete("/api/missions/vault?purge=true")
+    assert r.status_code == 200
+    body = r.json()
+    assert (body["image"], body["image_outcome"]) == ("xorcise/mission-vault:0", "none")
+    assert body["detail"].startswith(_NOT_MANAGED)
+    assert c.delete("/api/missions/vault").status_code == 404
+
+
 def test_pull_job_refresh_repulls_an_installed_mission(migrated_home, monkeypatch):
+    import dataclasses
+
+    from xorcise.core.rest.mission_pull import build_pull_deps
+
     _stub_catalog(monkeypatch)
-    driver = _seed_driver(monkeypatch)
+    driver = StubDockerDriver()
+    monkeypatch.setattr(
+        "xorcise.core.rest.routers.missions.build_pull_deps",
+        lambda settings: dataclasses.replace(build_pull_deps(settings), driver=driver),
+    )
     c = _client()
 
     def pull(json: dict[str, object] | None = None) -> str:

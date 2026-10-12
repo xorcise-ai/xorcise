@@ -228,6 +228,29 @@ def test_an_install_whose_image_cannot_be_found_protects_its_whole_mission(
     assert _candidate_ids(driver, root) == ["sha256:gone"]
 
 
+def test_an_install_swapping_while_prune_lists_the_store_stays_protected(
+    migrated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_atomic_install renames final→.bak then staging→final. A listing taken between the two
+    sees no `vault` record at all; prune must list again rather than drop the protection."""
+    from xorcise.core.rest import mission_images
+
+    root = migrated_home / "missions"
+    install_mission(migrated_home, slug="vault")
+    real = mission_images._listed_installs
+    listings = [frozenset[str]()]  # the first listing lands between the two renames
+
+    def listed(install_root: Path) -> frozenset[str]:
+        return listings.pop(0) if listings else real(install_root)
+
+    monkeypatch.setattr(mission_images, "_listed_installs", listed)
+    driver = _driver(
+        _img("sha256:inst", "xorcise/mission-vault:0"),
+        _img("sha256:gone", "xorcise/mission-gone:local"),
+    )
+    assert _candidate_ids(driver, root) == ["sha256:gone"]
+
+
 def test_a_live_run_protects_its_image_and_a_finished_one_does_not(migrated_home: Path) -> None:
     from xorcise.core.runs import create_run, mark_terminal
 

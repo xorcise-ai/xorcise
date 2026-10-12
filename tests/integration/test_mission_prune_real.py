@@ -166,3 +166,30 @@ def test_prune_removes_our_untagged_image_by_id(dangling: dict[str, str]) -> Non
     assert _present(dangling["free"]) is False
     assert _present(dangling["busy"]) is True
     assert _present(dangling["free_tag"]) is True  # the newer image under the moved tag
+
+
+def test_a_moved_tag_can_be_pointed_back_at_the_previous_image(tmp_path: Path) -> None:
+    """What a failed `pull --refresh` relies on: the tag a re-pull moved goes back to the image
+    the install record describes. Only this test's own images are touched."""
+    from xorcise.core.runner.docker.driver import DockerSdkDriver
+
+    run = uuid.uuid4().hex[:10]
+    tag = f"xorcise/mission-retagtest{run}:local"
+    holder = f"xorcise-retag-holder{run}:1"
+    old = ""
+    try:
+        old = _build(tmp_path / "old", tag)
+        new = _build(tmp_path / "new", holder)
+        subprocess.run(["docker", "tag", holder, tag], check=True, capture_output=True)
+        driver = DockerSdkDriver()
+        assert driver.image_id(tag) == new  # the tag moved, as a re-pull moves it
+
+        driver.tag_image(old, tag)
+
+        assert driver.image_id(tag) == old
+        assert driver.image_id(f"xorcise/mission-nosuch{run}:local") is None
+    finally:
+        for ref in (tag, holder):
+            subprocess.run(["docker", "rmi", ref], capture_output=True)
+        if old:
+            subprocess.run(["docker", "rmi", old], capture_output=True)

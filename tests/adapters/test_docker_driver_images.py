@@ -153,6 +153,15 @@ def test_remove_image_multi_repository_conflict_is_not_reported_as_in_use() -> N
     assert str(raised.value) == message
 
 
+def test_remove_image_dependent_child_conflict_is_not_reported_as_in_use() -> None:
+    message = "conflict: unable to delete 9f (cannot be forced) - image has dependent child images"
+    client = _FakeClient(remove_error=_api_error(409, message))
+    with pytest.raises(RuntimeError) as raised:
+        DockerSdkDriver(client=client).remove_image("sha256:9f")
+    assert not isinstance(raised.value, ImageInUseError)
+    assert str(raised.value) == message
+
+
 def test_remove_image_already_gone_is_success() -> None:
     client = _FakeClient(remove_error=docker.errors.ImageNotFound("No such image"))
     DockerSdkDriver(client=client).remove_image("xorcise/mission-gone:1")  # must not raise

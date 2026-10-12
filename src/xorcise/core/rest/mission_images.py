@@ -35,6 +35,7 @@ from xorcise.core.runner.docker import DockerDriver, ImageRecord
 from xorcise.core.runner.docker.build import BASE_VERSION_LABEL, MISSION_ID_LABEL
 
 _TITLE_LABEL = "org.opencontainers.image.title"
+_READ_ATTEMPTS = 3
 # Both spellings the base has shipped under: the cloud's base1 generation carried only the
 # title, the OSS base2 Dockerfile carries the title and BASE_VERSION_LABEL.
 _BASE_TITLES = frozenset({"xorcise-mission-base", "XORCISE mission-base"})
@@ -284,16 +285,35 @@ def _read_installs(install_root: Path) -> dict[str, str]:
     """Directory name → image ref, for every install record under the root.
 
     Hidden directories are read too: an install swap briefly holds the previous record in
-    `.<slug>.bak`, and the image it names is still in use until the swap completes."""
+    `.<slug>.bak`, and the image it names is still in use until the swap completes. The swap is
+    two renames (final → .bak, staging → final), so a listing taken between them shows no record
+    for that mission at all. The store is therefore listed again after the read, and the read
+    is repeated until both listings agree; a store that keeps changing fails closed."""
+    from xorcise.core.missions.runtime import INSTALLED_FILE
+
+    failure: InstallRecordUnreadable | None = None
+    for _ in range(_READ_ATTEMPTS):
+        names = _listed_installs(install_root)
+        try:
+            installs = {name: _record_image(install_root / name / INSTALLED_FILE) for name in names}
+        except InstallRecordUnreadable as exc:  # a record mid-swap, or a corrupt one
+            failure = exc
+            continue
+        if _listed_installs(install_root) == names:
+            return installs
+    raise failure or InstallRecordUnreadable(
+        f"the install records under {install_root} kept changing while prune read them; retry"
+    )
+
+
+def _listed_installs(install_root: Path) -> frozenset[str]:
     from xorcise.core.missions.runtime import INSTALLED_FILE
 
     if not install_root.is_dir():
-        return {}
-    return {
-        child.name: _record_image(child / INSTALLED_FILE)
-        for child in sorted(install_root.iterdir())
-        if (child / INSTALLED_FILE).is_file()
-    }
+        return frozenset()
+    return frozenset(
+        child.name for child in install_root.iterdir() if (child / INSTALLED_FILE).is_file()
+    )
 
 
 def _record_image(path: Path) -> str:

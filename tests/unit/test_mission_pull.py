@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import io
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -17,11 +19,12 @@ from xorcise.core.catalog.source import PullToken
 from xorcise.core.missions import get_installed
 from xorcise.core.rest.mission_pull import (
     MissionNotInCatalogError,
+    PullCancelled,
     PullDeps,
     PullError,
     pull_mission,
 )
-from xorcise.core.runner.docker import PullProgress, StubDockerDriver
+from xorcise.core.runner.docker import ImageRecord, PullProgress, StubDockerDriver
 
 
 def _deps(tmp_path: Path, driver: StubDockerDriver | None = None) -> PullDeps:
@@ -72,6 +75,65 @@ def test_refresh_never_replaces_your_own_mission(tmp_path: Path) -> None:
     with pytest.raises(MissionCollisionError):
         pull_mission("sqli-login", _deps(tmp_path / "missions", d), refresh=True)
     assert d.pulled == []
+
+
+_SQLI = "xorcise/mission-sqli-login:1"
+
+
+class _RepushedTag(StubDockerDriver):
+    """A registry that re-pushed the tag in place: every pull moves it to a fresh image."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.images = {"sha256:v1": ImageRecord("sha256:v1", (_SQLI,), {}, 1)}
+
+    def pull(self, image: str, **kwargs: Any) -> None:
+        super().pull(image, **kwargs)
+        for rid, rec in list(self.images.items()):
+            self.images[rid] = dataclasses.replace(
+                rec, tags=tuple(t for t in rec.tags if t != image)
+            )
+        new = f"sha256:v{len(self.images) + 1}"
+        self.images[new] = ImageRecord(new, (image,), {}, 1)
+
+
+def test_refresh_moves_the_tag_to_the_new_image_on_success(tmp_path: Path) -> None:
+    d = _RepushedTag()
+    pull_mission("sqli-login", _deps(tmp_path, d))
+    pull_mission("sqli-login", _deps(tmp_path, d), refresh=True)
+    assert d.image_id(_SQLI) == "sha256:v2"
+
+
+def test_a_refresh_cancelled_after_the_pull_puts_the_tag_back(tmp_path: Path) -> None:
+    d = _RepushedTag()
+    pull_mission("sqli-login", _deps(tmp_path, d))
+    with pytest.raises(PullCancelled):
+        pull_mission(
+            "sqli-login",
+            _deps(tmp_path, d),
+            refresh=True,
+            should_cancel=lambda: d.image_id(_SQLI) != "sha256:v1",
+        )
+    assert d.image_id(_SQLI) == "sha256:v1"  # the install record's image, not the new pull
+    installed = get_installed("sqli-login", tmp_path)
+    assert installed is not None and installed.install_revision == 1
+
+
+def test_a_refresh_whose_bundle_fails_puts_the_tag_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from xorcise.core.rest import mission_pull
+
+    d = _RepushedTag()
+    pull_mission("sqli-login", _deps(tmp_path, d))
+
+    def corrupt(*_: object) -> bytes:
+        raise PullError("delivery bundle sha256 mismatch")
+
+    monkeypatch.setattr(mission_pull, "_fetch_verified_delivery", corrupt)
+    with pytest.raises(PullError, match="sha256 mismatch"):
+        pull_mission("sqli-login", _deps(tmp_path, d), refresh=True)
+    assert d.image_id(_SQLI) == "sha256:v1"
 
 
 def test_pull_unknown_id_raises_not_in_catalog(tmp_path: Path) -> None:

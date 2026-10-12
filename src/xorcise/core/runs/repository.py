@@ -117,6 +117,7 @@ def reserve_run(
     entry_cidrs: str = "",
     name: str | None = None,
     intel_policy: str = "all",
+    sandbox_ref: str | None = None,
 ) -> RunEntry:
     """Insert a minimal 'created' run row with its allocated subnet, BEFORE deploy.
 
@@ -134,6 +135,7 @@ def reserve_run(
             network_cidr=network_cidr,
             entry_cidrs=entry_cidrs,
             intel_policy=intel_policy,
+            sandbox_ref=sandbox_ref,
         )
         s.add(row)
         s.flush()  # surfaces the unique-index collision here (rolled back by session_scope)
@@ -233,8 +235,8 @@ def active_cidrs() -> set[str]:
 def active_sandbox_refs() -> set[str]:
     """The mission image of every non-terminal run: the images that must not be removed.
 
-    A reservation not yet finalized has no sandbox_ref; its image is the installed mission's,
-    which the install record already pins."""
+    Run create records the image on the reservation, before deploy, so the image is protected
+    from the moment the run is reserved, not only once finalize_run runs."""
     with session_scope() as s:
         rows = s.scalars(select(RunRow).where(RunRow.state != "terminal")).all()
         return {r.sandbox_ref for r in rows if r.sandbox_ref}

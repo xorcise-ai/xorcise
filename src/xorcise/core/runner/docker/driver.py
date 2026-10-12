@@ -172,8 +172,9 @@ class DockerSdkDriver(DockerDriver):
             if exc.status_code != 409:
                 raise
             explanation = str(exc.explanation or exc)
-            # The one conflict that is not about a container: an id named by several repos.
-            if "multiple repositories" in explanation:
+            # Only a container conflict means "in use". Every other 409 (an id several
+            # repositories name, an image a child was built FROM) carries docker's own words.
+            if "container" not in explanation:
                 raise RuntimeError(explanation) from exc
             raise ImageInUseError(f"{ref} is in use by a container") from exc
 
@@ -181,6 +182,18 @@ class DockerSdkDriver(DockerDriver):
         # all=True: a stopped container pins its image exactly like a running one.
         containers = self._client.containers.list(all=True)
         return {str(c.attrs["Image"]) for c in containers if (c.attrs or {}).get("Image")}
+
+    def image_id(self, ref: str) -> str | None:
+        import docker.errors
+
+        try:
+            return str(self._client.images.get(ref).id)
+        except docker.errors.ImageNotFound:
+            return None
+
+    def tag_image(self, image_id: str, ref: str) -> None:
+        repo, tag = _split_ref(ref)
+        self._client.images.get(image_id).tag(repo, tag)
 
     def image_labels(self, image: str) -> dict[str, str] | None:
         """The image's config labels (inherited included), or None if it is not present."""

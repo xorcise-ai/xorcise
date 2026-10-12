@@ -194,6 +194,15 @@ class DockerDriver(ABC):
         delete either). Non-abstract empty default, like list_images."""
         return set()
 
+    def image_id(self, ref: str) -> str | None:
+        """The id of the local image `ref` names, or None when it is not in the store."""
+        return None
+
+    def tag_image(self, image_id: str, ref: str) -> None:
+        """Point `ref` at `image_id`, moving it off whichever image held it. Raises
+        NotImplementedError by default, like remove_image."""
+        raise NotImplementedError
+
     def daemon_platform(self) -> str | None:
         """The `os/architecture` the DAEMON executes natively (AS1), or None when unknown.
 
@@ -334,6 +343,17 @@ class StubDockerDriver(DockerDriver):
 
     def container_image_ids(self) -> set[str]:
         return set(self.container_images)
+
+    def image_id(self, ref: str) -> str | None:
+        if ref in self.images:
+            return ref
+        return next((r.id for r in self.images.values() if ref in r.tags), None)
+
+    def tag_image(self, image_id: str, ref: str) -> None:
+        for rid, record in list(self.images.items()):
+            tags = tuple(t for t in record.tags if t != ref)
+            self.images[rid] = replace(record, tags=(*tags, ref) if rid == image_id else tags)
+        self.present.add(ref)
 
     def read_image_file(self, image: str, path: str) -> str | None:
         """No image store to read from — see `reads_image_files`. The stub creates no networks

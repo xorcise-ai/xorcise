@@ -11,7 +11,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from xorcise.core.config import get_settings
+from xorcise.core.config import Settings, get_settings
 from xorcise.core.contracts.catalog import CatalogEntry
 from xorcise.core.contracts.errors import NotFoundError, PlatformUnsupportedError
 from xorcise.core.contracts.mission import MissionManifest
@@ -234,15 +234,19 @@ def prune_images(payload: PruneRequest | None = None) -> PruneReport:
     A candidate is an image XORCISE owns — mission-base lineage AND only mission-repository
     tags — that no install record, live run, container or in-flight pull uses. Removal is never
     forced; an image that turns out to be in use is reported under `failed` and the rest still
-    go. 409 when an install record cannot be read: its image is unknown, so nothing is removed.
+    go. 409 when an install record cannot be read (its image is unknown, so nothing is removed)
+    or when this server does not manage Docker images at all.
     """
     from xorcise.core.rest.mission_images import InstallRecordUnreadable, prune
-    from xorcise.core.rest.mission_pull import build_docker_driver
+    from xorcise.core.rest.mission_pull import image_store_driver
 
     settings = get_settings()
     apply = payload is not None and payload.apply
     try:
-        plan = prune(build_docker_driver(settings), Path(settings.missions_root), apply=apply)
+        driver = image_store_driver(settings)
+        if driver is None:
+            raise HTTPException(status_code=409, detail=_not_managing_images(settings))
+        plan = prune(driver, Path(settings.missions_root), apply=apply)
     except InstallRecordUnreadable as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RuntimeError as exc:  # Docker not reachable: the same 503 run create answers
@@ -522,9 +526,17 @@ def delete_mission(mission_id: str, purge: bool = False) -> Response:
     return JSONResponse(content=out.model_dump(), status_code=200)
 
 
+def _not_managing_images(settings: Settings) -> str:
+    stubs = ", stubs forced" if settings.use_stubs else ""
+    return (
+        f"this server does not manage Docker images (role '{settings.role}'{stubs}); "
+        "run it where Docker runs (role 'all' or 'runner')"
+    )
+
+
 def _purge_image(mission_id: str, image: str | None, install_root: Path) -> MissionDeleteOut:
     from xorcise.core.rest.mission_images import ImageOutcome, purge_image
-    from xorcise.core.rest.mission_pull import build_docker_driver
+    from xorcise.core.rest.mission_pull import image_store_driver
 
     if image is None:
         return MissionDeleteOut(
@@ -534,7 +546,15 @@ def _purge_image(mission_id: str, image: str | None, install_root: Path) -> Miss
             detail="the install record did not name a readable image",
         )
     try:
-        driver = build_docker_driver(get_settings())
+        settings = get_settings()
+        driver = image_store_driver(settings)
+        if driver is None:
+            return MissionDeleteOut(
+                mission_id=mission_id,
+                image=image or None,
+                image_outcome=ImageOutcome.NONE,
+                detail=_not_managing_images(settings) if image else "a static mission has no image",
+            )
         purge = purge_image(image, driver=driver, install_root=install_root)
     except Exception as exc:  # noqa: BLE001 — the uninstall already stood; report, not 500
         return MissionDeleteOut(

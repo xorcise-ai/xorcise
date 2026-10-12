@@ -409,7 +409,8 @@ export interface paths {
          *     A candidate is an image XORCISE owns — mission-base lineage AND only mission-repository
          *     tags — that no install record, live run, container or in-flight pull uses. Removal is never
          *     forced; an image that turns out to be in use is reported under `failed` and the rest still
-         *     go. 409 when an install record cannot be read: its image is unknown, so nothing is removed.
+         *     go. 409 when an install record cannot be read (its image is unknown, so nothing is removed)
+         *     or when this server does not manage Docker images at all.
          */
         post: operations["prune_images_api_missions_prune_post"];
         delete?: never;

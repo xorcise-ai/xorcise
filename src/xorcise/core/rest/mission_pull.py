@@ -58,8 +58,8 @@ __all__ = [
     "PullDeps",
     "PullError",
     "PullProgressSink",
-    "build_docker_driver",
     "build_pull_deps",
+    "image_store_driver",
     "pull_mission",
     "update_mission",
 ]
@@ -145,26 +145,26 @@ def _real_docker_driver() -> DockerDriver:
         ) from exc
 
 
-def build_docker_driver(settings: Settings, *, use_docker: bool | None = None) -> DockerDriver:
-    """The Docker driver for this process: REAL on a Docker-owning role unless stubs are forced.
-    `use_docker=None` derives from settings (role + use_stubs); pass an explicit bool to
-    override (tests inject False). Shared by the pull spine and image cleanup, so both always
-    act on the same image store."""
-    from xorcise.core.runner.docker import StubDockerDriver
-
-    real = _use_real_docker(settings) if use_docker is None else use_docker
-    return _real_docker_driver() if real else StubDockerDriver()
+def image_store_driver(settings: Settings) -> DockerDriver | None:
+    """The driver that sees and removes this host's images, or None when this server does not
+    manage Docker (role control, or stubs forced). Image cleanup needs the difference: a stub's
+    empty store would otherwise read as a clean disk."""
+    return _real_docker_driver() if _use_real_docker(settings) else None
 
 
 def build_pull_deps(settings: Settings, *, use_docker: bool | None = None) -> PullDeps:
     """Wire the pull deps. The catalog source is the real HTTP client when `catalog_url` is set,
-    else the offline stub — no silent stub fallback when a remote is configured. The driver
-    comes from build_docker_driver."""
+    else the offline stub — no silent stub fallback when a remote is configured. The
+    driver defaults to REAL on a Docker-owning role: `use_docker=None` derives from
+    settings (role + use_stubs); pass an explicit bool to override (tests inject False)."""
     from xorcise.core.rest.catalog_view import build_catalog_source
+    from xorcise.core.runner.docker import StubDockerDriver
 
+    real = _use_real_docker(settings) if use_docker is None else use_docker
+    driver = _real_docker_driver() if real else StubDockerDriver()
     return PullDeps(
         source=build_catalog_source(settings),
-        driver=build_docker_driver(settings, use_docker=use_docker),
+        driver=driver,
         install_root=Path(settings.missions_root),
         platform_override=settings.docker_platform,
     )
@@ -216,14 +216,35 @@ def pull_mission(
         if not refresh:
             return existing  # already pulled (docker-pull on a present image is a no-op)
 
-    return _acquire_and_install(
-        mission_id,
-        deps,
-        progress=progress,
-        should_cancel=should_cancel,
-        precheck=precheck,
-        force_pull=refresh,
-    )
+    # A refresh pulls the SAME tag again, and docker moves the tag the moment the pull lands:
+    # before the platform check, the bundle check, the cancel checkpoints and the install. If
+    # any of those stops the refresh, the install record would describe one image while its tag
+    # named another, and the image it describes would turn into a prune candidate. So remember
+    # what the record's tag pointed at, and put it back if the refresh does not finish.
+    pinned = existing.mission_ref.image if existing is not None else ""
+    previous = deps.driver.image_id(pinned) if pinned else None
+    try:
+        return _acquire_and_install(
+            mission_id,
+            deps,
+            progress=progress,
+            should_cancel=should_cancel,
+            precheck=precheck,
+            force_pull=refresh,
+        )
+    except BaseException:  # cancels and Ctrl-C too: each leaves the tag moved
+        if previous is not None:
+            _retag(deps.driver, previous, pinned)
+        raise
+
+
+def _retag(driver: DockerDriver, image_id: str, ref: str) -> None:
+    """Point `ref` back at `image_id` after a refresh that did not finish. Best effort: the
+    refresh's own error is the one to report, so a failure here is logged, not raised."""
+    try:
+        driver.tag_image(image_id, ref)
+    except Exception:  # noqa: BLE001 — never mask the error that stopped the refresh
+        log.warning("could not point %s back at %s after a failed refresh", ref, image_id)
 
 
 def update_mission(
