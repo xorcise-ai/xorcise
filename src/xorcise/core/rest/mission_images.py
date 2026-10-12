@@ -39,6 +39,10 @@ _SLUG = r"(?P<slug>[a-z0-9][a-z0-9._-]*)"
 # A registry host is told apart from a Docker Hub namespace the way docker does it: it holds a
 # '.' or a ':'. Without that rule `someuser/xorcise/mis-x` would match.
 _REGISTRY_HOST = r"(?:[^/]*[.:][^/]*/)?"
+# Docker Hub names one image several ways; the image list reports the shortest.
+_HUB_PREFIX = re.compile(
+    r"^(?:docker\.io/|index\.docker\.io/|registry-1\.docker\.io/)(?:library/)?"
+)
 _MISSION_REPOS = (
     # A local fuse (FusedImageBuilder): xorcise/mission-<slug>:local
     re.compile(rf"xorcise/mission-{_SLUG}"),
@@ -169,7 +173,7 @@ def prune(driver: DockerDriver, install_root: Path, *, apply: bool) -> PrunePlan
     be read."""
     images = driver.list_images()
     installs = _read_installs(install_root)
-    protected = _protected(images, driver, installs.values())
+    protected = _protected(images, driver, installs)
     installed_slugs = {name for name in installs if not name.startswith(".")}
     candidates = tuple(plan_prune(images, set(protected), installed_slugs))
     removal = apply_prune(driver, candidates) if apply else Removal((), ())
@@ -192,7 +196,7 @@ def purge_image(ref: str, *, driver: DockerDriver, install_root: Path) -> Purge:
     if slug is None:
         return Purge(ImageOutcome.KEPT, f"kept {ref}: not a XORCISE mission image")
     try:
-        protected = _protected(images, driver, _read_installs(install_root).values())
+        protected = _protected(images, driver, _read_installs(install_root))
     except InstallRecordUnreadable as exc:
         return Purge(ImageOutcome.FAILED, str(exc))
     if image.id in protected:
@@ -250,6 +254,7 @@ def _resolve(images: Iterable[ImageRecord]) -> Callable[[str], str | None]:
             index[name] = image.id
 
     def lookup(ref: str) -> str | None:
+        ref = _HUB_PREFIX.sub("", ref)
         if "@" not in ref and ":" not in ref.rsplit("/", 1)[-1]:
             ref = f"{ref}:latest"  # docker's implicit tag
         return index.get(ref)
@@ -288,16 +293,21 @@ def _record_image(path: Path) -> str:
 
 
 def _protected(
-    images: list[ImageRecord], driver: DockerDriver, install_refs: Iterable[str]
+    images: list[ImageRecord], driver: DockerDriver, installs: Mapping[str, str]
 ) -> dict[str, Keep]:
-    """Image id → why it must stay."""
+    """Image id → why it must stay.
+
+    An install whose ref names no listed image fails closed: it may be spelled in a way the
+    image list does not show, so every image of that mission stays."""
     from xorcise.core.rest.pull_jobs import pull_job_store
     from xorcise.core.runs import active_sandbox_refs
 
     resolve = _resolve(images)
     pulling = pull_job_store().active_mission_ids()
+    unresolved = {_install_slug(name) for name, ref in installs.items() if ref and not resolve(ref)}
     sources: tuple[tuple[Keep, Iterable[str | None]], ...] = (
-        (Keep.INSTALLED, (resolve(ref) for ref in install_refs if ref)),
+        (Keep.INSTALLED, (resolve(ref) for ref in installs.values() if ref)),
+        (Keep.INSTALLED, (i.id for i in images if owned_slug(i) in unresolved)),
         (Keep.ACTIVE_RUN, (resolve(ref) for ref in active_sandbox_refs())),
         (Keep.CONTAINER, driver.container_image_ids()),
         (Keep.PULLING, (i.id for i in images if owned_slug(i) in pulling)),
@@ -308,3 +318,8 @@ def _protected(
             if image_id is not None:
                 protected.setdefault(image_id, why)
     return protected
+
+
+def _install_slug(dir_name: str) -> str:
+    """`vault`, `.vault.tmp` and `.vault.bak` (an install mid-swap) all hold vault's record."""
+    return dir_name.lstrip(".").removesuffix(".tmp").removesuffix(".bak")

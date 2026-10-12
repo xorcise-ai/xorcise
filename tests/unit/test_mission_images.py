@@ -135,6 +135,40 @@ def test_digest_pinned_install_protects_its_image(migrated_home: Path) -> None:
     assert _candidate_ids(driver, root) == []
 
 
+def test_a_docker_hub_spelled_ref_still_protects_its_image(migrated_home: Path) -> None:
+    from xorcise.core.runs import create_run
+
+    root = migrated_home / "missions"
+    install_mission(migrated_home, slug="vault")
+    record = root / "vault" / "installed.json"
+    record.write_text(
+        record.read_text().replace("xorcise/mission-vault:0", "docker.io/xorcise/mission-vault:0")
+    )
+    create_run("agent", "live", sandbox_ref="index.docker.io/xorcise/mission-live:local")
+    driver = _driver(
+        _img("sha256:inst", "xorcise/mission-vault:0"),
+        _img("sha256:live", "xorcise/mission-live:local"),
+        _img("sha256:gone", "xorcise/mission-gone:local"),
+    )
+    assert _candidate_ids(driver, root) == ["sha256:gone"]
+
+
+def test_an_install_whose_image_cannot_be_found_protects_its_whole_mission(
+    migrated_home: Path,
+) -> None:
+    """Fail closed: a ref spelled in a way the image list does not show could still name one
+    of these images, so every image of that mission stays."""
+    root = migrated_home / "missions"
+    install_mission(migrated_home, slug="vault")
+    record = root / "vault" / "installed.json"
+    record.write_text(record.read_text().replace("xorcise/mission-vault:0", "odd/vault-ref:0"))
+    driver = _driver(
+        _img("sha256:a", "xorcise/mission-vault:old"),
+        _img("sha256:gone", "xorcise/mission-gone:local"),
+    )
+    assert _candidate_ids(driver, root) == ["sha256:gone"]
+
+
 def test_a_live_run_protects_its_image_and_a_finished_one_does_not(migrated_home: Path) -> None:
     from xorcise.core.runs import create_run, mark_terminal
 
