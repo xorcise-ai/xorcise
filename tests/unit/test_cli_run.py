@@ -6,7 +6,7 @@ from typer.testing import CliRunner
 
 import xorcise.core.cli.app  # noqa: F401  -- importing registers the command groups
 from xorcise.core.cli._shared import app
-from xorcise.core.contracts.run import run_outcome
+from xorcise.core.contracts.run import run_outcome, run_status
 
 runner = CliRunner()
 
@@ -968,9 +968,8 @@ def test_genuine_only_agrees_with_the_leaderboard_on_every_trigger():
     from xorcise.core.cli.commands.results import _flatten
     from xorcise.core.cli.commands.run import select_runs_for_export
 
-    # Every trigger the server writes, plus `completed` (which it never writes, and which both
-    # surfaces keep for parity — see COMPLETED_TRIGGERS) and an absent one.
-    for trigger in ("done", "completed", "operator", "timeout", "deploy_failed", "crashed", ""):
+    # Every trigger the server writes, plus an absent one.
+    for trigger in ("done", "operator", "timeout", "deploy_failed", "crashed", ""):
         row = _run_row("r", trigger=trigger)
 
         exported = bool(select_runs_for_export([row], genuine_only=True))
@@ -1790,18 +1789,6 @@ def test_run_status_says_nothing_about_a_seal_a_run_never_had(capsys):
     assert "seal" not in capsys.readouterr().out.lower()
 
 
-def test_the_genuine_set_keeps_a_trigger_no_server_has_ever_written():
-    """`completed` is NOT a legacy synonym: every terminal_trigger write goes through
-    `mark_terminal`, the only literals passed are done / operator / timeout / deploy_failed /
-    crashed, and the initial commit already had this same set. It stays for parity with
-    run_state_label and the GUI map — so no surface can disagree about one trigger."""
-    from xorcise.core.cli._ux import run_state_label
-    from xorcise.core.contracts.run import COMPLETED_TRIGGERS
-
-    assert "completed" in COMPLETED_TRIGGERS
-    assert run_state_label("terminal", "completed") == run_state_label("terminal", "done")
-
-
 def test_run_status_says_so_when_the_seal_could_not_be_hashed(capsys):
     """`unavailable` used to be indistinguishable here from a run that predates sealing: /result
     carried no status, so this surface could only fall silent on both (#139 review)."""
@@ -1863,6 +1850,7 @@ _NOT_GRADED = {
     "run_id": RID,
     "status": "not_graded",
     "terminal_trigger": "deploy_failed",
+    "run_status": run_status("terminal", "deploy_failed").model_dump(),
     "detail": "not ready within the readiness window",
 }
 
@@ -1875,9 +1863,12 @@ def test_run_status_says_an_environment_failure_was_not_graded(monkeypatch):
     )
     res = runner.invoke(app, ["run", "status", RID])
     assert res.exit_code == 0
-    assert "not graded" in res.stdout
-    assert "deploy_failed" in res.stdout
-    assert "not ready within the readiness window" in res.stdout
+    out = " ".join(res.stdout.split())  # the sentence may wrap
+    assert "not graded" in out
+    assert "Deploy failed" in out
+    # The server's sentence, verbatim — the one the GUI shows for the same run (#165).
+    assert str(run_status("terminal", "deploy_failed").detail) in out
+    assert "not ready within the readiness window" in out
 
 
 def test_run_report_writes_nothing_for_an_environment_failure(monkeypatch, tmp_path):

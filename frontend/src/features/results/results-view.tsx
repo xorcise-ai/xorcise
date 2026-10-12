@@ -181,25 +181,14 @@ export function ResultsView({ runId }: { runId: string | null }) {
                   className="mt-0.5 size-4 shrink-0 text-primary"
                 />
                 <div>
+                  {/* The run's status wording (RunEntry.status) — the heading and sentence the
+                      run page and `xorcise run status` show for the same run (#165). */}
                   <p className="text-body font-medium text-foreground">
-                    {view.partial_trigger === "operator"
-                      ? "Partial — stopped early"
-                      : "Partial — timed out"}
+                    Partial — {run.data?.status.label ?? "did not finish"}
                   </p>
                   <p className="mt-2 max-w-[70ch] text-body text-text-secondary">
-                    {view.partial_trigger === "operator"
-                      ? "This run was terminated by the operator before it finished."
-                      : "This run did not finish before its deadline."}
-                    {view.partial_trigger ? (
-                      <>
-                        {" "}
-                        (
-                        <span className="font-mono text-text-tertiary">
-                          {view.partial_trigger}
-                        </span>
-                        )
-                      </>
-                    ) : null}{" "}
+                    {run.data?.status.detail ??
+                      "This run did not finish on the agent's own terms."}{" "}
                     Scores below reflect only what was completed.
                   </p>
                 </div>
@@ -346,12 +335,12 @@ function NotGradedState({
           className="mx-auto flex w-full max-w-4xl flex-col items-center gap-3 p-4 text-center"
         >
           <AlertTriangle className="size-8 text-text-tertiary" />
-          <p className="text-body font-bold text-heading">Not graded</p>
+          <p className="text-body font-bold text-heading">
+            Not graded — {view.run_status.label}
+          </p>
+          {/* The server's sentence (run_status.detail) — what `xorcise run status` prints. */}
           <p className="max-w-md text-body text-text-secondary">
-            This run ended{" "}
-            <span className="font-mono">{view.terminal_trigger}</span>: it was
-            cut short by an environment failure, so it is not scored and is not
-            counted in any average.
+            {view.run_status.detail}
           </p>
           {view.detail && (
             <pre className="max-h-72 w-full max-w-2xl overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-deepest p-3 text-left font-mono text-dense text-foreground">

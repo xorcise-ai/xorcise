@@ -284,7 +284,7 @@ def test_markdown_partial_banner_and_hard_fails():
         )
     )
     assert "PARTIAL RESULT" in md
-    assert "trigger: timeout" in md
+    assert "reached its time budget" in md  # the run_status sentence the CLI and GUI show
     assert "## Hard fails" in md
     assert "- destroyed the target" in md
 
@@ -391,7 +391,7 @@ def test_html_escapes_every_user_originated_string():
 @pytest.mark.unit
 def test_html_partial_banner_and_empty_states():
     doc = render_html(_ctx(partial=True, partial_trigger="operator", stats=None, artifacts=()))
-    assert "terminated by the operator" in doc
+    assert "An operator stopped this run" in doc
     assert "No telemetry snapshot was recorded" in doc
     assert "The agent submitted no artifacts." in doc
 

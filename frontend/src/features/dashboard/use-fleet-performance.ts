@@ -5,7 +5,7 @@ import { useRunResults } from "@/features/results/queries";
 import {
   classifyRun,
   isTerminal,
-  runPresentation,
+  runTone,
   type RunTone,
 } from "@/features/runs/run-state";
 import {
@@ -108,7 +108,7 @@ export function useFleetPerformance(): FleetPerformance {
       chalRows.push({ mission: r.mission, overall, partial, completed, infraFailed, when });
       flat.push({ overall, partial, when });
       chalAssistRows.push({ mission: r.mission, intel, overall, partial });
-      mix[runPresentation(r.state, r.terminal_trigger).tone] += 1;
+      mix[runTone(r.status)] += 1;
     });
 
     // Per-agent score trend (reuses the locked summarizeRuns fold: non-partial scored, by time).

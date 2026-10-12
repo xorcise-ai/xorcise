@@ -3,7 +3,7 @@ import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { server } from "@/test/msw/server";
 import { renderWithProviders } from "@/test/render";
-import { runFixture } from "@/test/fixtures";
+import { runFixture, serverView } from "@/test/fixtures";
 import type { AgentEvent, RunEventsView } from "@/lib/api/types";
 
 vi.mock("next/link", () => ({
@@ -194,11 +194,16 @@ describe("RunLive", () => {
       ),
     );
     renderWithProviders(<RunLive runId="rdf" />);
-    await screen.findByText("The mission environment never became ready");
+    // The server's heading and sentence (RunEntry.status) — what `xorcise run status` prints.
+    const ending = await screen.findByTestId("run-ending");
+    expect(ending.textContent).toContain("Deploy failed");
+    expect(ending.textContent).toContain(
+      serverView("terminal", "deploy_failed").status.detail ?? "",
+    );
     const evidence = await screen.findByTestId("deploy-failure-detail");
     expect(evidence.textContent).toContain("service web exited (1)");
     expect(evidence.textContent).toContain("exit code 1");
-    // No partial result to open — the agent never worked against anything.
+    // No result to open — an environment failure is never graded.
     expect(screen.queryByText(/View partial result/i)).not.toBeInTheDocument();
   });
 

@@ -496,8 +496,8 @@
         "title": "AgentEventKind",
         "type": "string"
       },
-      "AgentHistoryEntry": {
-        "description": "One recorded result in an agent's track record (the 50/50 breakdown).",
+      "AgentHistoryView": {
+        "description": "A history row plus the run's status wording (contracts.run.run_status), joined here because\ncontracts never import one another. A row whose run has since been deleted still reads exactly\nas the run did \u2014 the GUI used to invent a \"budget\" trigger for it instead (#165).",
         "properties": {
           "agent_id": {
             "title": "Agent Id",
@@ -549,6 +549,9 @@
             "title": "Run Id",
             "type": "string"
           },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
           "trace_ref": {
             "anyOf": [
               {
@@ -567,9 +570,10 @@
           "overall",
           "deterministic",
           "judge",
-          "created_at"
+          "created_at",
+          "status"
         ],
-        "title": "AgentHistoryEntry",
+        "title": "AgentHistoryView",
         "type": "object"
       },
       "Announcement": {
@@ -3236,6 +3240,11 @@
             "title": "State",
             "type": "string"
           },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus",
+            "description": "How this run is shown (`run_status`): label, tone and why it ended. Clients render this\ninstead of mapping the trigger themselves, so the CLI and the GUI agree (#165).",
+            "readOnly": true
+          },
           "terminal_detail": {
             "anyOf": [
               {
@@ -3250,6 +3259,13 @@
           "terminal_trigger": {
             "anyOf": [
               {
+                "enum": [
+                  "done",
+                  "timeout",
+                  "operator",
+                  "deploy_failed",
+                  "crashed"
+                ],
                 "type": "string"
               },
               {
@@ -3266,7 +3282,8 @@
           "state",
           "created_at",
           "run_control_key",
-          "outcome"
+          "outcome",
+          "status"
         ],
         "title": "RunCreatedEntry",
         "type": "object"
@@ -3455,6 +3472,11 @@
             "title": "State",
             "type": "string"
           },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus",
+            "description": "How this run is shown (`run_status`): label, tone and why it ended. Clients render this\ninstead of mapping the trigger themselves, so the CLI and the GUI agree (#165).",
+            "readOnly": true
+          },
           "terminal_detail": {
             "anyOf": [
               {
@@ -3469,6 +3491,13 @@
           "terminal_trigger": {
             "anyOf": [
               {
+                "enum": [
+                  "done",
+                  "timeout",
+                  "operator",
+                  "deploy_failed",
+                  "crashed"
+                ],
                 "type": "string"
               },
               {
@@ -3484,7 +3513,8 @@
           "mission",
           "state",
           "created_at",
-          "outcome"
+          "outcome",
+          "status"
         ],
         "title": "RunEntry",
         "type": "object"
@@ -3739,6 +3769,42 @@
           }
         },
         "title": "RunStats",
+        "type": "object"
+      },
+      "RunStatus": {
+        "description": "How a run is SHOWN \u2014 the one wording the CLI, the GUI and the report all render, so the two\nsurfaces cannot describe the same run differently (#165).",
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "tone": {
+            "enum": [
+              "ok",
+              "active",
+              "err",
+              "muted"
+            ],
+            "title": "Tone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "tone"
+        ],
+        "title": "RunStatus",
         "type": "object"
       },
       "RunTelemetryView": {
@@ -4736,7 +4802,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/AgentHistoryEntry"
+                    "$ref": "#/components/schemas/AgentHistoryView"
                   },
                   "title": "Response Agent History Api Agents  Name  History Get",
                   "type": "array"

@@ -3,10 +3,13 @@ import { screen, fireEvent, waitFor } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { server } from "@/test/msw/server";
 import { renderWithProviders } from "@/test/render";
+import { serverView } from "@/test/fixtures";
+import type { RunEntry } from "@/lib/api/types";
 import { RunLive } from "./run-live";
 
-function run(state: string, trigger: string | null = null) {
+function run(state: string, trigger: RunEntry["terminal_trigger"] = null) {
   return {
+    ...serverView(state, trigger),
     run_id: "r1",
     agent_id: "a1",
     mission: "idor-accounts",
@@ -55,7 +58,8 @@ describe("RunLive terminate", () => {
       () => expect(screen.queryByRole("button", { name: /terminate/i })).toBeNull(),
       { timeout: 5000 },
     );
-    expect(screen.getByText(/View result/i)).toBeInTheDocument();
+    // An operator stop is graded partial: the run page offers its partial result.
+    expect(screen.getByText(/View partial result/i)).toBeInTheDocument();
   });
 
   it("hides Terminate for a terminal run", async () => {

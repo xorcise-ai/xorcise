@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from xorcise.core.contracts.control import MissionRef
 from xorcise.core.contracts.mission import EnvironmentSpec, MissionManifest, MissionMetadata
+from xorcise.core.contracts.run import TerminalTrigger, run_status
 from xorcise.core.missions.runtime import INSTALLED_FILE, InstalledMission
 from xorcise.core.roles.boot.role_all import build_rest_app
 
@@ -732,7 +733,7 @@ def test_run_report_active_run_is_409(migrated_home):
     assert "not terminal yet" in r.json()["detail"]
 
 
-def _environment_failed_run(home: Path, name: str, trigger: str) -> str:
+def _environment_failed_run(home: Path, name: str, trigger: TerminalTrigger) -> str:
     from datetime import UTC, datetime
 
     from xorcise.core import agents, runs
@@ -761,6 +762,7 @@ def test_environment_failure_answers_not_graded_on_every_read(migrated_home, mon
             "run_id": run_id,
             "status": "not_graded",
             "terminal_trigger": trigger,
+            "run_status": run_status("terminal", trigger).model_dump(),
             "detail": "environment never came up",
         }
         for path in ("result", "report", "stats"):

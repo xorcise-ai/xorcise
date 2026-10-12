@@ -32,7 +32,7 @@ from xorcise.core.cli._ux import (
     kind_label,
     next_step,
     print_table,
-    run_state_markup,
+    run_status_markup,
     short_id,
     ux_table,
 )
@@ -357,7 +357,7 @@ def list_runs(
         harness = kind_label(r.get("source_agent") or None)
         mission_id = str(r.get("mission") or r.get("mission_id") or DASH)
         mission = mission_names.get(mission_id, mission_id)
-        state = run_state_markup(r.get("state"), r.get("terminal_trigger"))
+        state = run_status_markup(r)
         if verbose is True:
             state += f" [dim]({r.get('state')}/{r.get('terminal_trigger') or '—'})[/dim]"
         score = _run_score(client, r)
@@ -645,12 +645,15 @@ def _not_graded_envelope(body: str) -> dict[str, Any] | None:
 
 
 def _print_not_graded(run_id: str, envelope: dict[str, Any]) -> None:
-    """Say plainly that a run has no score and why — never a 0.00 that reads as a real attempt."""
-    trigger = envelope.get("terminal_trigger") or "an environment failure"
-    console.print(
-        f"[warn]not graded[/] — run {short_id(run_id)} ended {escape(str(trigger))}: it was cut "
-        "short by an environment failure, so it is not scored or counted in any average"
-    )
+    """Say plainly that a run has no score and why — never a 0.00 that reads as a real attempt.
+
+    The sentence is the server's (`run_status.detail`, contracts.run.run_status), the same one the
+    GUI shows on the run and result pages."""
+    status = envelope.get("run_status") or {}
+    label = status.get("label") or envelope.get("terminal_trigger") or "ended"
+    console.print(f"[warn]not graded[/] — run {short_id(run_id)}: {escape(str(label))}")
+    if status.get("detail"):
+        console.print(f"  {escape(str(status['detail']))}")
     if envelope.get("detail"):
         console.print(f"  [dim]{escape(str(envelope['detail']))}[/dim]")
 

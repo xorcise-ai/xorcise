@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -445,18 +446,21 @@ def test_humanize_when_today_yesterday_and_older():
     assert humanize_when(None, now=now) == "—"
 
 
-def test_run_state_labels_mirror_the_gui_vocabulary():
-    from xorcise.core.cli._ux import run_state_label
+def test_run_status_markup_renders_the_server_status_and_nothing_else():
+    """The CLI shows the label and tone the server sent (RunEntry.status) — it holds no trigger
+    table of its own, so it cannot drift from the GUI (#165)."""
+    from xorcise.core.cli._ux import run_status_markup
 
-    assert run_state_label("terminal", "done") == "Completed"
-    assert run_state_label("terminal", "timeout") == "Timed out"
-    assert run_state_label("terminal", "crashed") == "Crashed"
-    assert run_state_label("terminal", "deploy_failed") == "Deploy failed"
-    assert run_state_label("terminal", "operator") == "Terminated"
-    assert run_state_label("terminal", "budget") == "Partial"
-    assert run_state_label("terminal", "error") == "Failed"
-    assert run_state_label("active") == "Running"
-    assert run_state_label("created") == "Created"
+    crashed: dict[str, Any] = {
+        "state": "terminal",
+        "status": {"label": "Crashed", "tone": "err", "detail": "gone"},
+    }
+    assert run_status_markup(crashed) == "[err]Crashed[/err]"
+    assert run_status_markup({"status": {"label": "Running", "tone": "active"}}) == (
+        "[accent]Running[/accent]"
+    )
+    # A run from a server that sends no status still renders its state, dimmed.
+    assert run_status_markup({"state": "terminal"}) == "[dim]terminal[/dim]"
 
 
 def test_kind_labels_read_as_products():

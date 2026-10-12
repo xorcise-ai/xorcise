@@ -42,7 +42,7 @@ from datetime import UTC, datetime
 from xorcise.core.contracts.agent_event import RunTelemetryView
 from xorcise.core.contracts.grading import GradeResult
 from xorcise.core.contracts.reporting import ResultConditions, RunStats
-from xorcise.core.contracts.run import RunEntry
+from xorcise.core.contracts.run import RunEntry, run_status
 from xorcise.core.contracts.terrain import ResolvedTerrainV2, TerrainNodeV2
 
 # How much of an artifact payload the report embeds before truncating. Reports are meant to be
@@ -565,12 +565,12 @@ def _terrain_rows(t: ResolvedTerrainV2) -> list[tuple[str, str]]:
 
 
 def _partial_note(ctx: RunReportContext) -> str:
-    trigger = ctx.partial_trigger or "partial"
-    stopped = "terminated by the operator" if trigger == "operator" else "did not finish"
-    return (
-        f"PARTIAL RESULT — this run {stopped} (trigger: {trigger}). "
-        "The scores below reflect only what was completed."
+    # The status sentence for the trigger the result was recorded partial under
+    # (contracts.run.run_status) — the wording the CLI and the GUI use for the same run.
+    why = run_status("terminal", ctx.partial_trigger).detail or (
+        "This run did not finish on the agent's own terms."
     )
+    return f"PARTIAL RESULT — {why} The scores below reflect only what was completed."
 
 
 def report_filename(ctx: RunReportContext, fmt: str) -> str:

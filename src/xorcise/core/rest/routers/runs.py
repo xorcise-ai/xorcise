@@ -60,6 +60,9 @@ def _not_graded(run: RunEntry) -> JSONResponse | None:
             "run_id": run.run_id,
             "status": "not_graded",
             "terminal_trigger": run.terminal_trigger,
+            # The run's status wording (label, tone, why it ended): the sentence every surface
+            # prints for a not-graded run, so the CLI and the GUI say the same thing.
+            "run_status": run.status.model_dump(),
             "detail": run.terminal_detail,
         },
     )

@@ -1411,10 +1411,12 @@ export interface components {
          */
         AgentEventKind: "message" | "thinking" | "terminal_command" | "terminal_output" | "file_edit" | "file_read" | "browser_action" | "browser_observation" | "tool_call" | "tool_result" | "mcp_call" | "mcp_result" | "finding" | "flag" | "error" | "status" | "metric" | "unclassified" | "unknown";
         /**
-         * AgentHistoryEntry
-         * @description One recorded result in an agent's track record (the 50/50 breakdown).
+         * AgentHistoryView
+         * @description A history row plus the run's status wording (contracts.run.run_status), joined here because
+         *     contracts never import one another. A row whose run has since been deleted still reads exactly
+         *     as the run did — the GUI used to invent a "budget" trigger for it instead (#165).
          */
-        AgentHistoryEntry: {
+        AgentHistoryView: {
             /** Agent Id */
             agent_id: string;
             /**
@@ -1446,6 +1448,7 @@ export interface components {
             partial_trigger?: string | null;
             /** Run Id */
             run_id: string;
+            status: components["schemas"]["RunStatus"];
             /** Trace Ref */
             trace_ref?: string | null;
         };
@@ -2609,10 +2612,15 @@ export interface components {
             source_agent: string;
             /** State */
             state: string;
+            /**
+             * @description How this run is shown (`run_status`): label, tone and why it ended. Clients render this
+             *     instead of mapping the trigger themselves, so the CLI and the GUI agree (#165).
+             */
+            readonly status: components["schemas"]["RunStatus"];
             /** Terminal Detail */
             terminal_detail?: string | null;
             /** Terminal Trigger */
-            terminal_trigger?: string | null;
+            terminal_trigger?: ("done" | "timeout" | "operator" | "deploy_failed" | "crashed") | null;
         };
         /**
          * RunEntry
@@ -2688,10 +2696,15 @@ export interface components {
             source_agent: string;
             /** State */
             state: string;
+            /**
+             * @description How this run is shown (`run_status`): label, tone and why it ended. Clients render this
+             *     instead of mapping the trigger themselves, so the CLI and the GUI agree (#165).
+             */
+            readonly status: components["schemas"]["RunStatus"];
             /** Terminal Detail */
             terminal_detail?: string | null;
             /** Terminal Trigger */
-            terminal_trigger?: string | null;
+            terminal_trigger?: ("done" | "timeout" | "operator" | "deploy_failed" | "crashed") | null;
         };
         /**
          * RunEnvironmentView
@@ -2839,6 +2852,22 @@ export interface components {
              *     }
              */
             tokens: components["schemas"]["TokenStats"];
+        };
+        /**
+         * RunStatus
+         * @description How a run is SHOWN — the one wording the CLI, the GUI and the report all render, so the two
+         *     surfaces cannot describe the same run differently (#165).
+         */
+        RunStatus: {
+            /** Detail */
+            detail?: string | null;
+            /** Label */
+            label: string;
+            /**
+             * Tone
+             * @enum {string}
+             */
+            tone: "ok" | "active" | "err" | "muted";
         };
         /**
          * RunTelemetryView
@@ -3354,7 +3383,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AgentHistoryEntry"][];
+                    "application/json": components["schemas"]["AgentHistoryView"][];
                 };
             };
             /** @description Validation Error */

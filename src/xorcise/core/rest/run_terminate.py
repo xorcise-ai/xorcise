@@ -14,7 +14,12 @@ from collections.abc import Callable
 from datetime import datetime
 
 from xorcise.core import reporting, runs
-from xorcise.core.contracts.run import PARTIAL_TRIGGERS, UNGRADED_TRIGGERS, RunEntry
+from xorcise.core.contracts.run import (
+    PARTIAL_TRIGGERS,
+    UNGRADED_TRIGGERS,
+    RunEntry,
+    TerminalTrigger,
+)
 from xorcise.core.runcontrol.errors import MissionOverError
 
 log = logging.getLogger(__name__)
@@ -61,7 +66,9 @@ _sealed_here_lock = threading.Lock()
 _sealed_here: set[str] = set()
 
 
-def seal_terminal(run_id: str, trigger: str, now: datetime, detail: str | None = None) -> str:
+def seal_terminal(
+    run_id: str, trigger: TerminalTrigger, now: datetime, detail: str | None = None
+) -> str:
     """Fast sync phase: transition immediately and begin the telemetry drain window.
 
     The control plane closes immediately, while OTLP remains admissible until grade_and_record
@@ -406,7 +413,9 @@ def _grade_run(run_id: str) -> None:
         log.warning("terrain attribution kickoff failed for %s", run_id, exc_info=True)
 
 
-def terminate_run(run_id: str, trigger: str, now: datetime, detail: str | None = None) -> str:
+def terminate_run(
+    run_id: str, trigger: TerminalTrigger, now: datetime, detail: str | None = None
+) -> str:
     """Synchronous composite: seal_terminal then grade_and_record. Returns the recorded trigger.
 
     Kept synchronous for the budget watchdog and the readiness gate (each runs in its own thread;

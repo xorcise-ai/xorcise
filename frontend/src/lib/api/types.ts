@@ -6,12 +6,15 @@ type S = components["schemas"];
 
 export type AgentEntry = S["AgentEntry"];
 export type AgentDeclaration = S["AgentDeclaration"];
-export type AgentHistoryEntry = S["AgentHistoryEntry"];
+export type AgentHistoryEntry = S["AgentHistoryView"];
 export type CatalogEntry = S["CatalogEntry"];
 export type CatalogStatus = S["CatalogStatus"];
 export type Announcement = S["Announcement"];
 export type AnnouncementsResponse = S["AnnouncementsResponse"];
 export type RunEntry = S["RunEntry"];
+/** How a run is shown — label, tone and why it ended — computed once by the server
+ *  (contracts.run.run_status) so the GUI and the CLI word every run identically (#165). */
+export type RunStatus = S["RunStatus"];
 export type RunCreate = S["RunCreate"];
 export type RunCreatedEntry = S["RunCreatedEntry"];
 export type GradeResult = S["GradeResult"];
@@ -24,7 +27,9 @@ export type RunStats = S["RunStats"];
 export type NotGradedView = {
   run_id: string;
   status: "not_graded";
-  terminal_trigger: string;
+  terminal_trigger: NonNullable<RunEntry["terminal_trigger"]>;
+  /** The run's status wording — the same label and sentence the run page shows. */
+  run_status: RunStatus;
   detail: string | null;
 };
 

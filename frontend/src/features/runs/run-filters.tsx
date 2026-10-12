@@ -3,7 +3,6 @@
 import { Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { runPresentation } from "./run-state";
 import type { RunEntry } from "@/lib/api/types";
 
 /** Frontend-only Run History filters (report §10): free-text search + Status / Agent /
@@ -29,10 +28,10 @@ export function hasActiveRunFilters(f: RunFilters): boolean {
   return Boolean(f.query.trim() || f.status || f.agent || f.mission);
 }
 
-/** The §10 status label for a run (Running / Completed / Partial / Timeout / Failed / Terminal /
- *  Created) — the same vocabulary the cards show, so the Status facet matches the badges. */
+/** The run's status label (the server's RunEntry.status) — the same word the cards and
+ *  `xorcise run list` show, so the Status facet matches the badges. */
 export function runStatusLabel(run: RunEntry): string {
-  return runPresentation(run.state, run.terminal_trigger).label;
+  return run.status.label;
 }
 
 /** Operator-facing agent name for a run (matches RunCard): the registered agent's name, else a

@@ -247,7 +247,7 @@ describe("AgentDetail", () => {
             agent_id: "agent-1",
             mission: "sqli-login",
             state: "terminal",
-            terminal_trigger: "budget",
+            terminal_trigger: "timeout",
           }),
         ]),
       ),

@@ -7,8 +7,17 @@ from fastapi import APIRouter, HTTPException, Response
 from xorcise.core import agents, reporting, runs
 from xorcise.core.contracts.agent import AgentDeclaration, AgentEntry
 from xorcise.core.contracts.reporting import AgentHistoryEntry
+from xorcise.core.contracts.run import RunStatus, run_status
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+
+class AgentHistoryView(AgentHistoryEntry):
+    """A history row plus the run's status wording (contracts.run.run_status), joined here because
+    contracts never import one another. A row whose run has since been deleted still reads exactly
+    as the run did — the GUI used to invent a "budget" trigger for it instead (#165)."""
+
+    status: RunStatus
 
 
 @router.get("")
@@ -59,7 +68,7 @@ def update_agent(name: str, declaration: AgentDeclaration) -> AgentEntry:
 
 
 @router.get("/{name}/history")
-def agent_history(name: str) -> list[AgentHistoryEntry]:
+def agent_history(name: str) -> list[AgentHistoryView]:
     agent = agents.get(name)
     if agent is None:
         raise HTTPException(status_code=404, detail=f"no agent named '{name}'")
@@ -69,12 +78,13 @@ def agent_history(name: str) -> list[AgentHistoryEntry]:
     from xorcise.core.runcontrol.store import disclosed_intel_count
 
     return [
-        entry.model_copy(
-            update={
-                "conditions": entry.conditions.model_copy(
-                    update={"intel_disclosed": disclosed_intel_count(entry.run_id)}
-                )
-            }
+        AgentHistoryView(
+            **entry.model_dump(exclude={"conditions"}),
+            conditions=entry.conditions.model_copy(
+                update={"intel_disclosed": disclosed_intel_count(entry.run_id)}
+            ),
+            # A recorded result is either the agent's own completion or a partial one.
+            status=run_status("terminal", entry.partial_trigger if entry.partial else "done"),
         )
         for entry in reporting.agent_history(agent.id)
     ]
