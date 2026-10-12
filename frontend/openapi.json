@@ -576,6 +576,142 @@
         "title": "AgentHistoryView",
         "type": "object"
       },
+      "AgentSaveView": {
+        "description": "A register/update result plus anything the operator should know about what was saved.\nThe save itself is never refused for these: a kind no harness answers to is the sanctioned\ncustom-harness path, so it is disclosed here rather than rejected (#141).",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "endpoint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "launch_command_template": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Launch Command Template"
+          },
+          "launch_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "host",
+                  "container"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Launch Mode"
+          },
+          "launch_tips": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Launch Tips"
+          },
+          "mission_preamble": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mission Preamble"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "otel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Otel"
+          },
+          "version": {
+            "default": 1,
+            "title": "Version",
+            "type": "integer"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "id",
+          "created_at"
+        ],
+        "title": "AgentSaveView",
+        "type": "object"
+      },
       "Announcement": {
         "additionalProperties": false,
         "description": "One active banner. `revision` increments when a published announcement is edited,\nso the browser can re-show a banner the reader had already dismissed.",
@@ -4739,7 +4875,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AgentEntry"
+                  "$ref": "#/components/schemas/AgentSaveView"
                 }
               }
             },
@@ -4826,7 +4962,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AgentEntry"
+                  "$ref": "#/components/schemas/AgentSaveView"
                 }
               }
             },

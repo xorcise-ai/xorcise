@@ -1454,6 +1454,49 @@ export interface components {
             trace_ref?: string | null;
         };
         /**
+         * AgentSaveView
+         * @description A register/update result plus anything the operator should know about what was saved.
+         *     The save itself is never refused for these: a kind no harness answers to is the sanctioned
+         *     custom-harness path, so it is disclosed here rather than rejected (#141).
+         */
+        AgentSaveView: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Endpoint */
+            endpoint?: string | null;
+            /** Id */
+            id: string;
+            /** Kind */
+            kind?: string | null;
+            /** Launch Command Template */
+            launch_command_template?: string | null;
+            /** Launch Mode */
+            launch_mode?: ("host" | "container") | null;
+            /** Launch Tips */
+            launch_tips?: string[] | null;
+            /** Mission Preamble */
+            mission_preamble?: string[] | null;
+            /** Model */
+            model?: string | null;
+            /** Name */
+            name: string;
+            /** Otel */
+            otel?: string | null;
+            /**
+             * Version
+             * @default 1
+             */
+            version: number;
+            /**
+             * Warnings
+             * @default []
+             */
+            warnings: string[];
+        };
+        /**
          * Announcement
          * @description One active banner. `revision` increments when a published announcement is edited,
          *     so the browser can re-show a banner the reader had already dismissed.
@@ -3328,7 +3371,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AgentEntry"];
+                    "application/json": components["schemas"]["AgentSaveView"];
                 };
             };
             /** @description Validation Error */
@@ -3363,7 +3406,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AgentEntry"];
+                    "application/json": components["schemas"]["AgentSaveView"];
                 };
             };
             /** @description Validation Error */
