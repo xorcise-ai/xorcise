@@ -213,12 +213,12 @@ def regrade_orphaned_terminal_runs() -> int:
     operator touching it. Idempotent + self-defending (grade_and_record records a zero fallback on
     a grading crash). Returns the count re-graded, for the boot log + tests.
 
-    A run that ended on an environment failure is never graded; if it is not sealed yet (a
-    `crashed` run, which reconcile closes out without finalising) it is finalised here — sealed,
-    released, events exported — but not counted, since nothing was graded."""
-    from xorcise.core.otel.store import SqliteSealStore
+    A run that ended on an environment failure is never graded; if it was never finalised (a
+    `crashed` run, which reconcile closes out without finalising, or any such run whose
+    finalisation a stop cut short) it is finalised here — sealed, released, events exported — but
+    not counted, since nothing was graded."""
+    from xorcise.core.rest.events_export import default_export_path
 
-    seals = SqliteSealStore()
     healed = 0
     for run in runs.list_runs():
         is_term, trigger, _ = runs.terminal_state(run.run_id)
@@ -228,9 +228,14 @@ def regrade_orphaned_terminal_runs() -> int:
             # An environment failure is ungraded BY DESIGN, not by a lost grade (#109) — but it
             # still needs the rest of finalisation. Reconcile marks a run `crashed` with a bare
             # mark_terminal, so this sweep is the only thing that ever seals one: without it late
-            # OTLP keeps landing in a terminal run's record and no evidence digest is taken. The
-            # seal doubles as the "finalised" mark, so each such run is finalised exactly once.
-            if not seals.is_sealed(run.run_id):
+            # OTLP keeps landing in a terminal run's record and no evidence digest is taken.
+            #
+            # "Finalised" is the LAST step having happened: the events export, which runs after
+            # the teardown. NOT the seal — that is the first step, and a stop between it and the
+            # teardown (digest hashing, the docker/headscale release) would leave a sealed run
+            # whose tailnet nodes nothing ever releases. Re-finalising a sealed run is cheap: the
+            # seal is not re-taken (no drain), and the teardown is idempotent.
+            if not default_export_path(run.run_id).exists():
                 log.info("regrade: finalising %s (ended %s; not graded)", run.run_id, trigger)
                 grade_and_record(run.run_id)
             continue

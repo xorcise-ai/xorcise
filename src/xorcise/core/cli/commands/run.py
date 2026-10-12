@@ -37,6 +37,7 @@ from xorcise.core.cli._ux import (
     ux_table,
 )
 from xorcise.core.cli.rest_client import DocumentUnavailable, RestClient
+from xorcise.core.contracts.run import run_status as status_wording
 from xorcise.core.reporting.render import _SEAL_MISMATCH, agent_model_line
 
 run_app = typer.Typer(
@@ -252,10 +253,12 @@ def _render_result(
     _render_telemetry(telemetry)
     # Partial banner — only shown when the result was graded on incomplete data.
     if r.get("partial"):
-        trig = r.get("partial_trigger") or "partial"
-        console.print(
-            f"[bold yellow]⚠ PARTIAL[/] — result graded on incomplete data (trigger: {trig})"
-        )
+        # The status wording the server ships on the run (contracts.run.run_status) — the same
+        # label and sentence the GUI's result page shows for this run (#165).
+        status = status_wording("terminal", r.get("partial_trigger"))
+        console.print(f"[bold yellow]⚠ PARTIAL[/] — {escape(status.label)}")
+        if status.detail:
+            console.print(f"  {escape(status.detail)}")
     if verbose:
         # The per-check (deterministic) + per-criterion (judge) detail. Both arrays
         # are already in the REST response; the default view stays compact.
@@ -523,8 +526,8 @@ pass --no-wait to return on the ack.
     run_id = _resolve_id(client, run_id)
     confirm_or_abort(f"Terminate run {short_id(run_id)}? (it will be graded as-is)", assume_yes=yes)
     entry = client.post(f"/runs/{run_id}/terminate", json={})
-    trigger = entry.get("terminal_trigger") or "operator"
-    console.print(f"run {run_id} → {entry.get('state')} (trigger: {trigger})")
+    label = (entry.get("status") or {}).get("label") or entry.get("state")
+    console.print(f"run {run_id} → {escape(str(label))}")
     if not wait:
         return
     console.print("[warn]grading…[/] (waiting for the result)")

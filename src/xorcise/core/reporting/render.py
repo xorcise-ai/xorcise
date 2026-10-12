@@ -299,8 +299,8 @@ def _verdict_class(passed: bool) -> str:
 
 
 def _status_line(ctx: RunReportContext) -> str:
-    trigger = ctx.run.terminal_trigger
-    return f"{ctx.run.state} ({trigger})" if trigger else ctx.run.state
+    # The run's status label (contracts.run.run_status) — the word the CLI and the GUI show (#165).
+    return ctx.run.status.label
 
 
 def _metadata_rows(ctx: RunReportContext) -> list[tuple[str, str]]:

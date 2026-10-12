@@ -64,25 +64,29 @@ export function filterRuns(
   });
 }
 
-/** Canonical Status ordering for the facet (active first, terminal outcomes after). */
-const STATUS_ORDER = [
-  "Running",
-  "Created",
-  "Completed",
-  "Partial",
-  "Timeout",
-  "Failed",
-  "Terminal",
-];
+/** Where a run's status sorts in the facet: live runs first, then by how the run counts. Keyed
+ *  on the server's state and outcome, never on label text — a label list here went stale the
+ *  moment the server's wording changed (#165). */
+function statusRank(run: RunEntry): number {
+  if (run.state === "active") return 0;
+  if (run.state === "created") return 1;
+  if (run.outcome === "completed") return 2;
+  if (run.outcome === "partial") return 3;
+  if (run.outcome === "infra_failed") return 4;
+  return 5;
+}
 
-/** Distinct status labels present across the runs, in canonical order (unknown labels last). */
+/** Distinct status labels present across the runs: live first, then completed, partial, infra
+ *  failures and anything else, alphabetical within a group. */
 export function distinctStatuses(runs: RunEntry[]): string[] {
-  const set = new Set(runs.map(runStatusLabel));
-  return [...set].sort((a, b) => {
-    const ia = STATUS_ORDER.indexOf(a);
-    const ib = STATUS_ORDER.indexOf(b);
-    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib) || a.localeCompare(b);
-  });
+  const rank = new Map<string, number>();
+  for (const run of runs) {
+    const label = runStatusLabel(run);
+    rank.set(label, Math.min(rank.get(label) ?? 99, statusRank(run)));
+  }
+  return [...rank.keys()].sort(
+    (a, b) => rank.get(a)! - rank.get(b)! || a.localeCompare(b),
+  );
 }
 
 /** Distinct agent names present across the runs, sorted. */

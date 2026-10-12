@@ -189,7 +189,9 @@ def test_run_status_shows_partial_banner_on_timed_out_result(monkeypatch):
     res = runner.invoke(app, ["run", "status", RID])
     assert res.exit_code == 0
     assert "PARTIAL" in res.stdout
-    assert "timeout" in res.stdout
+    # The run's status wording (contracts.run.run_status) — what the GUI's result page shows.
+    assert "Timed out" in res.stdout
+    assert "reached its time budget" in " ".join(res.stdout.split())
 
 
 def test_run_status_no_partial_banner_on_clean_result(monkeypatch):
@@ -334,15 +336,19 @@ def test_run_terminate_posts_to_terminate_endpoint(monkeypatch):
     def fake_post(self, path: str, json: dict[str, object]):
         captured["path"] = path
         captured["json"] = json
-        return {"run_id": RID, "state": "terminal", "terminal_trigger": "operator"}
+        return {
+            "run_id": RID,
+            "state": "terminal",
+            "terminal_trigger": "operator",
+            "status": run_status("terminal", "operator").model_dump(),
+        }
 
     monkeypatch.setattr("xorcise.core.cli.commands.run.RestClient.post", fake_post)
     res = runner.invoke(app, ["run", "terminate", RID, "--no-wait"])
     assert res.exit_code == 0
     assert captured["path"] == f"/runs/{RID}/terminate"
     assert captured["json"] == {}
-    assert "terminal" in res.stdout
-    assert "operator" in res.stdout
+    assert "Stopped" in res.stdout  # the server's label for an operator stop
 
 
 def test_run_terminate_waits_and_renders_grade(monkeypatch):

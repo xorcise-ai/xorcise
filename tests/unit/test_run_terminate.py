@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -360,6 +361,19 @@ def test_deploy_failure_is_finalised_but_never_graded(migrated_home, monkeypatch
     assert exported == [r.run_id]
 
 
+def _fake_export(calls: list[str]) -> Callable[[str], None]:
+    """export_run_events stand-in that records the call and leaves the file a real one would."""
+    from xorcise.core.rest.events_export import default_export_path
+
+    def export(run_id: str) -> None:
+        calls.append(run_id)
+        path = default_export_path(run_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("")
+
+    return export
+
+
 def test_boot_sweep_finalises_a_crashed_run_once_without_grading_it(
     migrated_home, monkeypatch
 ) -> None:
@@ -378,7 +392,7 @@ def test_boot_sweep_finalises_a_crashed_run_once_without_grading_it(
     torn: list[str] = []
     exported: list[str] = []
     monkeypatch.setattr(run_teardown, "teardown_run", lambda rid: torn.append(rid))
-    monkeypatch.setattr(events_export, "export_run_events", exported.append)
+    monkeypatch.setattr(events_export, "export_run_events", _fake_export(exported))
 
     r = runs.create_run(agent_id="a1", mission="c", budget_seconds=600)
     runs.mark_terminal(r.run_id, "crashed", _now())  # what reconcile._reconcile_one does
@@ -390,6 +404,37 @@ def test_boot_sweep_finalises_a_crashed_run_once_without_grading_it(
     regrade_orphaned_terminal_runs()  # the next boot: already finalised, left alone
     assert torn == [r.run_id]
     assert exported == [r.run_id]
+
+
+@pytest.mark.parametrize("trigger", ["deploy_failed", "crashed"])
+def test_boot_sweep_releases_an_ungraded_run_a_stop_left_sealed_but_not_torn_down(
+    migrated_home, monkeypatch, trigger
+) -> None:
+    """The seal is the FIRST step of finalisation, not the last. A server stopped after it but
+    before the teardown left a sealed run the sweep then skipped forever — its tailnet nodes never
+    released (boot reaps containers, not nodes). The sweep keys on the events export, which only
+    happens after the teardown, so such a run is finalised on the next boot — and only once."""
+    import xorcise.core.rest.events_export as events_export
+    import xorcise.core.rest.run_teardown as run_teardown
+    from xorcise.core.rest.evidence_seal import seal_with_digest
+    from xorcise.core.rest.run_terminate import regrade_orphaned_terminal_runs
+
+    torn: list[str] = []
+    exported: list[str] = []
+    monkeypatch.setattr(run_teardown, "teardown_run", lambda rid: torn.append(rid))
+    monkeypatch.setattr(events_export, "export_run_events", _fake_export(exported))
+
+    r = runs.create_run(agent_id="a1", mission="c", budget_seconds=600)
+    runs.mark_terminal(r.run_id, trigger, _now())
+    seal_with_digest(r.run_id)  # ... and the server stopped here, before the teardown
+
+    regrade_orphaned_terminal_runs()
+    assert torn == [r.run_id]
+    assert exported == [r.run_id]
+    assert reporting.get_result(r.run_id) is None  # released, still never graded
+
+    regrade_orphaned_terminal_runs()  # the boot after: finalised, left alone
+    assert torn == [r.run_id]
 
 
 @pytest.mark.parametrize("trigger", ["deploy_failed", "crashed"])

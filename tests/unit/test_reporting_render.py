@@ -241,7 +241,7 @@ def test_partial_judge_ranges_and_criterion_states_render_in_both_formats():
         assert "40%" in doc
         assert "unobservable" in doc
     assert "| Mission | sqli-login v1 |" in md
-    assert "| Status | terminal (done) |" in md
+    assert "| Status | Completed |" in md
     assert "| Budget | 600s |" in md
     assert "| Duration | 4m 30s |" in md
     assert "2026-07-24 10:00:00 UTC" in md

@@ -346,10 +346,11 @@ export function RunLive({ runId }: { runId: string | null }) {
                   {terminate.isPending ? "Terminating…" : "Terminate"}
                 </Button>
               )}
-              {/* A completed run's result (secondary action, §17). Every other ending explains
+              {/* A completed run's result (secondary action, §17) — and, for a terminal run whose
+                  ending is unknown, the way to whatever was recorded. Every other ending explains
                   itself in the banner below, which carries "View partial result" when there is
                   one — and an environment failure has no result to view at all. */}
-              {r.outcome === "completed" && (
+              {terminal && (r.outcome === "completed" || r.outcome == null) && (
                 <Link
                   href={resultHref}
                   className={buttonVariants({ variant: "outline", size: "sm" })}

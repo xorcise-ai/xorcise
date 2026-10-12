@@ -94,6 +94,33 @@ describe("Dashboard fleet performance", () => {
     expect(screen.getByText("67%")).toBeInTheDocument(); // Pass rate
   });
 
+  it("FleetMetrics keeps infra failures out of the pass rate and buckets the mix by outcome", async () => {
+    // #109: a run our infrastructure cut short is not an attempt. Two of them beside the three
+    // runs above must leave the pass rate at 2/3 — not 2/5 — and land in their own segment.
+    // The timeout is a PARTIAL run: it used to fall in "Failed" because the mix keyed on the
+    // status tone (red), which left the Partial segment empty for every fleet.
+    handlers();
+    server.use(
+      http.get("*/api/runs", () =>
+        HttpResponse.json([
+          ...RUNS,
+          runFixture({ run_id: "r4", agent_id: "a1", state: "terminal", terminal_trigger: "crashed" }),
+          runFixture({
+            run_id: "r5",
+            agent_id: "a2",
+            state: "terminal",
+            terminal_trigger: "deploy_failed",
+          }),
+        ]),
+      ),
+    );
+    renderWithProviders(<FleetMetrics />);
+    await waitFor(() => expect(screen.getByText("5")).toBeInTheDocument()); // Evaluated
+    expect(screen.getByText("67%")).toBeInTheDocument(); // Pass rate over the 3 attempts
+    expect(screen.getByText("Partial").parentElement?.textContent).toBe("Partial1");
+    expect(screen.getByText("Infra failed").parentElement?.textContent).toBe("Infra failed2");
+  });
+
   it("TopAgents ranks scored agents and hides agents with no scored run", async () => {
     handlers();
     renderWithProviders(<TopAgents />);
