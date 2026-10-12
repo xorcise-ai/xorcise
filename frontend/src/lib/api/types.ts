@@ -21,17 +21,12 @@ export type GradeResult = S["GradeResult"];
 export type RunResultView = S["RunResultView"];
 export type RunStats = S["RunStats"];
 
-/** The FINAL answer /result, /report and /stats give for a run whose environment failed
- *  (`deploy_failed` / `crashed`): never graded, because the failure is not the agent's.
- *  Not in the generated schema — like the 202 "grading" placeholder it is a bare JSON body. */
-export type NotGradedView = {
-  run_id: string;
-  status: "not_graded";
-  terminal_trigger: NonNullable<RunEntry["terminal_trigger"]>;
-  /** The run's status wording — the same label and sentence the run page shows. */
-  run_status: RunStatus;
-  detail: string | null;
-};
+/** The FINAL answer /result, /report and /stats give for a run cut short by an environment
+ *  failure (`deploy_failed` / `crashed`): never graded, because the failure is not the agent's.
+ *  Declared in the OpenAPI schema (contracts.run.NotGradedView), so this is the generated type. */
+export type NotGradedView = S["NotGradedView"];
+/** The 202 /result, /report and /stats give while a terminal run's grade is being recorded. */
+export type GradingView = S["GradingView"];
 
 export function isNotGraded(data: unknown): data is NotGradedView {
   return (

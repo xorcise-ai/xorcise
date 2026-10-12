@@ -748,6 +748,61 @@ def _environment_failed_run(home: Path, name: str, trigger: TerminalTrigger) -> 
     return run.run_id
 
 
+def test_openapi_declares_every_answer_the_result_reads_give(migrated_home) -> None:
+    """/result, /report and /stats answer 202 "grading" and 200 "not_graded" as raw JSON bodies,
+    which the schema generator cannot see: a client generated from the OpenAPI document expected
+    only the graded body and failed on either. Both are declared now, as real models."""
+    spec = _client().get("/openapi.json").json()
+
+    def refs(node: object) -> set[str]:
+        found: set[str] = set()
+        if isinstance(node, dict):
+            if isinstance(node.get("$ref"), str):
+                found.add(node["$ref"].rsplit("/", 1)[-1])
+            for value in node.values():
+                found |= refs(value)
+        elif isinstance(node, list):
+            for value in node:
+                found |= refs(value)
+        return found
+
+    for path, graded in (("result", "RunResultView"), ("stats", "RunStats"), ("report", None)):
+        responses = spec["paths"][f"/api/runs/{{run_id}}/{path}"]["get"]["responses"]
+        ok = refs(responses["200"])
+        assert "NotGradedView" in ok, path
+        if graded:
+            assert graded in ok, path
+        assert refs(responses["202"]) == {"GradingView"}, path
+        assert {"404", "409"} <= set(responses), path
+
+
+def test_the_not_graded_and_grading_bodies_are_the_declared_models(migrated_home) -> None:
+    """What the routes send must parse as what the schema declares — the models are the contract,
+    not documentation beside a hand-built dict."""
+    from datetime import UTC, datetime
+
+    from xorcise.core import agents, runs
+    from xorcise.core.contracts.run import GradingView, NotGradedView
+
+    run_id = _environment_failed_run(migrated_home, "declared", "crashed")
+    body = _client().get(f"/api/runs/{run_id}/result").json()
+    assert NotGradedView.model_validate(body).model_dump(mode="json") == body
+
+    agent = agents.get("declared")
+    assert agent is not None
+    graded_later = runs.create_run(agent_id=agent.id, mission="c1", run_control_key="K")
+    runs.mark_terminal(graded_later.run_id, "done", datetime.now(UTC))
+    import xorcise.core.rest.run_terminate as rt
+
+    rt._grading_in_flight.add(graded_later.run_id)  # a grade in flight: the read answers 202
+    try:
+        r = _client().get(f"/api/runs/{graded_later.run_id}/result")
+    finally:
+        rt._grading_in_flight.discard(graded_later.run_id)
+    assert r.status_code == 202
+    assert GradingView.model_validate(r.json()).model_dump(mode="json") == r.json()
+
+
 def test_environment_failure_answers_not_graded_on_every_read(migrated_home, monkeypatch):
     """#109: a deploy_failed / crashed run is never graded, so /result, /report and /stats must
     give a FINAL answer naming why — not the 202 "grading" a poll loop would wait on forever —

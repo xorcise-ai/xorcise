@@ -1981,6 +1981,21 @@ export interface components {
             /** Transcript Items */
             transcript_items?: number | null;
         };
+        /**
+         * GradingView
+         * @description The 202 /result, /report and /stats give while a terminal run's grade is still being
+         *     recorded — transient progress, not a failure: poll again.
+         */
+        GradingView: {
+            /** Run Id */
+            run_id: string;
+            /**
+             * Status
+             * @default grading
+             * @constant
+             */
+            status: "grading";
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -2329,6 +2344,30 @@ export interface components {
             advertise_host?: string | null;
             /** Headscale Url */
             headscale_url?: string | null;
+        };
+        /**
+         * NotGradedView
+         * @description The FINAL answer /result, /report and /stats give for a run cut short by an environment
+         *     failure (`deploy_failed` / `crashed`): such a run is never graded (#109). A 200, not a 202 —
+         *     an answer, not progress — so a poll loop stops on it.
+         */
+        NotGradedView: {
+            /** Detail */
+            detail?: string | null;
+            /** Run Id */
+            run_id: string;
+            run_status: components["schemas"]["RunStatus"];
+            /**
+             * Status
+             * @default not_graded
+             * @constant
+             */
+            status: "not_graded";
+            /**
+             * Terminal Trigger
+             * @enum {string}
+             */
+            terminal_trigger: "done" | "timeout" | "operator" | "deploy_failed" | "crashed";
         };
         /**
          * PlaneStatus
@@ -4715,14 +4754,39 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description The report as `text/markdown` or `text/html` — or, for a run cut short by an environment failure, the not-graded answer as JSON. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["NotGradedView"];
+                    "text/html": unknown;
+                    "text/markdown": unknown;
                 };
+            };
+            /** @description Terminal, grade not recorded yet — poll again. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GradingView"];
+                };
+            };
+            /** @description No such run. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The run has not ended yet — there is nothing to read. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -4754,8 +4818,31 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RunResultView"];
+                    "application/json": components["schemas"]["RunResultView"] | components["schemas"]["NotGradedView"];
                 };
+            };
+            /** @description Terminal, grade not recorded yet — poll again. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GradingView"];
+                };
+            };
+            /** @description No such run. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The run has not ended yet — there is nothing to read. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -4785,8 +4872,31 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RunStats"];
+                    "application/json": components["schemas"]["RunStats"] | components["schemas"]["NotGradedView"];
                 };
+            };
+            /** @description Terminal, grade not recorded yet — poll again. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GradingView"];
+                };
+            };
+            /** @description No such run. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The run has not ended yet — there is nothing to read. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

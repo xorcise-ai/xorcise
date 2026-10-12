@@ -108,6 +108,28 @@ def run_status(state: str, terminal_trigger: str | None) -> RunStatus:
     return RunStatus(label=state.title(), tone="muted")
 
 
+class NotGradedView(BaseModel):
+    """The FINAL answer /result, /report and /stats give for a run cut short by an environment
+    failure (`deploy_failed` / `crashed`): such a run is never graded (#109). A 200, not a 202 —
+    an answer, not progress — so a poll loop stops on it."""
+
+    run_id: str
+    status: Literal["not_graded"] = "not_graded"
+    terminal_trigger: TerminalTrigger
+    # The run's status wording (label, tone, why it ended) — what every surface prints for it.
+    run_status: RunStatus
+    # The evidence recorded when the run ended (the readiness gate's verdict and log tails).
+    detail: str | None = None
+
+
+class GradingView(BaseModel):
+    """The 202 /result, /report and /stats give while a terminal run's grade is still being
+    recorded — transient progress, not a failure: poll again."""
+
+    run_id: str
+    status: Literal["grading"] = "grading"
+
+
 class RunCreate(BaseModel):
     """Create request: the registered agent's name + the mission ref.
 
