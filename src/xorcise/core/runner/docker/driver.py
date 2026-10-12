@@ -169,9 +169,13 @@ class DockerSdkDriver(DockerDriver):
         except docker.errors.NotFound:
             return  # already gone: the end state removal asks for
         except docker.errors.APIError as exc:
-            if exc.status_code == 409:
-                raise ImageInUseError(f"{ref} is in use by a container") from exc
-            raise
+            if exc.status_code != 409:
+                raise
+            explanation = str(exc.explanation or exc)
+            # The one conflict that is not about a container: an id named by several repos.
+            if "multiple repositories" in explanation:
+                raise RuntimeError(explanation) from exc
+            raise ImageInUseError(f"{ref} is in use by a container") from exc
 
     def container_image_ids(self) -> set[str]:
         # all=True: a stopped container pins its image exactly like a running one.

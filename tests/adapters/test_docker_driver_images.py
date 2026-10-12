@@ -131,6 +131,28 @@ def test_remove_image_conflict_raises_image_in_use() -> None:
         DockerSdkDriver(client=client).remove_image("xorcise/mission-sqli:local")
 
 
+def test_remove_image_untagging_a_containers_image_is_also_in_use() -> None:
+    message = (
+        "conflict: unable to remove repository reference (must force)"
+        " - container c1 is using its referenced image 9f"
+    )
+    client = _FakeClient(remove_error=_api_error(409, message))
+    with pytest.raises(ImageInUseError):
+        DockerSdkDriver(client=client).remove_image("xorcise/mission-sqli:local")
+
+
+def test_remove_image_multi_repository_conflict_is_not_reported_as_in_use() -> None:
+    message = (
+        "conflict: unable to delete 9f (must be forced)"
+        " - image is referenced in multiple repositories"
+    )
+    client = _FakeClient(remove_error=_api_error(409, message))
+    with pytest.raises(RuntimeError) as raised:
+        DockerSdkDriver(client=client).remove_image("sha256:9f")
+    assert not isinstance(raised.value, ImageInUseError)
+    assert str(raised.value) == message
+
+
 def test_remove_image_already_gone_is_success() -> None:
     client = _FakeClient(remove_error=docker.errors.ImageNotFound("No such image"))
     DockerSdkDriver(client=client).remove_image("xorcise/mission-gone:1")  # must not raise
