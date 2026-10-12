@@ -240,8 +240,8 @@ def update_mission(
     user-facing operation is this same re-pull. Returns (record, updated): updated=False means
     the install already matches the catalog's current artifact — digest comparison first (§34's
     strongest signal), immutable release ref as the pre-contract fallback — and nothing was
-    touched. The replaced image's old tag stays in the local docker store; pruning is a separate
-    concern, the same stance mission delete takes.
+    touched. The replaced image's old tag stays in the local docker store, where
+    `mission prune` reports it as superseded.
 
     Raises NotFoundError when the id is not installed (nothing to update — pull it instead),
     MissionCollisionError for a your_own install (a local bundle updates by re-ingesting), and
