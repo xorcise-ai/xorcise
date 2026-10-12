@@ -17,6 +17,7 @@ from xorcise.core.runner.docker import (
     ContainerSpec,
     ContainerState,
     DockerDriver,
+    ImageRecord,
     PullProgress,
     ServiceState,
 )
@@ -142,6 +143,40 @@ class DockerSdkDriver(DockerDriver):
             return True
         except docker.errors.ImageNotFound:
             return False
+
+    def list_images(self) -> list[ImageRecord]:
+        records = []
+        for image in self._client.images.list():
+            attrs = image.attrs or {}
+            records.append(
+                ImageRecord(
+                    id=str(image.id),
+                    tags=tuple(image.tags),
+                    labels=dict((attrs.get("Config") or {}).get("Labels") or {}),
+                    size_bytes=int(attrs.get("Size") or 0),
+                    digests=tuple(attrs.get("RepoDigests") or ()),
+                )
+            )
+        return records
+
+    def remove_image(self, ref: str) -> None:
+        import docker.errors
+
+        from xorcise.core.contracts.errors import ImageInUseError
+
+        try:
+            self._client.images.remove(ref, force=False)
+        except docker.errors.NotFound:
+            return  # already gone: the end state removal asks for
+        except docker.errors.APIError as exc:
+            if exc.status_code == 409:
+                raise ImageInUseError(f"{ref} is in use by a container") from exc
+            raise
+
+    def container_image_ids(self) -> set[str]:
+        # all=True: a stopped container pins its image exactly like a running one.
+        containers = self._client.containers.list(all=True)
+        return {str(c.attrs["Image"]) for c in containers if (c.attrs or {}).get("Image")}
 
     def image_labels(self, image: str) -> dict[str, str] | None:
         """The image's config labels (inherited included), or None if it is not present."""
