@@ -181,7 +181,8 @@ class DockerDriver(ABC):
         return []
 
     def remove_image(self, ref: str) -> None:
-        """Remove one tag (or the image, when it is the last). Never forced.
+        """Remove one tag (or the image, when it is the last), or the image itself when `ref`
+        is its id. Never forced.
 
         Raises ImageInUseError when a container still uses the image; an image that is
         already gone is success. Raises NotImplementedError by default rather than silently
@@ -315,12 +316,14 @@ class StubDockerDriver(DockerDriver):
 
     def remove_image(self, ref: str) -> None:
         # Mirrors the daemon: untagging a still-tagged image always succeeds; deleting the
-        # image (its last tag) is refused while a container uses it.
-        record = next((r for r in self.images.values() if ref in r.tags), None)
+        # image (its last tag, or the image itself by id) is refused while a container uses it.
+        record = self.images.get(ref) or next(
+            (r for r in self.images.values() if ref in r.tags), None
+        )
         self.present.discard(ref)
         if record is None:
             return
-        remaining = tuple(t for t in record.tags if t != ref)
+        remaining = () if ref == record.id else tuple(t for t in record.tags if t != ref)
         if not remaining and record.id in self.container_images:
             raise ImageInUseError(f"{ref} is in use by a container")
         self.removed.append(ref)

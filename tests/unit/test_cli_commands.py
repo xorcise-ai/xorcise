@@ -1637,6 +1637,37 @@ def test_mission_prune_partial_failure_exits_1(monkeypatch):
     assert "could not remove xorcise/mission-gone:local: in use" in result.output
 
 
+_UNTAGGED = {
+    "image_id": "sha256:abcdef1234567890",
+    "tags": [],
+    "slug": "vault",
+    "size_bytes": 1_000_000_000,
+    "reason": "superseded",
+}
+
+
+def test_mission_prune_names_an_untagged_image_by_short_id_and_mission(monkeypatch):
+    report = {**_report(applied=False), "candidates": [_UNTAGGED]}
+    _fake_prune(monkeypatch, report)
+    result = runner.invoke(app, ["mission", "prune"])
+    assert result.exit_code == 0
+    assert "<untagged> abcdef123456 (vault)" in result.stdout
+
+
+def test_mission_prune_yes_reports_untagged_removals_and_failures(monkeypatch):
+    other = {**_UNTAGGED, "image_id": "sha256:0123456789abcdef", "slug": "sqli"}
+    failed = [{"image_id": "sha256:0123456789abcdef", "tags": [], "error": "in use"}]
+    report = {
+        **_report(True, removed=["sha256:abcdef1234567890"], failed=failed),
+        "candidates": [_UNTAGGED, other],
+    }
+    _fake_prune(monkeypatch, report)
+    result = runner.invoke(app, ["mission", "prune", "--yes"])
+    assert result.exit_code == 1
+    assert "removed <untagged> abcdef123456 (vault)" in result.stdout
+    assert "could not remove <untagged> 0123456789ab (sqli): in use" in result.output
+
+
 def test_mission_prune_json_emits_the_raw_report(monkeypatch):
     import json
 

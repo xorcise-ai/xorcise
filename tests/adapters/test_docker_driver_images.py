@@ -88,6 +88,16 @@ def test_list_images_maps_id_tags_labels_size_and_digests() -> None:
             ),
             # dangling, no labels, no size: every optional field defaults rather than crashing
             _Image("sha256:bbb", {"RepoTags": ["<none>:<none>"], "Config": {"Labels": None}}),
+            # dangling after a re-pull moved its tag: the digest still names where it came from
+            _Image(
+                "sha256:ccc",
+                {
+                    "RepoTags": [],
+                    "RepoDigests": ["reg.example/xorcise/mis-vault@sha256:eee"],
+                    "Config": {"Labels": {"ai.xorcise.mission.id": "vault"}},
+                    "Size": 7,
+                },
+            ),
         ]
     )
     assert DockerSdkDriver(client=client).list_images() == [
@@ -99,6 +109,13 @@ def test_list_images_maps_id_tags_labels_size_and_digests() -> None:
             digests=("reg.example/xorcise/mis-sqli@sha256:ddd",),
         ),
         ImageRecord(id="sha256:bbb", tags=(), labels={}, size_bytes=0, digests=()),
+        ImageRecord(
+            id="sha256:ccc",
+            tags=(),
+            labels={"ai.xorcise.mission.id": "vault"},
+            size_bytes=7,
+            digests=("reg.example/xorcise/mis-vault@sha256:eee",),
+        ),
     ]
 
 

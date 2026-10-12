@@ -6,10 +6,14 @@ image, and an update left the previous generation's tag behind. This module deci
 
 An image is OURS only when it carries the mission-base lineage AND every one of its tags names a
 mission repository. Either alone is not enough: base images and anything built FROM one carry
-the lineage, and a tag is just a name anyone can apply. An OWNED image is removable unless
-something still needs it: an install record, a live run, a container, or a pull in flight.
-Gathering those protections fails closed — an install record that cannot be read aborts the
-prune rather than leaving its image unprotected.
+the lineage, and a tag is just a name anyone can apply. An untagged image (its tag moved to a
+newer pull or build) is ours when it carries the lineage and its identity names exactly one
+mission: its mission-id label and every repo digest must agree, and at least one must exist. An
+untagged image with lineage alone (an old local fuse, built before the label) stays unowned.
+
+An OWNED image is removable unless something still needs it: an install record, a live run, a
+container, or a pull in flight. Gathering those protections fails closed — an install record
+that cannot be read aborts the prune rather than leaving its image unprotected.
 
 LAYER: delivery (rest). Composes the install store's on-disk records (missions), the run table
 (runs) and the image store (runner) — the same reasoning as mission_pull.py. The missions router
@@ -28,7 +32,7 @@ from pathlib import Path
 
 from xorcise.core.contracts.errors import ContractError, ImageInUseError
 from xorcise.core.runner.docker import DockerDriver, ImageRecord
-from xorcise.core.runner.docker.build import BASE_VERSION_LABEL
+from xorcise.core.runner.docker.build import BASE_VERSION_LABEL, MISSION_ID_LABEL
 
 _TITLE_LABEL = "org.opencontainers.image.title"
 # Both spellings the base has shipped under: the cloud's base1 generation carried only the
@@ -124,10 +128,18 @@ class Purge:
 
 
 def owned_slug(image: ImageRecord) -> str | None:
-    """The mission this image belongs to, or None when it is not a XORCISE mission image."""
-    if not _has_lineage(image.labels) or not image.tags:
+    """The mission this image belongs to, or None when it is not a XORCISE mission image.
+
+    A tagged image is named by its tags alone. An untagged one is named by its mission-id label
+    and its repo digests, which must all agree; one with neither is not ours."""
+    if not _has_lineage(image.labels):
         return None
-    slugs = {_mission_slug(tag) for tag in image.tags}
+    if image.tags:
+        slugs = {_mission_slug(tag) for tag in image.tags}
+    else:
+        slugs = {_mission_slug(digest) for digest in image.digests}
+        if MISSION_ID_LABEL in image.labels:
+            slugs.add(_label_slug(image.labels[MISSION_ID_LABEL]))
     if len(slugs) != 1:
         return None
     (slug,) = slugs
@@ -149,14 +161,15 @@ def plan_prune(
 
 
 def apply_prune(driver: DockerDriver, candidates: Iterable[Candidate]) -> Removal:
-    """Remove each candidate by untagging every tag (never forced). A failure is recorded and
-    the rest still run: one busy image must not keep the others on disk."""
+    """Remove each candidate by untagging every tag, or by id when it has none (never forced).
+    A failure is recorded and the rest still run: one busy image must not keep the others on
+    disk."""
     removed: list[str] = []
     failed: list[Failure] = []
     for candidate in candidates:
         try:
-            for tag in candidate.tags:
-                driver.remove_image(tag)
+            for ref in candidate.tags or (candidate.image_id,):
+                driver.remove_image(ref)
         except ImageInUseError:
             failed.append(Failure(candidate.image_id, candidate.tags, "in use"))
         except Exception as exc:  # noqa: BLE001 — per-image boundary: report it, keep going
@@ -205,7 +218,7 @@ def purge_image(ref: str, *, driver: DockerDriver, install_root: Path) -> Purge:
     removal = apply_prune(driver, [candidate])
     if removal.failed:
         return Purge(ImageOutcome.FAILED, removal.failed[0].error)
-    return Purge(ImageOutcome.REMOVED, f"removed {', '.join(image.tags)}")
+    return Purge(ImageOutcome.REMOVED, f"removed {', '.join(image.tags) or ref}")
 
 
 def installed_image_ref(slug: str, install_root: Path) -> str | None:
@@ -235,6 +248,11 @@ def _mission_slug(tag: str) -> str | None:
         if match:
             return match["slug"]
     return None
+
+
+def _label_slug(value: str) -> str | None:
+    match = re.fullmatch(_SLUG, value)
+    return match["slug"] if match else None
 
 
 def _repository(ref: str) -> str:

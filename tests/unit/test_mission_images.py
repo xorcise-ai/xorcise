@@ -30,11 +30,27 @@ _ECR = "123456789012.dkr.ecr.us-east-1.amazonaws.com"
 
 
 def _img(
-    image_id: str, *tags: str, labels: dict[str, str] | None = None, size: int = 100
+    image_id: str,
+    *tags: str,
+    labels: dict[str, str] | None = None,
+    size: int = 100,
+    digests: tuple[str, ...] = (),
 ) -> ImageRecord:
     return ImageRecord(
-        id=image_id, tags=tags, labels=_BASE2 if labels is None else labels, size_bytes=size
+        id=image_id,
+        tags=tags,
+        labels=_BASE2 if labels is None else labels,
+        size_bytes=size,
+        digests=digests,
     )
+
+
+def _dangling(
+    image_id: str, slug: str | None = None, *digests: str, size: int = 100
+) -> ImageRecord:
+    """An untagged image: its tag moved to a newer build or pull."""
+    labels = _BASE2 if slug is None else {**_BASE2, "ai.xorcise.mission.id": slug}
+    return _img(image_id, labels=labels, size=size, digests=digests)
 
 
 # owned_slug ---------------------------------------------------------------------------------
@@ -78,6 +94,42 @@ def test_owned_slug_refuses_everything_else(tags: tuple[str, ...], labels: dict[
     assert owned_slug(_img("sha256:a", *tags, labels=labels)) is None
 
 
+@pytest.mark.parametrize(
+    ("slug_label", "digests", "slug"),
+    [
+        ("vault", (), "vault"),
+        (None, (f"{_ECR}/xorcise/mis-vault@sha256:d1",), "vault"),
+        ("vault", (f"{_ECR}/xorcise/mis-vault@sha256:d1", "xorcise/mis-vault@sha256:d2"), "vault"),
+    ],
+)
+def test_an_untagged_image_is_owned_when_its_identity_names_one_mission(
+    slug_label: str | None, digests: tuple[str, ...], slug: str
+) -> None:
+    assert owned_slug(_dangling("sha256:a", slug_label, *digests)) == slug
+
+
+@pytest.mark.parametrize(
+    ("labels", "digests"),
+    [
+        ({**_BASE2, "ai.xorcise.mission.id": "vault"}, (f"{_ECR}/xorcise/mis-other@sha256:d",)),
+        ({**_BASE2, "ai.xorcise.mission.id": "vault"}, ("docker.io/someone/app@sha256:d",)),
+        ({**_BASE2, "ai.xorcise.mission.id": "vault"}, (f"{_ECR}/xorcise/mission-base@sha256:d",)),
+        (_BASE2, ()),  # an old local fuse: lineage, but nothing names its mission
+        ({"ai.xorcise.mission.id": "vault"}, (f"{_ECR}/xorcise/mis-vault@sha256:d",)),
+        ({**_BASE2, "ai.xorcise.mission.id": ""}, ()),
+    ],
+)
+def test_an_untagged_image_is_not_owned_unless_every_source_agrees(
+    labels: dict[str, str], digests: tuple[str, ...]
+) -> None:
+    assert owned_slug(_img("sha256:a", labels=labels, digests=digests)) is None
+
+
+def test_a_tagged_image_does_not_trust_its_mission_id_label() -> None:
+    image = _img("sha256:a", "myorg/keep:1", labels={**_BASE2, "ai.xorcise.mission.id": "vault"})
+    assert owned_slug(image) is None
+
+
 # plan_prune -------------------------------------------------------------------------------
 
 
@@ -91,6 +143,13 @@ def test_plan_names_superseded_and_uninstalled_images_and_skips_protected_ones()
     assert plan_prune(images, protected_ids={"sha256:cur"}, installed_slugs={"vault"}) == [
         Candidate("sha256:old", ("xorcise/mis-vault:1",), "vault", 200, Reason.SUPERSEDED),
         Candidate("sha256:gone", ("xorcise/mission-sqli:local",), "sqli", 50, Reason.NOT_INSTALLED),
+    ]
+
+
+def test_plan_includes_an_untagged_mission_image() -> None:
+    images = [_dangling("sha256:old", "vault", size=40), _dangling("sha256:anon")]
+    assert plan_prune(images, protected_ids=set(), installed_slugs={"vault"}) == [
+        Candidate("sha256:old", (), "vault", 40, Reason.SUPERSEDED)
     ]
 
 
@@ -195,6 +254,14 @@ def test_container_and_active_pull_protect_their_images(migrated_home: Path) -> 
     assert _candidate_ids(driver, migrated_home / "missions") == ["sha256:free"]
 
 
+def test_a_container_still_protects_an_image_that_lost_its_tag(migrated_home: Path) -> None:
+    driver = _driver(_dangling("sha256:boxed", "vault"), _dangling("sha256:free", "vault"))
+    driver.container_images.add("sha256:boxed")
+    plan = prune(driver, migrated_home / "missions", apply=True)
+    assert (plan.removed, plan.failed) == (("sha256:free",), ())
+    assert [i.id for i in driver.list_images()] == ["sha256:boxed"]
+
+
 def test_static_install_with_no_image_protects_nothing(migrated_home: Path) -> None:
     root = migrated_home / "missions"
     install_mission(migrated_home, slug="notes")
@@ -239,6 +306,14 @@ def test_apply_removes_every_tag_and_records_in_use_failures() -> None:
     assert [i.id for i in driver.list_images()] == ["sha256:busy"]
 
 
+def test_apply_removes_an_untagged_image_by_id() -> None:
+    driver = _driver(_dangling("sha256:old", "vault"), _img("sha256:cur", "xorcise/mis-vault:2"))
+    result = apply_prune(driver, [Candidate("sha256:old", (), "vault", 1, Reason.SUPERSEDED)])
+    assert (result.removed, result.failed) == (("sha256:old",), ())
+    assert driver.removed == ["sha256:old"]
+    assert [i.id for i in driver.list_images()] == ["sha256:cur"]
+
+
 def test_dry_run_reports_without_removing(migrated_home: Path) -> None:
     driver = _driver(_img("sha256:a", "xorcise/mis-a:1", size=7))
     plan = prune(driver, migrated_home / "missions", apply=False)
@@ -262,6 +337,14 @@ def test_purge_removes_an_unprotected_mission_image(migrated_home: Path) -> None
         "xorcise/mission-a:0", driver=driver, install_root=migrated_home / "missions"
     )
     assert purge.outcome is ImageOutcome.REMOVED
+    assert driver.list_images() == []
+
+
+def test_purge_removes_a_digest_pinned_image_that_has_no_tag(migrated_home: Path) -> None:
+    ref = f"{_ECR}/xorcise/mis-vault@sha256:d"
+    driver = _driver(_dangling("sha256:v", None, ref))
+    purge = purge_image(ref, driver=driver, install_root=migrated_home / "missions")
+    assert (purge.outcome, purge.detail) == (ImageOutcome.REMOVED, f"removed {ref}")
     assert driver.list_images() == []
 
 

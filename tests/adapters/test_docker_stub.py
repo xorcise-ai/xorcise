@@ -54,6 +54,17 @@ def test_stub_refuses_to_delete_an_image_a_container_uses() -> None:
     assert d.container_image_ids() == {"sha256:aaa"}
 
 
+def test_stub_removes_an_image_by_id_unless_a_container_uses_it() -> None:
+    dangling = ImageRecord(id="sha256:bbb", tags=(), labels={}, size_bytes=5)
+    d = _seeded(_TWO_TAGS, dangling)
+    d.container_images.add("sha256:aaa")
+    with pytest.raises(ImageInUseError):
+        d.remove_image("sha256:aaa")
+    d.remove_image("sha256:bbb")
+    assert d.list_images() == [_TWO_TAGS]
+    assert d.removed == ["sha256:bbb"]
+
+
 def test_deploy_runs_present_image_without_pulling() -> None:
     """Locally-present/locally-built images run with no registry pull (no force-pull)."""
     from xorcise.core.contracts.control import DeployRequest, MissionRef, NetworkSpec

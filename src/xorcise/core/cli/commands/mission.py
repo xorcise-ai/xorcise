@@ -358,6 +358,13 @@ def _images(n: int) -> str:
     return f"{n} image" if n == 1 else f"{n} images"
 
 
+def _image_name(tags: list[str], image_id: str, slug: str, sep: str = ", ") -> str:
+    """An image's tags, or `<untagged> <short id> (<mission>)` once its tag has moved on."""
+    if tags:
+        return sep.join(tags)
+    return f"<untagged> {image_id.removeprefix('sha256:')[:12]} ({slug})"
+
+
 @mission_app.command("prune")
 def prune_cmd(
     yes: bool = typer.Option(
@@ -370,8 +377,8 @@ def prune_cmd(
     """Free disk space: remove mission images nothing uses any more.
 
     That is the images of uninstalled missions and the previous versions an update left \
-behind. Without --yes this only lists them. An image an installed mission, an active run or \
-a container uses is never removed.
+behind, including untagged ones that still name their mission. Without --yes this only \
+lists them. An image an installed mission, an active run or a container uses is never removed.
     """
     apply = yes is True
     # Removing several multi-GB images can outlast the default read timeout.
@@ -391,7 +398,8 @@ a container uses is never removed.
     if not apply:
         table = ux_table("Image", "Size", "Reason")
         for c in candidates:
-            table.add_row("\n".join(c["tags"]), size_label(c["size_bytes"]), c["reason"])
+            name = _image_name(c["tags"], c["image_id"], c["slug"], sep="\n")
+            table.add_row(name, size_label(c["size_bytes"]), c["reason"])
         print_table(table)
         reclaim = size_label(report.get("reclaimable_bytes"))
         console.print(
@@ -400,11 +408,15 @@ a container uses is never removed.
         next_step("xorcise mission prune --yes", "re-run with --yes to remove them")
         return
     removed = set(report.get("removed") or [])
+    slugs = {c["image_id"]: c["slug"] for c in candidates}
     for c in candidates:
         if c["image_id"] in removed:
-            console.print(f"removed {', '.join(c['tags'])}", markup=False)
+            console.print(
+                f"removed {_image_name(c['tags'], c['image_id'], c['slug'])}", markup=False
+            )
     for f in failed:
-        err_console.print(f"could not remove {', '.join(f['tags'])}: {f['error']}", markup=False)
+        name = _image_name(f["tags"], f["image_id"], slugs.get(f["image_id"], "?"))
+        err_console.print(f"could not remove {name}: {f['error']}", markup=False)
     freed = sum(c["size_bytes"] for c in candidates if c["image_id"] in removed)
     console.print(
         f"removed {_images(len(removed))}, reclaiming up to {size_label(freed)}", markup=False
