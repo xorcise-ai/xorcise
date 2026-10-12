@@ -206,7 +206,7 @@ def disk_space() -> Check:
         False,
         f"only {gib:.1f} GB free at {root}",
         "a mission image is 1-3 GB (a local build needs ~3x that transiently) — "
-        "reclaim space with: docker system prune -a",
+        "reclaim space with: xorcise mission prune",
         level="warning",
     )
 

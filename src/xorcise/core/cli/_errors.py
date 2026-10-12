@@ -38,6 +38,7 @@ _EXAMPLES = {
     "xorcise mission update": "xorcise mission update aviary-access",
     "xorcise mission delete": "xorcise mission delete aviary-access",
     "xorcise mission rm": "xorcise mission rm aviary-access",
+    "xorcise mission prune": "xorcise mission prune --yes",
     "xorcise mission ingest": "xorcise mission ingest ./my-mission-bundle",
     "xorcise run create": "xorcise run create --agent my-agent --mission aviary-access",
     "xorcise run status": "xorcise run status <run-id>",

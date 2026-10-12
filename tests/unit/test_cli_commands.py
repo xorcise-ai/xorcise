@@ -1560,3 +1560,112 @@ def test_update_gates_only_a_changed_unrecognised_kind(monkeypatch):
         == 0
     )
     assert [p["kind"] for p in puts] == ["Custom", "openhands"]
+
+
+# mission prune / delete --purge / pull --refresh ---------------------------------------------
+
+_PRUNE_CANDIDATES = [
+    {
+        "image_id": "sha256:old",
+        "tags": ["xorcise/mis-vault:1"],
+        "slug": "vault",
+        "size_bytes": 1_500_000_000,
+        "reason": "superseded",
+    },
+    {
+        "image_id": "sha256:gone",
+        "tags": ["xorcise/mission-gone:local"],
+        "slug": "gone",
+        "size_bytes": 500_000_000,
+        "reason": "not installed",
+    },
+]
+
+
+def _fake_prune(monkeypatch, report: dict[str, object]) -> list[dict[str, object]]:
+    """Answer POST /missions/prune with *report*; returns the request bodies sent."""
+    bodies: list[dict[str, object]] = []
+
+    def fake_post(self, path, json, timeout=None):
+        assert path == "/missions/prune"
+        bodies.append(json)
+        return report
+
+    monkeypatch.setattr(RestClient, "post", fake_post)
+    return bodies
+
+
+def _report(applied: bool, removed=(), failed=()) -> dict[str, object]:
+    return {
+        "applied": applied,
+        "candidates": _PRUNE_CANDIDATES,
+        "removed": list(removed),
+        "failed": list(failed),
+        "reclaimable_bytes": 2_000_000_000,
+    }
+
+
+def test_mission_prune_defaults_to_a_dry_run(monkeypatch):
+    bodies = _fake_prune(monkeypatch, _report(applied=False))
+    result = runner.invoke(app, ["mission", "prune"])
+    assert result.exit_code == 0
+    assert bodies == [{"apply": False}]
+    out = result.stdout
+    assert "xorcise/mis-vault:1" in out and "superseded" in out and "1.5 GB" in out
+    assert "xorcise/mission-gone:local" in out and "not installed" in out
+    assert "would remove 2 images, reclaiming up to 2.0 GB" in out
+    assert "xorcise mission prune --yes" in out
+
+
+def test_mission_prune_yes_removes_and_summarises(monkeypatch):
+    bodies = _fake_prune(monkeypatch, _report(True, removed=["sha256:old", "sha256:gone"]))
+    result = runner.invoke(app, ["mission", "prune", "--yes"])
+    assert result.exit_code == 0
+    assert bodies == [{"apply": True}]
+    assert "removed xorcise/mis-vault:1" in result.stdout
+    assert "removed 2 images, reclaiming up to 2.0 GB" in result.stdout
+
+
+def test_mission_prune_partial_failure_exits_1(monkeypatch):
+    failed = [
+        {"image_id": "sha256:gone", "tags": ["xorcise/mission-gone:local"], "error": "in use"}
+    ]
+    _fake_prune(monkeypatch, _report(True, removed=["sha256:old"], failed=failed))
+    result = runner.invoke(app, ["mission", "prune", "-y"])
+    assert result.exit_code == 1
+    assert "removed xorcise/mis-vault:1" in result.stdout
+    assert "could not remove xorcise/mission-gone:local: in use" in result.output
+
+
+def test_mission_prune_json_emits_the_raw_report(monkeypatch):
+    import json
+
+    report = _report(applied=False)
+    _fake_prune(monkeypatch, report)
+    result = runner.invoke(app, ["mission", "prune", "--json"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == report
+
+
+def test_mission_prune_with_nothing_to_remove(monkeypatch):
+    _fake_prune(
+        monkeypatch,
+        {"applied": False, "candidates": [], "removed": [], "failed": [], "reclaimable_bytes": 0},
+    )
+    result = runner.invoke(app, ["mission", "prune"])
+    assert result.exit_code == 0
+    assert "no unused mission images to remove" in result.stdout
+
+
+def test_mission_prune_help_documents_the_flags():
+    result = runner.invoke(app, ["mission", "prune", "--help"])
+    assert result.exit_code == 0
+    assert "--yes" in result.output and "--json" in result.output
+
+
+def test_mission_show_prune_points_at_the_command(monkeypatch):
+    monkeypatch.setattr(RestClient, "get", lambda self, path: [{"mission_id": "vault"}])
+    result = runner.invoke(app, ["mission", "show", "prune"])
+    assert result.exit_code == 1
+    assert "'prune' is a command, not a mission" in result.output
+    assert "xorcise mission prune" in result.output

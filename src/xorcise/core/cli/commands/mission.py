@@ -331,6 +331,65 @@ image stays in the local store.
     console.print(f"deleted mission '{mission_id}'", markup=False)
 
 
+def _images(n: int) -> str:
+    return f"{n} image" if n == 1 else f"{n} images"
+
+
+@mission_app.command("prune")
+def prune_cmd(
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Remove the images. Without it, prune only lists them."
+    ),
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit the raw prune report as JSON (for scripting)."
+    ),
+) -> None:
+    """Free disk space: remove mission images nothing uses any more.
+
+    That is the images of uninstalled missions and the previous versions an update left \
+behind. Without --yes this only lists them. An image an installed mission, an active run or \
+a container uses is never removed.
+    """
+    apply = yes is True
+    # Removing several multi-GB images can outlast the default read timeout.
+    report = RestClient().post(
+        "/missions/prune", json={"apply": apply}, timeout=600.0 if apply else None
+    )
+    failed = report.get("failed") or []
+    if as_json is True:
+        emit_json(report)
+        if failed:
+            raise typer.Exit(1)
+        return
+    candidates = report.get("candidates") or []
+    if not candidates:
+        console.print("no unused mission images to remove")
+        return
+    if not apply:
+        table = ux_table("Image", "Size", "Reason")
+        for c in candidates:
+            table.add_row("\n".join(c["tags"]), size_label(c["size_bytes"]), c["reason"])
+        print_table(table)
+        reclaim = size_label(report.get("reclaimable_bytes"))
+        console.print(
+            f"would remove {_images(len(candidates))}, reclaiming up to {reclaim}", markup=False
+        )
+        next_step("xorcise mission prune --yes", "re-run with --yes to remove them")
+        return
+    removed = set(report.get("removed") or [])
+    for c in candidates:
+        if c["image_id"] in removed:
+            console.print(f"removed {', '.join(c['tags'])}", markup=False)
+    for f in failed:
+        err_console.print(f"could not remove {', '.join(f['tags'])}: {f['error']}", markup=False)
+    freed = sum(c["size_bytes"] for c in candidates if c["image_id"] in removed)
+    console.print(
+        f"removed {_images(len(removed))}, reclaiming up to {size_label(freed)}", markup=False
+    )
+    if failed:
+        fail(f"{_images(len(failed))} could not be removed", see=("xorcise mission prune",))
+
+
 @mission_app.command("ingest")
 def ingest_cmd(bundle_dir: Path | None = _BUNDLE_DIR_ARGUMENT) -> None:
     """Add your own mission from a local bundle (coming soon).
