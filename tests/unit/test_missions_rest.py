@@ -395,8 +395,8 @@ def test_pull_job_refresh_repulls_an_installed_mission(migrated_home, monkeypatc
     driver = _seed_driver(monkeypatch)
     c = _client()
 
-    def pull(**kwargs: object) -> str:
-        r = c.post("/api/missions/sqli-login/pull-jobs", **kwargs)
+    def pull(json: dict[str, object] | None = None) -> str:
+        r = c.post("/api/missions/sqli-login/pull-jobs", json=json)
         assert r.status_code == 202
         job = c.get(f"/api/missions/pull-jobs/{r.json()['job_id']}").json()
         return str(job["status"])
