@@ -29,9 +29,9 @@ class FrontendStaticExportBuildHook(BuildHookInterface):
     """Refresh core/frontend/_static from the Next.js source before packaging."""
 
     def initialize(self, version: str, build_data: dict[str, Any]) -> None:
-        # Editable installs (`pip install -e .`, including CI's `uv pip install -e ".[dev]"`) build
-        # the `editable` variant — they don't need a bundled export (dev serves the working-tree
-        # _static and `xorcise up` rebuilds it). Only the real wheel (`version ==
+        # Editable installs (`pip install -e .`, and the `uv sync --locked --extra dev` CI runs)
+        # build the `editable` variant — they don't need a bundled export (dev serves the
+        # working-tree _static and `xorcise up` rebuilds it). Only the real wheel (`version ==
         # "standard"`) must carry a fresh UI. Skipping non-standard builds also keeps a Node-less
         # dev/CI environment from failing the install.
         if version != "standard":

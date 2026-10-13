@@ -38,7 +38,7 @@ prevent.
 Python 3.12 + uv.
 
 ```bash
-uv pip install -e ".[dev]"
+uv sync --locked --extra dev   # exactly what CI installs; `uv pip install` skips uv.lock
 uv run pytest                 # test lanes: pytest -m unit|adapters|topology|integration|e2e
 uv run mypy                   # bare — config covers src + tests, same scope as CI
 uv run ruff check .
