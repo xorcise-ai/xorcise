@@ -84,3 +84,5 @@ export type PullJobStarted = S["PullJobStarted"];
 /** Poll view of a background pull. `percent` is null while the total is unknown
  * (indeterminate UI) and is NOT monotonic — docker layer totals grow mid-pull. */
 export type PullJobView = S["PullJobView"];
+export type PruneReport = S["PruneReport"];
+export type PruneCandidateView = S["PruneCandidateView"];

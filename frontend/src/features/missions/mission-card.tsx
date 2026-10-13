@@ -357,14 +357,33 @@ export function MissionCard({ mission: c }: { mission: CatalogEntry }) {
            a total. */}
         <div className="relative z-20 mt-auto flex flex-col items-start gap-2 border-t border-border pt-3">
           {installed ? (
-            <span className="flex flex-wrap items-center gap-2">
-              <Link href={detailHref} className={cn(buttonVariants({ size: "sm" }))}>
-                <FolderOpen className="size-3.5" />
-                Open
-              </Link>
-              {/* The badge above SAYS it; this DOES it — §35's one update action, in place. */}
-              {c.update_available === true && <UpdateMissionButton mission={c} />}
-            </span>
+            <>
+              <span className="flex flex-wrap items-center gap-2">
+                <Link href={detailHref} className={cn(buttonVariants({ size: "sm" }))}>
+                  <FolderOpen className="size-3.5" />
+                  Open
+                </Link>
+                {/* The badge above SAYS it; this DOES it — §35's one update action, in place. */}
+                {c.update_available === true && <UpdateMissionButton mission={c} />}
+              </span>
+              {/* A re-pull of an installed mission (from its detail page or the CLI) shares this
+                  job, so the card shows its progress too rather than a plain "installed". */}
+              {pull.isPulling && (
+                <div className="w-full space-y-2">
+                  {pull.canCancel && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => pull.cancel()}
+                      disabled={pull.isCancelling}
+                    >
+                      {pull.isCancelling ? "Cancelling…" : "Cancel pull"}
+                    </Button>
+                  )}
+                  <PullProgressBlock pull={pull} />
+                </div>
+              )}
+            </>
           ) : pull.isPulling ? (
             <div className="w-full space-y-2">
               <div className="flex items-center gap-1.5">

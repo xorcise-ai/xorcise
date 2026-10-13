@@ -10,6 +10,7 @@ import {
   Network,
   Plug,
   HardDrive,
+  HardDriveDownload,
   Map,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -51,6 +52,7 @@ import {
   type RoleGroup,
 } from "./module-groups";
 import { TokenLimitSlider } from "./token-limit-slider";
+import { PruneImagesPanel } from "@/features/missions/prune-images";
 
 /** A settings card. The shape (radius, border, header rule, padding) comes from the design
  *  system's Card/CardHeader/CardTitle/CardContent — this wrapper only keeps what is specific
@@ -564,6 +566,20 @@ function EnvironmentCard() {
   );
 }
 
+/** Reclaim disk from mission images nothing uses (CLI: `mission prune`). Full width: the dry-run
+ *  report is a table. */
+function MissionImagesCard() {
+  return (
+    <SettingsCard
+      title="Mission images"
+      icon={<HardDriveDownload className="size-4" />}
+      className="lg:col-span-2"
+    >
+      <PruneImagesPanel />
+    </SettingsCard>
+  );
+}
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-3">
@@ -985,6 +1001,7 @@ export function SettingsView() {
       <SettingsGroup title="Mission Library & Runtime" caption="catalog & environment">
         <CatalogCard />
         <EnvironmentCard />
+        <MissionImagesCard />
       </SettingsGroup>
 
       {/* Interface — this browser's operator preferences (client-side, localStorage). */}

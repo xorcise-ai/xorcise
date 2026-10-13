@@ -23,6 +23,7 @@ import {
   Server,
   ShieldCheck,
   Trash2,
+  RotateCw,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -156,6 +157,39 @@ export function MissionDetail({ id }: { id: string | null }) {
               <CreateRunButton id={c.mission_id} installed={c.installed} />
               {c.installed ? (
                 <>
+                  {/* Re-pull (CLI parity: `mission pull --refresh`). The Update banner only appears
+                      when the catalog has a newer artifact; this is for the cases it cannot see — a
+                      tag re-pushed in place, or a damaged local image. Library missions only: a
+                      custom mission has nothing to pull from. */}
+                  {c.source === "library" && (
+                    <>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        aria-busy={pull.isPulling}
+                        disabled={pull.isPulling}
+                        title="Download this mission's image again, even though it is installed"
+                        onClick={() => pull.start({ refresh: true })}
+                      >
+                        {pull.isPulling ? (
+                          <Loader2 className="size-3.5 motion-safe:animate-spin" />
+                        ) : (
+                          <RotateCw className="size-3.5" />
+                        )}
+                        {pull.isPulling ? "Pulling…" : "Re-pull"}
+                      </Button>
+                      {pull.canCancel && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => pull.cancel()}
+                          disabled={pull.isCancelling}
+                        >
+                          {pull.isCancelling ? "Cancelling…" : "Cancel"}
+                        </Button>
+                      )}
+                    </>
+                  )}
                   <Button variant="outline" size="sm" onClick={() => setDeleting(true)}>
                     <Trash2 className="size-3.5" />
                     Delete
@@ -203,6 +237,17 @@ export function MissionDetail({ id }: { id: string | null }) {
             </div>
           </div>
 
+          {pull.joinedInsteadOfRefresh && (
+            <p role="status" className="mt-1 max-w-[68ch] text-body text-warning">
+              A pull of this mission was already running, so this shows its progress instead of
+              starting a refresh. Re-pull again once it finishes if you still need one.
+            </p>
+          )}
+          {pull.isRefresh && pull.isSuccess && (
+            <p role="status" className="mt-1 text-body text-ok">
+              Re-pulled. The local image is fresh.
+            </p>
+          )}
           {pull.isCancelled && (
             <p className="mt-1 text-body text-text-tertiary">Pull cancelled.</p>
           )}

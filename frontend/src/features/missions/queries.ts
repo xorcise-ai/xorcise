@@ -7,6 +7,7 @@ import type {
   CatalogEntry,
   CatalogStatus,
   MissionManifest,
+  PruneReport,
   IngestJobView,
   IngestStarted,
   PullJobStarted,
@@ -42,7 +43,16 @@ const PULL_POLL_MS = 1000;
 
 /** Live pull state for one mission, shared by every component that renders it. */
 export interface PullMissionState {
-  start: () => void;
+  /** Start a pull. `refresh` pulls again even when the mission is installed and its image is
+   *  local (the "Re-pull" action). */
+  start: (opts?: { refresh?: boolean }) => void;
+  /** While the pull runs: this client asked for a refresh, but the server joined a pull that was
+   *  already running. That pull keeps the options it was started with, so this request started
+   *  no refresh. False once the joined pull ends, so a finished or cancelled pull is not
+   *  mislabelled. */
+  joinedInsteadOfRefresh: boolean;
+  /** The job this client started was a refresh that really ran (not joined). */
+  isRefresh: boolean;
   /** Ask the in-flight pull to stop (no-op if there's no live job yet). */
   cancel: () => void;
   isPulling: boolean;
@@ -98,8 +108,11 @@ export function usePullMission(missionId: string): PullMissionState {
   });
 
   const start = useMutation({
-    mutationFn: () =>
-      api.post<PullJobStarted>(`/missions/${enc}/pull-jobs`),
+    mutationFn: (refresh: boolean) =>
+      api.post<PullJobStarted>(
+        `/missions/${enc}/pull-jobs`,
+        refresh ? { refresh: true } : undefined,
+      ),
     // Clear any lingering TERMINAL view (a prior cancelled/errored/installed job) the instant a
     // re-pull begins, so during the start round-trip the card shows a clean "Pulling…" and not a
     // stale "Pull cancelled."/"Pull failed." caption alongside it — and so cancel() can't target
@@ -159,8 +172,12 @@ export function usePullMission(missionId: string): PullMissionState {
   // unwinds). This excludes the start round-trip (view not yet seeded) and any lingering
   // terminal job, so a click can only cancel the pull it visibly controls.
   const liveJobId = status === "pulling" ? view?.job_id : undefined;
+  const askedRefresh = start.variables === true;
+  const joined = start.data?.joined === true;
   return {
-    start: () => start.mutate(),
+    start: (opts) => start.mutate(opts?.refresh === true),
+    joinedInsteadOfRefresh: askedRefresh && joined && status === "pulling",
+    isRefresh: askedRefresh && start.isSuccess && !joined,
     cancel: () => {
       if (liveJobId) cancel.mutate(liveJobId);
     },
@@ -310,5 +327,20 @@ export function useIngestMission() {
       }
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["missions"] }),
+  });
+}
+
+/**
+ * Mission-image prune (CLI parity: `xorcise mission prune`). `apply: false` is the dry run: the
+ * report of what would go and why, with nothing removed. `apply: true` removes those images and
+ * reports per-image failures; the catalog is refetched because installed sizes may change.
+ */
+export function usePruneImages() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (apply: boolean) => api.post<PruneReport>("/missions/prune", { apply }),
+    onSuccess: (report) => {
+      if (report.applied) void qc.invalidateQueries({ queryKey: ["missions"] });
+    },
   });
 }
