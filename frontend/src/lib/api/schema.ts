@@ -1321,7 +1321,7 @@ export interface components {
             /** Id */
             id: string;
             /** Kind */
-            kind?: string | null;
+            kind: string;
             /** Launch Command Template */
             launch_command_template?: string | null;
             /** Launch Mode */
@@ -1457,7 +1457,7 @@ export interface components {
          * AgentSaveView
          * @description A register/update result plus anything the operator should know about what was saved.
          *     The save itself is never refused for these: a kind no harness answers to is the sanctioned
-         *     custom-harness path, so it is disclosed here rather than rejected (#141).
+         *     way to label your own CLI, so it is disclosed here rather than rejected (#141).
          */
         AgentSaveView: {
             /**
@@ -1470,7 +1470,7 @@ export interface components {
             /** Id */
             id: string;
             /** Kind */
-            kind?: string | null;
+            kind: string;
             /** Launch Command Template */
             launch_command_template?: string | null;
             /** Launch Mode */

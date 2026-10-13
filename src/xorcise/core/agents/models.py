@@ -20,7 +20,10 @@ class AgentRow(Base):
     endpoint: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     otel: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     model: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
-    kind: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
+    # Never NULL (#141): a declaration without a kind is stored as GENERIC_KIND, which the
+    # agents domain applies (contracts.agent.normalise_kind); the server default covers any
+    # other writer.
+    kind: Mapped[str] = mapped_column(String(255), nullable=False, server_default="generic")
     launch_command_template: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     launch_tips: Mapped[list[str] | None] = mapped_column(JSON, nullable=True, default=None)
     mission_preamble: Mapped[list[str] | None] = mapped_column(JSON, nullable=True, default=None)

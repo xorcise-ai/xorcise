@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import difflib
-
 from fastapi import APIRouter, HTTPException, Response
 
 from xorcise.core import agents, reporting, runs
-from xorcise.core.contracts.agent import AgentDeclaration, AgentEntry
+from xorcise.core.contracts.agent import AgentDeclaration, AgentEntry, kind_warning
 from xorcise.core.contracts.reporting import AgentHistoryEntry
 from xorcise.core.contracts.run import RunStatus, run_status
 
@@ -25,33 +23,24 @@ class AgentHistoryView(AgentHistoryEntry):
 class AgentSaveView(AgentEntry):
     """A register/update result plus anything the operator should know about what was saved.
     The save itself is never refused for these: a kind no harness answers to is the sanctioned
-    custom-harness path, so it is disclosed here rather than rejected (#141)."""
+    way to label your own CLI, so it is disclosed here rather than rejected (#141)."""
 
     warnings: list[str] = []
 
 
 def _kind_warnings(kind: str | None) -> list[str]:
-    """Disclose a `kind` no registered adapter answers to — its runs replay with the generic
-    renderer. A blank kind is the custom path itself and stays silent.
+    """Disclose a `kind` no registered adapter answers to (contracts.agent.kind_warning, the
+    wording the CLI gate prints too). A blank kind is stored as `generic` and stays silent.
 
     Checked here, not in the agents domain: the registry holds only `generic` until
     `load_adapters()` runs, and only the delivery tier may populate it (as
     rest/routers/harnesses.py does). Lazy imports keep the otel plane off this module's path."""
-    if kind is None or not kind.strip():
-        return []
     from xorcise.core.harness_adapters import load_adapters
     from xorcise.core.otel.adapters import registry
 
     load_adapters()
-    known = sorted(registry.registered_names())
-    if kind in known:
-        return []
-    close = difflib.get_close_matches(kind.lower(), known, n=1, cutoff=0.6)
-    hint = f"; did you mean '{close[0]}'?" if close else "."
-    return [
-        f"'{kind}' is not a registered harness (known: {', '.join(known)}){hint} "
-        "Runs will replay with the generic adapter."
-    ]
+    warning = kind_warning(kind, registry.registered_names())
+    return [warning] if warning else []
 
 
 @router.get("")
