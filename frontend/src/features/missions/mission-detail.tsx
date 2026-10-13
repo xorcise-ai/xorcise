@@ -27,27 +27,24 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/components/ui/cn";
 import { Skeleton, SkeletonRows } from "@/components/ui/skeleton";
 import { Reveal } from "@/components/ui/reveal";
 import { NotFoundState } from "@/components/layout/not-found-state";
-import type { CatalogEntry, MissionDeleteOut, MissionManifest } from "@/lib/api/types";
-import { useToastStore, type Toast, type ToastTone } from "@/stores/toasts";
+import type { CatalogEntry, MissionManifest } from "@/lib/api/types";
 import {
   PullProgressBlock,
   UpdateMissionButton,
-  hasImage,
   platformLabel,
   platformTags,
   updateReason,
 } from "./mission-card";
+import { DeleteMissionDialog } from "./delete-mission-dialog";
 import { MissionTerrain } from "./mission-terrain";
 import {
   formatBytes,
   useMission,
   useMissionManifest,
-  useDeleteMission,
   usePullMission,
 } from "./queries";
 import {
@@ -61,25 +58,6 @@ import { DifficultyBadge } from "./difficulty-badge";
 /** Trim a numeric weight to a tidy string (integer stays integer, else 2 dp). */
 function fmtWeight(w: number): string {
   return Number.isInteger(w) ? String(w) : String(Number(w.toFixed(2)));
-}
-
-/** What the operator is told about the image after an uninstall that also removed it, worded as
- *  the CLI's `mission delete --purge`. Keyed by the server's `image_outcome`; the uninstall
- *  itself stood in every case. */
-const IMAGE_OUTCOME_TOAST: Record<string, { tone: ToastTone; title: string } | undefined> = {
-  removed: { tone: "ok", title: "Removed its image" },
-  kept: { tone: "info", title: "Kept its image" },
-  none: { tone: "info", title: "No image removed" },
-  failed: { tone: "warn", title: "Uninstalled, but could not remove its image" },
-};
-
-function imageOutcomeToast(out: MissionDeleteOut): Omit<Toast, "id"> {
-  const known = IMAGE_OUTCOME_TOAST[out.image_outcome];
-  return {
-    tone: known?.tone ?? "info",
-    title: known?.title ?? `Image ${out.image_outcome}`,
-    body: out.detail ?? undefined,
-  };
 }
 
 /** The page's primary call-to-action. This page is dedicated to the mission itself, so for a
@@ -112,10 +90,7 @@ export function MissionDetail({ id }: { id: string | null }) {
   // Keyed by mission_id: the catalog card's pull and this button share ONE live job,
   // so starting a pull in either view disables both and both render its progress.
   const pull = usePullMission(id ?? "");
-  const del = useDeleteMission();
-  const pushToast = useToastStore((s) => s.push);
-  // null while the confirm is closed; opening it always starts with the image kept.
-  const [confirm, setConfirm] = useState<{ purgeImage: boolean } | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   if (!id)
     return (
@@ -153,12 +128,6 @@ export function MissionDetail({ id }: { id: string | null }) {
   // mission lists its security skills too, not just installed ones whose catalog row carries them.
   const skills = c.skills.length > 0 ? c.skills : (m?.metadata.skills ?? []);
 
-  async function confirmDelete(purgeImage: boolean) {
-    const out = await del.mutateAsync({ id: c.mission_id, purgeImage });
-    if (out) pushToast(imageOutcomeToast(out));
-    router.push("/missions");
-  }
-
   return (
     <div className="min-w-0 space-y-6 p-6">
       {/* ── Header ── */}
@@ -183,59 +152,21 @@ export function MissionDetail({ id }: { id: string | null }) {
             <h1 className="text-lead text-heading">
               {c.name}
             </h1>
-            {/* Wraps so the delete confirm (question, image checkbox, two buttons) stays on
-                screen at phone width instead of being clipped past the edge. */}
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <div className="flex shrink-0 items-center gap-2">
               <CreateRunButton id={c.mission_id} installed={c.installed} />
               {c.installed ? (
-                confirm ? (
-                  <>
-                    <span className="text-dense text-text-secondary">
-                      Delete this mission?
-                    </span>
-                    {hasImage(c) && (
-                      <Checkbox
-                        checked={confirm.purgeImage}
-                        onChange={(purgeImage) => setConfirm({ purgeImage })}
-                        disabled={del.isPending}
-                      >
-                        Also remove its image
-                        {c.image_size_bytes != null && (
-                          <>
-                            {" "}
-                            <span className="whitespace-nowrap">
-                              ({formatBytes(c.image_size_bytes)})
-                            </span>
-                          </>
-                        )}
-                      </Checkbox>
-                    )}
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={() => confirmDelete(confirm.purgeImage)}
-                      disabled={del.isPending}
-                    >
-                      {del.isPending ? "Deleting…" : "Yes, delete"}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setConfirm(null)}
-                    >
-                      Cancel
-                    </Button>
-                  </>
-                ) : (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setConfirm({ purgeImage: false })}
-                  >
+                <>
+                  <Button variant="outline" size="sm" onClick={() => setDeleting(true)}>
                     <Trash2 className="size-3.5" />
                     Delete
                   </Button>
-                )
+                  <DeleteMissionDialog
+                    entry={c}
+                    open={deleting}
+                    onClose={() => setDeleting(false)}
+                    onDeleted={() => router.push("/missions")}
+                  />
+                </>
               ) : (
                 <div className="flex items-center gap-2">
                   <Button
@@ -272,9 +203,6 @@ export function MissionDetail({ id }: { id: string | null }) {
             </div>
           </div>
 
-          {del.isError && (
-            <p className="mt-1 text-body text-err">Delete failed — try again.</p>
-          )}
           {pull.isCancelled && (
             <p className="mt-1 text-body text-text-tertiary">Pull cancelled.</p>
           )}

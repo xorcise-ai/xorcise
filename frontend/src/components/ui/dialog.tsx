@@ -1,7 +1,7 @@
 "use client";
 
 import { X } from "lucide-react";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { Button } from "./button";
 import { cn } from "./cn";
 import { useExitTransition } from "./use-exit-transition";
@@ -26,6 +26,14 @@ export function Dialog({
   size?: keyof typeof SIZE_CLS;
 }) {
   const { mounted, closing } = useExitTransition(open);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
   if (!mounted) return null;
   const requestClose = () => {
     if (!closing) onClose();
@@ -36,7 +44,7 @@ export function Dialog({
       aria-modal="true"
       aria-label={title}
       className={cn(
-        "fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4",
+        "fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4 backdrop-blur-sm",
         closing ? "animate-backdrop-out" : "animate-backdrop-in",
       )}
       onClick={requestClose}

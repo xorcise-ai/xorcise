@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Dialog } from "./dialog";
 
@@ -46,5 +47,29 @@ describe("Dialog animation", () => {
     fireEvent.click(screen.getByRole("dialog"));
     fireEvent.click(screen.getByLabelText("Close"));
     expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+function OpenDialog() {
+  const [open, setOpen] = useState(true);
+  return (
+    <Dialog open={open} onClose={() => setOpen(false)} title="T">
+      body
+    </Dialog>
+  );
+}
+
+describe("Dialog keyboard", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("closes on Escape and on no other key", () => {
+    render(<OpenDialog />);
+    fireEvent.keyDown(document, { key: "Enter" });
+    act(() => vi.advanceTimersByTime(150));
+    expect(screen.getByRole("dialog", { name: "T" })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    act(() => vi.advanceTimersByTime(150));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });
