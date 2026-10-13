@@ -8,7 +8,7 @@ import { useRuns } from "@/features/runs/queries";
 import { useMissions } from "@/features/missions/queries";
 import { AgentRunHistory, buildAgentRunRows } from "./agent-run-history";
 import { AgentPerformance, AgentCoverage } from "./agent-performance";
-import { HARNESSES, CustomMark } from "./harnesses";
+import { HARNESSES, GenericMark, harnessLabel } from "./harnesses";
 import { DeleteAgentButton } from "./delete-agent-dialog";
 import { NotFoundState } from "@/components/layout/not-found-state";
 import { Skeleton, SkeletonRows } from "@/components/ui/skeleton";
@@ -69,8 +69,8 @@ export function AgentDetail({ name }: { name: string | null }) {
 
   const a = agent.data;
   const harness = HARNESSES.find((h) => h.kind === a.kind);
-  const HarnessLogo = harness?.Logo ?? CustomMark;
-  const harnessName = harness?.name ?? "Custom";
+  const HarnessLogo = harness?.Logo ?? GenericMark;
+  const harnessName = harnessLabel(a.kind);
   const telemetry = a.otel
     ? "Configured"
     : a.endpoint

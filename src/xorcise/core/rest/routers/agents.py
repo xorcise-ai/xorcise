@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Response
 
 from xorcise.core import agents, reporting, runs
-from xorcise.core.contracts.agent import AgentDeclaration, AgentEntry
+from xorcise.core.contracts.agent import AgentDeclaration, AgentEntry, kind_warning
 from xorcise.core.contracts.reporting import AgentHistoryEntry
 from xorcise.core.contracts.run import RunStatus, run_status
 
@@ -20,15 +20,39 @@ class AgentHistoryView(AgentHistoryEntry):
     status: RunStatus
 
 
+class AgentSaveView(AgentEntry):
+    """A register/update result plus anything the operator should know about what was saved.
+    The save itself is never refused for these: a kind no harness answers to is the sanctioned
+    way to label your own CLI, so it is disclosed here rather than rejected (#141)."""
+
+    warnings: list[str] = []
+
+
+def _kind_warnings(kind: str | None) -> list[str]:
+    """Disclose a `kind` no registered adapter answers to (contracts.agent.kind_warning, the
+    wording the CLI gate prints too). A blank kind is stored as `generic` and stays silent.
+
+    Checked here, not in the agents domain: the registry holds only `generic` until
+    `load_adapters()` runs, and only the delivery tier may populate it (as
+    rest/routers/harnesses.py does). Lazy imports keep the otel plane off this module's path."""
+    from xorcise.core.harness_adapters import load_adapters
+    from xorcise.core.otel.adapters import registry
+
+    load_adapters()
+    warning = kind_warning(kind, registry.registered_names())
+    return [warning] if warning else []
+
+
 @router.get("")
 def list_agents() -> list[AgentEntry]:
     return agents.list_agents()
 
 
 @router.post("", status_code=201)
-def register_agent(declaration: AgentDeclaration) -> AgentEntry:
+def register_agent(declaration: AgentDeclaration) -> AgentSaveView:
+    warnings = _kind_warnings(declaration.kind)  # before the write: a save is never half-done
     try:
-        return agents.register(
+        entry = agents.register(
             name=declaration.name,
             endpoint=declaration.endpoint,
             otel=declaration.otel,
@@ -41,12 +65,14 @@ def register_agent(declaration: AgentDeclaration) -> AgentEntry:
         )
     except agents.DuplicateAgentError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return AgentSaveView(**entry.model_dump(), warnings=warnings)
 
 
 @router.put("/{name}")
-def update_agent(name: str, declaration: AgentDeclaration) -> AgentEntry:
+def update_agent(name: str, declaration: AgentDeclaration) -> AgentSaveView:
     """Update an agent's declaration and bump its version; a differing body name
     renames the agent (409 when taken). 404 when absent."""
+    warnings = _kind_warnings(declaration.kind)
     try:
         entry = agents.update_agent(
             name,
@@ -64,7 +90,7 @@ def update_agent(name: str, declaration: AgentDeclaration) -> AgentEntry:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if entry is None:
         raise HTTPException(status_code=404, detail=f"no agent named '{name}'")
-    return entry
+    return AgentSaveView(**entry.model_dump(), warnings=warnings)
 
 
 @router.get("/{name}/history")

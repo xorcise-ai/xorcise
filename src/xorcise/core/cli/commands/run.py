@@ -355,7 +355,7 @@ def list_runs(
     for r in runs:
         rid = str(r.get("run_id") or DASH)
         agent = agent_names.get(str(r.get("agent_id")), str(r.get("agent_id") or DASH)[:8])
-        # The harness the run was RENDERED as (its source_agent at create time). "Custom" =
+        # The harness the run was RENDERED as (its source_agent at create time). "Generic" =
         # no harness-specific adapter: the replay is the generic renderer (#119).
         harness = kind_label(r.get("source_agent") or None)
         mission_id = str(r.get("mission") or r.get("mission_id") or DASH)

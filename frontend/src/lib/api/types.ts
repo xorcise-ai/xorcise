@@ -6,6 +6,8 @@ type S = components["schemas"];
 
 export type AgentEntry = S["AgentEntry"];
 export type AgentDeclaration = S["AgentDeclaration"];
+/** A register/update result: the saved entry plus the server's warnings about it (#141). */
+export type AgentSaveView = S["AgentSaveView"];
 export type AgentHistoryEntry = S["AgentHistoryView"];
 export type CatalogEntry = S["CatalogEntry"];
 export type CatalogStatus = S["CatalogStatus"];

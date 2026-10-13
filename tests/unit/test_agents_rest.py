@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import subprocess
+import sys
+
 from fastapi.testclient import TestClient
 
 from tests._helpers import install_mission
@@ -138,3 +141,102 @@ def test_delete_agent_cascades_its_runs(migrated_home):
     c.post(f"/api/runs/{run['run_id']}/complete", headers={"Authorization": f"Bearer {key}"})
     assert c.delete("/api/agents/alpha").status_code == 204
     assert c.get("/api/runs").json() == []
+
+
+# --- #141: an unrecognised kind is accepted, but the response discloses it ---
+
+
+def test_register_and_update_warn_on_an_unrecognised_kind(migrated_home):
+    c = _client()
+    r1 = c.post("/api/agents", json={"name": "typo", "kind": "openhand"})
+    assert r1.status_code == 201
+    assert r1.json()["kind"] == "openhand"  # warned, not rejected: custom kinds stay legal
+    [warning] = r1.json()["warnings"]
+    assert "'openhand' is not a registered harness" in warning
+    assert "did you mean 'openhands'?" in warning
+    # "may", not "will": the adapter is picked by exact kind, then the trace's own resource kind,
+    # then a span fingerprint, so a mislabelled OpenHands run can still replay as OpenHands.
+    assert warning.endswith("Runs may replay with the generic adapter.")
+
+    r2 = c.put("/api/agents/typo", json={"name": "typo", "kind": "my-agent-cli"})
+    assert r2.status_code == 200
+    assert r2.json()["kind"] == "my-agent-cli"
+    [warning] = r2.json()["warnings"]
+    assert "'my-agent-cli' is not a registered harness" in warning
+    assert "did you mean" not in warning
+
+
+def test_registered_and_blank_kinds_do_not_warn(migrated_home):
+    c = _client()
+    for name, kind in (("a", "openhands"), ("b", None), ("c", ""), ("d", "  "), ("e", "generic")):
+        r = c.post("/api/agents", json={"name": name, "kind": kind})
+        assert (r.status_code, r.json()["warnings"]) == (201, []), kind
+    assert [a["kind"] for a in c.get("/api/agents").json()] == ["openhands"] + ["generic"] * 4
+    r = c.put("/api/agents/a", json={"name": "a", "kind": "codex"})
+    assert (r.status_code, r.json()["warnings"]) == (200, [])
+    # The read side is unchanged: warnings are a property of a write, not of the agent.
+    assert "warnings" not in c.get("/api/agents").json()[0]
+
+
+def test_first_request_in_a_fresh_process_knows_the_real_harnesses(migrated_home):
+    # The adapter registry holds only `generic` until harness_adapters.load_adapters() runs, so
+    # a check that trusted it as-is would flag every real kind when POST /agents is the first
+    # request a server answers. A fresh interpreter is the only place that state still exists.
+    code = (
+        "from fastapi.testclient import TestClient\n"
+        "from xorcise.core.otel.adapters import registry\n"
+        "from xorcise.core.roles.boot.role_all import build_rest_app\n"
+        "c = TestClient(build_rest_app())\n"
+        "assert registry.registered_names() == {'generic'}, registry.registered_names()\n"
+        "ok = c.post('/api/agents', json={'name': 'real', 'kind': 'openhands'}).json()\n"
+        "bad = c.post('/api/agents', json={'name': 'typo', 'kind': 'openhand'}).json()\n"
+        "print(len(ok['warnings']), len(bad['warnings']))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=120
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["0", "1"]
+
+
+def test_the_server_and_its_clients_agree_on_which_kinds_are_registered(migrated_home):
+    # The warning above checks the adapter registry (it decides the renderer); the CLI gate and
+    # the register page check GET /harnesses. If an adapter ever lands without a launch provider
+    # (or the reverse), the three surfaces would disagree about the same kind. Fail here instead.
+    c = _client()
+    listed = sorted(h["kind"] for h in c.get("/api/harnesses").json())
+    adapters = sorted(p["adapter_name"] for p in c.get("/api/harnesses/capabilities").json())
+    assert listed == adapters
+    assert "openhands" in listed
+    for kind in listed:
+        r = c.post("/api/agents", json={"name": f"agent-{kind}", "kind": kind})
+        assert (r.status_code, r.json()["warnings"]) == (201, []), kind
+
+
+# --- every agent has a kind, and the default is generic ---
+
+
+def test_register_and_update_without_a_kind_save_generic(migrated_home):
+    c = _client()
+    r = c.post("/api/agents", json={"name": "plain"})  # an older client that never sends a kind
+    assert r.status_code == 201
+    assert (r.json()["kind"], r.json()["warnings"]) == ("generic", [])
+    c.put("/api/agents/plain", json={"name": "plain", "kind": "codex"})
+    r = c.put("/api/agents/plain", json={"name": "plain"})  # a full re-declaration, no kind
+    assert r.status_code == 200
+    assert (r.json()["kind"], r.json()["warnings"]) == ("generic", [])
+    assert c.get("/api/agents").json()[0]["kind"] == "generic"
+
+
+def test_a_padded_kind_is_stored_trimmed_and_judged_as_stored(migrated_home):
+    r = _client().post("/api/agents", json={"name": "padded", "kind": " openhands "})
+    assert (r.json()["kind"], r.json()["warnings"]) == ("openhands", [])
+
+
+def test_the_rest_warning_is_the_shared_one_the_cli_prints(migrated_home):
+    from xorcise.core.contracts.agent import kind_warning
+
+    c = _client()
+    known = [h["kind"] for h in c.get("/api/harnesses").json()]
+    r = c.post("/api/agents", json={"name": "typo", "kind": "openhand"})
+    assert r.json()["warnings"] == [kind_warning("openhand", known)]

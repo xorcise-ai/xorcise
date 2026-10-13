@@ -34,7 +34,7 @@ class HarnessLaunchProvider(ABC):
     # Registration-facing identity and non-authoritative model suggestions. Model intel are
     # shortcuts only: AgentDeclaration.model stays free text because XORCISE records what the
     # operator discloses and does not own the harness's model catalogue.
-    display_name: str = "Custom harness"
+    display_name: str = "Generic harness"
     description: str = "Any CLI agent — launch behavior is supplied by the operator."
     model_hints: tuple[str, ...] = ()
     # Optional CLI switch inserted immediately before the mission when a registered agent

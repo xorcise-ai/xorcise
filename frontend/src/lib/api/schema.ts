@@ -1321,7 +1321,7 @@ export interface components {
             /** Id */
             id: string;
             /** Kind */
-            kind?: string | null;
+            kind: string;
             /** Launch Command Template */
             launch_command_template?: string | null;
             /** Launch Mode */
@@ -1452,6 +1452,49 @@ export interface components {
             status: components["schemas"]["RunStatus"];
             /** Trace Ref */
             trace_ref?: string | null;
+        };
+        /**
+         * AgentSaveView
+         * @description A register/update result plus anything the operator should know about what was saved.
+         *     The save itself is never refused for these: a kind no harness answers to is the sanctioned
+         *     way to label your own CLI, so it is disclosed here rather than rejected (#141).
+         */
+        AgentSaveView: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Endpoint */
+            endpoint?: string | null;
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Launch Command Template */
+            launch_command_template?: string | null;
+            /** Launch Mode */
+            launch_mode?: ("host" | "container") | null;
+            /** Launch Tips */
+            launch_tips?: string[] | null;
+            /** Mission Preamble */
+            mission_preamble?: string[] | null;
+            /** Model */
+            model?: string | null;
+            /** Name */
+            name: string;
+            /** Otel */
+            otel?: string | null;
+            /**
+             * Version
+             * @default 1
+             */
+            version: number;
+            /**
+             * Warnings
+             * @default []
+             */
+            warnings: string[];
         };
         /**
          * Announcement
@@ -3328,7 +3371,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AgentEntry"];
+                    "application/json": components["schemas"]["AgentSaveView"];
                 };
             };
             /** @description Validation Error */
@@ -3363,7 +3406,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AgentEntry"];
+                    "application/json": components["schemas"]["AgentSaveView"];
                 };
             };
             /** @description Validation Error */
