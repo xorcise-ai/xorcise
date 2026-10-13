@@ -158,8 +158,10 @@ export function MissionDetail({ id }: { id: string | null }) {
               {c.installed ? (
                 <>
                   {/* Re-pull (CLI parity: `mission pull --refresh`) repairs an installed mission
-                      whose local image is damaged. A newer release is Update's job: the catalog
-                      flags it. Library missions only: a custom mission has nothing to pull from. */}
+                      whose local image is damaged: the server removes the image, never forced,
+                      then downloads it again, because a plain pull skips layers already on
+                      disk. A newer release is Update's job: the catalog flags it. Library
+                      missions only: a custom mission has nothing to pull from. */}
                   {c.source === "library" && (
                     <>
                       <Button
@@ -167,7 +169,7 @@ export function MissionDetail({ id }: { id: string | null }) {
                         size="sm"
                         aria-busy={pull.isPulling}
                         disabled={pull.isPulling}
-                        title="Download this mission's image again, even though it is installed"
+                        title="Remove this mission's image and download it again, to repair a damaged copy"
                         onClick={() => pull.start({ refresh: true })}
                       >
                         {pull.isPulling ? (
@@ -244,11 +246,15 @@ export function MissionDetail({ id }: { id: string | null }) {
           )}
           {pull.isRefresh && pull.isSuccess && (
             <p role="status" className="mt-1 text-body text-ok">
-              Re-pulled. The local image is fresh.
+              Re-pulled. The image was downloaded again and the mission reinstalled.
             </p>
           )}
           {pull.isCancelled && (
-            <p className="mt-1 text-body text-text-tertiary">Pull cancelled.</p>
+            <p className="mt-1 text-body text-text-tertiary">
+              {pull.isRefresh
+                ? "Re-pull cancelled. If it had already removed the image, Re-pull again before starting a run."
+                : "Pull cancelled."}
+            </p>
           )}
           {pull.isError && (
             <p className="mt-1 text-body text-err">

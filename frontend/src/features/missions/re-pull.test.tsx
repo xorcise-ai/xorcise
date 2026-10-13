@@ -73,7 +73,13 @@ describe("Re-pull on the mission detail page", () => {
     const { sent, finish } = serve(INSTALLED_LIBRARY, { job_id: "j1", joined: false });
     await renderDetail();
 
-    fireEvent.click(screen.getByRole("button", { name: "Re-pull" }));
+    const button = screen.getByRole("button", { name: "Re-pull" });
+    // A plain pull skips layers already on disk, so Re-pull says it removes the image first.
+    expect(button).toHaveAttribute(
+      "title",
+      "Remove this mission's image and download it again, to repair a damaged copy",
+    );
+    fireEvent.click(button);
     await waitFor(() => expect(sent.body).toEqual({ refresh: true }));
     await waitFor(() =>
       expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "50"),
@@ -84,7 +90,7 @@ describe("Re-pull on the mission detail page", () => {
     finish();
     // The next poll tick (1 s) lands the terminal state; RTL's default wait is also 1 s.
     expect(
-      await screen.findByText("Re-pulled. The local image is fresh.", {}, { timeout: 3000 }),
+      await screen.findByText("Re-pulled. The image was downloaded again and the mission reinstalled.", {}, { timeout: 3000 }),
     ).toBeInTheDocument();
   });
 
@@ -102,7 +108,27 @@ describe("Re-pull on the mission detail page", () => {
     await waitFor(() => expect(screen.queryByText(notice)).not.toBeInTheDocument(), {
       timeout: 3000,
     });
-    expect(screen.queryByText("Re-pulled. The local image is fresh.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Re-pulled. The image was downloaded again and the mission reinstalled.")).not.toBeInTheDocument();
+  });
+
+  it("says a cancelled Re-pull may have left the mission without its image", async () => {
+    const { sent } = serve(INSTALLED_LIBRARY, { job_id: "j1", joined: false });
+    server.use(
+      http.get("*/api/missions/pull-jobs/j1", () =>
+        HttpResponse.json(job({ status: "cancelled", phase: "done" })),
+      ),
+    );
+    await renderDetail();
+    fireEvent.click(screen.getByRole("button", { name: "Re-pull" }));
+    await waitFor(() => expect(sent.posted).toBe(true));
+    expect(
+      await screen.findByText(
+        "Re-pull cancelled. If it had already removed the image, Re-pull again before starting a run.",
+        {},
+        { timeout: 3000 },
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Pull cancelled.")).not.toBeInTheDocument();
   });
 
   it("is not offered for a custom mission, which has nothing to pull from", async () => {
