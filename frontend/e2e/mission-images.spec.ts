@@ -89,9 +89,10 @@ test("prune shows the dry run, removes only after a confirmation, and lists what
           candidates: [CANDIDATE],
           removed: [],
           failed: [{ ...CANDIDATE, error: "image is being used by a running container" }],
+          skipped: [],
           reclaimable_bytes: 650_000_000,
         }]
-      : [200, { applied: false, candidates: [CANDIDATE], removed: [], failed: [], reclaimable_bytes: 650_000_000 }],
+      : [200, { applied: false, candidates: [CANDIDATE], removed: [], failed: [], skipped: [], reclaimable_bytes: 650_000_000 }],
   );
   await page.goto("/ui/settings/");
 
@@ -109,7 +110,10 @@ test("prune shows the dry run, removes only after a confirmation, and lists what
   const result = page.getByTestId("prune-result");
   await expect(result).toContainText("Removed 0 of 1 image.");
   await expect(result).toContainText("xorcise/mis-e2e-lab:0 — image is being used by a running container");
-  expect(posts.map((p) => p.body)).toEqual([{ apply: false }, { apply: true }]);
+  expect(posts.map((p) => p.body)).toEqual([
+    { apply: false },
+    { apply: true, image_ids: [CANDIDATE.image_id] },
+  ]);
 });
 
 test("prune shows the server's refusal as it is", async ({ page }) => {

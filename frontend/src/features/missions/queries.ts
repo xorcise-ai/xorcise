@@ -335,10 +335,19 @@ export function useIngestMission() {
  * report of what would go and why, with nothing removed. `apply: true` removes those images and
  * reports per-image failures; the catalog is refetched because installed sizes may change.
  */
+/** A prune request: a dry run (`apply: false`), or the removal of the images the operator
+ *  confirmed from one. The server removes only those still unused and reports the rest as
+ *  `skipped`, so a confirmation never reaches an image the operator did not see. */
+export type PruneRun = { apply: false } | { apply: true; imageIds: string[] };
+
 export function usePruneImages() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (apply: boolean) => api.post<PruneReport>("/missions/prune", { apply }),
+    mutationFn: (run: PruneRun) =>
+      api.post<PruneReport>(
+        "/missions/prune",
+        run.apply ? { apply: true, image_ids: run.imageIds } : { apply: false },
+      ),
     onSuccess: (report) => {
       if (report.applied) void qc.invalidateQueries({ queryKey: ["missions"] });
     },

@@ -258,6 +258,7 @@ def test_prune_dry_run_reports_candidates_and_removes_nothing(migrated_home, mon
         ],
         "removed": [],
         "failed": [],
+        "skipped": [],
         "reclaimable_bytes": 12,
     }
     assert len(driver.list_images()) == 3
@@ -295,6 +296,28 @@ def test_prune_apply_removes_candidates_and_reports_failures(migrated_home, monk
         [{"image_id": "sha256:raced", "tags": ["xorcise/mission-raced:local"], "error": "in use"}],
     )
     assert [i.id for i in driver.list_images()] == ["sha256:raced"]
+
+
+def test_prune_apply_with_image_ids_removes_only_the_confirmed_images_still_unused(
+    migrated_home, monkeypatch
+):
+    # The GUI confirms a dry run's list, then applies it. Between the two, one confirmed image
+    # vanished and a new one became unused: neither the vanished one nor the unseen one moves.
+    driver = _seed_driver(
+        monkeypatch,
+        _image("sha256:a", "xorcise/mission-a:local", size=4),
+        _image("sha256:unseen", "xorcise/mission-unseen:local"),
+    )
+    r = _client().post(
+        "/api/missions/prune",
+        json={"apply": True, "image_ids": ["sha256:a", "sha256:vanished"]},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert (body["removed"], body["skipped"]) == (["sha256:a"], ["sha256:vanished"])
+    assert [c["image_id"] for c in body["candidates"]] == ["sha256:a"]
+    assert body["reclaimable_bytes"] == 4
+    assert [i.id for i in driver.list_images()] == ["sha256:unseen"]
 
 
 def test_prune_refuses_while_an_install_record_is_unreadable(migrated_home, monkeypatch):

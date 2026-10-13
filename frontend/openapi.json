@@ -2948,6 +2948,14 @@
             },
             "title": "Removed",
             "type": "array"
+          },
+          "skipped": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Skipped",
+            "type": "array"
           }
         },
         "required": [
@@ -2966,6 +2974,20 @@
             "default": false,
             "title": "Apply",
             "type": "boolean"
+          },
+          "image_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Ids"
           }
         },
         "title": "PruneRequest",
@@ -5719,7 +5741,7 @@
     },
     "/api/missions/prune": {
       "post": {
-        "description": "Find (and with apply=true, remove) the local mission images nothing uses any more.\n\nA candidate is an image XORCISE owns \u2014 mission-base lineage AND only mission-repository\ntags \u2014 that no install record, live run, container or in-flight pull uses. Removal is never\nforced; an image that turns out to be in use is reported under `failed` and the rest still\ngo. 409 when an install record cannot be read (its image is unknown, so nothing is removed)\nor when this server does not manage Docker images at all.",
+        "description": "Find (and with apply=true, remove) the local mission images nothing uses any more.\n\nA candidate is an image XORCISE owns \u2014 mission-base lineage AND only mission-repository\ntags \u2014 that no install record, live run, container or in-flight pull uses. Removal is never\nforced; an image that turns out to be in use is reported under `failed` and the rest still\ngo. `image_ids` limits the removal to images the operator confirmed: one that is no longer\na candidate is reported under `skipped` and kept. 409 when an install record cannot be read (its image is unknown, so nothing is removed)\nor when this server does not manage Docker images at all.",
         "operationId": "prune_images_api_missions_prune_post",
         "requestBody": {
           "content": {

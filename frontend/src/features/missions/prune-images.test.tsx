@@ -28,9 +28,12 @@ const report = (over: Partial<PruneReport> = {}): PruneReport => ({
   candidates: CANDIDATES,
   removed: [],
   failed: [],
+  skipped: [],
   reclaimable_bytes: 1_200_000_000,
   ...over,
 });
+
+const CONFIRMED = { apply: true, image_ids: ["sha256:aaa", "sha256:bbb"] };
 
 /** Answer POST /missions/prune by its `apply` flag and record every body sent. */
 function servePrune(dry: PruneReport, applied: PruneReport) {
@@ -79,11 +82,13 @@ describe("PruneImagesPanel", () => {
 
     const dialog = screen.getByRole("dialog", { name: "Remove 2 unused images?" });
     expect(dialog).toHaveTextContent("Frees up to 1.2 GB.");
+    expect(dialog).toHaveTextContent("Only the images listed are removed.");
     expect(bodies).toEqual([{ apply: false }]);
     fireEvent.click(within(dialog).getByRole("button", { name: "Remove images" }));
 
     const result = await screen.findByTestId("prune-result");
-    expect(bodies).toEqual([{ apply: false }, { apply: true }]);
+    // The removal names the images the operator confirmed, not "whatever is unused now".
+    expect(bodies).toEqual([{ apply: false }, CONFIRMED]);
     expect(result).toHaveTextContent("Removed 1 of 2 images.");
     expect(result).toHaveTextContent("1 image was not removed:");
     expect(result).toHaveTextContent("xorcise/mis-sqli:3 — image is in use by a container");
@@ -153,10 +158,16 @@ describe("PruneImagesPanel", () => {
     expect(screen.getByRole("button", { name: "Check again" })).toHaveFocus();
   });
 
-  it("says so when the list changed between the check and the removal", async () => {
+  it("says which confirmed images were kept because they were no longer unused", async () => {
+    // Between the check and the click, sqli's mission was installed again: the server keeps it.
     servePrune(
       report(),
-      report({ applied: true, candidates: [CANDIDATES[0]], removed: ["sha256:aaa"] }),
+      report({
+        applied: true,
+        candidates: [CANDIDATES[0]],
+        removed: ["sha256:aaa"],
+        skipped: ["sha256:bbb"],
+      }),
     );
     renderWithProviders(<PruneImagesPanel />);
     fireEvent.click(screen.getByRole("button", { name: "Check for unused images" }));
@@ -165,7 +176,12 @@ describe("PruneImagesPanel", () => {
 
     const result = await screen.findByTestId("prune-result");
     expect(result).toHaveTextContent("Removed 1 of 1 image.");
-    expect(result).toHaveTextContent("The list changed after the check (2 images then).");
+    expect(result).toHaveTextContent(
+      "1 image you confirmed was no longer unused, so it was kept.",
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Removed 1 of 1 image. 1 image you confirmed was no longer unused, so it was kept.",
+    );
   });
 
   it("shows a refusal of the removal itself in the server's words and claims nothing removed", async () => {

@@ -114,6 +114,8 @@ class PrunePlan:
     candidates: tuple[Candidate, ...]
     removed: tuple[str, ...]
     failed: tuple[Failure, ...]
+    # Image ids the caller confirmed that are no longer candidates, so they were left alone.
+    skipped: tuple[str, ...] = ()
 
     @property
     def reclaimable_bytes(self) -> int:
@@ -180,8 +182,18 @@ def apply_prune(driver: DockerDriver, candidates: Iterable[Candidate]) -> Remova
     return Removal(tuple(removed), tuple(failed))
 
 
-def prune(driver: DockerDriver, install_root: Path, *, apply: bool) -> PrunePlan:
+def prune(
+    driver: DockerDriver,
+    install_root: Path,
+    *,
+    apply: bool,
+    only: frozenset[str] | None = None,
+) -> PrunePlan:
     """Plan (and with `apply`, carry out) the removal of every owned, unprotected image.
+
+    `only` limits the plan to images the caller already confirmed, so a removal never reaches
+    an image the operator did not see. The plan is still made fresh: a confirmed image that is
+    no longer a candidate (now installed, in use, or gone) is reported as skipped and left alone.
 
     Raises InstallRecordUnreadable before anything is removed when an install record cannot
     be read."""
@@ -190,8 +202,13 @@ def prune(driver: DockerDriver, install_root: Path, *, apply: bool) -> PrunePlan
     protected = _protected(images, driver, installs)
     installed_slugs = {name for name in installs if not name.startswith(".")}
     candidates = tuple(plan_prune(images, set(protected), installed_slugs))
+    skipped: tuple[str, ...] = ()
+    if only is not None:
+        fresh = {c.image_id for c in candidates}
+        skipped = tuple(sorted(only - fresh))
+        candidates = tuple(c for c in candidates if c.image_id in only)
     removal = apply_prune(driver, candidates) if apply else Removal((), ())
-    return PrunePlan(apply, candidates, removal.removed, removal.failed)
+    return PrunePlan(apply, candidates, removal.removed, removal.failed, skipped)
 
 
 def purge_image(ref: str, *, driver: DockerDriver, install_root: Path) -> Purge:

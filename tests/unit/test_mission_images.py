@@ -351,6 +351,40 @@ def test_applied_prune_removes_candidates(migrated_home: Path) -> None:
     assert driver.list_images() == []
 
 
+def test_a_confirmed_prune_removes_only_the_confirmed_images_still_unused(
+    migrated_home: Path,
+) -> None:
+    # The operator confirmed a and b from a dry run. Since then b's mission was installed, so b
+    # is protected, and c became unused. Only a goes: b is reported as kept, and c waits for a
+    # check the operator has seen.
+    install_mission(migrated_home, slug="b")  # records xorcise/mission-b:0
+    driver = _driver(
+        _img("sha256:a", "xorcise/mis-a:1"),
+        _img("sha256:b", "xorcise/mission-b:0"),
+        _img("sha256:c", "xorcise/mis-c:1"),
+    )
+    plan = prune(
+        driver, migrated_home / "missions", apply=True, only=frozenset({"sha256:a", "sha256:b"})
+    )
+    assert plan.removed == ("sha256:a",)
+    assert [c.image_id for c in plan.candidates] == ["sha256:a"]
+    assert plan.skipped == ("sha256:b",)
+    assert sorted(i.id for i in driver.list_images()) == ["sha256:b", "sha256:c"]
+
+
+def test_a_confirmed_prune_of_nothing_removes_nothing(migrated_home: Path) -> None:
+    driver = _driver(_img("sha256:a", "xorcise/mis-a:1"))
+    plan = prune(driver, migrated_home / "missions", apply=True, only=frozenset())
+    assert (plan.removed, plan.candidates, plan.skipped) == ((), (), ())
+    assert driver.removed == []
+
+
+def test_an_unconfirmed_prune_still_removes_every_candidate(migrated_home: Path) -> None:
+    driver = _driver(_img("sha256:a", "xorcise/mis-a:1"))
+    plan = prune(driver, migrated_home / "missions", apply=True)
+    assert (plan.removed, plan.skipped) == (("sha256:a",), ())
+
+
 # purge (delete --purge) -------------------------------------------------------------------
 
 

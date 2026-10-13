@@ -19,24 +19,40 @@ function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
 }
 
+/** The confirmed images the server left alone because they were no longer unused. */
+function keptSentence(report: PruneReport): string | null {
+  const kept = report.skipped.length;
+  if (kept === 0) return null;
+  return kept === 1
+    ? "1 image you confirmed was no longer unused, so it was kept."
+    : `${kept} images you confirmed were no longer unused, so they were kept.`;
+}
+
 function appliedSummary(report: PruneReport): string {
   const found = report.candidates.length;
-  if (found === 0) return "Nothing to remove.";
   const failed = report.failed.length;
-  return (
-    `Removed ${report.removed.length} of ${plural(found, "image", "images")}.` +
-    (failed > 0 ? ` ${plural(failed, "image was", "images were")} not removed.` : "")
-  );
+  const kept = keptSentence(report);
+  return [
+    found === 0
+      ? "Nothing to remove."
+      : `Removed ${report.removed.length} of ${plural(found, "image", "images")}.`,
+    failed > 0 ? `${plural(failed, "image was", "images were")} not removed.` : null,
+    kept,
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 /**
  * Reclaim disk from mission images nothing uses (CLI parity: `xorcise mission prune`).
  *
  * "Check" runs the server's dry run and lists each candidate with its reason and size. Removing
- * them needs an explicit confirmation, which sends `apply: true`. The server re-plans at that
- * moment, so the applied report (what it removed, and each image it could not) replaces the
- * dry run. A refusal (409 when this server does not manage Docker images, 503 when Docker is
- * unreachable) is shown in the server's own words, never as an empty report.
+ * them needs an explicit confirmation, which sends `apply: true` with the ids of the images on
+ * screen. The server re-plans at that moment and removes only those still unused, so the
+ * confirmation covers exactly what can go. The applied report (what it removed, each image it
+ * could not, and each confirmed image it kept) replaces the dry run. A refusal (409 when this
+ * server does not manage Docker images, 503 when Docker is unreachable) is shown in the
+ * server's own words, never as an empty report.
  */
 export function PruneImagesPanel() {
   const prune = usePruneImages();
@@ -44,14 +60,15 @@ export function PruneImagesPanel() {
   // Held here, not read from prune.data: a new request clears the mutation's data, and the
   // confirm dialog must keep the dry run it is confirming on screen while removal runs.
   const [report, setReport] = useState<PruneReport | null>(null);
-  // How many images the operator confirmed. The server re-plans on apply, so its list can differ.
-  const [confirmedCount, setConfirmedCount] = useState<number | null>(null);
   const checkButton = useRef<HTMLButtonElement>(null);
-  const removing = prune.isPending && prune.variables === true;
+  const checking = prune.isPending && prune.variables?.apply === false;
+  const removing = prune.isPending && prune.variables?.apply === true;
 
   function run(apply: boolean) {
-    setConfirmedCount(apply && report ? report.candidates.length : null);
-    prune.mutate(apply, { onSuccess: setReport, onSettled: () => setConfirming(false) });
+    const request = apply
+      ? { apply: true as const, imageIds: report?.candidates.map((c) => c.image_id) ?? [] }
+      : { apply: false as const };
+    prune.mutate(request, { onSuccess: setReport, onSettled: () => setConfirming(false) });
   }
 
   // The button that opened the dialog is gone once the applied report replaces the dry run, so
@@ -73,9 +90,9 @@ export function PruneImagesPanel() {
         size="sm"
         onClick={() => run(false)}
         disabled={prune.isPending}
-        aria-busy={prune.isPending && prune.variables === false}
+        aria-busy={checking}
       >
-        {prune.isPending && prune.variables === false ? (
+        {checking ? (
           <Loader2 className="size-3.5 motion-safe:animate-spin" />
         ) : (
           <ScanSearch className="size-3.5" />
@@ -100,11 +117,7 @@ export function PruneImagesPanel() {
       </p>
 
       {report && !prune.isError && (
-        <PruneReportView
-          report={report}
-          confirmedCount={confirmedCount}
-          onRemove={() => setConfirming(true)}
-        />
+        <PruneReportView report={report} onRemove={() => setConfirming(true)} />
       )}
 
       {report && !report.applied && (
@@ -118,9 +131,9 @@ export function PruneImagesPanel() {
           title={`Remove ${plural(report.candidates.length, "unused image", "unused images")}?`}
         >
           <p className="prose-block text-body text-text-secondary">
-            Frees up to {formatBytes(report.reclaimable_bytes)}. A removed image is downloaded again
-            only if its mission is pulled again. An image that turns out to be in use is left in
-            place and listed.
+            Frees up to {formatBytes(report.reclaimable_bytes)}. Only the images listed are removed.
+            A removed image is downloaded again only if its mission is pulled again. An image that
+            turns out to be in use is left in place and listed.
           </p>
           <div className="mt-4 flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setConfirming(false)} disabled={removing}>
@@ -138,16 +151,15 @@ export function PruneImagesPanel() {
 
 function PruneReportView({
   report,
-  confirmedCount,
   onRemove,
 }: {
   report: PruneReport;
-  confirmedCount: number | null;
   onRemove: () => void;
 }) {
   const found = report.candidates.length;
 
   if (report.applied) {
+    const kept = keptSentence(report);
     return (
       <div className="space-y-2" data-testid="prune-result">
         <p className="text-foreground">
@@ -155,11 +167,7 @@ function PruneReportView({
             ? "Nothing to remove."
             : `Removed ${report.removed.length} of ${plural(found, "image", "images")}.`}
         </p>
-        {confirmedCount != null && confirmedCount !== found && (
-          <p className="text-text-tertiary">
-            The list changed after the check ({plural(confirmedCount, "image", "images")} then).
-          </p>
-        )}
+        {kept && <p className="text-text-tertiary">{kept}</p>}
         {report.failed.length > 0 && (
           <div className="space-y-1">
             <p className="text-err">

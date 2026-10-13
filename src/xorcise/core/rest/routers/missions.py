@@ -105,6 +105,9 @@ class MissionDeleteOut(BaseModel):
 
 class PruneRequest(BaseModel):
     apply: bool = False  # false = a dry run: report what would be removed, remove nothing
+    # The images the operator confirmed from a dry run. When set, only those that are still
+    # candidates go; the rest come back under `skipped`. Unset keeps every candidate in scope.
+    image_ids: list[str] | None = None
 
 
 class PruneCandidateView(BaseModel):
@@ -128,6 +131,7 @@ class PruneReport(BaseModel):
     candidates: list[PruneCandidateView]
     removed: list[str]  # image ids
     failed: list[PruneFailureView]
+    skipped: list[str] = []  # confirmed image ids that are no longer candidates, left alone
     reclaimable_bytes: int  # an upper bound: images built on one base share layers
 
 
@@ -237,19 +241,26 @@ def prune_images(payload: PruneRequest | None = None) -> PruneReport:
     A candidate is an image XORCISE owns — mission-base lineage AND only mission-repository
     tags — that no install record, live run, container or in-flight pull uses. Removal is never
     forced; an image that turns out to be in use is reported under `failed` and the rest still
-    go. 409 when an install record cannot be read (its image is unknown, so nothing is removed)
-    or when this server does not manage Docker images at all.
+    go. `image_ids` limits the removal to images the operator confirmed: one that is no longer
+    a candidate is reported under `skipped` and kept. 409 when an install record cannot be read
+    (its image is unknown, so nothing is removed) or when this server does not manage Docker
+    images at all.
     """
     from xorcise.core.rest.mission_images import InstallRecordUnreadable, prune
     from xorcise.core.rest.mission_pull import image_store_driver
 
     settings = get_settings()
     apply = payload is not None and payload.apply
+    only = (
+        frozenset(payload.image_ids)
+        if payload is not None and payload.image_ids is not None
+        else None
+    )
     try:
         driver = image_store_driver(settings)
         if driver is None:
             raise HTTPException(status_code=409, detail=_not_managing_images(settings))
-        plan = prune(driver, Path(settings.missions_root), apply=apply)
+        plan = prune(driver, Path(settings.missions_root), apply=apply, only=only)
     except InstallRecordUnreadable as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RuntimeError as exc:  # Docker not reachable: the same 503 run create answers
@@ -271,6 +282,7 @@ def prune_images(payload: PruneRequest | None = None) -> PruneReport:
             PruneFailureView(image_id=f.image_id, tags=list(f.tags), error=f.error)
             for f in plan.failed
         ],
+        skipped=list(plan.skipped),
         reclaimable_bytes=plan.reclaimable_bytes,
     )
 

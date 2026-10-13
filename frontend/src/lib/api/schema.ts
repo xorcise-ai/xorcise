@@ -409,7 +409,8 @@ export interface paths {
          *     A candidate is an image XORCISE owns — mission-base lineage AND only mission-repository
          *     tags — that no install record, live run, container or in-flight pull uses. Removal is never
          *     forced; an image that turns out to be in use is reported under `failed` and the rest still
-         *     go. 409 when an install record cannot be read (its image is unknown, so nothing is removed)
+         *     go. `image_ids` limits the removal to images the operator confirmed: one that is no longer
+         *     a candidate is reported under `skipped` and kept. 409 when an install record cannot be read (its image is unknown, so nothing is removed)
          *     or when this server does not manage Docker images at all.
          */
         post: operations["prune_images_api_missions_prune_post"];
@@ -2538,6 +2539,11 @@ export interface components {
             reclaimable_bytes: number;
             /** Removed */
             removed: string[];
+            /**
+             * Skipped
+             * @default []
+             */
+            skipped: string[];
         };
         /** PruneRequest */
         PruneRequest: {
@@ -2546,6 +2552,8 @@ export interface components {
              * @default false
              */
             apply: boolean;
+            /** Image Ids */
+            image_ids?: string[] | null;
         };
         /** PullJobRequest */
         PullJobRequest: {
