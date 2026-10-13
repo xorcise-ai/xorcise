@@ -2863,6 +2863,11 @@
           "job_id": {
             "title": "Job Id",
             "type": "string"
+          },
+          "joined": {
+            "default": false,
+            "title": "Joined",
+            "type": "boolean"
           }
         },
         "required": [

@@ -15,6 +15,7 @@ import time
 from typing import Any
 
 import typer
+from rich.markup import escape
 
 from xorcise.core.cli._shared import err_console
 from xorcise.core.cli.rest_client import RestClient
@@ -115,6 +116,13 @@ def pull_to_terminal(
     body = {"refresh": True} if refresh else {}
     started = client.post(f"/missions/{mission_id}/pull-jobs", json=body)
     job_id = started["job_id"]
+    if refresh and started.get("joined"):
+        # The server joins a pull already in flight as-is, so this refresh did not happen.
+        err_console.print(
+            f"[warn]warning[/]: a pull of '{escape(mission_id)}' was already running; "
+            "following it instead of starting a refresh. Run this again once it finishes "
+            "if you still need one."
+        )
     try:
         return watch_pull(client, job_id)
     except KeyboardInterrupt:

@@ -2516,6 +2516,11 @@ export interface components {
         PullJobStarted: {
             /** Job Id */
             job_id: string;
+            /**
+             * Joined
+             * @default false
+             */
+            joined: boolean;
         };
         /**
          * PullJobView

@@ -71,6 +71,9 @@ class PullJobRequest(BaseModel):
 
 class PullJobStarted(BaseModel):
     job_id: str
+    # True when this POST joined a pull already in flight instead of starting one. A joined
+    # refresh did not happen: the running job keeps the options it was started with.
+    joined: bool = False
 
 
 class PullJobView(BaseModel):
@@ -457,7 +460,7 @@ def start_pull_job(
     if created:
         refresh = payload is not None and payload.refresh
         background.add_task(_run_pull, job_id, mission_id, refresh)
-    return PullJobStarted(job_id=job_id)
+    return PullJobStarted(job_id=job_id, joined=not created)
 
 
 @router.get("/pull-jobs/{job_id}")

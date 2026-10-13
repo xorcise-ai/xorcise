@@ -1797,12 +1797,12 @@ def test_mission_delete_help_documents_purge():
     assert "image stays in the local store" not in result.output
 
 
-def _fake_pull(monkeypatch, installed: bool) -> list[tuple[str, object]]:
+def _fake_pull(monkeypatch, installed: bool, joined: bool = False) -> list[tuple[str, object]]:
     posts: list[tuple[str, object]] = []
 
     def fake_post(self, path, json=None, timeout=None):
         posts.append((path, json))
-        return {"job_id": "j1"}
+        return {"job_id": "j1", "joined": joined}
 
     def fake_get(self, path):
         if path == "/missions":
@@ -1821,6 +1821,21 @@ def test_mission_pull_refresh_repulls_an_installed_mission(monkeypatch):
     assert result.exit_code == 0
     assert posts == [("/missions/sqli/pull-jobs", {"refresh": True})]
     assert "installed 'SQLi' (sqli)" in result.stdout
+
+
+def test_mission_pull_refresh_says_when_it_only_joined_a_running_pull(monkeypatch):
+    _fake_pull(monkeypatch, installed=True, joined=True)
+    result = runner.invoke(app, ["mission", "pull", "sqli", "--refresh"])
+    assert result.exit_code == 0
+    assert "a pull of 'sqli' was already running" in result.stderr
+    assert "instead of starting a refresh" in result.stderr
+
+
+def test_mission_pull_refresh_is_quiet_when_it_starts_the_pull(monkeypatch):
+    _fake_pull(monkeypatch, installed=True, joined=False)
+    result = runner.invoke(app, ["mission", "pull", "sqli", "--refresh"])
+    assert result.exit_code == 0
+    assert "already running" not in result.stderr
 
 
 def test_mission_pull_without_refresh_posts_the_plain_body(monkeypatch):
