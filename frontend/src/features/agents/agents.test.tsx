@@ -143,6 +143,28 @@ describe("AgentList", () => {
     expect(names).toEqual(["raider", "scout", "probe"]);
   });
 
+  // #141: `generic` is the default kind, shown as Generic — never "Custom" or the raw slug.
+  it("names a generic agent's harness Generic and keeps your own label as typed", async () => {
+    server.use(
+      http.get("*/api/agents", () =>
+        HttpResponse.json([
+          agentFixture({ id: "a1", name: "probe", kind: "generic" }),
+          agentFixture({ id: "a2", name: "scout", kind: "my-agent-cli" }),
+        ]),
+      ),
+    );
+    renderWithProviders(<AgentList />);
+    const probe = (await screen.findByText("probe")).closest("li")!;
+    expect(within(probe).getByText("Generic")).toBeInTheDocument();
+    expect(within(probe).queryByText(/custom|^generic$/)).not.toBeInTheDocument();
+    const scout = screen.getByText("scout").closest("li")!;
+    expect(within(scout).getByText("my-agent-cli")).toBeInTheDocument();
+    const facets = within(screen.getByLabelText("Harness")).getAllByRole("option");
+    expect(facets.map((o) => o.textContent)).toEqual(
+      expect.arrayContaining(["Generic", "my-agent-cli"]),
+    );
+  });
+
   it("filters agents by harness", async () => {
     server.use(
       http.get("*/api/agents", () =>
@@ -231,6 +253,18 @@ describe("AgentDetail", () => {
     await waitFor(() =>
       expect(screen.getByText("Agent not found")).toBeInTheDocument(),
     );
+  });
+
+  it("names a generic agent's harness Generic, not Custom", async () => {
+    server.use(
+      http.get("*/api/agents", () =>
+        HttpResponse.json([agentFixture({ name: "scout", kind: "generic" })]),
+      ),
+    );
+    renderWithProviders(<AgentDetail name="scout" />);
+    await screen.findByRole("heading", { name: "scout" });
+    expect(screen.getAllByText("Generic")).toHaveLength(2); // the badge and the Harness tile
+    expect(screen.queryByText(/custom/i)).not.toBeInTheDocument();
   });
 
   it("renders the agent header meta and a compact, enriched run-history table", async () => {

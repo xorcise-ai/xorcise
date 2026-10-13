@@ -22,18 +22,17 @@ import {
   type AgentPerformanceSummary,
 } from "@/features/results/summarize-runs";
 import { useAgents } from "./queries";
-import { HARNESSES, CUSTOM_LABEL, CustomMark } from "./harnesses";
+import { HARNESSES, GenericMark, harnessLabel } from "./harnesses";
 import type { AgentEntry } from "@/lib/api/types";
 
 /** Harness identity for an agent's `kind` (report §7: the harness icon is the visual identity).
- *  Falls back to the neutral custom mark + label when the kind has no registered harness. */
+ *  Generic and your own label take the neutral generic mark; the name is harnessLabel's. */
 function harnessOf(kind: string | null | undefined): {
   Logo: () => ReactNode;
   name: string;
 } {
   const h = kind ? HARNESSES.find((x) => x.kind === kind) : undefined;
-  if (h) return { Logo: h.Logo, name: h.name };
-  return { Logo: CustomMark, name: kind || CUSTOM_LABEL };
+  return { Logo: h?.Logo ?? GenericMark, name: harnessLabel(kind) };
 }
 
 /** Facet bucket for an agent's model — agents that disclose no model share one bucket,
@@ -292,7 +291,7 @@ function AgentCard({
 function EmptyAgents({ onRegister }: { onRegister: () => void }) {
   return (
     <Card className="flex flex-col items-center gap-3 p-6 text-center">
-      <CustomMark />
+      <GenericMark />
       <div className="space-y-2">
         <p className="text-body font-bold text-heading">No agents yet</p>
         <p className="mx-auto max-w-sm text-body text-text-secondary">

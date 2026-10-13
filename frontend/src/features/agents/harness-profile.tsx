@@ -19,7 +19,7 @@ import {
   type DisplayGroup,
 } from "@/features/capabilities/capability-groups";
 import type { HarnessDescriptor } from "@/lib/api/types";
-import { HARNESSES, HarnessGlyph } from "./harnesses";
+import { GENERIC_KIND, HARNESSES, HarnessGlyph } from "./harnesses";
 import { useHarnessDescriptors } from "./use-harnesses";
 
 const REGISTRATION_GROUPS: readonly DisplayGroup[] = [
@@ -51,7 +51,16 @@ function selectedDescriptor(
   kind: string,
   byKind: ReturnType<typeof useHarnessDescriptors>["byKind"],
 ) {
-  return byKind.get(HARNESSES.some((h) => h.kind === kind) ? kind : "generic");
+  const typed = kind.trim(); // as the server will store it
+  return byKind.get(HARNESSES.some((h) => h.kind === typed) ? typed : GENERIC_KIND);
+}
+
+/** Your own label under Generic (not `generic` itself, and not blank, which saves as generic).
+ *  The generic adapter is only its likely replay: the trace may still identify a real harness,
+ *  and what the label's harness exports is unknown, so it is not shown the generic profile. */
+function isOwnLabel(kind: string): boolean {
+  const typed = kind.trim();
+  return typed !== "" && typed !== GENERIC_KIND && !HARNESSES.some((h) => h.kind === typed);
 }
 
 export function capabilitySummary(
@@ -74,13 +83,26 @@ export function HarnessProfile({
   launchCustomized = false,
   launchFooter,
 }: {
-  kind: string;
+  /** null while no harness has been chosen. */
+  kind: string | null;
   section?: "all" | "visibility" | "launch";
   launchPreview?: HarnessDescriptor["launch"];
   launchCustomized?: boolean;
   launchFooter?: ReactNode;
 }) {
   const { byKind, descriptors, isLoading, isError } = useHarnessDescriptors();
+
+  if (kind === null) {
+    return (
+      <Card className="flex items-start gap-2 p-3 text-dense text-text-tertiary">
+        <Info className="mt-0.5 size-4 shrink-0" aria-hidden />
+        {section === "launch"
+          ? "Choose a harness to see how it launches."
+          : "Choose a harness to see which spans it exports."}
+      </Card>
+    );
+  }
+
   const descriptor = selectedDescriptor(kind, byKind);
 
   if (isLoading || !descriptors) {
@@ -105,7 +127,9 @@ export function HarnessProfile({
     );
   }
 
-  const isGeneric = descriptor.kind === "generic";
+  // Unknown only for your own label: `generic` is a registered adapter with a real profile.
+  const unknown = isOwnLabel(kind);
+  const isGeneric = descriptor.kind === GENERIC_KIND;
   const summary = capabilitySummary(descriptor.capabilities);
   const effectiveLaunch = launchPreview ?? descriptor.launch;
 
@@ -117,12 +141,16 @@ export function HarnessProfile({
             <div className="min-w-0">
               <h3 className="text-body font-bold text-heading">Export span support</h3>
               <p className="truncate text-dense text-text-tertiary">
-                {isGeneric ? "Unknown until the custom harness is verified" : descriptor.display_name}
+                {unknown
+                  ? "Unknown until your harness has a verified adapter"
+                  : isGeneric
+                    ? "Generic adapter · unverified"
+                    : descriptor.display_name}
               </p>
             </div>
           </div>
           <span className="shrink-0 text-caption text-text-tertiary">
-            {isGeneric
+            {unknown
               ? `${REGISTRATION_GROUPS.length} unknown`
               : `${summary.supported} supported${
                   summary.partial ? ` · ${summary.partial} partial` : ""
@@ -140,7 +168,7 @@ export function HarnessProfile({
                 : undefined;
             return (
               <li key={group.id} className="flex items-start gap-2 text-dense text-text-secondary">
-                {isGeneric ? (
+                {unknown ? (
                   <CircleHelp
                     className="mt-0.5 size-4 shrink-0 text-primary"
                     aria-label={`${group.label}: unknown`}
@@ -158,7 +186,7 @@ export function HarnessProfile({
                 )}
                 <span>
                   {group.label}
-                  {!isGeneric && level !== "supported" && note && (
+                  {!unknown && level !== "supported" && note && (
                     <span className="block text-caption text-text-tertiary">{note}</span>
                   )}
                 </span>
@@ -198,7 +226,7 @@ export function HarnessProfile({
           <CommandPreview template={effectiveLaunch.command_template} />
         ) : (
           <p className="mt-3 text-dense text-text-secondary">
-            Custom harnesses do not have a verified launch template.
+            The generic harness has no launch template: you run your agent’s own command.
           </p>
         )}
         <p className="mt-2 text-caption text-text-tertiary">
@@ -239,11 +267,12 @@ export function HarnessProfile({
 }
 
 /** Compact read-only facts for the sticky review panel. */
-export function HarnessReviewFacts({ kind }: { kind: string }) {
+export function HarnessReviewFacts({ kind }: { kind: string | null }) {
   const { byKind } = useHarnessDescriptors();
-  const descriptor = selectedDescriptor(kind, byKind);
-  if (!descriptor) return null;
-  const isGeneric = descriptor.kind === "generic";
+  const descriptor = kind === null ? undefined : selectedDescriptor(kind, byKind);
+  if (kind === null || !descriptor) return null;
+  const unknown = isOwnLabel(kind);
+  const verified = descriptor.capabilities.verified;
   const summary = capabilitySummary(descriptor.capabilities);
   return (
     <>
@@ -258,9 +287,9 @@ export function HarnessReviewFacts({ kind }: { kind: string }) {
       <ReviewFact
         label="Visibility"
         value={
-          isGeneric
+          unknown
             ? "Unverified · capabilities unknown"
-            : `${summary.supported} supported${
+            : `${verified ? "" : "Unverified · "}${summary.supported} supported${
                 summary.partial ? ` · ${summary.partial} partial` : ""
               } · ${summary.unsupported} unavailable`
         }

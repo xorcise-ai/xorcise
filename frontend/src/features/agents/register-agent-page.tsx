@@ -10,11 +10,12 @@ import { Dialog } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/components/ui/cn";
 import { ApiError } from "@/lib/api/client";
-import type { AgentEntry, HarnessDescriptor } from "@/lib/api/types";
+import type { AgentEntry, AgentSaveView, HarnessDescriptor } from "@/lib/api/types";
+import { useToastStore } from "@/stores/toasts";
 import { useAgents, useRegisterAgent, useUpdateAgent } from "./queries";
 import { HarnessSelector } from "./harness-selector";
 import { HarnessProfile, HarnessReviewFacts } from "./harness-profile";
-import { HARNESSES } from "./harnesses";
+import { GENERIC_KIND, HARNESSES, harnessLabel } from "./harnesses";
 import { useHarnessDescriptors } from "./use-harnesses";
 
 /** Multiline launch fields are edited one item per line; blank lines are ignored. */
@@ -191,9 +192,9 @@ function AgentForm({
   // on edit so removing the old OTel field from this page is not destructive.
   const [otel] = useState(agent?.otel ?? "");
   const [model, setModel] = useState(agent?.model ?? "");
-  // No harness is pre-selected for a NEW agent — the operator picks one deliberately (blank →
-  // generic adapter). Only an existing agent seeds its saved kind.
-  const [kind, setKind] = useState(agent?.kind ?? "");
+  // No harness is pre-selected for a NEW agent (null): every agent has a kind, so the operator
+  // picks one deliberately, Generic included. An existing agent seeds its saved kind.
+  const [kind, setKind] = useState<string | null>(agent?.kind ?? null);
   const [launchEditorOpen, setLaunchEditorOpen] = useState(false);
   const [launchCustomized, setLaunchCustomized] = useState(
     agent?.launch_command_template != null ||
@@ -224,12 +225,27 @@ function AgentForm({
   const register = useRegisterAgent();
   const update = useUpdateAgent();
   const mutation = editing ? update : register;
+  const pushToast = useToastStore((s) => s.push);
   const nameInvalid = !name.trim();
   const showNameError = nameTouched && nameInvalid;
+  // Why the submit is disabled, shown under it and read as its description.
+  const blocked =
+    nameInvalid && kind === null
+      ? "Name the agent and choose a harness to register."
+      : nameInvalid
+        ? editing
+          ? "Name the agent to save changes."
+          : "Name the agent to register."
+        : kind === null
+          ? "Choose a harness to register."
+          : null;
   const harnesses = useHarnessDescriptors();
-  const descriptor = harnesses.byKind.get(
-    HARNESSES.some((h) => h.kind === kind) ? kind : "generic",
-  );
+  const descriptor =
+    kind === null
+      ? undefined
+      : harnesses.byKind.get(
+          HARNESSES.some((h) => h.kind === kind.trim()) ? kind.trim() : GENERIC_KIND,
+        );
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -237,11 +253,13 @@ function AgentForm({
       setNameTouched(true);
       return;
     }
+    if (kind === null) return;
     const decl = {
       name: name.trim(),
       endpoint: endpoint.trim() || null,
       otel: otel.trim() || null,
       model: model.trim() || null,
+      // A cleared Generic ID goes as blank; the server saves it as `generic`.
       kind: kind.trim() || null,
       launch_command_template: launchCustomized
         ? (launchCommand ?? descriptor?.launch.command_template ?? null)
@@ -256,7 +274,7 @@ function AgentForm({
         : null,
       launch_mode: launchMode,
     };
-    let entry: AgentEntry;
+    let entry: AgentSaveView;
     try {
       // The PUT routes on the agent's CURRENT name; a differing decl.name renames it.
       entry = agent
@@ -266,6 +284,17 @@ function AgentForm({
       // Failure is surfaced via mutation.isError below; stay on the page so the
       // operator can retry without re-entering everything.
       return;
+    }
+    // The server judges the saved kind itself, so its warning still lands when this page's own
+    // check could not run (GET /harnesses failed). Like the CLI gate, an edit warns only when it
+    // gave the agent a new kind: re-saving a label it already had is not a new choice.
+    const warnings = entry.warnings ?? [];
+    if (warnings.length > 0 && (!agent || entry.kind !== agent.kind)) {
+      pushToast({
+        tone: "warn",
+        title: `${agent ? "Saved" : "Registered"} “${entry.name}” with a warning`,
+        body: warnings.join(" "),
+      });
     }
     // Latch BEFORE navigating — see RegisterAgentPage's docstring: the list invalidation above
     // already resolved (mutateAsync awaits it), so the parent may already see a stale `agent`
@@ -278,10 +307,7 @@ function AgentForm({
     );
   }
 
-  const isBuiltIn = HARNESSES.some((h) => h.kind === kind);
-  const harnessName = kind.trim()
-    ? (isBuiltIn ? HARNESSES.find((h) => h.kind === kind)!.name : `Custom (${kind.trim()})`)
-    : null;
+  const harnessName = kind === null ? null : harnessLabel(kind);
 
   const modelSuggestions = descriptor?.model_hints ?? [];
   const providerLaunch = descriptor ? withModel(descriptor.launch, model) : undefined;
@@ -344,19 +370,29 @@ function AgentForm({
               {/* The line is reserved even while empty. The field is autofocused, so the first
                   click on a harness card is also its blur; a message inserted then pushed the
                   cards down between mousedown and mouseup, and the click landed on their
-                  container instead of the card. */}
-              <div className="mt-1 min-h-5">
-                {showNameError && (
-                  <p id="agent-name-error" role="alert" className="text-dense text-err">
-                    Name is required.
+                  container instead of the card. In edit mode the rename note holds that line
+                  rather than sitting under an empty one: both share one grid cell, so the cell
+                  keeps the taller one's height and swapping in the error moves nothing. */}
+              <div className="mt-1 grid">
+                {editing && (
+                  <p
+                    className={cn(
+                      "col-start-1 row-start-1 max-w-[68ch] text-dense text-text-tertiary",
+                      showNameError && "invisible",
+                    )}
+                    aria-hidden={showNameError || undefined}
+                  >
+                    Renaming keeps the agent’s history — runs stay attached.
                   </p>
                 )}
+                <div className="col-start-1 row-start-1 min-h-5">
+                  {showNameError && (
+                    <p id="agent-name-error" role="alert" className="text-dense text-err">
+                      Name is required.
+                    </p>
+                  )}
+                </div>
               </div>
-              {editing && (
-                <p className="mt-1 max-w-[68ch] text-dense text-text-tertiary">
-                  Renaming keeps the agent’s history — runs stay attached.
-                </p>
-              )}
             </Field>
           </Step>
 
@@ -385,7 +421,9 @@ function AgentForm({
               helpText={
                 descriptor?.launch.model_flag
                   ? `Updates the launch command using ${descriptor.launch.model_flag}.`
-                  : "Recorded as disclosed context; this harness does not expose a model flag."
+                  : descriptor
+                    ? "Recorded as disclosed context; this harness does not expose a model flag."
+                    : "Recorded as disclosed context."
               }
             >
               <Input
@@ -479,11 +517,7 @@ function AgentForm({
               <p className="text-label uppercase text-text-tertiary">Agent summary</p>
               <dl className="mt-2 space-y-2 text-dense">
                 <ReviewRow label="Name" value={name.trim() || null} />
-                <ReviewRow
-                  label="Harness"
-                  value={harnessName}
-                  placeholder="Generic (no harness selected)"
-                />
+                <ReviewRow label="Harness" value={harnessName} />
                 <ReviewRow
                   label="Model"
                   value={model.trim() || null}
@@ -496,17 +530,21 @@ function AgentForm({
                 <ReviewRow
                   label="Address context"
                   value={
-                    effectiveLaunchMode === "host"
-                      ? "Local host · loopback"
-                      : "Container · reachable host"
+                    kind === null
+                      ? null
+                      : effectiveLaunchMode === "host"
+                        ? "Local host · loopback"
+                        : "Container · reachable host"
                   }
                 />
               </dl>
             </div>
 
-            <dl className="space-y-3 border-t border-border pt-3">
-              <HarnessReviewFacts kind={kind} />
-            </dl>
+            {kind !== null && (
+              <dl className="space-y-3 border-t border-border pt-3">
+                <HarnessReviewFacts kind={kind} />
+              </dl>
+            )}
 
             <p className="border-t border-border pt-3 text-caption text-text-tertiary">
               The runnable launch command will be generated when a run is created.
@@ -525,7 +563,8 @@ function AgentForm({
             <Button
               type="submit"
               className="mt-auto w-full"
-              disabled={nameInvalid || mutation.isPending}
+              disabled={blocked !== null || mutation.isPending}
+              aria-describedby={blocked ? "agent-submit-blocked" : undefined}
             >
               {mutation.isPending && (
                 <Loader2 className="size-4 motion-safe:animate-spin" aria-hidden />
@@ -538,6 +577,10 @@ function AgentForm({
                   ? "Save changes"
                   : "Register agent"}
             </Button>
+            {/* Reserved like the Name line, so the button does not jump as the reason clears. */}
+            <p id="agent-submit-blocked" className="-mt-2 min-h-5 text-dense text-text-tertiary">
+              {blocked}
+            </p>
           </Step>
         </aside>
       </form>
