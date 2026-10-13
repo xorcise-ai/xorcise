@@ -37,6 +37,7 @@ _KIND_LABELS = {
     "gemini": "Gemini CLI",
     "goose": "Goose",
     "cai": "CAI",
+    "generic": "Generic",
 }
 
 # Mission source slugs → the labels the GUI catalog uses.
@@ -148,9 +149,10 @@ def short_id(full: str) -> str:
 
 
 def kind_label(kind: str | None) -> str:
-    """Agent kind slug → readable label; unregistered/no harness reads as Custom."""
+    """Agent kind slug → readable label. A blank kind reads as Generic: it is stored as
+    `generic` (#141), and a run of it replays with the generic adapter."""
     if not kind:
-        return "Custom"
+        return _KIND_LABELS["generic"]
     return _KIND_LABELS.get(kind, kind.replace("-", " ").title())
 
 

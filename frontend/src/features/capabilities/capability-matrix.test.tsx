@@ -5,12 +5,12 @@ import { renderWithProviders } from "@/test/render";
 import { CapabilityMatrix } from "./capability-matrix";
 
 describe("CapabilityMatrix", () => {
-  it("is a real table: group row headers + one column per harness + Custom", async () => {
+  it("is a real table: group row headers + one column per harness + Generic", async () => {
     renderWithProviders(<CapabilityMatrix selectedKind="codex" />);
     await waitFor(() => expect(screen.getByRole("table")).toBeInTheDocument());
     expect(screen.getByRole("rowheader", { name: /Thinking \/ CoT/ })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: /Codex CLI/ })).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: /Custom/ })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: /Generic/ })).toBeInTheDocument();
   });
 
   it("tells the honest story: codex messages partial, claude-code thinking unsupported", async () => {
@@ -33,24 +33,24 @@ describe("CapabilityMatrix", () => {
     expect(screen.getAllByText(/Model refusals: supported/)).toHaveLength(3);
   });
 
-  it("marks the Custom column unverified", async () => {
+  it("marks the Generic column unverified", async () => {
     renderWithProviders(<CapabilityMatrix selectedKind="codex" />);
     await waitFor(() => expect(screen.getByText(/unverified/i)).toBeInTheDocument());
   });
 
-  it("highlights Custom when selectedKind matches no built-in harness (typed custom kind)", async () => {
+  it("highlights Generic when selectedKind matches no built-in harness (your own label)", async () => {
     renderWithProviders(<CapabilityMatrix selectedKind="my-custom-cli" />);
     await waitFor(() => expect(screen.getByRole("table")).toBeInTheDocument());
-    const customHeader = screen.getByRole("columnheader", { name: /Custom/ });
-    expect(customHeader).toHaveAttribute("data-selected", "true");
+    const genericHeader = screen.getByRole("columnheader", { name: /Generic/ });
+    expect(genericHeader).toHaveAttribute("data-selected", "true");
     const codexHeader = screen.getByRole("columnheader", { name: /Codex CLI/ });
     expect(codexHeader).not.toHaveAttribute("data-selected");
   });
 
-  it("still highlights Custom for the unselected default (selectedKind=\"\")", async () => {
-    renderWithProviders(<CapabilityMatrix selectedKind="" />);
+  it("highlights Generic for the generic kind", async () => {
+    renderWithProviders(<CapabilityMatrix selectedKind="generic" />);
     await waitFor(() => expect(screen.getByRole("table")).toBeInTheDocument());
-    expect(screen.getByRole("columnheader", { name: /Custom/ })).toHaveAttribute(
+    expect(screen.getByRole("columnheader", { name: /Generic/ })).toHaveAttribute(
       "data-selected",
       "true",
     );

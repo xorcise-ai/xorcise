@@ -132,7 +132,7 @@ const HARNESS_DESCRIPTORS: HarnessDescriptor[] = [
   },
   {
     kind: "generic",
-    display_name: "Custom",
+    display_name: "Generic",
     description: "Any CLI agent — replayed and launched through generic fallbacks.",
     model_hints: [],
     capabilities: profile("generic"),

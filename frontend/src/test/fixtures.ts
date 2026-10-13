@@ -31,6 +31,7 @@ export const agentFixture = (over: Partial<AgentEntry> = {}): AgentEntry => ({
   name: "scout",
   endpoint: "http://localhost:9000",
   otel: null,
+  kind: "generic", // what the server stores for a declaration that names no harness
   version: 1,
   created_at: "2026-06-29T10:00:00Z",
   ...over,
