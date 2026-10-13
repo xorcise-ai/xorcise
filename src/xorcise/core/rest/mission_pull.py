@@ -181,10 +181,10 @@ def pull_mission(
 ) -> InstalledMission:
     """Acquire + install a library mission. Idempotent; failure leaves it not-installed.
 
-    `refresh` (keyword-only, default False) pulls and reinstalls a mission that is already
-    installed, which is otherwise left as it is: it repairs a damaged local image. A newer
-    catalog artifact is the update path's job. A your_own install of the id still collides —
-    refresh never replaces your own mission.
+    `refresh` (keyword-only, default False) repairs a mission that is already installed, which
+    is otherwise left as it is: it removes the local image, never forced, then downloads and
+    reinstalls it (see _remove_for_repair). A newer catalog artifact is the update path's job.
+    A your_own install of the id still collides — refresh never replaces your own mission.
 
     `progress` (keyword-only, default None ⇒ backward-compatible for run-create's auto-pull)
     receives (phase, bytes_current, bytes_total) as the pull advances.
@@ -217,13 +217,13 @@ def pull_mission(
         if not refresh:
             return existing  # already pulled (docker-pull on a present image is a no-op)
 
-    # A refresh pulls the SAME tag again, and docker moves the tag the moment the pull lands:
-    # before the platform check, the bundle check, the cancel checkpoints and the install. If
-    # any of those stops the refresh, the install record would describe one image while its tag
-    # named another, and the image it describes would turn into a prune candidate. So remember
-    # what the record's tag pointed at, and put it back if the refresh does not finish.
-    pinned = existing.mission_ref.image if existing is not None else ""
-    previous = deps.driver.image_id(pinned) if pinned else None
+    # A refresh is a repair. `docker pull` skips every layer already in the store, so a damaged
+    # layer would survive a plain re-pull: the image goes first, then downloads whole.
+    removed = (
+        refresh
+        and existing is not None
+        and _remove_for_repair(mission_id, existing.mission_ref.image, deps)
+    )
     try:
         return _acquire_and_install(
             mission_id,
@@ -232,12 +232,59 @@ def pull_mission(
             should_cancel=should_cancel,
             precheck=precheck,
         )
-    except BaseException:  # cancels and Ctrl-C too: each leaves the tag moved
-        # Only while the record still describes the previous image: an install that committed
-        # and then failed (cleaning up its backup) already describes the new one.
-        if previous is not None and existing is not None and _record_unchanged(existing, deps):
-            _retag(deps.driver, previous, pinned)
+    except PullCancelled:
         raise
+    except Exception as exc:
+        if not removed:
+            raise
+        raise PullError(
+            f"{exc}. The local image was already removed for the repair, so this mission has "
+            "no image until a repair succeeds. Repair it again with Re-pull, or with "
+            f"`xorcise mission pull {mission_id} --refresh`."
+        ) from exc
+
+
+def _remove_for_repair(mission_id: str, ref: str, deps: PullDeps) -> bool:
+    """Remove an installed mission's image so the repair's pull downloads it whole. True when
+    removed; False when there is nothing local to remove (the pull downloads it anyway).
+
+    Never forced. Refused with nothing removed when removing would not free the image's layers
+    (another tag names the same image), when the registry does not answer for the tag now (an
+    offline repair would trade a working image for none), or when a container, running or
+    stopped, still uses the image."""
+    from xorcise.core.contracts.errors import ImageInUseError
+
+    if not ref:
+        return False  # a static mission has no image
+    image_id = deps.driver.image_id(ref)
+    if image_id is None:
+        return False
+    record = next((r for r in deps.driver.list_images() if r.id == image_id), None)
+    others = sorted(t for t in (record.tags if record is not None else ()) if t != ref)
+    if others:
+        raise PullError(
+            f"cannot repair {ref}: the same image is also tagged {', '.join(others)}, so "
+            f"removing {ref} would keep its layers. Remove those tags first. Nothing was removed."
+        )
+    token = deps.source.pull_token(mission_id)
+    try:
+        deps.driver.check_registry(
+            ref, auth=(token.username, token.password) if token is not None else None
+        )
+    except Exception as exc:
+        raise PullError(
+            f"cannot repair {ref}: the registry did not answer for it ({exc}). Nothing was removed."
+        ) from exc
+    try:
+        deps.driver.remove_image(ref)
+    except ImageInUseError as exc:
+        raise PullError(
+            f"cannot repair {ref}: a container still uses it, running or stopped "
+            f"(docker ps -a --filter ancestor={ref}). Nothing was removed."
+        ) from exc
+    except Exception as exc:
+        raise PullError(f"cannot repair {ref}: {exc}. Nothing was removed.") from exc
+    return True
 
 
 def _record_unchanged(before: InstalledMission, deps: PullDeps) -> bool:
@@ -248,12 +295,12 @@ def _record_unchanged(before: InstalledMission, deps: PullDeps) -> bool:
 
 
 def _retag(driver: DockerDriver, image_id: str, ref: str) -> None:
-    """Point `ref` back at `image_id` after a refresh that did not finish. Best effort: the
-    refresh's own error is the one to report, so a failure here is logged, not raised."""
+    """Point `ref` back at `image_id` after an install that did not finish. Best effort: the
+    install's own error is the one to report, so a failure here is logged, not raised."""
     try:
         driver.tag_image(image_id, ref)
-    except Exception:  # noqa: BLE001 — never mask the error that stopped the refresh
-        log.warning("could not point %s back at %s after a failed refresh", ref, image_id)
+    except Exception:  # noqa: BLE001 — never mask the error that stopped the install
+        log.warning("could not point %s back at %s after a failed install", ref, image_id)
 
 
 def update_mission(
@@ -357,6 +404,45 @@ def _acquire_and_install(
     should_cancel: Callable[[], bool] | None,
     precheck: Callable[[str | None], None] | None,
     resolved: tuple[MissionDetail, str | None] | None = None,
+) -> InstalledMission:
+    """_pull_and_install, putting back any installed tag the pull moved if it does not finish.
+
+    The pull can move a tag an install record already names: a refresh pulls the same tag, and
+    an update pulls it again when the catalog re-pushed a release under it. Docker moves the tag
+    the moment the pull lands, before the platform check, the bundle check, the cancel
+    checkpoints and the install. If any of those stops the install, the record would describe
+    one image while its tag named another, and the image it describes would turn into a prune
+    candidate. Both callers come through here, so neither path can leave that behind."""
+    from xorcise.core.missions import get_installed
+
+    existing = get_installed(mission_id, deps.install_root)
+    pinned = existing.mission_ref.image if existing is not None else ""
+    previous = deps.driver.image_id(pinned) if pinned else None
+    try:
+        return _pull_and_install(
+            mission_id,
+            deps,
+            progress=progress,
+            should_cancel=should_cancel,
+            precheck=precheck,
+            resolved=resolved,
+        )
+    except BaseException:  # cancels and Ctrl-C too: each leaves the tag moved
+        # Only while the record still describes the previous image: an install that committed
+        # and then failed (cleaning up its backup) already describes the new one.
+        if previous is not None and existing is not None and _record_unchanged(existing, deps):
+            _retag(deps.driver, previous, pinned)
+        raise
+
+
+def _pull_and_install(
+    mission_id: str,
+    deps: PullDeps,
+    *,
+    progress: PullProgressSink | None,
+    should_cancel: Callable[[], bool] | None,
+    precheck: Callable[[str | None], None] | None,
+    resolved: tuple[MissionDetail, str | None] | None,
 ) -> InstalledMission:
     """The shared acquire spine: resolve → (precheck) → pull → bundle → atomic install.
 

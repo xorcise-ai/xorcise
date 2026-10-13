@@ -203,6 +203,15 @@ class DockerDriver(ABC):
         NotImplementedError by default, like remove_image."""
         raise NotImplementedError
 
+    def check_registry(  # noqa: B027 — optional by design, like the other image defaults
+        self, ref: str, *, auth: tuple[str, str] | None = None
+    ) -> None:
+        """Raise unless the registry answers for `ref` now, without pulling anything.
+
+        A mission repair removes the local image before it pulls, so it asks this first: an
+        offline repair must fail with the image still in place. The default does nothing (a
+        driver without a registry has nothing to ask), which leaves the repair unguarded."""
+
     def daemon_platform(self) -> str | None:
         """The `os/architecture` the DAEMON executes natively (AS1), or None when unknown.
 

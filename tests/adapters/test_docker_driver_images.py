@@ -178,3 +178,37 @@ def test_container_image_ids_cover_containers_in_every_state() -> None:
     assert DockerSdkDriver(client=client).container_image_ids() == {"sha256:aaa", "sha256:ccc"}
     # a stopped container still pins its image (docker refuses to delete it), so include them
     assert client.containers.list_kwargs == {"all": True}
+
+
+class _DistributionApi:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.calls: list[tuple[str, dict[str, str] | None]] = []
+
+    def inspect_distribution(
+        self, image: str, auth_config: dict[str, str] | None = None
+    ) -> dict[str, Any]:
+        self.calls.append((image, auth_config))
+        if self.error is not None:
+            raise self.error
+        return {"Descriptor": {"digest": "sha256:abc"}, "Platforms": []}
+
+
+class _RegistryClient(_FakeClient):
+    def __init__(self, error: Exception | None = None) -> None:
+        super().__init__()
+        self.api = _DistributionApi(error)
+
+
+def test_check_registry_asks_for_the_manifest_with_the_pull_credentials() -> None:
+    client = _RegistryClient()
+    DockerSdkDriver(client=client).check_registry("reg/xorcise/mis-a:1", auth=("AWS", "pw"))
+    assert client.api.calls == [("reg/xorcise/mis-a:1", {"username": "AWS", "password": "pw"})]
+    DockerSdkDriver(client=client).check_registry("reg/xorcise/mis-a:1")
+    assert client.api.calls[-1] == ("reg/xorcise/mis-a:1", None)
+
+
+def test_check_registry_raises_the_daemons_words_when_the_registry_does_not_answer() -> None:
+    client = _RegistryClient(_api_error(500, "Get https://reg/v2/: dial tcp: i/o timeout"))
+    with pytest.raises(RuntimeError, match="i/o timeout"):
+        DockerSdkDriver(client=client).check_registry("reg/xorcise/mis-a:1")

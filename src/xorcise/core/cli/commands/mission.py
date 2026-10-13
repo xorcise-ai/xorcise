@@ -241,8 +241,9 @@ def pull_mission_cmd(
         False,
         "--refresh",
         help=(
-            "Pull again even if installed, then reinstall (repairs a damaged local image; "
-            "for a newer release use: xorcise mission update)."
+            "Repair an installed mission. Removes its local image (never forced), downloads "
+            "it again and reinstalls it. Layers it shares with other images are kept. For a "
+            "newer release use: xorcise mission update."
         ),
     ),
 ) -> None:
@@ -258,7 +259,12 @@ def pull_mission_cmd(
     view = pull_to_terminal(client, mission_id, refresh=refresh is True)
     if view.get("status") == "installed":
         name = (view.get("entry") or {}).get("name") or entry.get("name") or mission_id
-        console.print(f"installed '{name}' ({mission_id})", markup=False)
+        done = (
+            f"repaired '{name}' ({mission_id}): its image was downloaded again and reinstalled"
+            if refresh is True
+            else f"installed '{name}' ({mission_id})"
+        )
+        console.print(done, markup=False)
         next_step(f"xorcise run create --agent <name> --mission {mission_id}")
         return
     if view.get("status") == "error":
@@ -271,7 +277,16 @@ def pull_mission_cmd(
         # exits 130 above) and nothing was installed. A clean, intentional stop: not a failure
         # (exit 1) and not still-in-progress (exit 3), so exit 0 — parity with the GUI's terminal
         # "Pull cancelled." state.
-        err_console.print(f"pull cancelled — '{mission_id}' was not installed", markup=False)
+        if refresh is True:
+            # The repair removes the local image before it downloads, so a cancel can leave the
+            # mission installed without one.
+            err_console.print(
+                f"repair cancelled — if its image was already removed, run "
+                f"xorcise mission pull {mission_id} --refresh again",
+                markup=False,
+            )
+        else:
+            err_console.print(f"pull cancelled — '{mission_id}' was not installed", markup=False)
         raise typer.Exit(0)
     # Cap expired with the job still running server-side: in progress, not failure.
     console.print(

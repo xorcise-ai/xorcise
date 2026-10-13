@@ -1,5 +1,6 @@
 import errno
 import os
+import re
 import subprocess
 from collections.abc import Mapping
 
@@ -1816,7 +1817,9 @@ def test_mission_delete_help_documents_purge():
     assert "image stays in the local store" not in result.output
 
 
-def _fake_pull(monkeypatch, installed: bool, joined: bool = False) -> list[tuple[str, object]]:
+def _fake_pull(
+    monkeypatch, installed: bool, joined: bool = False, status: str = "installed"
+) -> list[tuple[str, object]]:
     posts: list[tuple[str, object]] = []
 
     def fake_post(self, path, json=None, timeout=None):
@@ -1827,7 +1830,7 @@ def _fake_pull(monkeypatch, installed: bool, joined: bool = False) -> list[tuple
         if path == "/missions":
             return [{"mission_id": "sqli", "name": "SQLi", "installed": installed}]
         assert path == "/missions/pull-jobs/j1"
-        return {"status": "installed", "phase": "done", "entry": {"name": "SQLi"}}
+        return {"status": status, "phase": "done", "entry": {"name": "SQLi"}}
 
     monkeypatch.setattr(RestClient, "post", fake_post)
     monkeypatch.setattr(RestClient, "get", fake_get)
@@ -1839,7 +1842,17 @@ def test_mission_pull_refresh_repulls_an_installed_mission(monkeypatch):
     result = runner.invoke(app, ["mission", "pull", "sqli", "--refresh"])
     assert result.exit_code == 0
     assert posts == [("/missions/sqli/pull-jobs", {"refresh": True})]
-    assert "installed 'SQLi' (sqli)" in result.stdout
+    assert "repaired 'SQLi' (sqli): its image was downloaded again" in result.stdout
+
+
+def test_mission_pull_refresh_cancelled_says_to_run_the_repair_again(monkeypatch):
+    # The repair removes the local image before it downloads, so a cancel can leave the mission
+    # installed without one. "was not installed" would be wrong on both counts.
+    _fake_pull(monkeypatch, installed=True, status="cancelled")
+    result = runner.invoke(app, ["mission", "pull", "sqli", "--refresh"])
+    assert result.exit_code == 0
+    assert "was not installed" not in result.stderr
+    assert "xorcise mission pull sqli --refresh" in " ".join(result.stderr.split())
 
 
 def test_mission_pull_refresh_says_when_it_only_joined_a_running_pull(monkeypatch):
@@ -1868,3 +1881,10 @@ def test_mission_pull_help_documents_refresh():
     result = runner.invoke(app, ["mission", "pull", "--help"])
     assert result.exit_code == 0
     assert "--refresh" in result.output
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    help_text = " ".join(plain.replace("│", " ").split())
+    # A plain re-pull skips layers already in the store, so the help must say what refresh
+    # does that makes it a repair, and must not promise more.
+    assert "Removes its local image" in help_text
+    assert "never forced" in help_text
+    assert "repairs a damaged local image;" not in help_text

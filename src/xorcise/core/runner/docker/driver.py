@@ -195,6 +195,16 @@ class DockerSdkDriver(DockerDriver):
         repo, tag = _split_ref(ref)
         self._client.images.get(image_id).tag(repo, tag)
 
+    def check_registry(self, ref: str, *, auth: tuple[str, str] | None = None) -> None:
+        import docker.errors
+
+        auth_config = {"username": auth[0], "password": auth[1]} if auth else None
+        try:
+            # The daemon asks the registry for the manifest only: nothing is downloaded.
+            self._client.api.inspect_distribution(ref, auth_config=auth_config)
+        except docker.errors.APIError as exc:
+            raise RuntimeError(str(exc.explanation or exc)) from exc
+
     def image_labels(self, image: str) -> dict[str, str] | None:
         """The image's config labels (inherited included), or None if it is not present."""
         try:
