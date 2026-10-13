@@ -249,9 +249,9 @@ def _remove_for_repair(mission_id: str, ref: str, deps: PullDeps) -> bool:
     removed; False when there is nothing local to remove (the pull downloads it anyway).
 
     Never forced. Refused with nothing removed when removing would not free the image's layers
-    (another tag names the same image), when the registry does not answer for the tag now (an
-    offline repair would trade a working image for none), or when a container, running or
-    stopped, still uses the image."""
+    (another tag names the same image), when the registry does not answer for the image the
+    repair will pull (an offline repair would trade a working image for none), or when a
+    container, running or stopped, still uses the image."""
     from xorcise.core.contracts.errors import ImageInUseError
 
     if not ref:
@@ -266,14 +266,18 @@ def _remove_for_repair(mission_id: str, ref: str, deps: PullDeps) -> bool:
             f"cannot repair {ref}: the same image is also tagged {', '.join(others)}, so "
             f"removing {ref} would keep its layers. Remove those tags first. Nothing was removed."
         )
+    # The repair pulls the library's CURRENT image, a newer release when the library moved on,
+    # so that is the one the registry must answer for.
+    target = _image_for(deps.source, mission_id) or ref
     token = deps.source.pull_token(mission_id)
     try:
         deps.driver.check_registry(
-            ref, auth=(token.username, token.password) if token is not None else None
+            target, auth=(token.username, token.password) if token is not None else None
         )
     except Exception as exc:
         raise PullError(
-            f"cannot repair {ref}: the registry did not answer for it ({exc}). Nothing was removed."
+            f"cannot repair {ref}: the registry did not answer for {target} ({exc}). "
+            "Nothing was removed."
         ) from exc
     try:
         deps.driver.remove_image(ref)

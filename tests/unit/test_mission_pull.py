@@ -140,6 +140,29 @@ def test_a_repair_asks_the_registry_with_the_pull_token(tmp_path: Path) -> None:
     assert d.registry_checks == [(_SQLI, ("AWS", "pw"))]
 
 
+def test_a_repair_asks_the_registry_for_the_image_it_will_pull(tmp_path: Path) -> None:
+    # A refresh installs the library's CURRENT image. When the library moved on, the check
+    # must be about that image, not the installed one, or the removal could go ahead for a
+    # download that then has nothing to fetch.
+    class _Moved(StubCatalogSource):
+        def list_library(self) -> Any:
+            return tuple(
+                dataclasses.replace(i, image="xorcise/mission-sqli-login:2")
+                if i.mission_id == "sqli-login"
+                else i
+                for i in super().list_library()
+            )
+
+    d = _RepushedTag()
+    pull_mission("sqli-login", _deps(tmp_path, d))
+    moved = PullDeps(source=_Moved(enabled=True), driver=d, install_root=tmp_path)
+    pull_mission("sqli-login", moved, refresh=True)
+    assert d.registry_checks == [("xorcise/mission-sqli-login:2", None)]
+    assert d.removed == [_SQLI]  # the installed image still goes: it is what may be damaged
+    installed = get_installed("sqli-login", tmp_path)
+    assert installed is not None and installed.mission_ref.image == "xorcise/mission-sqli-login:2"
+
+
 def test_a_repair_is_refused_while_a_container_uses_the_image(tmp_path: Path) -> None:
     d = _RepushedTag()
     pull_mission("sqli-login", _deps(tmp_path, d))
