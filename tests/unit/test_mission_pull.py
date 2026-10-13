@@ -43,11 +43,15 @@ def test_pull_absent_image_pulls_and_installs(tmp_path: Path) -> None:
     assert ic.mission_ref.image == "xorcise/mission-sqli-login:1"
 
 
-def test_pull_present_image_skips_pull(tmp_path: Path) -> None:
+def test_pull_checks_the_registry_even_when_the_tag_is_already_local(tmp_path: Path) -> None:
+    # An uninstall without --purge leaves the image behind under the same tag. Installing from
+    # that copy without asking the registry would reinstall whatever it was then, not what the
+    # catalog serves now. A docker pull of an unchanged image moves no layers, so always asking
+    # costs one registry round trip.
     d = StubDockerDriver()
     d.present.add("xorcise/mission-sqli-login:1")
     pull_mission("sqli-login", _deps(tmp_path, d))
-    assert d.pulled == []  # already local
+    assert d.pulled == ["xorcise/mission-sqli-login:1"]
     assert get_installed("sqli-login", tmp_path) is not None
 
 
@@ -97,11 +101,12 @@ class _RepushedTag(StubDockerDriver):
         self.images[new] = ImageRecord(new, (image,), {}, 1)
 
 
-def test_refresh_moves_the_tag_to_the_new_image_on_success(tmp_path: Path) -> None:
-    d = _RepushedTag()
+def test_install_and_refresh_each_take_what_the_registry_tag_names_now(tmp_path: Path) -> None:
+    d = _RepushedTag()  # the tag is already local as v1, left over from an earlier install
     pull_mission("sqli-login", _deps(tmp_path, d))
+    assert d.image_id(_SQLI) == "sha256:v2"  # the install asked the registry, not the stale v1
     pull_mission("sqli-login", _deps(tmp_path, d), refresh=True)
-    assert d.image_id(_SQLI) == "sha256:v2"
+    assert d.image_id(_SQLI) == "sha256:v3"
 
 
 def test_a_refresh_cancelled_after_the_pull_puts_the_tag_back(tmp_path: Path) -> None:
@@ -112,9 +117,9 @@ def test_a_refresh_cancelled_after_the_pull_puts_the_tag_back(tmp_path: Path) ->
             "sqli-login",
             _deps(tmp_path, d),
             refresh=True,
-            should_cancel=lambda: d.image_id(_SQLI) != "sha256:v1",
+            should_cancel=lambda: d.image_id(_SQLI) != "sha256:v2",
         )
-    assert d.image_id(_SQLI) == "sha256:v1"  # the install record's image, not the new pull
+    assert d.image_id(_SQLI) == "sha256:v2"  # the install record's image, not the new pull
     installed = get_installed("sqli-login", tmp_path)
     assert installed is not None and installed.install_revision == 1
 
@@ -133,7 +138,7 @@ def test_a_refresh_whose_bundle_fails_puts_the_tag_back(
     monkeypatch.setattr(mission_pull, "_fetch_verified_delivery", corrupt)
     with pytest.raises(PullError, match="sha256 mismatch"):
         pull_mission("sqli-login", _deps(tmp_path, d), refresh=True)
-    assert d.image_id(_SQLI) == "sha256:v1"
+    assert d.image_id(_SQLI) == "sha256:v2"  # the install record's image
 
 
 def test_a_refresh_that_fails_after_its_install_committed_keeps_the_new_tag(
@@ -155,7 +160,7 @@ def test_a_refresh_that_fails_after_its_install_committed_keeps_the_new_tag(
         pull_mission("sqli-login", _deps(tmp_path, d), refresh=True)
     installed = get_installed("sqli-login", tmp_path)
     assert installed is not None and installed.install_revision == 2
-    assert d.image_id(_SQLI) == "sha256:v2"
+    assert d.image_id(_SQLI) == "sha256:v3"
 
 
 def test_pull_unknown_id_raises_not_in_catalog(tmp_path: Path) -> None:

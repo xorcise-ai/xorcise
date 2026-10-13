@@ -240,7 +240,10 @@ def pull_mission_cmd(
     refresh: bool = typer.Option(
         False,
         "--refresh",
-        help="Pull again even if installed, then reinstall (picks up a re-published image).",
+        help=(
+            "Pull again even if installed, then reinstall (repairs a damaged local image; "
+            "for a newer release use: xorcise mission update)."
+        ),
     ),
 ) -> None:
     """Install a library mission so it becomes runnable (downloads its image)."""

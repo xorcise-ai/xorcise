@@ -157,10 +157,9 @@ export function MissionDetail({ id }: { id: string | null }) {
               <CreateRunButton id={c.mission_id} installed={c.installed} />
               {c.installed ? (
                 <>
-                  {/* Re-pull (CLI parity: `mission pull --refresh`). The Update banner only appears
-                      when the catalog has a newer artifact; this is for the cases it cannot see — a
-                      tag re-pushed in place, or a damaged local image. Library missions only: a
-                      custom mission has nothing to pull from. */}
+                  {/* Re-pull (CLI parity: `mission pull --refresh`) repairs an installed mission
+                      whose local image is damaged. A newer release is Update's job: the catalog
+                      flags it. Library missions only: a custom mission has nothing to pull from. */}
                   {c.source === "library" && (
                     <>
                       <Button

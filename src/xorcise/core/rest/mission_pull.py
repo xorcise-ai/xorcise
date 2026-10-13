@@ -1,7 +1,7 @@
 """Mission pull spine (delivery/rest layer).
 
-Acquires a free-library mission as a prebuilt fused image: local-store-first
-(`driver.image_exists`) → `driver.pull` → record the catalog manifest + image ref via
+Acquires a free-library mission as a prebuilt fused image: `driver.pull` (always; docker
+skips the layers it already has) → record the catalog manifest + image ref via
 `missions.install_pulled` (no builder; the library path is NOT the Your-Own ingest
 path). Coordinates three part-islands (catalog + runner + missions) from
 the delivery layer, the same reasoning as `rest/run_create.py` / `rest/catalog_view.py`.
@@ -181,9 +181,10 @@ def pull_mission(
 ) -> InstalledMission:
     """Acquire + install a library mission. Idempotent; failure leaves it not-installed.
 
-    `refresh` (keyword-only, default False) pulls again even when the mission is installed and
-    its image is local, then reinstalls: a tag the registry re-pointed is fetched afresh. A
-    your_own install of the id still collides — refresh never replaces your own mission.
+    `refresh` (keyword-only, default False) pulls and reinstalls a mission that is already
+    installed, which is otherwise left as it is: it repairs a damaged local image. A newer
+    catalog artifact is the update path's job. A your_own install of the id still collides —
+    refresh never replaces your own mission.
 
     `progress` (keyword-only, default None ⇒ backward-compatible for run-create's auto-pull)
     receives (phase, bytes_current, bytes_total) as the pull advances.
@@ -230,7 +231,6 @@ def pull_mission(
             progress=progress,
             should_cancel=should_cancel,
             precheck=precheck,
-            force_pull=refresh,
         )
     except BaseException:  # cancels and Ctrl-C too: each leaves the tag moved
         # Only while the record still describes the previous image: an install that committed
@@ -357,13 +357,17 @@ def _acquire_and_install(
     should_cancel: Callable[[], bool] | None,
     precheck: Callable[[str | None], None] | None,
     resolved: tuple[MissionDetail, str | None] | None = None,
-    force_pull: bool = False,
 ) -> InstalledMission:
     """The shared acquire spine: resolve → (precheck) → pull → bundle → atomic install.
 
     Backs pull_mission (fresh install) and update_mission (in-place re-install; it passes the
     (detail, image) it already fetched for its no-op check via `resolved`, so the catalog is
-    not asked twice). `force_pull` pulls even when the image is already local (a refresh)."""
+    not asked twice).
+
+    The image is always pulled, even when its tag is already local. A tag can outlive its
+    install (an uninstall without --purge keeps the image), and reusing that copy would install
+    whatever the tag named then rather than what the catalog serves now. Docker skips layers it
+    already has, so an unchanged image costs one registry round trip."""
     from xorcise.core.missions import install_pulled
 
     def report(phase: str, current: int = 0, total: int = 0) -> None:
@@ -391,7 +395,7 @@ def _acquire_and_install(
         image = _image_for(deps.source, mission_id)
     manifest = detail.manifest
     ref = MissionRef(mission_id=mission_id, image=image or "")
-    if image is not None and (force_pull or not deps.driver.image_exists(image)):
+    if image is not None:
         # Native-first platform selection (AS1–AS5), decided BEFORE any byte moves so an
         # impossible host/mission pairing costs one error message, not a download. None ⇒ no
         # selection was possible (pre-contract catalog / operator made none): the driver's
