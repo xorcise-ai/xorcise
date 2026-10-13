@@ -19,6 +19,9 @@ log = logging.getLogger(__name__)
 # How long a contended write waits for the lock. This was already the sqlite3 driver's default;
 # it is spelled out so the value is a decision, not an accident of the driver.
 SQLITE_BUSY_TIMEOUT_S = 5.0
+# What a checkpoint truncates the -wal file back to. Without a limit the file stays at its
+# high-water mark for good, and raw OTLP lives in this database, so that mark can be large.
+SQLITE_JOURNAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024
 
 
 @lru_cache
@@ -42,15 +45,42 @@ def _sqlite_wal(dbapi_conn: sqlite3.Connection, _record: Any) -> None:
     In the default rollback-journal mode a commit needs every reader gone: it waits out the busy
     timeout behind any connection still holding a read — a report, a list, the gate's poll — and
     then fails with "database is locked". Under WAL the commit does not wait on readers at all.
+    What WAL does not change: a connection that writes while one of its own reads is still open,
+    after another connection committed, fails at once with SQLITE_BUSY_SNAPSHOT, which the busy
+    timeout does not retry. Finish a read before writing on the same connection.
 
     The mode is stored in the database file, so after the first switch this is a no-op. The
     switch itself needs the file to itself; on a busy file it is logged and left for the next
     connection, never raised — a connection without WAL still works, one that fails to open does
     not. An in-memory database answers "memory" and is left as it is."""
+    dbapi_conn.execute(f"PRAGMA journal_size_limit={SQLITE_JOURNAL_SIZE_LIMIT_BYTES}")
     try:
         dbapi_conn.execute("PRAGMA journal_mode=WAL")
     except sqlite3.OperationalError as exc:
         log.warning("SQLite is not in WAL mode yet (%s); retrying on the next connection", exc)
+
+
+def close_engine() -> None:
+    """Fold the WAL back into the database file, then close every pooled connection.
+
+    Under WAL, committed writes can sit in xorcise.db-wal until a checkpoint, so a copy of
+    xorcise.db alone is missing them, and an older xorcise.db restored beside a leftover -wal
+    has that WAL replayed over it. The server calls this once on the way out, so a cleanly
+    stopped server leaves one self-contained file. A SIGKILL skips it; the backup docs cover
+    that case. A no-op when no engine was built, and best-effort: a thread still holding a
+    connection can keep the checkpoint from finishing, which is logged, never raised."""
+    if get_engine.cache_info().currsize == 0:
+        return  # nothing opened the database: do not build an engine just to close it
+    engine = get_engine()
+    if engine.dialect.name == "sqlite":
+        try:
+            with engine.connect() as conn:
+                busy = conn.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)").scalar()
+            if busy:
+                log.warning("SQLite checkpoint on shutdown did not finish: a reader is still open")
+        except Exception as exc:  # best-effort on the way out
+            log.warning("SQLite checkpoint on shutdown failed: %s", exc)
+    engine.dispose()
 
 
 @contextmanager

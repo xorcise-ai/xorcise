@@ -16,6 +16,7 @@ from enum import StrEnum
 
 import typer
 
+from xorcise.core import db
 from xorcise.core.cli._preflight import (
     IPV6_LOOPBACK,
     address_unavailable,
@@ -293,6 +294,9 @@ def serve(
     finally:
         for b in bound:
             b.close()  # uvicorn closes what it adopted; this covers a bind that never got there
+        # After EVERY server has stopped, not in a lifespan hook: a hook runs once per uvicorn
+        # Server, and the planes share one app, so it would checkpoint while another still writes.
+        db.close_engine()
     if failures:
         # A crashed server plane must not exit 0 — surface the first failure.
         err_console.print(f"[err]error[/err]: server exited — {failures[0]}")

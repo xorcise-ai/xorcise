@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
+import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -10,51 +12,103 @@ from sqlalchemy import Engine, text
 
 from xorcise.core import config, db
 from xorcise.core.db import engine as engine_module
-from xorcise.core.db.engine import SQLITE_BUSY_TIMEOUT_S, _sqlite_wal
+from xorcise.core.db.engine import (
+    SQLITE_BUSY_TIMEOUT_S,
+    SQLITE_JOURNAL_SIZE_LIMIT_BYTES,
+    _sqlite_wal,
+)
 
 
-def test_engine_targets_home_sqlite(tmp_path, monkeypatch):
+@pytest.fixture
+def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """A throwaway XORCISE_HOME with no schema. Same teardown as `migrated_home`: an engine left
+    in the cache would outlive the test, pointing at a deleted tmp dir — with whatever timeout
+    the test patched in — for the next test on this worker."""
     monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
     config.get_settings.cache_clear()
     db.get_engine.cache_clear()
+    yield tmp_path
+    if db.get_engine.cache_info().currsize:
+        db.get_engine().dispose()
+    config.get_settings.cache_clear()
+    db.get_engine.cache_clear()
+
+
+def _seeded_engine() -> Engine:
+    engine = db.get_engine()
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE t (x INTEGER)"))
+        conn.execute(text("INSERT INTO t VALUES (1), (2), (3)"))
+    return engine
+
+
+def test_engine_targets_home_sqlite(home: Path) -> None:
     engine = db.get_engine()
     assert engine.url.drivername.startswith("sqlite")
-    assert str(tmp_path) in str(engine.url)
+    assert str(home) in str(engine.url)
 
 
-def test_session_scope_commits_and_reads(tmp_path, monkeypatch):
-    monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
-    config.get_settings.cache_clear()
-    db.get_engine.cache_clear()
+def test_session_scope_commits_and_reads(home: Path) -> None:
     with db.session_scope() as s:
         assert s.execute(text("select 1")).scalar() == 1
 
 
-def _fresh_engine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Engine:
-    monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
-    config.get_settings.cache_clear()
-    db.get_engine.cache_clear()
-    return db.get_engine()
-
-
-def test_sqlite_engine_is_wal_and_waits_on_a_lock(tmp_path, monkeypatch):
-    engine = _fresh_engine(tmp_path, monkeypatch)
-    with engine.connect() as conn:
+def test_sqlite_engine_is_wal_with_a_bounded_journal(home: Path) -> None:
+    with db.get_engine().connect() as conn:
         assert conn.execute(text("PRAGMA journal_mode")).scalar() == "wal"
+        limit = conn.execute(text("PRAGMA journal_size_limit")).scalar()
+    assert limit == SQLITE_JOURNAL_SIZE_LIMIT_BYTES
+
+
+def test_a_write_behind_a_held_write_lock_waits_then_lands(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The busy timeout is the engine's, not the driver's: patch it, and the patched value is
+    what a contended write waits on. The holder releases well inside it, so the write lands."""
+    monkeypatch.setattr(engine_module, "SQLITE_BUSY_TIMEOUT_S", 3.0)
+    engine = _seeded_engine()
+    with engine.connect() as conn:
+        assert conn.execute(text("PRAGMA busy_timeout")).scalar() == 3000
+
+    locked = threading.Event()
+
+    def holder() -> None:
+        with engine.connect() as conn:
+            conn.execute(text("INSERT INTO t VALUES (10)"))  # takes the write lock
+            locked.set()
+            time.sleep(0.3)
+            conn.commit()
+
+    thread = threading.Thread(target=holder)
+    thread.start()
+    try:
+        assert locked.wait(5)
+        started = time.monotonic()
+        with engine.connect() as conn:
+            conn.execute(text("INSERT INTO t VALUES (20)"))
+            conn.commit()
+        waited = time.monotonic() - started
+    finally:
+        thread.join(10)
+    assert waited >= 0.1  # it queued behind the holder rather than failing at once
+    with engine.connect() as conn:
+        assert {10, 20} <= set(conn.execute(text("SELECT x FROM t")).scalars())
+
+
+def test_the_default_busy_timeout_is_five_seconds(home: Path) -> None:
+    with db.get_engine().connect() as conn:
         busy_ms = conn.execute(text("PRAGMA busy_timeout")).scalar()
-    assert busy_ms == int(SQLITE_BUSY_TIMEOUT_S * 1000)
-    engine.dispose()
+    assert busy_ms == int(SQLITE_BUSY_TIMEOUT_S * 1000) == 5000
 
 
-def test_a_commit_does_not_wait_on_an_open_reader(tmp_path, monkeypatch):
+def test_a_commit_does_not_wait_on_an_open_reader(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """#107. In rollback-journal mode a commit needs every reader gone: it waits out the busy
     timeout behind any connection still holding a read, then fails with "database is locked".
     Under WAL a reader never blocks the writer, so the commit lands while the read is open."""
     monkeypatch.setattr(engine_module, "SQLITE_BUSY_TIMEOUT_S", 0.5)  # fail fast on a regression
-    engine = _fresh_engine(tmp_path, monkeypatch)
-    with engine.begin() as conn:
-        conn.execute(text("CREATE TABLE t (x INTEGER)"))
-        conn.execute(text("INSERT INTO t VALUES (1), (2), (3)"))
+    engine = _seeded_engine()
 
     reading = threading.Event()
     committed = threading.Event()
@@ -67,8 +121,8 @@ def test_a_commit_does_not_wait_on_an_open_reader(tmp_path, monkeypatch):
             committed.wait(5)
             rows.fetchall()
 
-    holder = threading.Thread(target=reader)
-    holder.start()
+    thread = threading.Thread(target=reader)
+    thread.start()
     try:
         assert reading.wait(5)
         with engine.connect() as conn:
@@ -76,13 +130,12 @@ def test_a_commit_does_not_wait_on_an_open_reader(tmp_path, monkeypatch):
             conn.commit()
     finally:
         committed.set()
-        holder.join(10)
+        thread.join(10)
     with engine.connect() as conn:
         assert 20 in set(conn.execute(text("SELECT x FROM t")).scalars())
-    engine.dispose()
 
 
-def test_a_busy_file_leaves_the_connection_usable(tmp_path, caplog):
+def test_a_busy_file_leaves_the_connection_usable(tmp_path: Path, caplog) -> None:
     """Switching an existing file to WAL needs it to itself. Another connection's lock must cost
     a warning, never the connection — the switch is retried on the next one."""
     path = tmp_path / "busy.db"
@@ -105,7 +158,59 @@ def test_a_busy_file_leaves_the_connection_usable(tmp_path, caplog):
     conn.close()
 
 
-def test_a_non_sqlite_url_gets_no_sqlite_settings(tmp_path, monkeypatch):
+def test_close_engine_folds_the_wal_into_the_database_file(home: Path) -> None:
+    """After close_engine, xorcise.db alone holds every committed write: a copy of just that
+    file is a complete backup, and no -wal is left to replay over a restored older copy.
+
+    An idle connection stays open throughout, as a daemon thread's would. SQLite folds the WAL
+    in by itself when the LAST connection closes, so without one this test would pass on
+    dispose() alone and never exercise the checkpoint."""
+    engine = _seeded_engine()
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO t VALUES (99)"))
+    wal = home / "xorcise.db-wal"
+    assert wal.stat().st_size > 0  # the write is in the WAL, not yet in the database file
+    idle = sqlite3.connect(home / "xorcise.db")
+    idle.execute("SELECT count(*) FROM t").fetchall()  # opens the WAL; no read left open
+    try:
+        db.close_engine()
+        assert wal.stat().st_size == 0  # TRUNCATE: folded in and emptied, though idle is open
+    finally:
+        idle.close()
+    copy = home / "copy.db"
+    copy.write_bytes((home / "xorcise.db").read_bytes())
+    alone = sqlite3.connect(copy)
+    try:
+        assert 99 in {x for (x,) in alone.execute("SELECT x FROM t")}
+    finally:
+        alone.close()
+
+
+def test_close_engine_reports_a_checkpoint_a_reader_holds_open(home: Path, caplog) -> None:
+    engine = _seeded_engine()
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO t VALUES (99)"))
+    reader = sqlite3.connect(home / "xorcise.db")
+    rows = reader.execute("SELECT x FROM t")
+    rows.fetchone()  # an open read pins the WAL: the TRUNCATE checkpoint cannot finish
+    try:
+        with caplog.at_level(logging.WARNING, logger="xorcise.core.db.engine"):
+            db.close_engine()  # must not raise
+        assert "did not finish" in caplog.text
+    finally:
+        rows.fetchall()
+        reader.close()
+
+
+def test_close_engine_builds_no_engine_when_none_was_opened(home: Path) -> None:
+    db.close_engine()
+    assert db.get_engine.cache_info().currsize == 0
+    assert not (home / "xorcise.db").exists()
+
+
+def test_a_non_sqlite_url_gets_no_sqlite_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     calls: list[tuple[str, dict[str, object]]] = []
 
     def fake_create_engine(url: str, **kwargs: object) -> object:

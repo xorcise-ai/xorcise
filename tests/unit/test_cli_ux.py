@@ -136,6 +136,7 @@ def test_db_upgrade_history_mismatch_is_a_targeted_error(monkeypatch, tmp_path):
     result = runner.invoke(app, ["db", "upgrade"])
     assert result.exit_code == 1
     assert "migration history mismatch" in result.stderr
+    assert "xorcise.db-wal" in result.stderr  # a copy of xorcise.db alone can miss writes (#107)
     assert "9999_other_build" in result.stderr
     assert "different build" in result.stderr
 
