@@ -9,7 +9,7 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from xorcise.core.agents.models import AgentRow
-from xorcise.core.contracts.agent import AgentEntry
+from xorcise.core.contracts.agent import AgentEntry, normalise_kind
 from xorcise.core.db import session_scope
 
 
@@ -53,7 +53,8 @@ def register(
     mission_preamble: tuple[str, ...] | None = None,
     launch_mode: Literal["host", "container"] | None = None,
 ) -> AgentEntry:
-    """Register a thin agent declaration. Rejects a duplicate name."""
+    """Register a thin agent declaration. Rejects a duplicate name. A missing or blank `kind` is
+    stored as `generic` (normalise_kind)."""
     with session_scope() as s:
         if s.scalar(select(AgentRow).where(AgentRow.name == name)) is not None:
             raise DuplicateAgentError(f"agent '{name}' already registered")
@@ -63,7 +64,7 @@ def register(
             endpoint=endpoint,
             otel=otel,
             model=model,
-            kind=kind,
+            kind=normalise_kind(kind),
             launch_command_template=launch_command_template,
             launch_tips=list(launch_tips) if launch_tips is not None else None,
             mission_preamble=list(mission_preamble) if mission_preamble is not None else None,
@@ -91,7 +92,8 @@ def update_agent(
     """Update an existing agent's declaration and bump its version (same id).
 
     This is a full re-declaration at a new version: the supplied endpoint/otel/model/kind
-    REPLACE the previous values (None means "unset"). A differing ``new_name`` renames the
+    REPLACE the previous values (None means "unset"; for `kind`, unset is `generic` — see
+    normalise_kind). A differing ``new_name`` renames the
     agent — the id stays stable, so runs and history survive — and raises
     DuplicateAgentError when that name is taken. Returns None if the agent is absent;
     the caller decides whether to 404.
@@ -107,7 +109,7 @@ def update_agent(
         row.endpoint = endpoint
         row.otel = otel
         row.model = model
-        row.kind = kind
+        row.kind = normalise_kind(kind)
         row.launch_command_template = launch_command_template
         row.launch_tips = list(launch_tips) if launch_tips is not None else None
         row.mission_preamble = list(mission_preamble) if mission_preamble is not None else None

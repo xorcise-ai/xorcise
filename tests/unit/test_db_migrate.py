@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import inspect
 
 from xorcise.core import config, db
+
+_NOW = "2026-10-13 00:00:00"
 
 
 def test_upgrade_creates_agents_table(tmp_path, monkeypatch):
@@ -90,6 +93,90 @@ def test_upgrade_drops_results_recorded_for_environment_failures(tmp_path, monke
     assert {r.run_id for r in runs.list_runs()} == set(ids.values())
 
 
+def test_upgrade_gives_every_agent_a_kind_and_keeps_the_table_intact(tmp_path, monkeypatch):
+    """0006 (#141): an agent registered without a harness was stored with kind NULL or blank. Its
+    runs already replayed as `generic`, so the upgrade writes that down and makes the column NOT
+    NULL DEFAULT 'generic'. A real kind, including one no harness answers to, is left alone."""
+    from alembic import command
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
+
+    from xorcise.core.db.migrate import _alembic_config
+
+    monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
+    config.get_settings.cache_clear()
+    db.get_engine.cache_clear()
+    db.upgrade()
+    command.downgrade(_alembic_config(), "0005_drop_environment_failure_results")
+    stored = {
+        "null": None,
+        "empty": "",
+        "spaces": "   ",
+        "tab": "\t\n",
+        "known": "openhands",
+        "typo": "openhand",
+    }
+    with db.get_engine().begin() as conn:
+        for name, kind in stored.items():
+            conn.execute(
+                text(
+                    "INSERT INTO agents (id, name, kind, version, created_at) "
+                    "VALUES (:id, :n, :k, 1, :t)"
+                ),
+                {"id": f"id-{name}", "n": name, "k": kind, "t": _NOW},
+            )
+        conn.execute(
+            text(
+                "INSERT INTO runs (id, agent_id, mission, state, created_at) "
+                "VALUES ('r1', 'id-null', 'm', 'terminal', :t)"
+            ),
+            {"t": _NOW},
+        )
+
+    db.upgrade()
+
+    with db.get_engine().begin() as conn:
+        kinds = {name: kind for name, kind in conn.execute(text("SELECT name, kind FROM agents"))}
+        assert kinds == {
+            "null": "generic",
+            "empty": "generic",
+            "spaces": "generic",
+            "tab": "generic",
+            "known": "openhands",
+            "typo": "openhand",
+        }
+        # A writer that leaves the column out gets the default, and nothing can store NULL again.
+        conn.execute(
+            text(
+                "INSERT INTO agents (id, name, version, created_at) VALUES ('id-new', 'new', 1, :t)"
+            ),
+            {"t": _NOW},
+        )
+        new_kind = conn.execute(text("SELECT kind FROM agents WHERE name = 'new'")).scalar()
+        assert new_kind == "generic"
+    with pytest.raises(IntegrityError), db.get_engine().begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO agents (id, name, kind, version, created_at) "
+                "VALUES ('x', 'x', NULL, 1, :t)"
+            ),
+            {"t": _NOW},
+        )
+    # The rebuild keeps the table's constraints and its run still points at it.
+    with pytest.raises(IntegrityError), db.get_engine().begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO agents (id, name, version, created_at) VALUES ('dup', 'known', 1, :t)"
+            ),
+            {"t": _NOW},
+        )
+    assert "ix_agents_name" in {i["name"] for i in inspect(db.get_engine()).get_indexes("agents")}
+    [fk] = inspect(db.get_engine()).get_foreign_keys("runs")
+    assert fk["referred_table"] == "agents"
+    with db.get_engine().begin() as conn:
+        assert conn.execute(text("SELECT agent_id FROM runs")).scalar() == "id-null"
+
+
 def test_upgrade_is_idempotent(tmp_path, monkeypatch):
     monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
     config.get_settings.cache_clear()
@@ -118,7 +205,7 @@ def test_head_revision_is_the_latest_migration(tmp_path, monkeypatch):
     monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
     config.get_settings.cache_clear()
     db.get_engine.cache_clear()
-    assert db.head_revision() == "0005_drop_environment_failure_results"
+    assert db.head_revision() == "0006_agent_kind_defaults_to_generic"
 
 
 def test_boot_state_fresh_on_empty_db(tmp_path, monkeypatch):

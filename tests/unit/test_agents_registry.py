@@ -78,8 +78,20 @@ def test_register_round_trips_kind(migrated_home):
     assert fetched is not None and fetched.kind == "openhands"
 
 
-def test_register_without_kind_is_none(migrated_home):
-    assert agents.register(name="a-nokind").kind is None
+def test_every_agent_has_a_kind_and_generic_is_the_default(migrated_home):
+    # #141: a missing, null or blank kind is `generic`, never NULL; a real kind loses only its
+    # surrounding whitespace (so " openhands " still selects the OpenHands adapter).
+    assert agents.register(name="a-nokind").kind == "generic"
+    assert agents.register(name="a-null", kind=None).kind == "generic"
+    assert agents.register(name="a-blank", kind=" \t").kind == "generic"
+    assert agents.register(name="a-padded", kind=" openhands ").kind == "openhands"
+    assert agents.register(name="a-own", kind="my-agent-cli").kind == "my-agent-cli"
+
+    updated = agents.update_agent("a-padded")  # a full re-declaration that names no kind
+    assert updated is not None and updated.kind == "generic"
+    updated = agents.update_agent("a-nokind", kind="  codex")
+    assert updated is not None and updated.kind == "codex"
+    assert {a.name: a.kind for a in agents.list_agents()}["a-nokind"] == "codex"
 
 
 def test_register_round_trips_launch_overrides_and_empty_lists(migrated_home):

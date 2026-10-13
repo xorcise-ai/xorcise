@@ -106,14 +106,14 @@ def test_agent_list_renders(monkeypatch):
         "get",
         lambda self, path: [
             {"id": "beta-uuid-1", "name": "beta", "kind": "claude-code", "version": 2},
-            {"id": "alpha-uuid-2", "name": "alpha"},
+            {"id": "alpha-uuid-2", "name": "alpha", "kind": "generic"},
         ],
     )
     result = runner.invoke(app, ["agent", "list"])
     assert result.exit_code == 0
     assert "alpha" in result.stdout and "beta" in result.stdout
     assert "Claude Code" in result.stdout  # kind slug → readable label
-    assert "Custom" in result.stdout  # missing kind reads as Custom
+    assert "Generic" in result.stdout and "Custom" not in result.stdout  # #141: no "Custom"
     assert "v1" in result.stdout and "v2" in result.stdout
     # internal ids stay hidden by default (only --verbose/--json expose them)
     assert "uuid" not in result.stdout
@@ -1478,8 +1478,8 @@ def test_register_unrecognised_kind_warns_and_asks_interactively_default_no(monk
     )
     assert result.exit_code == 1
     assert "'Custom' is not a registered harness" in result.stderr
-    assert "known: claude-code, codex, openhands" in result.stderr
-    assert "generic renderer" in result.stderr
+    assert "known: claude-code, codex, generic, openhands" in result.stderr
+    assert "may replay with the generic adapter" in " ".join(result.stderr.split())
     assert "aborted" in result.stdout
     assert posted == []  # nothing written on the default (No)
 
@@ -1528,6 +1528,25 @@ def test_register_known_or_blank_kind_never_prompts(monkeypatch):
     )
     assert runner.invoke(app, ["agent", "register", "--name", "b"]).exit_code == 0
     assert [p["kind"] for p in posted] == ["openhands", None]
+
+
+def test_register_generic_kind_never_prompts(monkeypatch):
+    # `generic` is always registered, whether or not the server's harness list names it.
+    posted = _stub_register(monkeypatch, interactive=False)
+    result = runner.invoke(app, ["agent", "register", "--name", "g", "--kind", "generic"])
+    assert result.exit_code == 0, result.stderr
+    assert result.stderr == ""
+    assert posted[0]["kind"] == "generic"
+
+
+def test_register_gate_prints_the_same_warning_the_server_returns(monkeypatch):
+    from xorcise.core.contracts.agent import kind_warning
+
+    _stub_register(monkeypatch, interactive=False)
+    result = runner.invoke(app, ["agent", "register", "--name", "re", "--kind", "openhand"])
+    expected = kind_warning("openhand", [h["kind"] for h in _HARNESSES])
+    assert expected is not None
+    assert f"warning: {expected}" in " ".join(result.stderr.split())
 
 
 def test_register_gate_stays_out_of_the_way_when_the_server_has_no_harness_list(monkeypatch):

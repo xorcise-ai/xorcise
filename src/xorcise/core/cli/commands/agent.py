@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import difflib
-
 import typer
 from rich.markup import escape
 
@@ -21,6 +19,7 @@ from xorcise.core.cli._ux import (
     ux_table,
 )
 from xorcise.core.cli.rest_client import RestClient
+from xorcise.core.contracts.agent import kind_warning
 
 agent_app = typer.Typer(help="Register and manage the agents you evaluate.", no_args_is_help=True)
 app.add_typer(agent_app, name="agent", rich_help_panel="Evaluate")
@@ -31,7 +30,7 @@ _LAUNCH_MODES = {"host", "container"}
 
 _KIND_HELP = (
     "Agent harness for replay-adapter selection, e.g. 'claude-code', 'codex', 'openhands'. "
-    "Leave it out for a custom harness (generic renderer); an unrecognised value asks for "
+    "Leave it out to save 'generic', for any other CLI agent; an unrecognised value asks for "
     "confirmation."
 )
 _YES_HELP = "Skip the unrecognised --kind confirmation prompt."
@@ -52,26 +51,20 @@ def _gate_unrecognised_kind(
 ) -> None:
     """Warn about — and HARD-gate — a `--kind` no registered harness answers to (#119).
 
-    A blank kind is the sanctioned custom path and passes silently. Any other value that is not
-    a registered harness (a typo like `openhand`, or a label like `Custom`) would route every
-    run to the generic renderer with no signal at registration time, so: say which kinds exist,
-    suggest the closest one, and require a y/N. Fails closed without a TTY (see confirm_gate)."""
+    A blank kind is saved as `generic` and passes silently, as does `generic` itself. Any other
+    value that is not a registered harness (a typo like `openhand`, or a label like `Custom`)
+    may route every run to the generic renderer with no signal at registration time, so: print
+    the warning the server would return (contracts.agent.kind_warning: which kinds exist and the
+    closest one), and require a y/N. Fails closed without a TTY (see confirm_gate)."""
     if kind is None or not kind.strip():
-        return
+        return  # nothing to judge, so no need to ask the server for its harness list
     known = _known_harness_kinds(client)
-    if known is None or kind in known:
+    if known is None:
         return
-    listed = ", ".join(sorted(known))
-    err_console.print(
-        f"[warn]warning[/]: '{escape(kind)}' is not a registered harness (known: {listed})"
-    )
-    close = difflib.get_close_matches(kind.lower(), sorted(known), n=1, cutoff=0.6)
-    if close:
-        err_console.print(f"         did you mean '{close[0]}'?")
-    err_console.print(
-        "         runs will use the generic renderer: spans are shown as-is and\n"
-        "         unrecognised span names are labelled unclassified"
-    )
+    warning = kind_warning(kind, known)
+    if warning is None:
+        return
+    err_console.print(f"[warn]warning[/]: {escape(warning)}")
     verb = action.lower()
     confirm_gate(
         f"{action} '{agent}' with kind '{kind}' anyway?",

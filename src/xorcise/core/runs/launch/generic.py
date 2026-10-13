@@ -8,5 +8,5 @@ from xorcise.core.runs.launch.base import HarnessLaunchProvider
 class GenericLaunchProvider(HarnessLaunchProvider):
     name = "generic"
     version = "1"
-    display_name = "Custom"
+    display_name = "Generic"
     description = "Any CLI agent — replayed and launched through generic fallbacks."

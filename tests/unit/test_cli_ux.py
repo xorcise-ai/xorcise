@@ -468,7 +468,10 @@ def test_kind_labels_read_as_products():
 
     assert kind_label("claude-code") == "Claude Code"
     assert kind_label("codex") == "Codex"
-    assert kind_label(None) == "Custom"
+    # #141: every agent has a kind and the default is generic, so a blank one reads the same.
+    assert kind_label("generic") == "Generic"
+    assert kind_label(None) == kind_label("") == "Generic"
+    assert kind_label("my-agent-cli") == "My Agent Cli"
 
 
 # --- short run-id prefixes ----------------------------------------------------

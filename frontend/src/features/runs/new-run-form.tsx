@@ -34,8 +34,9 @@ import { BudgetSlider } from "./budget-slider";
 import { useCreateRun } from "./queries";
 
 /** Human harness name for an agent's `kind`, or null when it's the generic fallback
- *  (report §11: "Harness, when available"). */
-function harnessLabel(kind: string | null | undefined): string | null {
+ *  (report §11: "Harness, when available"). Deliberately not the shared harnessLabel, which
+ *  names `generic` too: the picker only calls out a specific harness. */
+function specificHarnessName(kind: string | null | undefined): string | null {
   if (!kind || kind === "generic") return null;
   return HARNESSES.find((h) => h.kind === kind)?.name ?? kind;
 }
@@ -320,7 +321,7 @@ export function NewRunForm({
               <ul className="max-h-48 min-h-24 space-y-0.5 overflow-y-auto rounded-md border border-border bg-background p-1">
                 {(agents.data ?? []).map((a) => {
                   const active = a.name === agent;
-                  const harness = harnessLabel(a.kind);
+                  const harness = specificHarnessName(a.kind);
                   return (
                     <li key={a.id}>
                       <button
