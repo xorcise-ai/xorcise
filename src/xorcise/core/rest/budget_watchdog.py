@@ -41,7 +41,10 @@ class BudgetWatchdog:
     async def run(self) -> None:
         while True:
             await asyncio.sleep(self._interval)
-            self.tick()
+            # Worker thread: terminate grades in the same call (the telemetry drain sleep, the
+            # judge, Docker teardown), and REST and OTLP share this loop - on it, neither would
+            # answer until the grade finished.
+            await asyncio.to_thread(self.tick)
 
     def start(self) -> None:
         if self._task is None:
