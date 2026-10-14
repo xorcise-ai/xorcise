@@ -551,6 +551,33 @@ def test_serve_fails_fast_on_port_conflict(monkeypatch, tmp_path):
     assert "in use" in result.output
 
 
+@pytest.mark.parametrize("ending", ["clean", "ctrl-c", "failure"])
+def test_serve_checkpoints_the_database_once_every_server_has_stopped(
+    monkeypatch, tmp_path, ending
+):
+    """#107 review: under WAL a stopped server must leave one self-contained xorcise.db, however
+    serve ends. Once, after serve_bound returns, never per server lifespan."""
+    from xorcise.core.cli.commands import serve as serve_mod
+
+    monkeypatch.setenv("XORCISE_HOME", str(tmp_path))  # serve bootstraps home+db now
+    monkeypatch.setattr(lifecycle, "resolve_ports", lambda host, wanted: dict(wanted))
+    monkeypatch.setattr(serve_mod, "activate", lambda role: [AppSpec(app=object(), port=REST_PORT)])
+    monkeypatch.setattr(serve_mod, "bind_specs", lambda specs, host: [])
+    events: list[str] = []
+
+    async def fake_serve_bound(bound):
+        events.append("served")
+        if ending == "ctrl-c":
+            raise KeyboardInterrupt
+        return [RuntimeError("plane crashed")] if ending == "failure" else []
+
+    monkeypatch.setattr(serve_mod, "serve_bound", fake_serve_bound)
+    monkeypatch.setattr("xorcise.core.db.close_engine", lambda: events.append("closed"))
+    result = runner.invoke(app, ["serve"])
+    assert events == ["served", "closed"]
+    assert result.exit_code == (1 if ending == "failure" else 0)
+
+
 def test_version_flag_prints_version():
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
