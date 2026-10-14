@@ -592,15 +592,17 @@ def run_delete(
     run_id: str = typer.Argument(..., help=_RUN_ID_HELP),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
 ) -> None:
-    """Delete a run's result + record. Available as both `delete` and `rm`.
+    """Delete a run and everything recorded for it. Available as both `delete` and `rm`.
 
-    Removes the recorded result and the run row, so the run leaves the runs \
-list, agent history, and results view. A still-running run cannot be \
-deleted — stop it first with `xorcise run terminate`.
+    Removes its result, telemetry, submissions and exported files, then the \
+run itself, so it leaves the runs list, agent history, and results view. A \
+still-running run cannot be deleted — stop it first with `xorcise run terminate`.
     """
     client = RestClient()
     run_id = _resolve_id(client, run_id)
-    confirm_or_abort(f"Delete run {short_id(run_id)} and its recorded result?", assume_yes=yes)
+    confirm_or_abort(
+        f"Delete run {short_id(run_id)} with its result, telemetry and files?", assume_yes=yes
+    )
     client.delete(f"/runs/{run_id}")
     console.print(f"deleted run '{run_id}'")
 

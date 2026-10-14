@@ -25,6 +25,7 @@ class InMemoryTraceStore(TraceStore):
         return [r for r in self._records.get(run_id, []) if r.seq > after_seq]
 
 
+from xorcise.core.otel.store.run_rows import delete_for_runs, held_run_ids  # noqa: E402
 from xorcise.core.otel.store.seal import InMemorySealStore, SqliteSealStore  # noqa: E402
 from xorcise.core.otel.store.sqlite import (  # noqa: E402  (re-export)
     SqliteLogStore,
@@ -37,4 +38,6 @@ __all__ = [
     "SqliteLogStore",
     "InMemorySealStore",
     "SqliteSealStore",
+    "delete_for_runs",
+    "held_run_ids",
 ]

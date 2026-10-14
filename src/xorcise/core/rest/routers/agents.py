@@ -118,11 +118,12 @@ def agent_history(name: str) -> list[AgentHistoryView]:
 
 @router.delete("/{name}", status_code=204)
 def remove_agent(name: str) -> Response:
-    """Remove an agent and cascade-delete its runs + results."""
+    """Remove an agent and everything recorded for its runs."""
+    from xorcise.core.rest.run_purge import purge_runs
+
     agent = agents.get(name)
     if agent is None:
         raise HTTPException(status_code=404, detail=f"no agent named '{name}'")
-    reporting.delete_for_agent(agent.id)
-    runs.delete_for_agent(agent.id)
+    purge_runs([run.run_id for run in runs.list_runs() if run.agent_id == agent.id])
     agents.remove(name)
     return Response(status_code=204)

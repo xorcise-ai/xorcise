@@ -236,13 +236,13 @@ def terminate_run(run_id: str, background: BackgroundTasks) -> RunEntry:
 
 @router.delete("/{run_id}", status_code=204)
 def delete_run(run_id: str) -> Response:
-    """Operator-initiated delete of a single run's result + record.
+    """Operator-initiated delete of a single run and everything recorded for it.
 
-    The narrow, per-run counterpart to the agent-scoped cascade (DELETE /agents/{name}): removes
-    the recorded result and the run row so the run leaves the runs list, the agent history, and the
-    results view. 404 if the run is unknown; 409 if it has not reached a terminal state — it must be
-    terminated first (deleting it would strand its container/tailnet env). Idempotent on the result
-    (delete of an ungraded terminal run still removes the record).
+    The per-run counterpart to the agent-scoped cascade (DELETE /agents/{name}): removes the run's
+    telemetry, submissions, result, run directory and, last, its row (rest.run_purge), so the run
+    leaves the runs list, the agent history and the results view. 404 if the run is unknown; 409 if
+    it has not reached a terminal state — it must be terminated first (deleting it would strand its
+    container/tailnet env). A delete that fails partway leaves the row, so repeating it finishes.
     """
     run = runs.get(run_id)
     if run is None:
@@ -259,8 +259,9 @@ def delete_run(run_id: str) -> Response:
                 f"terminate it before deleting"
             ),
         )
-    reporting.delete_result(run_id)
-    runs.delete_run(run_id)
+    from xorcise.core.rest.run_purge import purge_runs
+
+    purge_runs([run_id])
     return Response(status_code=204)
 
 

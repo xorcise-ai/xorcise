@@ -180,14 +180,21 @@ def reconcile_on_startup(
 
 
 def reconcile_all_on_startup() -> None:
-    """Run every boot reconcile: the run/tailnet/docker convergence, the ingest
-    and pull jobs, and the orphaned-grade sweep. The single entrypoint the role_all
+    """Run every boot reconcile: the orphaned-run sweep, the run/tailnet/docker convergence, the
+    ingest and pull jobs, and the orphaned-grade sweep. The single entrypoint the role_all
     startup task schedules on a worker thread, so the boot wiring stays a trivial, obviously-correct
     call."""
     from xorcise.core.rest.ingest_jobs import reconcile_ingest_jobs
     from xorcise.core.rest.pull_jobs import reconcile_pull_jobs
+    from xorcise.core.rest.run_purge import sweep_orphaned_runs
     from xorcise.core.rest.run_terminate import regrade_orphaned_terminal_runs
 
+    # First and isolated: it needs only the database and the disk, so a Docker or Headscale
+    # failure below must not skip it, and its own failure must not skip them.
+    try:
+        sweep_orphaned_runs()
+    except Exception:
+        log.warning("reconcile: orphaned-run sweep failed", exc_info=True)
     reconcile_on_startup()
     reconcile_ingest_jobs()
     reconcile_pull_jobs()
