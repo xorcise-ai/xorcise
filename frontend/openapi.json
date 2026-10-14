@@ -3154,6 +3154,36 @@
         "title": "RawTraceRef",
         "type": "object"
       },
+      "ReleaseBacklogView": {
+        "additionalProperties": false,
+        "description": "Finished runs whose environment a teardown failed to release (#173): their container or\ntailnet nodes are still up, and the release sweeper keeps retrying. Runs merely waiting for\ntheir grade to finish are not counted \u2014 that is normal, not something to act on.",
+        "properties": {
+          "last_error": {
+            "default": "",
+            "title": "Last Error",
+            "type": "string"
+          },
+          "oldest_ended_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Ended At"
+          },
+          "pending": {
+            "default": 0,
+            "title": "Pending",
+            "type": "integer"
+          }
+        },
+        "title": "ReleaseBacklogView",
+        "type": "object"
+      },
       "ResolvedTerrainV2": {
         "additionalProperties": false,
         "description": "The v2 resolved terrain wire DTO \u2014 the run-scoped network/infrastructure map\nwith groups, nodes, edges, and an updates stream for state transitions.",
@@ -3907,7 +3937,7 @@
         "type": "object"
       },
       "RunEnvironmentView": {
-        "description": "The live state of a run's mission ENVIRONMENT, for the run page's Environment chip.\n\nPreviously the UI inferred this from `sandbox_ref` alone, which could only ever say \"Starting\"\nor \"Ready\" and was wrong twice over: a static mission (no image \u21d2 no sandbox_ref) read as a\nperpetual \"Starting\", and an environment that had DIED still read as \"Ready\". These states are\nobserved from the runner + fence instead:\n\n  none      static (attachment-only) run \u2014 there is no environment, and never will be\n  starting  deployed; the mission services / subnet router are still coming up\n  ready     every inner service is running and the run's router is on the tailnet\n  failed    the environment exited or never came up (the run is closed out as deploy_failed)\n  released  terminal run \u2014 the environment has been torn down",
+        "description": "The live state of a run's mission ENVIRONMENT, for the run page's Environment chip.\n\nPreviously the UI inferred this from `sandbox_ref` alone, which could only ever say \"Starting\"\nor \"Ready\" and was wrong twice over: a static mission (no image \u21d2 no sandbox_ref) read as a\nperpetual \"Starting\", and an environment that had DIED still read as \"Ready\". These states are\nobserved from the runner + fence instead:\n\n  none      static (attachment-only) run \u2014 there is no environment, and never will be\n  starting  deployed; the mission services / subnet router are still coming up\n  ready     every inner service is running and the run's router is on the tailnet\n  failed    the environment exited or never came up (the run is closed out as deploy_failed)\n  releasing terminal run \u2014 the container or tailnet nodes are not torn down yet: grading has\n            not finished, or a teardown failed and is being retried (#173)\n  released  terminal run \u2014 the environment has been torn down",
         "properties": {
           "detail": {
             "default": "",
@@ -3919,6 +3949,11 @@
             "title": "Ready",
             "type": "boolean"
           },
+          "release_attempts": {
+            "default": 0,
+            "title": "Release Attempts",
+            "type": "integer"
+          },
           "run_id": {
             "title": "Run Id",
             "type": "string"
@@ -3929,6 +3964,7 @@
               "starting",
               "ready",
               "failed",
+              "releasing",
               "released"
             ],
             "title": "State",
@@ -4362,6 +4398,16 @@
             },
             "title": "Planes",
             "type": "array"
+          },
+          "releases": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReleaseBacklogView"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "remotes": {
             "default": [],
@@ -5741,7 +5787,7 @@
     },
     "/api/missions/prune": {
       "post": {
-        "description": "Find (and with apply=true, remove) the local mission images nothing uses any more.\n\nA candidate is an image XORCISE owns \u2014 mission-base lineage AND only mission-repository\ntags \u2014 that no install record, live run, container or in-flight pull uses. Removal is never\nforced; an image that turns out to be in use is reported under `failed` and the rest still\ngo. `image_ids` limits the removal to images the operator confirmed: one that is no longer\na candidate is reported under `skipped` and kept. 409 when an install record cannot be read (its image is unknown, so nothing is removed)\nor when this server does not manage Docker images at all.",
+        "description": "Find (and with apply=true, remove) the local mission images nothing uses any more.\n\nA candidate is an image XORCISE owns \u2014 mission-base lineage AND only mission-repository\ntags \u2014 that no install record, live run, container or in-flight pull uses. Removal is never\nforced; an image that turns out to be in use is reported under `failed` and the rest still\ngo. `image_ids` limits the removal to images the operator confirmed: one that is no longer\na candidate is reported under `skipped` and kept. 409 when an install record cannot be read\n(its image is unknown, so nothing is removed) or when this server does not manage Docker\nimages at all.",
         "operationId": "prune_images_api_missions_prune_post",
         "requestBody": {
           "content": {

@@ -11,9 +11,10 @@ from __future__ import annotations
 from typing import Any
 
 import typer
+from rich.markup import escape
 
 from xorcise.core.cli._shared import app, console, emit_json
-from xorcise.core.cli._ux import DASH, print_table, service_label, ux_table
+from xorcise.core.cli._ux import DASH, humanize_when, print_table, service_label, ux_table
 from xorcise.core.cli.rest_client import RestClient
 
 
@@ -65,6 +66,19 @@ def system(
         console.print("mission library: enabled (live status: xorcise catalog status)")
     remotes = info.get("remotes") or ()
     console.print(f"remotes:   {', '.join(remotes) if remotes else '— (none registered)'}")
+    # Environments still up after a failed teardown (#173). Shown only when there are any: the
+    # line exists to say something needs attention, usually a plane that is down.
+    releases = info.get("releases") or {}
+    if releases.get("pending"):
+        console.print(
+            f"[warn]releases:  {releases['pending']} finished run(s) still hold their container or "
+            f"tailnet nodes[/warn] (oldest ended {humanize_when(releases.get('oldest_ended_at'))}) "
+            "— retried automatically"
+        )
+        if releases.get("last_error"):
+            console.print(
+                f"           [dim]last error: {escape(str(releases['last_error']))}[/dim]"
+            )
     if verbose is True:
         # Name the role's maturity here too: `role list` says it, so the deployment readout
         # must not quietly present an experimental role as an ordinary configuration value.

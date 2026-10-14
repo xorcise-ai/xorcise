@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -357,6 +358,84 @@ def terminal_state(run_id: str) -> tuple[bool, str | None, datetime | None]:
         if row is None or row.state != "terminal":
             return (False, None, None)
         return (True, row.terminal_trigger, _utc(row.completed_at))
+
+
+@dataclass(frozen=True)
+class ReleaseState:
+    """Where a run's environment release stands (#173). `released_at` None means not yet."""
+
+    released_at: datetime | None
+    attempts: int
+    error: str | None
+
+
+# A traceback-free error line is what the run page shows; a runaway message must not bloat the row.
+_RELEASE_ERROR_MAX = 500
+
+
+def release_state(run_id: str) -> ReleaseState | None:
+    """The run's release state, or None if the run does not exist."""
+    with session_scope() as s:
+        row = s.scalar(select(RunRow).where(RunRow.id == run_id))
+        if row is None:
+            return None
+        return ReleaseState(_utc(row.released_at), row.release_attempts, row.release_error)
+
+
+def mark_released(run_id: str, at: datetime) -> None:
+    """Record that the run's container and tailnet nodes are gone. First-wins and idempotent: a
+    second release (the sweeper racing the grade's own teardown) keeps the first timestamp."""
+    with session_scope() as s:
+        row = s.scalar(select(RunRow).where(RunRow.id == run_id))
+        if row is None or row.released_at is not None:
+            return
+        row.released_at = at
+        row.release_error = None
+
+
+def record_release_failure(run_id: str, error: str) -> int:
+    """Count a failed release attempt and keep its error. Returns the attempts so far (0 when the
+    run is gone or was released meanwhile, so the caller does not report a stale failure)."""
+    with session_scope() as s:
+        row = s.scalar(select(RunRow).where(RunRow.id == run_id))
+        if row is None or row.released_at is not None:
+            return 0
+        row.release_attempts = (row.release_attempts or 0) + 1
+        row.release_error = error[:_RELEASE_ERROR_MAX]
+        return row.release_attempts
+
+
+@dataclass(frozen=True)
+class AwaitingRelease:
+    """A terminal run whose environment is not released yet (#173)."""
+
+    run_id: str
+    trigger: str | None
+    completed_at: datetime | None
+    attempts: int
+    error: str | None
+
+
+def terminal_runs_awaiting_release() -> list[AwaitingRelease]:
+    """Every terminal run whose environment is not released yet, oldest first. STATIC runs are
+    excluded: they own no container and no tailnet nodes (empty network_cidr), so there is nothing
+    to release."""
+    with session_scope() as s:
+        rows = s.scalars(
+            select(RunRow)
+            .where(
+                RunRow.state == "terminal",
+                RunRow.released_at.is_(None),
+                RunRow.network_cidr != "",
+            )
+            .order_by(RunRow.completed_at)
+        ).all()
+        return [
+            AwaitingRelease(
+                r.id, r.terminal_trigger, _utc(r.completed_at), r.release_attempts, r.release_error
+            )
+            for r in rows
+        ]
 
 
 def is_budget_expired(run_id: str, now: datetime) -> bool:

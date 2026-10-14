@@ -32,6 +32,7 @@ from xorcise.core.roles.boot import AppSpec
 
 if TYPE_CHECKING:
     from xorcise.core.rest.budget_watchdog import BudgetWatchdog
+    from xorcise.core.rest.release_sweeper import ReleaseSweeper
     from xorcise.core.rest.run_readiness import ReadinessWatchdog
 
 
@@ -67,6 +68,7 @@ def build_rest_app() -> FastAPI:
     # blocks; a host that cycles the lifespan) comes back with live singletons, not with a
     # stopped watchdog and no gate silently left behind by the previous cycle.
     _watchdog: BudgetWatchdog | None = None
+    _release_sweeper: ReleaseSweeper | None = None
     _readiness: ReadinessWatchdog | None = None
     # Separate from `_readiness` because the gate cannot be assigned until after an await; see
     # the claim in _start_readiness_gate.
@@ -141,6 +143,37 @@ def build_rest_app() -> FastAPI:
         watchdog, _watchdog = _watchdog, None  # release the guard for a lifespan restart
         if watchdog is not None:
             await watchdog.stop()
+
+    @app.on_event("startup")
+    async def _start_release_sweeper() -> None:
+        # Retry releasing terminal runs whose container or tailnet nodes are still up after a
+        # failed teardown (#173). Unlike the readiness gate it builds each release's deps per
+        # attempt, so a plane that is down at boot delays releases instead of disabling them.
+        nonlocal _release_sweeper
+        if _release_sweeper is not None:
+            return  # a second listener on the same app — one sweeper per process
+        from xorcise.core import runs
+        from xorcise.core.rest.release_sweeper import ReleaseSweeper, grading_settled, release_run
+
+        settings = get_settings()
+        if settings.release_sweep_interval_seconds <= 0:
+            return  # explicitly disabled
+        _release_sweeper = ReleaseSweeper(
+            release=release_run,
+            list_awaiting=runs.terminal_runs_awaiting_release,
+            settled=grading_settled,
+            now_fn=lambda: datetime.now(UTC),
+            interval=settings.release_sweep_interval_seconds,
+            batch=settings.release_sweep_batch,
+        )
+        _release_sweeper.start()
+
+    @app.on_event("shutdown")
+    async def _stop_release_sweeper() -> None:
+        nonlocal _release_sweeper
+        sweeper, _release_sweeper = _release_sweeper, None  # release the guard for a restart
+        if sweeper is not None:
+            await sweeper.stop()
 
     @app.on_event("startup")
     async def _start_readiness_gate() -> None:

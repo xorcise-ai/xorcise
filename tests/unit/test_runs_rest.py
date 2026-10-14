@@ -836,3 +836,67 @@ def test_regrade_refuses_an_environment_failure(migrated_home):
     assert r.status_code == 409
     assert "deploy_failed" in r.json()["detail"]
     assert reporting.get_result(run_id) is None
+
+
+# --- #173: a delete must not drop a run whose environment is still up -------------------------
+
+
+def _finished_lab_run(run_id: str, agent_id: str = "a1") -> None:
+    from datetime import UTC, datetime
+
+    from xorcise.core import runs
+
+    runs.reserve_run(run_id, agent_id, "c1", network_cidr="10.200.9.0/24", entry_cidrs="")
+    runs.finalize_run(run_id, budget_seconds=300, prompt="P")
+    runs.mark_terminal(run_id, "done", datetime.now(UTC))
+
+
+def _stub_release(monkeypatch, *, released: bool) -> list[str]:
+    from xorcise.core.rest import run_teardown
+
+    called: list[str] = []
+
+    def teardown(run_id: str) -> run_teardown.ReleaseOutcome:
+        called.append(run_id)
+        return run_teardown.ReleaseOutcome(
+            released=released, error="" if released else "tailnet: Headscale is not reachable"
+        )
+
+    monkeypatch.setattr(run_teardown, "teardown_run", teardown)
+    return called
+
+
+def test_delete_releases_an_unreleased_environment_first(migrated_home, monkeypatch):
+    from xorcise.core import runs
+
+    _finished_lab_run("run-del-rel")
+    called = _stub_release(monkeypatch, released=True)
+    assert _client().delete("/api/runs/run-del-rel").status_code == 204
+    assert called == ["run-del-rel"]
+    assert runs.get("run-del-rel") is None
+
+
+def test_delete_refuses_while_the_environment_cannot_be_released(migrated_home, monkeypatch):
+    # The row is the release sweeper's only handle on the run: deleting it would leak the
+    # container until the next boot and the tailnet nodes forever.
+    from xorcise.core import runs
+
+    _finished_lab_run("run-del-stuck")
+    _stub_release(monkeypatch, released=False)
+    r = _client().delete("/api/runs/run-del-stuck")
+    assert r.status_code == 409
+    assert "run-del-stuck" in r.json()["detail"]
+    assert "Headscale is not reachable" in r.json()["detail"]
+    assert runs.get("run-del-stuck") is not None
+
+
+def test_delete_of_a_released_run_does_not_tear_down_again(migrated_home, monkeypatch):
+    from datetime import UTC, datetime
+
+    from xorcise.core import runs
+
+    _finished_lab_run("run-del-done")
+    runs.mark_released("run-del-done", datetime.now(UTC))
+    called = _stub_release(monkeypatch, released=False)
+    assert _client().delete("/api/runs/run-del-done").status_code == 204
+    assert called == []

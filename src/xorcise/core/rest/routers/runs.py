@@ -259,6 +259,11 @@ def delete_run(run_id: str) -> Response:
                 f"terminate it before deleting"
             ),
         )
+    from xorcise.core.rest.run_teardown import release_before_delete, unreleased_detail
+
+    unreleased = release_before_delete([run_id])
+    if unreleased:
+        raise HTTPException(status_code=409, detail=unreleased_detail(unreleased))
     reporting.delete_result(run_id)
     runs.delete_run(run_id)
     return Response(status_code=204)
@@ -453,6 +458,23 @@ def run_environment(run_id: str) -> RunEnvironmentView:
             run_id=run_id, state="none", detail="static mission — no environment to start"
         )
     if run.state == "terminal":
+        # Read from the run row, not assumed: a teardown can fail, and until it lands the
+        # container and tailnet nodes are still up (#173).
+        release = runs.release_state(run_id)
+        if release is not None and release.released_at is None:
+            if release.attempts:
+                detail = (
+                    f"teardown failed {release.attempts} time(s), retrying automatically: "
+                    f"{release.error or 'no error recorded'}"
+                )
+            else:
+                detail = "the environment is torn down once grading finishes"
+            return RunEnvironmentView(
+                run_id=run_id,
+                state="releasing",
+                detail=detail,
+                release_attempts=release.attempts,
+            )
         return RunEnvironmentView(
             run_id=run_id, state="released", detail="the environment has been torn down"
         )

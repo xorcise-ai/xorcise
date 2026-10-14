@@ -122,6 +122,16 @@ def remove_agent(name: str) -> Response:
     agent = agents.get(name)
     if agent is None:
         raise HTTPException(status_code=404, detail=f"no agent named '{name}'")
+    # Release the agent's finished runs first: deleting a row whose environment is still up loses
+    # the release sweeper's only handle on it (#173).
+    from xorcise.core.rest.run_teardown import release_before_delete, unreleased_detail
+
+    finished = [
+        r.run_id for r in runs.list_runs() if r.agent_id == agent.id and r.state == "terminal"
+    ]
+    unreleased = release_before_delete(finished)
+    if unreleased:
+        raise HTTPException(status_code=409, detail=unreleased_detail(unreleased))
     reporting.delete_for_agent(agent.id)
     runs.delete_for_agent(agent.id)
     agents.remove(name)

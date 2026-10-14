@@ -177,6 +177,42 @@ def test_upgrade_gives_every_agent_a_kind_and_keeps_the_table_intact(tmp_path, m
         assert conn.execute(text("SELECT agent_id FROM runs")).scalar() == "id-null"
 
 
+def test_upgrade_adds_the_release_columns_without_backfilling(tmp_path, monkeypatch):
+    """0007 (#173): a terminal run that predates the columns starts out unreleased, so the release
+    sweeper revisits it once; the downgrade drops the columns again."""
+    from alembic import command
+    from sqlalchemy import text
+
+    from xorcise.core.db.migrate import _alembic_config
+
+    monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
+    config.get_settings.cache_clear()
+    db.get_engine.cache_clear()
+    db.upgrade()
+    command.downgrade(_alembic_config(), "0006_agent_kind_defaults_to_generic")
+    with db.get_engine().begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO runs (id, agent_id, mission, state, created_at, terminal_trigger, "
+                "completed_at, network_cidr) VALUES ('r1', 'a1', 'm', 'terminal', :now, 'done', "
+                ":now, '10.200.1.0/24')"
+            ),
+            {"now": _NOW},
+        )
+    db.upgrade()
+    cols = {c["name"] for c in inspect(db.get_engine()).get_columns("runs")}
+    assert {"released_at", "release_attempts", "release_error"} <= cols
+    with db.get_engine().begin() as conn:
+        row = conn.execute(
+            text("SELECT released_at, release_attempts, release_error FROM runs WHERE id = 'r1'")
+        ).one()
+    assert tuple(row) == (None, 0, None)
+
+    command.downgrade(_alembic_config(), "0006_agent_kind_defaults_to_generic")
+    cols = {c["name"] for c in inspect(db.get_engine()).get_columns("runs")}
+    assert not {"released_at", "release_attempts", "release_error"} & cols
+
+
 def test_upgrade_is_idempotent(tmp_path, monkeypatch):
     monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
     config.get_settings.cache_clear()
@@ -205,7 +241,7 @@ def test_head_revision_is_the_latest_migration(tmp_path, monkeypatch):
     monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
     config.get_settings.cache_clear()
     db.get_engine.cache_clear()
-    assert db.head_revision() == "0006_agent_kind_defaults_to_generic"
+    assert db.head_revision() == "0007_record_environment_release"
 
 
 def test_boot_state_fresh_on_empty_db(tmp_path, monkeypatch):

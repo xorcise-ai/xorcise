@@ -218,13 +218,18 @@ class RunEnvironmentView(BaseModel):
       starting  deployed; the mission services / subnet router are still coming up
       ready     every inner service is running and the run's router is on the tailnet
       failed    the environment exited or never came up (the run is closed out as deploy_failed)
+      releasing terminal run — the container or tailnet nodes are not torn down yet: grading has
+                not finished, or a teardown failed and is being retried (#173)
       released  terminal run — the environment has been torn down
     """
 
     run_id: str
-    state: Literal["none", "starting", "ready", "failed", "released"]
+    state: Literal["none", "starting", "ready", "failed", "releasing", "released"]
     ready: bool = False
     detail: str = ""  # short human explanation, e.g. what it is still waiting for
+    # Failed teardown attempts so far (releasing only). Non-zero means a plane refused the release,
+    # not merely that grading is still running — the case a person should hear about.
+    release_attempts: int = 0
 
 
 class RunCreatedEntry(RunEntry):

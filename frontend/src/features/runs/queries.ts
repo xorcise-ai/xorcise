@@ -138,12 +138,26 @@ export function useTerminateRun() {
  *  actually coming up (or dying) without a manual refresh; stops once the run is terminal, where
  *  the state is a fixed "Released". Served from the readiness gate's last observation, so polling
  *  it is cheap (no Docker probe per request). */
+/** A finished run's teardown is retried with a backoff of 30 s and up, so polling its
+ *  "releasing" state faster than this would only re-read the same answer. */
+const RELEASE_POLL_MS = 10_000;
+
+/** Poll while the run is live, and keep polling a finished run until its environment is
+ *  released, so the chip moves from Releasing to Released without a reload (#173). */
+export function environmentPollInterval(
+  active: boolean,
+  env: RunEnvironment | undefined,
+): number | false {
+  if (active) return RUN_POLL_MS;
+  return env?.state === "releasing" ? RELEASE_POLL_MS : false;
+}
+
 export function useRunEnvironment(runId: string, active: boolean) {
   return useQuery({
     queryKey: ["run-environment", runId],
     queryFn: () =>
       api.get<RunEnvironment>(`/runs/${encodeURIComponent(runId)}/environment`),
     enabled: !!runId,
-    refetchInterval: active ? RUN_POLL_MS : false,
+    refetchInterval: (q) => environmentPollInterval(active, q.state.data),
   });
 }

@@ -9,6 +9,7 @@ show on the CLI."""
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -169,6 +170,16 @@ class MissionBaseView(_Frozen):
     promoted_index_digest: str | None = None
 
 
+class ReleaseBacklogView(_Frozen):
+    """Finished runs whose environment a teardown failed to release (#173): their container or
+    tailnet nodes are still up, and the release sweeper keeps retrying. Runs merely waiting for
+    their grade to finish are not counted — that is normal, not something to act on."""
+
+    pending: int = 0
+    oldest_ended_at: datetime | None = None  # when the longest-waiting of them ended
+    last_error: str = ""  # that run's most recent teardown error
+
+
 class SystemInfo(_Frozen):
     """Read-only Reflect view powering the GUI System / Modules / Catalog cards."""
 
@@ -189,3 +200,5 @@ class SystemInfo(_Frozen):
     # port — and, with the pid, stop it or repair the record instead of orphaning it. None from
     # a server that predates the field.
     pid: int | None = None
+    # Environments still up after a failed teardown. None from a server that predates the field.
+    releases: ReleaseBacklogView | None = None

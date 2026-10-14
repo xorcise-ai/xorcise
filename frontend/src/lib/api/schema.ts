@@ -410,8 +410,9 @@ export interface paths {
          *     tags — that no install record, live run, container or in-flight pull uses. Removal is never
          *     forced; an image that turns out to be in use is reported under `failed` and the rest still
          *     go. `image_ids` limits the removal to images the operator confirmed: one that is no longer
-         *     a candidate is reported under `skipped` and kept. 409 when an install record cannot be read (its image is unknown, so nothing is removed)
-         *     or when this server does not manage Docker images at all.
+         *     a candidate is reported under `skipped` and kept. 409 when an install record cannot be read
+         *     (its image is unknown, so nothing is removed) or when this server does not manage Docker
+         *     images at all.
          */
         post: operations["prune_images_api_missions_prune_post"];
         delete?: never;
@@ -2626,6 +2627,26 @@ export interface components {
             trace_id?: string | null;
         };
         /**
+         * ReleaseBacklogView
+         * @description Finished runs whose environment a teardown failed to release (#173): their container or
+         *     tailnet nodes are still up, and the release sweeper keeps retrying. Runs merely waiting for
+         *     their grade to finish are not counted — that is normal, not something to act on.
+         */
+        ReleaseBacklogView: {
+            /**
+             * Last Error
+             * @default
+             */
+            last_error: string;
+            /** Oldest Ended At */
+            oldest_ended_at?: string | null;
+            /**
+             * Pending
+             * @default 0
+             */
+            pending: number;
+        };
+        /**
          * ResolvedTerrainV2
          * @description The v2 resolved terrain wire DTO — the run-scoped network/infrastructure map
          *     with groups, nodes, edges, and an updates stream for state transitions.
@@ -2918,6 +2939,8 @@ export interface components {
          *       starting  deployed; the mission services / subnet router are still coming up
          *       ready     every inner service is running and the run's router is on the tailnet
          *       failed    the environment exited or never came up (the run is closed out as deploy_failed)
+         *       releasing terminal run — the container or tailnet nodes are not torn down yet: grading has
+         *                 not finished, or a teardown failed and is being retried (#173)
          *       released  terminal run — the environment has been torn down
          */
         RunEnvironmentView: {
@@ -2931,13 +2954,18 @@ export interface components {
              * @default false
              */
             ready: boolean;
+            /**
+             * Release Attempts
+             * @default 0
+             */
+            release_attempts: number;
             /** Run Id */
             run_id: string;
             /**
              * State
              * @enum {string}
              */
-            state: "none" | "starting" | "ready" | "failed" | "released";
+            state: "none" | "starting" | "ready" | "failed" | "releasing" | "released";
         };
         /**
          * RunEventsView
@@ -3156,6 +3184,7 @@ export interface components {
             pid?: number | null;
             /** Planes */
             planes: components["schemas"]["PlaneStatus"][];
+            releases?: components["schemas"]["ReleaseBacklogView"] | null;
             /**
              * Remotes
              * @default []

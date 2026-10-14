@@ -336,6 +336,28 @@ def test_system_renders_planes_table_and_environment(monkeypatch):
         assert internal not in out
 
 
+def test_system_warns_about_environments_a_teardown_left_up(monkeypatch):
+    """#173: finished runs whose container or tailnet nodes are still up after a failed teardown
+    are counted, so a plane that is down gets noticed. Nothing is printed when there are none."""
+    info = {
+        **_SYSTEM_INFO,
+        "releases": {
+            "pending": 2,
+            "oldest_ended_at": "2026-10-14T12:00:00Z",
+            "last_error": "tailnet: Headscale control plane 'headscale' is not reachable",
+        },
+    }
+    monkeypatch.setattr(RestClient, "get", lambda self, path: info)
+    out = runner.invoke(app, ["system"]).stdout
+    assert "2 finished run(s) still hold their container or tailnet nodes" in out
+    assert "retried automatically" in out
+    assert "Headscale control plane 'headscale' is not reachable" in out
+
+    for quiet in ({**_SYSTEM_INFO, "releases": {"pending": 0}}, _SYSTEM_INFO):
+        monkeypatch.setattr(RestClient, "get", lambda self, path, quiet=quiet: quiet)
+        assert "releases:" not in runner.invoke(app, ["system"]).stdout
+
+
 def test_system_verbose_reveals_deployment_internals(monkeypatch):
     monkeypatch.setattr(RestClient, "get", lambda self, path: _SYSTEM_INFO)
     result = runner.invoke(app, ["system", "--verbose"])

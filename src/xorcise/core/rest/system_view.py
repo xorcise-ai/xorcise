@@ -21,6 +21,7 @@ from xorcise.core.contracts.config import (
     CatalogStatusView,
     MissionBaseView,
     PlaneStatus,
+    ReleaseBacklogView,
     SystemInfo,
 )
 from xorcise.core.rest.catalog_view import build_catalog_view_deps
@@ -276,6 +277,26 @@ def build_system_info(settings: Settings) -> SystemInfo:
         mission_base=_cached("mission_base", lambda: _mission_base_view(source)),
         host_platform=_host_platform(settings),
         pid=os.getpid(),  # lets `down`/`up`/`db upgrade` find this instance without the pid file
+        releases=_release_backlog(),
+    )
+
+
+def _release_backlog() -> ReleaseBacklogView | None:
+    """Runs a teardown failed to release (#173). Read live, not memoised: it is one query, and
+    the count is what an operator watches fall back to zero once a plane is back. None if it
+    cannot be read: a diagnostics view must not fail on one of its parts."""
+    from xorcise.core import runs
+
+    try:
+        awaiting = runs.terminal_runs_awaiting_release()
+    except Exception:  # noqa: BLE001 — degrade this one field, never the whole /system view
+        return None
+    failed = [a for a in awaiting if a.attempts > 0]
+    if not failed:
+        return ReleaseBacklogView()
+    oldest = failed[0]  # the listing is oldest-first
+    return ReleaseBacklogView(
+        pending=len(failed), oldest_ended_at=oldest.completed_at, last_error=oldest.error or ""
     )
 
 

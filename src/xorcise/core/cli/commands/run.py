@@ -489,6 +489,7 @@ def run_status(
     if r.get("status") == "not_graded":
         # Final, not progress: exit 0 so a `while … run status` poll stops here.
         _print_not_graded(run_id, r)
+        _print_unreleased(client, run_id)
         return
     if r.get("status") == "grading":
         # Terminal but not graded yet — grading is async after /complete.
@@ -506,6 +507,7 @@ def run_status(
         )
         raise typer.Exit(3)
     _render_result(r, verbose=verbose, telemetry=telemetry)
+    _print_unreleased(client, run_id)
 
 
 @run_app.command("terminate")
@@ -645,6 +647,16 @@ def _not_graded_envelope(body: str) -> dict[str, Any] | None:
     if isinstance(parsed, dict) and parsed.get("status") == "not_graded":
         return parsed
     return None
+
+
+def _print_unreleased(client: RestClient, run_id: str) -> None:
+    """Warn when a finished run's environment is still up because its teardown failed (#173).
+
+    Silent while the teardown simply has not run yet (grading just finished), and against an older
+    server without the field: the warning is for a plane that refused the release."""
+    env = client.get_or_none(f"/runs/{run_id}/environment") or {}
+    if env.get("state") == "releasing" and env.get("release_attempts"):
+        console.print(f"[warn]environment not released[/] — {escape(str(env.get('detail') or ''))}")
 
 
 def _print_not_graded(run_id: str, envelope: dict[str, Any]) -> None:

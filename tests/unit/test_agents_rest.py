@@ -240,3 +240,36 @@ def test_the_rest_warning_is_the_shared_one_the_cli_prints(migrated_home):
     known = [h["kind"] for h in c.get("/api/harnesses").json()]
     r = c.post("/api/agents", json={"name": "typo", "kind": "openhand"})
     assert r.json()["warnings"] == [kind_warning("openhand", known)]
+
+
+def test_delete_agent_refuses_while_a_run_environment_cannot_be_released(
+    migrated_home, monkeypatch
+):
+    """#173: the cascade deletes the run rows, which are the release sweeper's only handle on
+    them. A finished run whose environment is still up is released first, or the delete refused."""
+    from datetime import UTC, datetime
+
+    from xorcise.core import agents, runs
+    from xorcise.core.rest import run_teardown
+
+    agent = agents.register("alpha", endpoint="http://a")
+    runs.reserve_run("r-stuck", agent.id, "c1", network_cidr="10.200.9.0/24", entry_cidrs="")
+    runs.finalize_run("r-stuck", budget_seconds=300, prompt="P")
+    runs.mark_terminal("r-stuck", "done", datetime.now(UTC))
+    monkeypatch.setattr(
+        run_teardown,
+        "teardown_run",
+        lambda run_id: run_teardown.ReleaseOutcome(released=False, error="container: boom"),
+    )
+    c = _client()
+    r = c.delete("/api/agents/alpha")
+    assert r.status_code == 409
+    assert "r-stuck" in r.json()["detail"]
+    assert agents.get("alpha") is not None
+    assert runs.get("r-stuck") is not None
+
+    monkeypatch.setattr(
+        run_teardown, "teardown_run", lambda run_id: run_teardown.ReleaseOutcome(released=True)
+    )
+    assert c.delete("/api/agents/alpha").status_code == 204
+    assert runs.get("r-stuck") is None

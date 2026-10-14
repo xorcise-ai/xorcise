@@ -137,6 +137,11 @@ class RunCreateDeps:
     image_platform: Callable[[str], str | None] = _no_image_platform
 
 
+# The credential the in-process control adapters are built with. Only meaningful across a process
+# boundary; in-process it is a fixed shared value, so every builder here uses the same one.
+CONTROL_API_KEY = "local"
+
+
 def _use_real_headscale(settings: Settings) -> bool:
     """Real fence iff this process owns the Headscale plane and stubs aren't forced."""
     return not settings.use_stubs and settings.role in {"all", "runner"}
@@ -167,43 +172,25 @@ def _real_headscale_cli(settings: Settings) -> HeadscaleCli:
     return cli
 
 
-def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None) -> RunCreateDeps:
-    """Wire the in-process run-create deps from settings.
-
-    Real-by-default: `use_docker=None` derives from settings — real DockerSdkDriver-backed
-    control (`_use_real_docker`) and the real DockerExecHeadscaleCli fence
-    (`_use_real_headscale`) on a Docker/Headscale-owning role (`all`/`runner`), stub
-    when `use_stubs` is set or the role doesn't own the plane. An explicit `use_docker` bool
-    overrides both (tests inject False; the integration loop passes True).
-    """
-    # Lazy by design: wiring the concrete adapters is the ONE place the server touches the
-    # headscale/runner planes. Keeping these out of module scope lets the control plane
-    # import this module at boot without leaking those planes (role isolation).
-    from xorcise.core.headscale import NetworkController, StubHeadscaleCli
-    from xorcise.core.orchestration.clients.control import (
-        InProcessControlStub,
-        RunnerControlAdapter,
-    )
-    from xorcise.core.orchestration.clients.headscale_client import HeadscaleFenceClient
-    from xorcise.core.rest.mission_pull import _real_docker_driver, _use_real_docker
-
-    control_real = _use_real_docker(settings) if use_docker is None else use_docker
-    fence_real = _use_real_headscale(settings) if use_docker is None else use_docker
-
-    # Topology-resolved agent-facing host: local uses the docker host-gateway alias so
-    # the agent reaches the COLLECTOR (OTLP) without the tailnet; distributed uses the advertised
-    # tailnet host. Used ONLY for the OTLP endpoint (deps.advertise_host).
-    local = settings.deployment_topology == "local"
-    agent_host = _agent_facing_host(settings)
-    # The tailnet control plane — the Headscale login server the per-run ROUTER dials
-    # (NetworkSpec.login_server) and the agent's `tailscale up --login-server` join recipe
-    # (mission.login_server) — ALWAYS uses the advertised tailnet host, NEVER host.docker.internal:
-    # the per-run router container gets no host-gateway mapping and cannot resolve that alias.
-    # This is topology-independent (the mission data plane is unchanged).
+def _login_server(settings: Settings) -> str:
+    """The tailnet control plane: the Headscale login server the per-run ROUTER dials
+    (NetworkSpec.login_server) and the agent's `tailscale up --login-server` join recipe
+    (mission.login_server). ALWAYS the advertised tailnet host, NEVER host.docker.internal: the
+    per-run router container gets no host-gateway mapping and cannot resolve that alias. This is
+    topology-independent (the mission data plane is unchanged)."""
     tailnet_host = settings.headscale_advertise_host or settings.host
-    login_server = settings.headscale_url or f"http://{tailnet_host}:{settings.headscale_port}"
+    return settings.headscale_url or f"http://{tailnet_host}:{settings.headscale_port}"
+
+
+def _build_fence(settings: Settings, *, fence_real: bool) -> NetworkFencePort:
+    """The tailnet fence. The real one probes Headscale first and raises if it is unreachable."""
+    # Lazy, like every adapter import here: keeps the headscale plane off this module's import path.
+    from xorcise.core.headscale import NetworkController, StubHeadscaleCli
+    from xorcise.core.orchestration.clients.headscale_client import HeadscaleFenceClient
+
+    local = settings.deployment_topology == "local"
     cli = _real_headscale_cli(settings) if fence_real else StubHeadscaleCli()
-    fence = HeadscaleFenceClient(
+    return HeadscaleFenceClient(
         NetworkController(
             cli,
             router_tag=settings.router_tag,
@@ -217,6 +204,64 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
             active_provider=_acl_active_provider if fence_real else None,
         )
     )
+
+
+def build_teardown_fence(settings: Settings) -> NetworkFencePort:
+    """The fence alone, for releasing a run's tailnet nodes (#173).
+
+    Separate from build_run_create_deps so a release builds only the plane it is about to use.
+    Built together, a down Headscale raised before the Docker half existed, and the run's
+    container leaked although Docker was fine. Raises if Headscale is unreachable."""
+    return _build_fence(settings, fence_real=_use_real_headscale(settings))
+
+
+def build_teardown_control(settings: Settings) -> ControlPort:
+    """The control port alone, for releasing a run's container (#173). It skips what only a create
+    needs (the nesting and base checks, the subnet lister), and a down Headscale cannot stop it.
+    Raises if Docker is unreachable."""
+    from xorcise.core.orchestration.clients.control import (
+        InProcessControlStub,
+        RunnerControlAdapter,
+    )
+    from xorcise.core.rest.mission_pull import _real_docker_driver, _use_real_docker
+
+    if not _use_real_docker(settings):
+        return InProcessControlStub(api_key=CONTROL_API_KEY)
+    from xorcise.core.runner.service import RunnerControlService
+
+    return RunnerControlAdapter(
+        RunnerControlService(_real_docker_driver(), login_server=_login_server(settings)),
+        api_key=CONTROL_API_KEY,
+    )
+
+
+def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None) -> RunCreateDeps:
+    """Wire the in-process run-create deps from settings.
+
+    Real-by-default: `use_docker=None` derives from settings — real DockerSdkDriver-backed
+    control (`_use_real_docker`) and the real DockerExecHeadscaleCli fence
+    (`_use_real_headscale`) on a Docker/Headscale-owning role (`all`/`runner`), stub
+    when `use_stubs` is set or the role doesn't own the plane. An explicit `use_docker` bool
+    overrides both (tests inject False; the integration loop passes True).
+    """
+    # Lazy by design: wiring the concrete adapters is the ONE place the server touches the
+    # headscale/runner planes. Keeping these out of module scope lets the control plane
+    # import this module at boot without leaking those planes (role isolation).
+    from xorcise.core.orchestration.clients.control import (
+        InProcessControlStub,
+        RunnerControlAdapter,
+    )
+    from xorcise.core.rest.mission_pull import _real_docker_driver, _use_real_docker
+
+    control_real = _use_real_docker(settings) if use_docker is None else use_docker
+    fence_real = _use_real_headscale(settings) if use_docker is None else use_docker
+
+    # Topology-resolved agent-facing host: local uses the docker host-gateway alias so
+    # the agent reaches the COLLECTOR (OTLP) without the tailnet; distributed uses the advertised
+    # tailnet host. Used ONLY for the OTLP endpoint (deps.advertise_host).
+    agent_host = _agent_facing_host(settings)
+    login_server = _login_server(settings)
+    fence = _build_fence(settings, fence_real=fence_real)
     control: ControlPort
     # Default: no Docker to enumerate (stub/unit path) → the allocator sees no leftover subnets.
     live_subnets: Callable[[], set[str]] = _no_live_subnets
@@ -232,7 +277,7 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
         driver = _real_docker_driver()
         control = RunnerControlAdapter(
             RunnerControlService(driver, login_server=login_server),
-            api_key="local",
+            api_key=CONTROL_API_KEY,
         )
         # Reconcile allocation against live Docker networks (incl. LEFTOVERS the DB no longer
         # tracks), filtered to the run pool so Docker's own bridges never mask a run subnet.
@@ -272,13 +317,13 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
         def image_platform(image_ref: str) -> str | None:
             return local_image_platform(settings, image_ref)
     else:
-        control = InProcessControlStub(api_key="local")
+        control = InProcessControlStub(api_key=CONTROL_API_KEY)
     ca_cert = Path(settings.headscale_ca_cert).read_text() if settings.headscale_ca_cert else ""
     extra_hosts = (settings.headscale_host_alias,) if settings.headscale_host_alias else ()
     return RunCreateDeps(
         control=control,
         fence=fence,
-        api_key="local",
+        api_key=CONTROL_API_KEY,
         install_root=Path(settings.missions_root),
         login_server=login_server,
         base_network=settings.base_network,
