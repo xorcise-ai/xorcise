@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import signal
 import socket
+import threading
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -286,12 +288,21 @@ def serve(
     console.print(lifecycle._serve_banner(role_name, specs))
     for line in listener_lines(bound):
         err_console.print(f"[dim]{line}[/dim]", highlight=False)  # stderr: lands in serve.log
+    # `down` stops us with SIGTERM. uvicorn shuts the servers down on it, then re-raises it into
+    # the handler that was installed before it; left at the default, that kills the process
+    # inside asyncio.run and the finally below never runs. Routed to the Ctrl-C handler instead,
+    # it ends as the KeyboardInterrupt caught below, after a graceful shutdown.
+    in_main_thread = threading.current_thread() is threading.main_thread()
+    if in_main_thread:
+        previous_sigterm = signal.signal(signal.SIGTERM, signal.default_int_handler)
     try:
         failures = asyncio.run(serve_bound(bound))
     except KeyboardInterrupt:
         console.print("shutting down")
         return
     finally:
+        if in_main_thread:
+            signal.signal(signal.SIGTERM, previous_sigterm)
         for b in bound:
             b.close()  # uvicorn closes what it adopted; this covers a bind that never got there
         # After EVERY server has stopped, not in a lifespan hook: a hook runs once per uvicorn
