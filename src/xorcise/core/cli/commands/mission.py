@@ -237,20 +237,34 @@ def show_mission(
 @mission_app.command("pull")
 def pull_mission_cmd(
     mission_id: str = typer.Argument(..., help=_MISSION_HELP),
+    refresh: bool = typer.Option(
+        False,
+        "--refresh",
+        help=(
+            "Repair an installed mission. Removes its local image (never forced), downloads "
+            "it again and reinstalls it. Layers it shares with other images are kept. For a "
+            "newer release use: xorcise mission update."
+        ),
+    ),
 ) -> None:
     """Install a library mission so it becomes runnable (downloads its image)."""
     client = RestClient()
     entry = resolve_mission(client, mission_id)
     mission_id = str(entry["mission_id"])
-    if entry.get("installed"):
+    if entry.get("installed") and refresh is not True:
         # Safe no-op: converging on 'already installed' is success, not an error.
         console.print(f"'{entry.get('name') or mission_id}' is already installed", markup=False)
         next_step(f"xorcise run create --agent <name> --mission {mission_id}")
         return
-    view = pull_to_terminal(client, mission_id)
+    view = pull_to_terminal(client, mission_id, refresh=refresh is True)
     if view.get("status") == "installed":
         name = (view.get("entry") or {}).get("name") or entry.get("name") or mission_id
-        console.print(f"installed '{name}' ({mission_id})", markup=False)
+        done = (
+            f"repaired '{name}' ({mission_id}): its image was downloaded again and reinstalled"
+            if refresh is True
+            else f"installed '{name}' ({mission_id})"
+        )
+        console.print(done, markup=False)
         next_step(f"xorcise run create --agent <name> --mission {mission_id}")
         return
     if view.get("status") == "error":
@@ -263,7 +277,16 @@ def pull_mission_cmd(
         # exits 130 above) and nothing was installed. A clean, intentional stop: not a failure
         # (exit 1) and not still-in-progress (exit 3), so exit 0 — parity with the GUI's terminal
         # "Pull cancelled." state.
-        err_console.print(f"pull cancelled — '{mission_id}' was not installed", markup=False)
+        if refresh is True:
+            # The repair removes the local image before it downloads, so a cancel can leave the
+            # mission installed without one.
+            err_console.print(
+                f"repair cancelled — if its image was already removed, run "
+                f"xorcise mission pull {mission_id} --refresh again",
+                markup=False,
+            )
+        else:
+            err_console.print(f"pull cancelled — '{mission_id}' was not installed", markup=False)
         raise typer.Exit(0)
     # Cap expired with the job still running server-side: in progress, not failure.
     console.print(
@@ -307,12 +330,17 @@ place). Already-current installs are a no-op."""
 def delete_mission_cmd(
     mission_id: str = typer.Argument(..., help=_MISSION_HELP),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+    purge: bool = typer.Option(
+        False,
+        "--purge",
+        help="Also remove the mission's image, unless something else still uses it.",
+    ),
 ) -> None:
     """Uninstall an installed mission. Available as both `delete` and `rm`.
 
     Removes the local install so the mission leaves Your Own / drops back to \
-not-installed in the library. Recorded runs and results are kept; the fused \
-image stays in the local store.
+not-installed in the library. Recorded runs and results are kept. Its image is \
+kept for a later `xorcise mission prune` unless you pass --purge.
     """
     client = RestClient()
     entry = resolve_mission(client, mission_id)
@@ -324,11 +352,95 @@ image stays in the local store.
             f"'{entry.get('name') or mission_id}' is not installed — nothing to uninstall",
             see=("xorcise mission list --installed",),
         )
+    also = " and remove its image" if purge is True else ""
     confirm_or_abort(
-        f"Uninstall mission '{mission_id}'? (runs and results are kept)", assume_yes=yes
+        f"Uninstall mission '{mission_id}'{also}? (runs and results are kept)", assume_yes=yes
     )
-    client.delete(f"/missions/{mission_id}")
+    if purge is not True:
+        client.delete(f"/missions/{mission_id}")
+        console.print(f"deleted mission '{mission_id}'", markup=False)
+        return
+    # Removing a multi-GB image can outlast the default read timeout.
+    out = client.delete(f"/missions/{mission_id}?purge=true", timeout=600.0)
     console.print(f"deleted mission '{mission_id}'", markup=False)
+    outcome, detail = out.get("image_outcome"), out.get("detail")
+    if outcome == "failed":
+        fail(
+            f"uninstalled, but could not remove image {out.get('image')}: {detail}",
+            see=("xorcise mission prune",),
+        )
+    console.print(f"no image removed: {detail}" if outcome == "none" else str(detail), markup=False)
+
+
+def _images(n: int) -> str:
+    return f"{n} image" if n == 1 else f"{n} images"
+
+
+def _image_name(tags: list[str], image_id: str, slug: str, sep: str = ", ") -> str:
+    """An image's tags, or `<untagged> <short id> (<mission>)` once its tag has moved on."""
+    if tags:
+        return sep.join(tags)
+    return f"<untagged> {image_id.removeprefix('sha256:')[:12]} ({slug})"
+
+
+@mission_app.command("prune")
+def prune_cmd(
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Remove the images. Without it, prune only lists them."
+    ),
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit the raw prune report as JSON (for scripting)."
+    ),
+) -> None:
+    """Free disk space: remove mission images nothing uses any more.
+
+    That is the images of uninstalled missions and the previous versions an update left \
+behind, including untagged ones that still name their mission. Without --yes this only \
+lists them. An image an installed mission, an active run or a container uses is never removed.
+    """
+    apply = yes is True
+    # Removing several multi-GB images can outlast the default read timeout.
+    report = RestClient().post(
+        "/missions/prune", json={"apply": apply}, timeout=600.0 if apply else None
+    )
+    failed = report.get("failed") or []
+    if as_json is True:
+        emit_json(report)
+        if failed:
+            raise typer.Exit(1)
+        return
+    candidates = report.get("candidates") or []
+    if not candidates:
+        console.print("no unused mission images to remove")
+        return
+    if not apply:
+        table = ux_table("Image", "Size", "Reason")
+        for c in candidates:
+            name = _image_name(c["tags"], c["image_id"], c["slug"], sep="\n")
+            table.add_row(name, size_label(c["size_bytes"]), c["reason"])
+        print_table(table)
+        reclaim = size_label(report.get("reclaimable_bytes"))
+        console.print(
+            f"would remove {_images(len(candidates))}, reclaiming up to {reclaim}", markup=False
+        )
+        next_step("xorcise mission prune --yes", "re-run with --yes to remove them")
+        return
+    removed = set(report.get("removed") or [])
+    slugs = {c["image_id"]: c["slug"] for c in candidates}
+    for c in candidates:
+        if c["image_id"] in removed:
+            console.print(
+                f"removed {_image_name(c['tags'], c['image_id'], c['slug'])}", markup=False
+            )
+    for f in failed:
+        name = _image_name(f["tags"], f["image_id"], slugs.get(f["image_id"], "?"))
+        err_console.print(f"could not remove {name}: {f['error']}", markup=False)
+    freed = sum(c["size_bytes"] for c in candidates if c["image_id"] in removed)
+    console.print(
+        f"removed {_images(len(removed))}, reclaiming up to {size_label(freed)}", markup=False
+    )
+    if failed:
+        fail(f"{_images(len(failed))} could not be removed", see=("xorcise mission prune",))
 
 
 @mission_app.command("ingest")

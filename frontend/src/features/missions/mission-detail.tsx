@@ -23,6 +23,7 @@ import {
   Server,
   ShieldCheck,
   Trash2,
+  RotateCw,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -39,12 +40,12 @@ import {
   platformTags,
   updateReason,
 } from "./mission-card";
+import { DeleteMissionDialog } from "./delete-mission-dialog";
 import { MissionTerrain } from "./mission-terrain";
 import {
   formatBytes,
   useMission,
   useMissionManifest,
-  useDeleteMission,
   usePullMission,
 } from "./queries";
 import {
@@ -90,8 +91,7 @@ export function MissionDetail({ id }: { id: string | null }) {
   // Keyed by mission_id: the catalog card's pull and this button share ONE live job,
   // so starting a pull in either view disables both and both render its progress.
   const pull = usePullMission(id ?? "");
-  const del = useDeleteMission();
-  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   if (!id)
     return (
@@ -129,11 +129,6 @@ export function MissionDetail({ id }: { id: string | null }) {
   // mission lists its security skills too, not just installed ones whose catalog row carries them.
   const skills = c.skills.length > 0 ? c.skills : (m?.metadata.skills ?? []);
 
-  async function confirmDelete() {
-    await del.mutateAsync(c.mission_id);
-    router.push("/missions");
-  }
-
   return (
     <div className="min-w-0 space-y-6 p-6">
       {/* ── Header ── */}
@@ -161,37 +156,52 @@ export function MissionDetail({ id }: { id: string | null }) {
             <div className="flex shrink-0 items-center gap-2">
               <CreateRunButton id={c.mission_id} installed={c.installed} />
               {c.installed ? (
-                confirming ? (
-                  <>
-                    <span className="text-dense text-text-secondary">
-                      Delete this mission?
-                    </span>
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={confirmDelete}
-                      disabled={del.isPending}
-                    >
-                      {del.isPending ? "Deleting…" : "Yes, delete"}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setConfirming(false)}
-                    >
-                      Cancel
-                    </Button>
-                  </>
-                ) : (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setConfirming(true)}
-                  >
+                <>
+                  {/* Re-pull (CLI parity: `mission pull --refresh`) repairs an installed mission
+                      whose local image is damaged: the server removes the image, never forced,
+                      then downloads it again, because a plain pull skips layers already on
+                      disk. A newer release is Update's job: the catalog flags it. Library
+                      missions only: a custom mission has nothing to pull from. */}
+                  {c.source === "library" && (
+                    <>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        aria-busy={pull.isPulling}
+                        disabled={pull.isPulling}
+                        title="Remove this mission's image and download it again, to repair a damaged copy"
+                        onClick={() => pull.start({ refresh: true })}
+                      >
+                        {pull.isPulling ? (
+                          <Loader2 className="size-3.5 motion-safe:animate-spin" />
+                        ) : (
+                          <RotateCw className="size-3.5" />
+                        )}
+                        {pull.isPulling ? "Pulling…" : "Re-pull"}
+                      </Button>
+                      {pull.canCancel && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => pull.cancel()}
+                          disabled={pull.isCancelling}
+                        >
+                          {pull.isCancelling ? "Cancelling…" : "Cancel"}
+                        </Button>
+                      )}
+                    </>
+                  )}
+                  <Button variant="outline" size="sm" onClick={() => setDeleting(true)}>
                     <Trash2 className="size-3.5" />
                     Delete
                   </Button>
-                )
+                  <DeleteMissionDialog
+                    entry={c}
+                    open={deleting}
+                    onClose={() => setDeleting(false)}
+                    onDeleted={() => router.push("/missions")}
+                  />
+                </>
               ) : (
                 <div className="flex items-center gap-2">
                   <Button
@@ -228,11 +238,23 @@ export function MissionDetail({ id }: { id: string | null }) {
             </div>
           </div>
 
-          {del.isError && (
-            <p className="mt-1 text-body text-err">Delete failed — try again.</p>
+          {pull.joinedInsteadOfRefresh && (
+            <p role="status" className="mt-1 max-w-[68ch] text-body text-warning">
+              A pull of this mission was already running, so this shows its progress instead of
+              starting a refresh. Re-pull again once it finishes if you still need one.
+            </p>
+          )}
+          {pull.isRefresh && pull.isSuccess && (
+            <p role="status" className="mt-1 text-body text-ok">
+              Re-pulled. The image was downloaded again and the mission reinstalled.
+            </p>
           )}
           {pull.isCancelled && (
-            <p className="mt-1 text-body text-text-tertiary">Pull cancelled.</p>
+            <p className="mt-1 text-body text-text-tertiary">
+              {pull.isRefresh
+                ? "Re-pull cancelled. If it had already removed the image, Re-pull again before starting a run."
+                : "Pull cancelled."}
+            </p>
           )}
           {pull.isError && (
             <p className="mt-1 text-body text-err">

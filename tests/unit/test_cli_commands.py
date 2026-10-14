@@ -1,5 +1,6 @@
 import errno
 import os
+import re
 import subprocess
 from collections.abc import Mapping
 
@@ -1579,3 +1580,311 @@ def test_update_gates_only_a_changed_unrecognised_kind(monkeypatch):
         == 0
     )
     assert [p["kind"] for p in puts] == ["Custom", "openhands"]
+
+
+# mission prune / delete --purge / pull --refresh ---------------------------------------------
+
+_PRUNE_CANDIDATES = [
+    {
+        "image_id": "sha256:old",
+        "tags": ["xorcise/mis-vault:1"],
+        "slug": "vault",
+        "size_bytes": 1_500_000_000,
+        "reason": "superseded",
+    },
+    {
+        "image_id": "sha256:gone",
+        "tags": ["xorcise/mission-gone:local"],
+        "slug": "gone",
+        "size_bytes": 500_000_000,
+        "reason": "not installed",
+    },
+]
+
+
+def _fake_prune(monkeypatch, report: dict[str, object]) -> list[dict[str, object]]:
+    """Answer POST /missions/prune with *report*; returns the request bodies sent."""
+    bodies: list[dict[str, object]] = []
+
+    def fake_post(self, path, json, timeout=None):
+        assert path == "/missions/prune"
+        bodies.append(json)
+        return report
+
+    monkeypatch.setattr(RestClient, "post", fake_post)
+    return bodies
+
+
+def _report(applied: bool, removed=(), failed=()) -> dict[str, object]:
+    return {
+        "applied": applied,
+        "candidates": _PRUNE_CANDIDATES,
+        "removed": list(removed),
+        "failed": list(failed),
+        "reclaimable_bytes": 2_000_000_000,
+    }
+
+
+def test_mission_prune_defaults_to_a_dry_run(monkeypatch):
+    bodies = _fake_prune(monkeypatch, _report(applied=False))
+    result = runner.invoke(app, ["mission", "prune"])
+    assert result.exit_code == 0
+    assert bodies == [{"apply": False}]
+    out = result.stdout
+    assert "xorcise/mis-vault:1" in out and "superseded" in out and "1.5 GB" in out
+    assert "xorcise/mission-gone:local" in out and "not installed" in out
+    assert "would remove 2 images, reclaiming up to 2.0 GB" in out
+    assert "xorcise mission prune --yes" in out
+
+
+def test_mission_prune_yes_removes_and_summarises(monkeypatch):
+    bodies = _fake_prune(monkeypatch, _report(True, removed=["sha256:old", "sha256:gone"]))
+    result = runner.invoke(app, ["mission", "prune", "--yes"])
+    assert result.exit_code == 0
+    assert bodies == [{"apply": True}]
+    assert "removed xorcise/mis-vault:1" in result.stdout
+    assert "removed 2 images, reclaiming up to 2.0 GB" in result.stdout
+
+
+def test_mission_prune_partial_failure_exits_1(monkeypatch):
+    failed = [
+        {"image_id": "sha256:gone", "tags": ["xorcise/mission-gone:local"], "error": "in use"}
+    ]
+    _fake_prune(monkeypatch, _report(True, removed=["sha256:old"], failed=failed))
+    result = runner.invoke(app, ["mission", "prune", "-y"])
+    assert result.exit_code == 1
+    assert "removed xorcise/mis-vault:1" in result.stdout
+    assert "could not remove xorcise/mission-gone:local: in use" in result.output
+
+
+_UNTAGGED = {
+    "image_id": "sha256:abcdef1234567890",
+    "tags": [],
+    "slug": "vault",
+    "size_bytes": 1_000_000_000,
+    "reason": "superseded",
+}
+
+
+def test_mission_prune_names_an_untagged_image_by_short_id_and_mission(monkeypatch):
+    report = {**_report(applied=False), "candidates": [_UNTAGGED]}
+    _fake_prune(monkeypatch, report)
+    result = runner.invoke(app, ["mission", "prune"])
+    assert result.exit_code == 0
+    assert "<untagged> abcdef123456 (vault)" in result.stdout
+
+
+def test_mission_prune_yes_reports_untagged_removals_and_failures(monkeypatch):
+    other = {**_UNTAGGED, "image_id": "sha256:0123456789abcdef", "slug": "sqli"}
+    failed = [{"image_id": "sha256:0123456789abcdef", "tags": [], "error": "in use"}]
+    report = {
+        **_report(True, removed=["sha256:abcdef1234567890"], failed=failed),
+        "candidates": [_UNTAGGED, other],
+    }
+    _fake_prune(monkeypatch, report)
+    result = runner.invoke(app, ["mission", "prune", "--yes"])
+    assert result.exit_code == 1
+    assert "removed <untagged> abcdef123456 (vault)" in result.stdout
+    assert "could not remove <untagged> 0123456789ab (sqli): in use" in result.output
+
+
+def test_mission_prune_json_emits_the_raw_report(monkeypatch):
+    import json
+
+    report = _report(applied=False)
+    _fake_prune(monkeypatch, report)
+    result = runner.invoke(app, ["mission", "prune", "--json"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == report
+
+
+def test_mission_prune_with_nothing_to_remove(monkeypatch):
+    _fake_prune(
+        monkeypatch,
+        {"applied": False, "candidates": [], "removed": [], "failed": [], "reclaimable_bytes": 0},
+    )
+    result = runner.invoke(app, ["mission", "prune"])
+    assert result.exit_code == 0
+    assert "no unused mission images to remove" in result.stdout
+
+
+def test_mission_prune_help_documents_the_flags():
+    result = runner.invoke(app, ["mission", "prune", "--help"])
+    assert result.exit_code == 0
+    assert "--yes" in result.output and "--json" in result.output
+
+
+def test_mission_show_prune_points_at_the_command(monkeypatch):
+    monkeypatch.setattr(RestClient, "get", lambda self, path: [{"mission_id": "vault"}])
+    result = runner.invoke(app, ["mission", "show", "prune"])
+    assert result.exit_code == 1
+    assert "'prune' is a command, not a mission" in result.output
+    assert "xorcise mission prune" in result.output
+
+
+def _fake_delete(monkeypatch, answer: object, timeouts: list[object] | None = None) -> list[str]:
+    paths: list[str] = []
+    monkeypatch.setattr(
+        RestClient,
+        "get",
+        lambda self, path: [{"mission_id": "vault", "name": "Vault", "installed": True}],
+    )
+
+    def fake_delete(self, path, timeout=None):
+        paths.append(path)
+        if timeouts is not None:
+            timeouts.append(timeout)
+        return answer
+
+    monkeypatch.setattr(RestClient, "delete", fake_delete)
+    return paths
+
+
+def test_mission_delete_purge_removes_the_image(monkeypatch):
+    paths = _fake_delete(
+        monkeypatch,
+        {
+            "mission_id": "vault",
+            "image": "xorcise/mission-vault:0",
+            "image_outcome": "removed",
+            "detail": "removed xorcise/mission-vault:0",
+        },
+    )
+    result = runner.invoke(app, ["mission", "delete", "vault", "--purge"])
+    assert result.exit_code == 0
+    assert paths == ["/missions/vault?purge=true"]
+    assert "deleted mission 'vault'" in result.stdout
+    assert "removed xorcise/mission-vault:0" in result.stdout
+
+
+def test_mission_delete_purge_waits_long_enough_to_remove_a_large_image(monkeypatch):
+    timeouts: list[object] = []
+    _fake_delete(
+        monkeypatch,
+        {"mission_id": "vault", "image": None, "image_outcome": "none", "detail": "static"},
+        timeouts,
+    )
+    result = runner.invoke(app, ["mission", "delete", "vault", "--purge", "--yes"])
+    assert result.exit_code == 0
+    assert timeouts == [600.0]
+
+
+def test_mission_delete_purge_kept_image_is_success_with_a_note(monkeypatch):
+    _fake_delete(
+        monkeypatch,
+        {
+            "mission_id": "vault",
+            "image": "xorcise/mission-vault:0",
+            "image_outcome": "kept",
+            "detail": "kept xorcise/mission-vault:0: used by an active run",
+        },
+    )
+    result = runner.invoke(app, ["mission", "delete", "vault", "--purge", "--yes"])
+    assert result.exit_code == 0
+    assert "kept xorcise/mission-vault:0: used by an active run" in result.stdout
+
+
+def test_mission_delete_purge_failed_removal_exits_1_after_uninstalling(monkeypatch):
+    _fake_delete(
+        monkeypatch,
+        {
+            "mission_id": "vault",
+            "image": "xorcise/mission-vault:0",
+            "image_outcome": "failed",
+            "detail": "in use",
+        },
+    )
+    result = runner.invoke(app, ["mission", "delete", "vault", "--purge"])
+    assert result.exit_code == 1
+    assert "deleted mission 'vault'" in result.stdout
+    assert "uninstalled, but could not remove image xorcise/mission-vault:0: in use" in (
+        result.output
+    )
+
+
+def test_mission_delete_without_purge_keeps_the_plain_path(monkeypatch):
+    paths = _fake_delete(monkeypatch, None)
+    result = runner.invoke(app, ["mission", "delete", "vault"])
+    assert result.exit_code == 0
+    assert paths == ["/missions/vault"]
+    assert result.stdout.strip().endswith("deleted mission 'vault'")
+
+
+def test_mission_delete_help_documents_purge():
+    result = runner.invoke(app, ["mission", "delete", "--help"])
+    assert result.exit_code == 0
+    assert "--purge" in result.output
+    assert "image stays in the local store" not in result.output
+
+
+def _fake_pull(
+    monkeypatch, installed: bool, joined: bool = False, status: str = "installed"
+) -> list[tuple[str, object]]:
+    posts: list[tuple[str, object]] = []
+
+    def fake_post(self, path, json=None, timeout=None):
+        posts.append((path, json))
+        return {"job_id": "j1", "joined": joined}
+
+    def fake_get(self, path):
+        if path == "/missions":
+            return [{"mission_id": "sqli", "name": "SQLi", "installed": installed}]
+        assert path == "/missions/pull-jobs/j1"
+        return {"status": status, "phase": "done", "entry": {"name": "SQLi"}}
+
+    monkeypatch.setattr(RestClient, "post", fake_post)
+    monkeypatch.setattr(RestClient, "get", fake_get)
+    return posts
+
+
+def test_mission_pull_refresh_repulls_an_installed_mission(monkeypatch):
+    posts = _fake_pull(monkeypatch, installed=True)
+    result = runner.invoke(app, ["mission", "pull", "sqli", "--refresh"])
+    assert result.exit_code == 0
+    assert posts == [("/missions/sqli/pull-jobs", {"refresh": True})]
+    assert "repaired 'SQLi' (sqli): its image was downloaded again" in result.stdout
+
+
+def test_mission_pull_refresh_cancelled_says_to_run_the_repair_again(monkeypatch):
+    # The repair removes the local image before it downloads, so a cancel can leave the mission
+    # installed without one. "was not installed" would be wrong on both counts.
+    _fake_pull(monkeypatch, installed=True, status="cancelled")
+    result = runner.invoke(app, ["mission", "pull", "sqli", "--refresh"])
+    assert result.exit_code == 0
+    assert "was not installed" not in result.stderr
+    assert "xorcise mission pull sqli --refresh" in " ".join(result.stderr.split())
+
+
+def test_mission_pull_refresh_says_when_it_only_joined_a_running_pull(monkeypatch):
+    _fake_pull(monkeypatch, installed=True, joined=True)
+    result = runner.invoke(app, ["mission", "pull", "sqli", "--refresh"])
+    assert result.exit_code == 0
+    assert "a pull of 'sqli' was already running" in result.stderr
+    assert "instead of starting a refresh" in result.stderr
+
+
+def test_mission_pull_refresh_is_quiet_when_it_starts_the_pull(monkeypatch):
+    _fake_pull(monkeypatch, installed=True, joined=False)
+    result = runner.invoke(app, ["mission", "pull", "sqli", "--refresh"])
+    assert result.exit_code == 0
+    assert "already running" not in result.stderr
+
+
+def test_mission_pull_without_refresh_posts_the_plain_body(monkeypatch):
+    posts = _fake_pull(monkeypatch, installed=False)
+    result = runner.invoke(app, ["mission", "pull", "sqli"])
+    assert result.exit_code == 0
+    assert posts == [("/missions/sqli/pull-jobs", {})]
+
+
+def test_mission_pull_help_documents_refresh():
+    result = runner.invoke(app, ["mission", "pull", "--help"])
+    assert result.exit_code == 0
+    assert "--refresh" in result.output
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    help_text = " ".join(plain.replace("│", " ").split())
+    # A plain re-pull skips layers already in the store, so the help must say what refresh
+    # does that makes it a repair, and must not promise more.
+    assert "Removes its local image" in help_text
+    assert "never forced" in help_text
+    assert "repairs a damaged local image;" not in help_text

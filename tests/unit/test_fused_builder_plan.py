@@ -182,3 +182,22 @@ def test_base_compat_verdict_by_generation():
 
     unknown = base_compat(None)  # a local :local fuse carries no generation in its tag
     assert unknown.compatible is None and unknown.hint is None
+
+
+def test_fused_image_is_labelled_with_its_mission(monkeypatch, tmp_path):
+    """The fused build stamps ai.xorcise.mission.id, matching the cloud fuse."""
+    calls: list[list[str]] = []
+
+    def _run(cmd, **kw):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", _run)
+    monkeypatch.setattr(build_mod, "ensure_base_image", lambda: None)
+    monkeypatch.setattr(build_mod, "_image_present", lambda ref: True)
+
+    ref = build_mod.FusedImageBuilder().build(tmp_path, _manifest_with_compose(tmp_path))
+    final = calls[-1]
+    assert final[:2] == ["docker", "build"]
+    assert final[2:-1] == ["-t", "xorcise/mission-m1:local", "--label", "ai.xorcise.mission.id=m1"]
+    assert ref.image == "xorcise/mission-m1:local"

@@ -117,6 +117,21 @@ def test_happy_path_is_1_1_1_with_budget_and_prompt(migrated_home, install_root)
     assert prompt.objective == "Bypass the login."
 
 
+def test_the_mission_image_is_protected_while_the_run_deploys(migrated_home, install_root):
+    seen: list[set[str]] = []
+
+    class _Spy(InProcessControlStub):
+        def deploy(self, request, *, credential):
+            seen.append(runs.active_sandbox_refs())
+            return super().deploy(request, credential=credential)
+
+    agents.register("alice", endpoint="http://a")
+    _write_installed(install_root)
+    deps = dataclasses.replace(_deps(install_root), control=_Spy(api_key="k"))
+    create_run(agent_name="alice", mission_slug="sqli-login", budget_seconds=900, deps=deps)
+    assert seen == [{"xorcise/mission-sqli-login:0"}]
+
+
 def test_create_run_surfaces_static_ip_target_in_prompt(migrated_home, install_root):
     # with static_ips {web: {default: 10}} the prompt's Targets section names web at its
     # authored address on the carved /24 (no fabricated port).

@@ -57,6 +57,8 @@ export type MissionManifest = S["MissionManifest"];
 export type IngestStarted = S["IngestStarted"];
 export type IngestJobView = S["IngestJobView"];
 export type MissionUpdateOut = S["MissionUpdateOut"];
+/** DELETE /missions/{id}?purge=true: the mission is uninstalled whatever `image_outcome` says. */
+export type MissionDeleteOut = S["MissionDeleteOut"];
 export type SystemInfo = S["SystemInfo"];
 export type PlaneStatus = S["PlaneStatus"];
 export type FsListing = S["FsListing"];
@@ -84,3 +86,5 @@ export type PullJobStarted = S["PullJobStarted"];
 /** Poll view of a background pull. `percent` is null while the total is unknown
  * (indeterminate UI) and is NOT monotonic — docker layer totals grow mid-pull. */
 export type PullJobView = S["PullJobView"];
+export type PruneReport = S["PruneReport"];
+export type PruneCandidateView = S["PruneCandidateView"];

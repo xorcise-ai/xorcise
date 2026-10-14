@@ -2,10 +2,12 @@ import { useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, errorDetail } from "@/lib/api/client";
 import type {
+  MissionDeleteOut,
   MissionUpdateOut,
   CatalogEntry,
   CatalogStatus,
   MissionManifest,
+  PruneReport,
   IngestJobView,
   IngestStarted,
   PullJobStarted,
@@ -41,7 +43,16 @@ const PULL_POLL_MS = 1000;
 
 /** Live pull state for one mission, shared by every component that renders it. */
 export interface PullMissionState {
-  start: () => void;
+  /** Start a pull. `refresh` pulls again even when the mission is installed and its image is
+   *  local (the "Re-pull" action). */
+  start: (opts?: { refresh?: boolean }) => void;
+  /** While the pull runs: this client asked for a refresh, but the server joined a pull that was
+   *  already running. That pull keeps the options it was started with, so this request started
+   *  no refresh. False once the joined pull ends, so a finished or cancelled pull is not
+   *  mislabelled. */
+  joinedInsteadOfRefresh: boolean;
+  /** The job this client started was a refresh that really ran (not joined). */
+  isRefresh: boolean;
   /** Ask the in-flight pull to stop (no-op if there's no live job yet). */
   cancel: () => void;
   isPulling: boolean;
@@ -97,8 +108,11 @@ export function usePullMission(missionId: string): PullMissionState {
   });
 
   const start = useMutation({
-    mutationFn: () =>
-      api.post<PullJobStarted>(`/missions/${enc}/pull-jobs`),
+    mutationFn: (refresh: boolean) =>
+      api.post<PullJobStarted>(
+        `/missions/${enc}/pull-jobs`,
+        refresh ? { refresh: true } : undefined,
+      ),
     // Clear any lingering TERMINAL view (a prior cancelled/errored/installed job) the instant a
     // re-pull begins, so during the start round-trip the card shows a clean "Pulling…" and not a
     // stale "Pull cancelled."/"Pull failed." caption alongside it — and so cancel() can't target
@@ -158,8 +172,12 @@ export function usePullMission(missionId: string): PullMissionState {
   // unwinds). This excludes the start round-trip (view not yet seeded) and any lingering
   // terminal job, so a click can only cancel the pull it visibly controls.
   const liveJobId = status === "pulling" ? view?.job_id : undefined;
+  const askedRefresh = start.variables === true;
+  const joined = start.data?.joined === true;
   return {
-    start: () => start.mutate(),
+    start: (opts) => start.mutate(opts?.refresh === true),
+    joinedInsteadOfRefresh: askedRefresh && joined && status === "pulling",
+    isRefresh: askedRefresh && start.isSuccess && !joined,
     cancel: () => {
       if (liveJobId) cancel.mutate(liveJobId);
     },
@@ -220,8 +238,6 @@ export function pullPhaseLabel(phase: string | null): string {
   return (phase && PULL_PHASE_LABELS[phase]) || "Pulling…";
 }
 
-// Uninstall an installed mission — local or pulled. Refreshes the catalog so it drops
-// out of Your Own / falls back to not-installed in the library.
 /**
  * §35's ONE update action: an in-place, atomic server-side re-pull of an installed library
  * mission onto the catalog's current artifact. Synchronous by design — layers shared with the
@@ -237,11 +253,17 @@ export function useUpdateMission() {
   });
 }
 
+/** Uninstall an installed mission, local or pulled. Refreshes the catalog so it drops out of Your
+ *  Own / falls back to not-installed in the library. Without `purgeImage` the server answers a
+ *  bare 204 (undefined here). With it, a 200 says what became of the image; the uninstall stands
+ *  whatever the image outcome. */
 export function useDeleteMission() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) =>
-      api.del(`/missions/${encodeURIComponent(id)}`),
+    mutationFn: ({ id, purgeImage }: { id: string; purgeImage: boolean }) =>
+      api.del<MissionDeleteOut | undefined>(
+        `/missions/${encodeURIComponent(id)}${purgeImage ? "?purge=true" : ""}`,
+      ),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["missions"] }),
   });
 }
@@ -305,5 +327,29 @@ export function useIngestMission() {
       }
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["missions"] }),
+  });
+}
+
+/**
+ * Mission-image prune (CLI parity: `xorcise mission prune`). `apply: false` is the dry run: the
+ * report of what would go and why, with nothing removed. `apply: true` removes those images and
+ * reports per-image failures; the catalog is refetched because installed sizes may change.
+ */
+/** A prune request: a dry run (`apply: false`), or the removal of the images the operator
+ *  confirmed from one. The server removes only those still unused and reports the rest as
+ *  `skipped`, so a confirmation never reaches an image the operator did not see. */
+export type PruneRun = { apply: false } | { apply: true; imageIds: string[] };
+
+export function usePruneImages() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (run: PruneRun) =>
+      api.post<PruneReport>(
+        "/missions/prune",
+        run.apply ? { apply: true, image_ids: run.imageIds } : { apply: false },
+      ),
+    onSuccess: (report) => {
+      if (report.applied) void qc.invalidateQueries({ queryKey: ["missions"] });
+    },
   });
 }

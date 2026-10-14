@@ -17,6 +17,7 @@ from xorcise.core.runner.docker import (
     ContainerSpec,
     ContainerState,
     DockerDriver,
+    ImageRecord,
     PullProgress,
     ServiceState,
 )
@@ -142,6 +143,67 @@ class DockerSdkDriver(DockerDriver):
             return True
         except docker.errors.ImageNotFound:
             return False
+
+    def list_images(self) -> list[ImageRecord]:
+        records = []
+        for image in self._client.images.list():
+            attrs = image.attrs or {}
+            records.append(
+                ImageRecord(
+                    id=str(image.id),
+                    tags=tuple(image.tags),
+                    labels=dict((attrs.get("Config") or {}).get("Labels") or {}),
+                    size_bytes=int(attrs.get("Size") or 0),
+                    digests=tuple(attrs.get("RepoDigests") or ()),
+                )
+            )
+        return records
+
+    def remove_image(self, ref: str) -> None:
+        import docker.errors
+
+        from xorcise.core.contracts.errors import ImageInUseError
+
+        try:
+            self._client.images.remove(ref, force=False)
+        except docker.errors.NotFound:
+            return  # already gone: the end state removal asks for
+        except docker.errors.APIError as exc:
+            if exc.status_code != 409:
+                raise
+            explanation = str(exc.explanation or exc)
+            # Only a container conflict means "in use". Every other 409 (an id several
+            # repositories name, an image a child was built FROM) carries docker's own words.
+            if "container" not in explanation:
+                raise RuntimeError(explanation) from exc
+            raise ImageInUseError(f"{ref} is in use by a container") from exc
+
+    def container_image_ids(self) -> set[str]:
+        # all=True: a stopped container pins its image exactly like a running one.
+        containers = self._client.containers.list(all=True)
+        return {str(c.attrs["Image"]) for c in containers if (c.attrs or {}).get("Image")}
+
+    def image_id(self, ref: str) -> str | None:
+        import docker.errors
+
+        try:
+            return str(self._client.images.get(ref).id)
+        except docker.errors.ImageNotFound:
+            return None
+
+    def tag_image(self, image_id: str, ref: str) -> None:
+        repo, tag = _split_ref(ref)
+        self._client.images.get(image_id).tag(repo, tag)
+
+    def check_registry(self, ref: str, *, auth: tuple[str, str] | None = None) -> None:
+        import docker.errors
+
+        auth_config = {"username": auth[0], "password": auth[1]} if auth else None
+        try:
+            # The daemon asks the registry for the manifest only: nothing is downloaded.
+            self._client.api.inspect_distribution(ref, auth_config=auth_config)
+        except docker.errors.APIError as exc:
+            raise RuntimeError(str(exc.explanation or exc)) from exc
 
     def image_labels(self, image: str) -> dict[str, str] | None:
         """The image's config labels (inherited included), or None if it is not present."""

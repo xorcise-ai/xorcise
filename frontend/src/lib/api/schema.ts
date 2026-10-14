@@ -393,6 +393,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/missions/prune": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Prune Images
+         * @description Find (and with apply=true, remove) the local mission images nothing uses any more.
+         *
+         *     A candidate is an image XORCISE owns — mission-base lineage AND only mission-repository
+         *     tags — that no install record, live run, container or in-flight pull uses. Removal is never
+         *     forced; an image that turns out to be in use is reported under `failed` and the rest still
+         *     go. `image_ids` limits the removal to images the operator confirmed: one that is no longer
+         *     a candidate is reported under `skipped` and kept. 409 when an install record cannot be read (its image is unknown, so nothing is removed)
+         *     or when this server does not manage Docker images at all.
+         */
+        post: operations["prune_images_api_missions_prune_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/missions/pull-jobs": {
         parameters: {
             query?: never;
@@ -475,8 +502,13 @@ export interface paths {
          *
          *     Removes the local install directory so the mission leaves Your Own / drops back to
          *     not-installed in the library. 404 if nothing is installed under that id. Routes the write
-         *     through the server's install root (single writer, parity with ingest/pull). The fused image is
-         *     intentionally left in the local store; pruning it is a separate concern.
+         *     through the server's install root (single writer, parity with ingest/pull).
+         *
+         *     Without `purge` the image stays in the local store and the answer is a bare 204 (POST
+         *     /missions/prune reclaims it later). With `purge=true` the image is removed too, under
+         *     prune's rules: it stays when it is not a XORCISE mission image or another install, an
+         *     active run or a container still uses it. The uninstall stands either way; the 200 body
+         *     says what became of the image.
          */
         delete: operations["delete_mission_api_missions__mission_id__delete"];
         options?: never;
@@ -541,6 +573,10 @@ export interface paths {
          *     for — so it runs on a background task; poll GET /missions/pull-jobs/{job_id}. A POST
          *     while a pull for this mission is active returns the SAME job_id without starting a
          *     second worker (server-side double-pull guard).
+         *
+         *     The body is optional. `refresh: true` pulls again even when the mission is installed and
+         *     its image is local. A refresh that arrives while a pull is already active joins that pull
+         *     as-is: the running job does not turn into a refresh.
          */
         post: operations["start_pull_job_api_missions__mission_id__pull_jobs_post"];
         delete?: never;
@@ -2237,6 +2273,20 @@ export interface components {
             required_major: number;
         };
         /**
+         * MissionDeleteOut
+         * @description DELETE /{id}?purge=true result. The mission is uninstalled whatever image_outcome says.
+         */
+        MissionDeleteOut: {
+            /** Detail */
+            detail?: string | null;
+            /** Image */
+            image: string | null;
+            /** Image Outcome */
+            image_outcome: string;
+            /** Mission Id */
+            mission_id: string;
+        };
+        /**
          * MissionInfo
          * @description What `GET /runs/{id}/mission` returns: the run's single mission, unlocked.
          */
@@ -2452,10 +2502,76 @@ export interface components {
              */
             state: "ok" | "down" | "not_deployed";
         };
+        /** PruneCandidateView */
+        PruneCandidateView: {
+            /** Image Id */
+            image_id: string;
+            /** Reason */
+            reason: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Slug */
+            slug: string;
+            /** Tags */
+            tags: string[];
+        };
+        /** PruneFailureView */
+        PruneFailureView: {
+            /** Error */
+            error: string;
+            /** Image Id */
+            image_id: string;
+            /** Tags */
+            tags: string[];
+        };
+        /**
+         * PruneReport
+         * @description What prune found (candidates) and, when applied, what it removed or could not.
+         */
+        PruneReport: {
+            /** Applied */
+            applied: boolean;
+            /** Candidates */
+            candidates: components["schemas"]["PruneCandidateView"][];
+            /** Failed */
+            failed: components["schemas"]["PruneFailureView"][];
+            /** Reclaimable Bytes */
+            reclaimable_bytes: number;
+            /** Removed */
+            removed: string[];
+            /**
+             * Skipped
+             * @default []
+             */
+            skipped: string[];
+        };
+        /** PruneRequest */
+        PruneRequest: {
+            /**
+             * Apply
+             * @default false
+             */
+            apply: boolean;
+            /** Image Ids */
+            image_ids?: string[] | null;
+        };
+        /** PullJobRequest */
+        PullJobRequest: {
+            /**
+             * Refresh
+             * @default false
+             */
+            refresh: boolean;
+        };
         /** PullJobStarted */
         PullJobStarted: {
             /** Job Id */
             job_id: string;
+            /**
+             * Joined
+             * @default false
+             */
+            joined: boolean;
         };
         /**
          * PullJobView
@@ -3891,6 +4007,39 @@ export interface operations {
             };
         };
     };
+    prune_images_api_missions_prune_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PruneRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PruneReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     active_pull_job_api_missions_pull_jobs_get: {
         parameters: {
             query: {
@@ -3986,7 +4135,9 @@ export interface operations {
     };
     delete_mission_api_missions__mission_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                purge?: boolean;
+            };
             header?: never;
             path: {
                 mission_id: string;
@@ -3995,6 +4146,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Uninstalled, with purge=true */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MissionDeleteOut"];
+                };
+            };
             /** @description Successful Response */
             204: {
                 headers: {
@@ -4084,7 +4244,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PullJobRequest"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             202: {

@@ -32,6 +32,8 @@ BASE_VERSION = "2"
 REQUIRED_BASE_MAJOR = int(BASE_VERSION)
 #: The label the base declares and every fused image inherits via `FROM`.
 BASE_VERSION_LABEL = "ai.xorcise.base.version"
+#: The label every fused image carries naming its mission.
+MISSION_ID_LABEL = "ai.xorcise.mission.id"
 
 
 def base_major_from_ref(ref: str) -> int | None:
@@ -249,5 +251,7 @@ class FusedImageBuilder:
             subprocess.run(["cp", "-r", str(bundle_dir), str(ctx / "bundle")], check=True)
             _write_fused_dockerfile(ctx)
             tag = fused_tag(slug)
-            subprocess.run(["docker", "build", "-t", tag, str(ctx)], check=True)
+            # The cloud fuse stamps the same label, so every mission image names its mission.
+            label = f"{MISSION_ID_LABEL}={slug}"
+            subprocess.run(["docker", "build", "-t", tag, "--label", label, str(ctx)], check=True)
         return MissionRef(mission_id=slug, image=tag)

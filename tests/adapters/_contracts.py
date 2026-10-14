@@ -146,3 +146,8 @@ class DockerDriverContract:
         assert driver.image_exists("xorcise/definitely-absent:0") is False
         driver.pull("ghcr.io/xorcise/mission-1:1")
         assert driver.image_exists("ghcr.io/xorcise/mission-1:1") is True
+
+    def test_remove_absent_image_converges(self, driver: DockerDriver) -> None:
+        # removal is idempotent: an image that is already gone is the end state asked for
+        driver.remove_image("xorcise/definitely-absent:0")
+        assert driver.image_exists("xorcise/definitely-absent:0") is False

@@ -2331,6 +2331,48 @@
         "title": "MissionBaseView",
         "type": "object"
       },
+      "MissionDeleteOut": {
+        "description": "DELETE /{id}?purge=true result. The mission is uninstalled whatever image_outcome says.",
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "image": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image"
+          },
+          "image_outcome": {
+            "title": "Image Outcome",
+            "type": "string"
+          },
+          "mission_id": {
+            "title": "Mission Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mission_id",
+          "image",
+          "image_outcome"
+        ],
+        "title": "MissionDeleteOut",
+        "type": "object"
+      },
       "MissionInfo": {
         "description": "What `GET /runs/{id}/mission` returns: the run's single mission, unlocked.",
         "properties": {
@@ -2813,11 +2855,165 @@
         "title": "PlaneStatus",
         "type": "object"
       },
+      "PruneCandidateView": {
+        "properties": {
+          "image_id": {
+            "title": "Image Id",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          }
+        },
+        "required": [
+          "image_id",
+          "tags",
+          "slug",
+          "size_bytes",
+          "reason"
+        ],
+        "title": "PruneCandidateView",
+        "type": "object"
+      },
+      "PruneFailureView": {
+        "properties": {
+          "error": {
+            "title": "Error",
+            "type": "string"
+          },
+          "image_id": {
+            "title": "Image Id",
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          }
+        },
+        "required": [
+          "image_id",
+          "tags",
+          "error"
+        ],
+        "title": "PruneFailureView",
+        "type": "object"
+      },
+      "PruneReport": {
+        "description": "What prune found (candidates) and, when applied, what it removed or could not.",
+        "properties": {
+          "applied": {
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/PruneCandidateView"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "failed": {
+            "items": {
+              "$ref": "#/components/schemas/PruneFailureView"
+            },
+            "title": "Failed",
+            "type": "array"
+          },
+          "reclaimable_bytes": {
+            "title": "Reclaimable Bytes",
+            "type": "integer"
+          },
+          "removed": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Removed",
+            "type": "array"
+          },
+          "skipped": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Skipped",
+            "type": "array"
+          }
+        },
+        "required": [
+          "applied",
+          "candidates",
+          "removed",
+          "failed",
+          "reclaimable_bytes"
+        ],
+        "title": "PruneReport",
+        "type": "object"
+      },
+      "PruneRequest": {
+        "properties": {
+          "apply": {
+            "default": false,
+            "title": "Apply",
+            "type": "boolean"
+          },
+          "image_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Ids"
+          }
+        },
+        "title": "PruneRequest",
+        "type": "object"
+      },
+      "PullJobRequest": {
+        "properties": {
+          "refresh": {
+            "default": false,
+            "title": "Refresh",
+            "type": "boolean"
+          }
+        },
+        "title": "PullJobRequest",
+        "type": "object"
+      },
       "PullJobStarted": {
         "properties": {
           "job_id": {
             "title": "Job Id",
             "type": "string"
+          },
+          "joined": {
+            "default": false,
+            "title": "Joined",
+            "type": "boolean"
           }
         },
         "required": [
@@ -5543,6 +5739,55 @@
         ]
       }
     },
+    "/api/missions/prune": {
+      "post": {
+        "description": "Find (and with apply=true, remove) the local mission images nothing uses any more.\n\nA candidate is an image XORCISE owns \u2014 mission-base lineage AND only mission-repository\ntags \u2014 that no install record, live run, container or in-flight pull uses. Removal is never\nforced; an image that turns out to be in use is reported under `failed` and the rest still\ngo. `image_ids` limits the removal to images the operator confirmed: one that is no longer\na candidate is reported under `skipped` and kept. 409 when an install record cannot be read (its image is unknown, so nothing is removed)\nor when this server does not manage Docker images at all.",
+        "operationId": "prune_images_api_missions_prune_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PruneRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PruneReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prune Images",
+        "tags": [
+          "missions"
+        ]
+      }
+    },
     "/api/missions/pull-jobs": {
       "get": {
         "description": "The active ('pulling') job for a mission, or null \u2014 lets a reloaded GUI resume its\nprogress bar and keeps a second view's Pull button disabled.",
@@ -5682,7 +5927,7 @@
     },
     "/api/missions/{mission_id}": {
       "delete": {
-        "description": "Uninstall an installed mission \u2014 local (your_own) or pulled (library).\n\nRemoves the local install directory so the mission leaves Your Own / drops back to\nnot-installed in the library. 404 if nothing is installed under that id. Routes the write\nthrough the server's install root (single writer, parity with ingest/pull). The fused image is\nintentionally left in the local store; pruning it is a separate concern.",
+        "description": "Uninstall an installed mission \u2014 local (your_own) or pulled (library).\n\nRemoves the local install directory so the mission leaves Your Own / drops back to\nnot-installed in the library. 404 if nothing is installed under that id. Routes the write\nthrough the server's install root (single writer, parity with ingest/pull).\n\nWithout `purge` the image stays in the local store and the answer is a bare 204 (POST\n/missions/prune reclaims it later). With `purge=true` the image is removed too, under\nprune's rules: it stays when it is not a XORCISE mission image or another install, an\nactive run or a container still uses it. The uninstall stands either way; the 200 body\nsays what became of the image.",
         "operationId": "delete_mission_api_missions__mission_id__delete",
         "parameters": [
           {
@@ -5693,9 +5938,29 @@
               "title": "Mission Id",
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "purge",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Purge",
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MissionDeleteOut"
+                }
+              }
+            },
+            "description": "Uninstalled, with purge=true"
+          },
           "204": {
             "description": "Successful Response"
           },
@@ -5804,7 +6069,7 @@
     },
     "/api/missions/{mission_id}/pull-jobs": {
       "post": {
-        "description": "Start (or join) a background pull for a library mission (202 + job_id, idempotent).\n\nThe image download can take minutes \u2014 far past what a browser will hold one request open\nfor \u2014 so it runs on a background task; poll GET /missions/pull-jobs/{job_id}. A POST\nwhile a pull for this mission is active returns the SAME job_id without starting a\nsecond worker (server-side double-pull guard).",
+        "description": "Start (or join) a background pull for a library mission (202 + job_id, idempotent).\n\nThe image download can take minutes \u2014 far past what a browser will hold one request open\nfor \u2014 so it runs on a background task; poll GET /missions/pull-jobs/{job_id}. A POST\nwhile a pull for this mission is active returns the SAME job_id without starting a\nsecond worker (server-side double-pull guard).\n\nThe body is optional. `refresh: true` pulls again even when the mission is installed and\nits image is local. A refresh that arrives while a pull is already active joins that pull\nas-is: the running job does not turn into a refresh.",
         "operationId": "start_pull_job_api_missions__mission_id__pull_jobs_post",
         "parameters": [
           {
@@ -5817,6 +6082,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PullJobRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
         "responses": {
           "202": {
             "content": {
