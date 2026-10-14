@@ -28,6 +28,14 @@ class ImageNotInstalledError(ContractError):
     runner must fail loud (the caller re-ingests) rather than attempt a doomed registry pull."""
 
 
+class ImageInUseError(ContractError):
+    """Docker refused to delete an image because a container (in any state) still uses it.
+
+    Image removal is never forced, so this is the daemon's 409 conflict surfaced as-is: the
+    caller reports the image as kept and moves on rather than deleting it from under a
+    container."""
+
+
 class EnvironmentConfigError(ContractError, ValueError):
     """A lab mission cannot be safely turned into a per-run environment as configured.
 

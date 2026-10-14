@@ -19,7 +19,7 @@ from xorcise.core.cli.rest_client import RestClient
 # resolution is almost always a transposed command, not a resource name — and
 # the answer must never be a mutating suggestion.
 _AGENT_COMMANDS = frozenset({"list", "register", "update", "rename", "history", "rm", "delete"})
-_MISSION_COMMANDS = frozenset({"list", "show", "pull", "delete", "rm", "ingest"})
+_MISSION_COMMANDS = frozenset({"list", "show", "pull", "update", "delete", "rm", "prune", "ingest"})
 
 
 def _require_value(given: str, noun: str, see: str) -> None:

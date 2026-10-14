@@ -235,3 +235,17 @@ def test_external_control_plane_any_http_response_counts_as_reachable(monkeypatc
 
     monkeypatch.setattr(httpx, "get", lambda *a, **k: Resp())
     assert diag.external_control_plane("https://x:443").ok is True
+
+
+def test_low_disk_space_points_at_mission_prune(monkeypatch, tmp_path):
+    # `docker system prune -a` deletes every unused image on the host, not just XORCISE's.
+    monkeypatch.setattr(diag, "_docker_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        shutil, "disk_usage", lambda path: shutil._ntuple_diskusage(100, 99, 1024**3)
+    )
+    check = diag.disk_space()
+    assert (check.ok, check.detail) == (False, f"only 1.0 GB free at {tmp_path}")
+    assert check.remediation == (
+        "a mission image is 1-3 GB (a local build needs ~3x that transiently) — "
+        "reclaim space with: xorcise mission prune"
+    )

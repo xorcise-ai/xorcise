@@ -7,9 +7,11 @@ stub records calls and pulls/runs nothing.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from typing import ClassVar
+
+from xorcise.core.contracts.errors import ImageInUseError
 
 # Every per-run container the driver creates is stamped with this label so it can be reaped
 # without any in-process bookkeeping — survives a server restart, an abandoned run,
@@ -78,6 +80,21 @@ class PullProgress:
     status: str
     current: int
     total: int
+
+
+@dataclass(frozen=True)
+class ImageRecord:
+    """One image in the local store, as `docker images` lists it.
+
+    `tags` excludes docker's `<none>:<none>` placeholder, so a dangling image has none.
+    `digests` are its repo digests (`repo@sha256:…`): an image pulled by digest is reachable
+    only through them, so anything resolving a ref to an image must consult both."""
+
+    id: str
+    tags: tuple[str, ...]
+    labels: Mapping[str, str]
+    size_bytes: int
+    digests: tuple[str, ...] = ()
 
 
 class DockerDriver(ABC):
@@ -158,6 +175,43 @@ class DockerDriver(ABC):
         inspects, and a None simply leaves the install record's platform unknown."""
         return None
 
+    def list_images(self) -> list[ImageRecord]:
+        """Every image in the local store. Non-abstract [] default: a driver with no image
+        store has nothing to list, which reads as nothing to prune."""
+        return []
+
+    def remove_image(self, ref: str) -> None:
+        """Remove one tag (or the image, when it is the last), or the image itself when `ref`
+        is its id. Never forced.
+
+        Raises ImageInUseError when a container still uses the image; an image that is
+        already gone is success. Raises NotImplementedError by default rather than silently
+        doing nothing, so a driver that cannot delete never reports an image as removed."""
+        raise NotImplementedError(f"{type(self).__name__} cannot remove images")
+
+    def container_image_ids(self) -> set[str]:
+        """Ids of the images used by every container, running or stopped (docker refuses to
+        delete either). Non-abstract empty default, like list_images."""
+        return set()
+
+    def image_id(self, ref: str) -> str | None:
+        """The id of the local image `ref` names, or None when it is not in the store."""
+        return None
+
+    def tag_image(self, image_id: str, ref: str) -> None:
+        """Point `ref` at `image_id`, moving it off whichever image held it. Raises
+        NotImplementedError by default, like remove_image."""
+        raise NotImplementedError
+
+    def check_registry(  # noqa: B027 — optional by design, like the other image defaults
+        self, ref: str, *, auth: tuple[str, str] | None = None
+    ) -> None:
+        """Raise unless the registry answers for `ref` now, without pulling anything.
+
+        A mission repair removes the local image before it pulls, so it asks this first: an
+        offline repair must fail with the image still in place. The default does nothing (a
+        driver without a registry has nothing to ask), which leaves the repair unguarded."""
+
     def daemon_platform(self) -> str | None:
         """The `os/architecture` the DAEMON executes natively (AS1), or None when unknown.
 
@@ -237,6 +291,10 @@ class StubDockerDriver(DockerDriver):
         self.stopped: list[str] = []
         self.stopped_by_name: list[str] = []  # names passed to stop_by_name(), for assertions
         self.present: set[str] = set()
+        # Image-store seams: id → record (test-seeded), ids a container uses, refs removed.
+        self.images: dict[str, ImageRecord] = {}
+        self.container_images: set[str] = set()
+        self.removed: list[str] = []
         self.network_cidrs: set[str] = set()  # test-settable in-use subnets for list_network_cidrs
         # Test seams for the readiness verdict: name → outer ContainerState, project → inner
         # ServiceStates. Unset ⇒ a deployed container reads as running and its inner stack as
@@ -269,7 +327,42 @@ class StubDockerDriver(DockerDriver):
         self.present.add(image)  # after pull the image is local
 
     def image_exists(self, image: str) -> bool:
-        return image in self.present
+        return image in self.present or any(image in r.tags for r in self.images.values())
+
+    def list_images(self) -> list[ImageRecord]:
+        return list(self.images.values())
+
+    def remove_image(self, ref: str) -> None:
+        # Mirrors the daemon: untagging a still-tagged image always succeeds; deleting the
+        # image (its last tag, or the image itself by id) is refused while a container uses it.
+        record = self.images.get(ref) or next(
+            (r for r in self.images.values() if ref in r.tags), None
+        )
+        self.present.discard(ref)
+        if record is None:
+            return
+        remaining = () if ref == record.id else tuple(t for t in record.tags if t != ref)
+        if not remaining and record.id in self.container_images:
+            raise ImageInUseError(f"{ref} is in use by a container")
+        self.removed.append(ref)
+        if remaining:
+            self.images[record.id] = replace(record, tags=remaining)
+        else:
+            del self.images[record.id]
+
+    def container_image_ids(self) -> set[str]:
+        return set(self.container_images)
+
+    def image_id(self, ref: str) -> str | None:
+        if ref in self.images:
+            return ref
+        return next((r.id for r in self.images.values() if ref in r.tags), None)
+
+    def tag_image(self, image_id: str, ref: str) -> None:
+        for rid, record in list(self.images.items()):
+            tags = tuple(t for t in record.tags if t != ref)
+            self.images[rid] = replace(record, tags=(*tags, ref) if rid == image_id else tags)
+        self.present.add(ref)
 
     def read_image_file(self, image: str, path: str) -> str | None:
         """No image store to read from — see `reads_image_files`. The stub creates no networks

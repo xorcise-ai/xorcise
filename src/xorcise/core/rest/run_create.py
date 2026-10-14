@@ -494,6 +494,7 @@ def _reserve_run_subnet(
     entry_networks: tuple[str, ...],
     *,
     name: str | None = None,
+    sandbox_ref: str | None = None,
 ) -> tuple[str, dict[str, str]]:
     """Allocate a /prefix avoiding every live run's subnet and reserve it as a DB row.
 
@@ -525,6 +526,7 @@ def _reserve_run_subnet(
                     network_cidr=cidr,
                     entry_cidrs=",".join(entry_subnets.values()),
                     name=name,
+                    sandbox_ref=sandbox_ref,
                 )
                 return cidr, entry_subnets
             except IntegrityError:
@@ -673,6 +675,9 @@ def create_run(
         mission_slug,
         entry_networks,
         name=run_name,
+        # Recorded now, not at finalize: `mission prune` must see the image as in use for the
+        # whole deploy, even if a concurrent update re-points the install record meanwhile.
+        sandbox_ref=installed.mission_ref.image,
     )
     try:
         return _create_run_with_cidr(

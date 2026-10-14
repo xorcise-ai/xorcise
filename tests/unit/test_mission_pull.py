@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import io
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -21,7 +23,7 @@ from xorcise.core.rest.mission_pull import (
     PullError,
     pull_mission,
 )
-from xorcise.core.runner.docker import PullProgress, StubDockerDriver
+from xorcise.core.runner.docker import ImageRecord, PullProgress, StubDockerDriver
 
 
 def _deps(tmp_path: Path, driver: StubDockerDriver | None = None) -> PullDeps:
@@ -40,12 +42,178 @@ def test_pull_absent_image_pulls_and_installs(tmp_path: Path) -> None:
     assert ic.mission_ref.image == "xorcise/mission-sqli-login:1"
 
 
-def test_pull_present_image_skips_pull(tmp_path: Path) -> None:
+def test_pull_checks_the_registry_even_when_the_tag_is_already_local(tmp_path: Path) -> None:
+    # An uninstall without --purge leaves the image behind under the same tag. Installing from
+    # that copy without asking the registry would reinstall whatever it was then, not what the
+    # catalog serves now. A docker pull of an unchanged image moves no layers, so always asking
+    # costs one registry round trip.
     d = StubDockerDriver()
     d.present.add("xorcise/mission-sqli-login:1")
     pull_mission("sqli-login", _deps(tmp_path, d))
-    assert d.pulled == []  # already local
+    assert d.pulled == ["xorcise/mission-sqli-login:1"]
     assert get_installed("sqli-login", tmp_path) is not None
+
+
+def test_refresh_repulls_a_present_image_and_reinstalls(tmp_path: Path) -> None:
+    d = StubDockerDriver()
+    first = pull_mission("sqli-login", _deps(tmp_path, d))
+    again = pull_mission("sqli-login", _deps(tmp_path, d), refresh=True)
+    assert d.pulled == ["xorcise/mission-sqli-login:1", "xorcise/mission-sqli-login:1"]
+    assert (first.install_revision, again.install_revision) == (1, 2)
+
+
+def test_refresh_with_no_local_image_just_downloads_it(tmp_path: Path) -> None:
+    d = StubDockerDriver()
+    d.present.add("xorcise/mission-sqli-login:1")
+    pull_mission("sqli-login", _deps(tmp_path, d), refresh=True)
+    assert d.pulled == ["xorcise/mission-sqli-login:1"]
+    assert d.removed == []  # nothing in the store to remove first
+
+
+def test_refresh_never_replaces_your_own_mission(tmp_path: Path) -> None:
+    from tests._helpers import install_mission
+    from xorcise.core.missions.errors import MissionCollisionError
+
+    install_mission(tmp_path, slug="sqli-login")  # a your_own record under tmp_path/missions
+    d = StubDockerDriver()
+    with pytest.raises(MissionCollisionError):
+        pull_mission("sqli-login", _deps(tmp_path / "missions", d), refresh=True)
+    assert d.pulled == []
+
+
+_SQLI = "xorcise/mission-sqli-login:1"
+
+
+class _RepushedTag(StubDockerDriver):
+    """A registry that re-pushed the tag in place: every pull moves it to a fresh image."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.images = {"sha256:v1": ImageRecord("sha256:v1", (_SQLI,), {}, 1)}
+        self.registry_checks: list[tuple[str, tuple[str, str] | None]] = []
+        self._pulls = 1
+
+    def pull(self, image: str, **kwargs: Any) -> None:
+        super().pull(image, **kwargs)
+        for rid, rec in list(self.images.items()):
+            self.images[rid] = dataclasses.replace(
+                rec, tags=tuple(t for t in rec.tags if t != image)
+            )
+        self._pulls += 1  # a counter, not len(images): a repair deletes images
+        new = f"sha256:v{self._pulls}"
+        self.images[new] = ImageRecord(new, (image,), {}, 1)
+
+    def check_registry(self, ref: str, *, auth: tuple[str, str] | None = None) -> None:
+        self.registry_checks.append((ref, auth))
+
+
+def test_install_and_refresh_each_take_what_the_registry_tag_names_now(tmp_path: Path) -> None:
+    d = _RepushedTag()  # the tag is already local as v1, left over from an earlier install
+    pull_mission("sqli-login", _deps(tmp_path, d))
+    assert d.image_id(_SQLI) == "sha256:v2"  # the install asked the registry, not the stale v1
+    pull_mission("sqli-login", _deps(tmp_path, d), refresh=True)
+    assert d.image_id(_SQLI) == "sha256:v3"
+
+
+# ── refresh is a repair: remove the local image, never forced, then download it again ──
+# `docker pull` skips every layer already in the store, so a damaged layer survives a plain
+# re-pull. Removing the image first is what makes the download real.
+
+
+def test_a_repair_removes_the_image_and_downloads_it_again(tmp_path: Path) -> None:
+    d = _RepushedTag()
+    pull_mission("sqli-login", _deps(tmp_path, d))
+    repaired = pull_mission("sqli-login", _deps(tmp_path, d), refresh=True)
+    assert d.removed == [_SQLI]
+    assert "sha256:v2" not in d.images  # gone, not just untagged
+    assert d.pulled == [_SQLI, _SQLI]
+    assert d.image_id(_SQLI) == "sha256:v3"
+    assert d.registry_checks == [(_SQLI, None)]  # asked before anything was removed
+    assert repaired.install_revision == 2
+
+
+def test_a_repair_asks_the_registry_with_the_pull_token(tmp_path: Path) -> None:
+    d = _RepushedTag()
+    deps = PullDeps(source=_FakeAuthedSource(enabled=True), driver=d, install_root=tmp_path)
+    pull_mission("sqli-login", deps)
+    pull_mission("sqli-login", deps, refresh=True)
+    assert d.registry_checks == [(_SQLI, ("AWS", "pw"))]
+
+
+def test_a_repair_asks_the_registry_for_the_image_it_will_pull(tmp_path: Path) -> None:
+    # A refresh installs the library's CURRENT image. When the library moved on, the check
+    # must be about that image, not the installed one, or the removal could go ahead for a
+    # download that then has nothing to fetch.
+    class _Moved(StubCatalogSource):
+        def list_library(self) -> Any:
+            return tuple(
+                dataclasses.replace(i, image="xorcise/mission-sqli-login:2")
+                if i.mission_id == "sqli-login"
+                else i
+                for i in super().list_library()
+            )
+
+    d = _RepushedTag()
+    pull_mission("sqli-login", _deps(tmp_path, d))
+    moved = PullDeps(source=_Moved(enabled=True), driver=d, install_root=tmp_path)
+    pull_mission("sqli-login", moved, refresh=True)
+    assert d.registry_checks == [("xorcise/mission-sqli-login:2", None)]
+    assert d.removed == [_SQLI]  # the installed image still goes: it is what may be damaged
+    installed = get_installed("sqli-login", tmp_path)
+    assert installed is not None and installed.mission_ref.image == "xorcise/mission-sqli-login:2"
+
+
+def test_a_repair_is_refused_while_a_container_uses_the_image(tmp_path: Path) -> None:
+    d = _RepushedTag()
+    pull_mission("sqli-login", _deps(tmp_path, d))
+    d.container_images.add("sha256:v2")
+    with pytest.raises(PullError, match="still uses it") as err:
+        pull_mission("sqli-login", _deps(tmp_path, d), refresh=True)
+    assert "nothing was removed" in str(err.value).lower()
+    assert (d.removed, d.pulled, d.image_id(_SQLI)) == ([], [_SQLI], "sha256:v2")
+    installed = get_installed("sqli-login", tmp_path)
+    assert installed is not None and installed.install_revision == 1
+
+
+def test_a_repair_is_refused_when_another_tag_shares_the_image(tmp_path: Path) -> None:
+    # Removing our tag would only untag it: the layers stay, and the "repair" would download
+    # nothing. Never forced, so say so instead.
+    d = _RepushedTag()
+    pull_mission("sqli-login", _deps(tmp_path, d))
+    d.tag_image("sha256:v2", "mine/copy:latest")
+    with pytest.raises(PullError, match="also tagged mine/copy:latest"):
+        pull_mission("sqli-login", _deps(tmp_path, d), refresh=True)
+    assert (d.removed, d.pulled) == ([], [_SQLI])
+
+
+def test_a_repair_is_refused_when_the_registry_does_not_answer(tmp_path: Path) -> None:
+    # Offline, removing first would trade a working image for none. Ask the registry first.
+    class _Offline(_RepushedTag):
+        def check_registry(self, ref: str, *, auth: tuple[str, str] | None = None) -> None:
+            raise RuntimeError("dial tcp: lookup registry: no such host")
+
+    d = _Offline()
+    pull_mission("sqli-login", _deps(tmp_path, d))
+    with pytest.raises(PullError, match="no such host") as err:
+        pull_mission("sqli-login", _deps(tmp_path, d), refresh=True)
+    assert "nothing was removed" in str(err.value).lower()
+    assert (d.removed, d.image_id(_SQLI)) == ([], "sha256:v2")
+
+
+def test_a_repair_whose_download_fails_says_the_image_is_already_gone(tmp_path: Path) -> None:
+    class _DropsMidPull(_RepushedTag):
+        def pull(self, image: str, **kwargs: Any) -> None:
+            if self.removed:
+                raise RuntimeError("connection reset by peer")
+            super().pull(image, **kwargs)
+
+    d = _DropsMidPull()
+    pull_mission("sqli-login", _deps(tmp_path, d))
+    with pytest.raises(PullError, match="connection reset by peer") as err:
+        pull_mission("sqli-login", _deps(tmp_path, d), refresh=True)
+    message = str(err.value)
+    assert "already removed" in message
+    assert "xorcise mission pull sqli-login --refresh" in message
 
 
 def test_pull_unknown_id_raises_not_in_catalog(tmp_path: Path) -> None:
