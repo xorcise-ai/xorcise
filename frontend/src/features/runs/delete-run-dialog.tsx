@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { errorDetail } from "@/lib/api/client";
 import { useDeleteRun } from "./queries";
 
-/** Confirm-and-delete modal for a single run's result + record.
+/** Confirm-and-delete modal for a single run and everything recorded for it.
  *  Controlled (open/onClose) so both the results-page button and the Run
  *  History card's delete icon can drive it. `onDeleted` fires on success. A refusal is surfaced
  *  inline in the SERVER's own words — it names the run's actual state (a `created` run has not
@@ -41,7 +41,7 @@ export function DeleteRunDialog({
   return (
     <Dialog open={open} onClose={onClose} title="Delete this run?">
       <p className="prose-block text-body text-text-secondary">
-        This permanently deletes the run&apos;s <strong>result and record</strong>. It will be
+        This permanently deletes the run with its <strong>result, telemetry and files</strong>. It will be
         removed from the runs list, this agent&apos;s history, and the results view. This
         can&apos;t be undone.
       </p>

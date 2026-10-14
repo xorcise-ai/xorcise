@@ -76,7 +76,7 @@ export function DeleteRunInline({
         Delete this run?
       </p>
       <p className="text-caption text-text-secondary">
-        Permanently removes its <strong className="text-foreground">result and record</strong>.
+        Permanently removes its <strong className="text-foreground">result, telemetry and files</strong>.
         This can&apos;t be undone.
       </p>
       {del.isError && (
