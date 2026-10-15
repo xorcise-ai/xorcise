@@ -25,6 +25,7 @@ from xorcise.core.contracts.grading import GradeResult
 from xorcise.core.contracts.reporting import ResultConditions, RunStats
 from xorcise.core.contracts.run import (
     UNGRADED_TRIGGERS,
+    DeleteRefusal,
     GradingView,
     NotGradedView,
     RunCreate,
@@ -234,33 +235,29 @@ def terminate_run(run_id: str, background: BackgroundTasks) -> RunEntry:
     return updated
 
 
-@router.delete("/{run_id}", status_code=204)
-def delete_run(run_id: str) -> Response:
+@router.delete("/{run_id}", status_code=204, responses={409: {"model": DeleteRefusal}})
+def delete_run(run_id: str, force: bool = False) -> Response:
     """Operator-initiated delete of a single run and everything recorded for it.
 
     The per-run counterpart to the agent-scoped cascade (DELETE /agents/{name}): removes the run's
     telemetry, submissions, result, run directory and, last, its row (rest.run_purge), so the run
-    leaves the runs list, the agent history and the results view. 404 if the run is unknown; 409 if
-    it has not reached a terminal state — it must be terminated first (deleting it would strand its
-    container/tailnet env). A delete that fails partway leaves the row, so repeating it finishes.
+    leaves the runs list, the agent history and the results view. 404 if the run is unknown. A
+    delete that fails partway leaves the row, so repeating it finishes.
+
+    409 (contracts.run.DeleteRefusal) while the run has not finished, while its grade is in
+    flight, or when its environment, released here first, cannot be torn down (#173). Only the
+    last is overridable: `force=true` accepts that the container or tailnet nodes may be left
+    running.
     """
     run = runs.get(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"no run '{run_id}'")
-    if not runs.terminal_state(run_id)[0]:
-        # Name the state rather than asserting the run "is still active": the gate is
-        # `state != "terminal"`, which also catches `created` — a run that never started, where
-        # "still active" describes nothing that is happening and makes "terminate it" read as
-        # advice for a different situation.
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"run '{run_id}' has not finished (state: {run.state}) — "
-                f"terminate it before deleting"
-            ),
-        )
     from xorcise.core.rest.run_purge import purge_runs
+    from xorcise.core.rest.run_teardown import check_deletable
 
+    blocked = check_deletable([run_id], force=force)
+    if blocked is not None:
+        return JSONResponse(status_code=409, content=blocked.body())
     purge_runs([run_id])
     return Response(status_code=204)
 
@@ -454,6 +451,23 @@ def run_environment(run_id: str) -> RunEnvironmentView:
             run_id=run_id, state="none", detail="static mission — no environment to start"
         )
     if run.state == "terminal":
+        # Read from the run row, not assumed: a teardown can fail, and until it lands the
+        # container and tailnet nodes are still up (#173).
+        release = runs.release_state(run_id)
+        if release is not None and release.released_at is None:
+            if release.attempts:
+                detail = (
+                    f"teardown failed {release.attempts} time(s), retrying automatically: "
+                    f"{release.error or 'no error recorded'}"
+                )
+            else:
+                detail = "the environment is torn down once grading finishes"
+            return RunEnvironmentView(
+                run_id=run_id,
+                state="releasing",
+                detail=detail,
+                release_attempts=release.attempts,
+            )
         return RunEnvironmentView(
             run_id=run_id, state="released", detail="the environment has been torn down"
         )

@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import MetaData, Table, func, insert, select, text
+from sqlalchemy.exc import OperationalError
 
 from xorcise.core import agents, runs
 from xorcise.core.db import get_engine
@@ -160,12 +161,19 @@ def test_a_delete_that_fails_partway_keeps_the_run_and_a_retry_finishes_it(migra
 
 
 def _boot(monkeypatch) -> list[str]:
-    """The boot reconcile, with the Docker/Headscale convergence (which needs live deps) recorded
-    instead of run."""
+    """The boot reconcile, with the Docker/Headscale convergence (which needs live deps) and any
+    grade it starts recorded instead of run."""
     import xorcise.core.rest.reconcile as reconcile
+    import xorcise.core.rest.run_terminate as run_terminate
 
     calls: list[str] = []
-    monkeypatch.setattr(reconcile, "reconcile_on_startup", lambda: calls.append("runs"))
+
+    def converge() -> reconcile.ReconcileReport:
+        calls.append("runs")
+        return reconcile.ReconcileReport()
+
+    monkeypatch.setattr(reconcile, "reconcile_on_startup", converge)
+    monkeypatch.setattr(run_terminate, "grade_and_record", lambda run_id: calls.append(run_id))
     reconcile.reconcile_all_on_startup()
     return calls
 
@@ -221,15 +229,23 @@ def test_a_sweep_that_cannot_read_the_runs_deletes_nothing_and_boot_carries_on(
     with get_engine().begin() as conn:
         conn.execute(text("ALTER TABLE runs RENAME TO runs_unreadable"))
     calls: list[str] = []
-    monkeypatch.setattr(reconcile, "reconcile_on_startup", lambda: calls.append("runs"))
+
+    def converge() -> reconcile.ReconcileReport:
+        calls.append("runs")
+        return reconcile.ReconcileReport()
+
+    monkeypatch.setattr(reconcile, "reconcile_on_startup", converge)
     monkeypatch.setattr(
         run_terminate, "regrade_orphaned_terminal_runs", lambda: calls.append("regrade")
     )
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING), pytest.raises(OperationalError, match="runs"):
         reconcile.reconcile_all_on_startup()
 
     assert calls == ["runs", "regrade"]
     assert _rows(run_id) == _one_each()
     assert _run_dirs(migrated_home) == ["run-live"]
-    assert "orphaned-run sweep failed" in caplog.text
+    assert "the orphaned runs step failed" in caplog.text
+    status = reconcile.boot_reconcile_status()
+    assert status.state == "failed"
+    assert status.error.startswith("orphaned runs: ")

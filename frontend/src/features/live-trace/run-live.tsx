@@ -381,6 +381,16 @@ export function RunLive({ runId }: { runId: string | null }) {
             ))}
           </ChipRow>
 
+          {/* A failed teardown, in words and not only in the chip's tooltip: a tooltip on an
+              element that cannot take focus is unreadable by keyboard and touch (#173). The
+              detail is the server's, the same text `xorcise run status` prints. */}
+          {environment.data?.state === "releasing" && environment.data.release_attempts > 0 && (
+            <p role="status" data-testid="teardown-failed" className="text-caption text-err">
+              Environment {environment.data.detail}. Until it lands, this run&apos;s container or
+              tailnet nodes are still up.
+            </p>
+          )}
+
           {/* One wrapping strip of facts — content-sized, so a 5-fact CREATED run and an
               8-fact terminal run both fill their rows with no orphaned cell. A real <dl>, because
               every cell is a term and its definition (StatTileRow supplies it). */}

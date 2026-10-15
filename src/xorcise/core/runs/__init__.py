@@ -9,6 +9,9 @@ and the delete cascade.
 from __future__ import annotations
 
 from xorcise.core.runs.repository import (
+    AwaitingRelease,
+    ReleaseBacklog,
+    ReleaseState,
     active_cidrs,
     active_run_networks,
     active_runs_to_reconcile,
@@ -28,12 +31,20 @@ from xorcise.core.runs.repository import (
     held_run_ids,
     is_budget_expired,
     list_runs,
+    mark_released,
     mark_terminal,
+    record_release_failure,
+    release_backlog,
+    release_state,
     reserve_run,
+    terminal_runs_awaiting_release,
     terminal_state,
 )
 
 __all__ = [
+    "AwaitingRelease",
+    "ReleaseBacklog",
+    "ReleaseState",
     "active_cidrs",
     "active_run_networks",
     "active_runs_to_reconcile",
@@ -53,7 +64,12 @@ __all__ = [
     "held_run_ids",
     "is_budget_expired",
     "list_runs",
+    "mark_released",
     "mark_terminal",
+    "record_release_failure",
+    "release_backlog",
+    "release_state",
     "reserve_run",
+    "terminal_runs_awaiting_release",
     "terminal_state",
 ]

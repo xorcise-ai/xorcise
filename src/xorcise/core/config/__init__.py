@@ -210,6 +210,12 @@ class Settings(BaseSettings):
     # harnesses commonly flush their final tool result only after /complete returns; sealing before
     # that flush permanently rejects the last span/log batch.
     telemetry_drain_seconds: float = Field(default=5.0, ge=0.0, le=300.0)
+    # Release sweeper (#173): how often to retry releasing terminal runs whose container or tailnet
+    # nodes are still up after a failed teardown, and at most how many runs one scan attempts. The
+    # cap bounds a scan's Docker/Headscale calls (each release re-renders the ACL) when a long
+    # outage, or an upgrade over many older runs, leaves a large backlog. 0 disables the sweeper.
+    release_sweep_interval_seconds: float = Field(default=30.0, ge=0.0)
+    release_sweep_batch: int = Field(default=20, ge=1)
 
     @classmethod
     def settings_customise_sources(

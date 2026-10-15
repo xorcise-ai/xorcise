@@ -177,6 +177,13 @@ def grade_and_record(run_id: str) -> None:
         _forget_sealed_here(run_id)
 
 
+def is_grading(run_id: str) -> bool:
+    """True while this process has a grade for the run in flight. The release sweeper uses it to
+    leave a run's environment alone until its grade, and the teardown in its `finally`, is done."""
+    with _grading_lock:
+        return run_id in _grading_in_flight
+
+
 def ensure_graded_async(run_id: str, schedule: Callable[[Callable[[], None]], None]) -> bool:
     """Re-drive grading for a terminal-but-ungraded run that has none in flight, then return True.
 

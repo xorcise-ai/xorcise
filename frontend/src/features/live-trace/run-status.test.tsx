@@ -38,7 +38,7 @@ describe("ConnectionPanel", () => {
         eventCount={4}
         // The env state is now OBSERVED by the server rather than guessed from sandbox_ref (which
         // could not tell a static mission from a dead environment).
-        environment={{ run_id: "r1", state: "ready", ready: true, detail: "" }}
+        environment={{ run_id: "r1", state: "ready", ready: true, detail: "", release_attempts: 0 }}
       />,
     );
     expect(screen.queryByText("Agent")).toBeNull();
@@ -68,9 +68,16 @@ describe("ConnectionPanel", () => {
           sandbox_ref: "xorcise/chal:local",
         })}
         eventCount={5}
-        // The server reports "released" for any terminal run (asserted server-side too), so the
-        // chip can never show a present-tense green "Ready" for a torn-down environment.
-        environment={{ run_id: "r1", state: "released", ready: false, detail: "" }}
+        // The server reports "released" for a terminal run once its teardown has landed (and
+        // "releasing" until then, #173), so the chip can never show a present-tense green "Ready"
+        // for a finished run.
+        environment={{
+          run_id: "r1",
+          state: "released",
+          ready: false,
+          detail: "",
+          release_attempts: 0,
+        }}
       />,
     );
     expect(screen.queryByText("Ready")).toBeNull();

@@ -9,6 +9,7 @@ show on the CLI."""
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -169,6 +170,47 @@ class MissionBaseView(_Frozen):
     promoted_index_digest: str | None = None
 
 
+class ReleaseBacklogView(_Frozen):
+    """Finished runs whose environment a teardown failed to release (#173): their container or
+    tailnet nodes are still up, and the release sweeper keeps retrying. Runs merely waiting for
+    their grade to finish are not counted — that is normal, not something to act on."""
+
+    pending: int = 0
+    oldest_ended_at: datetime | None = None  # when the longest-waiting of them ended
+    # The longest-waiting run's most recent teardown error. Named for whose error it is: the
+    # NEWEST failure across runs is not tracked, so this is not "the last error" overall.
+    oldest_error: str = ""
+
+
+class BootReconcileView(_Frozen):
+    """What this server's start-up reconcile did, so the CLI can say it (#173).
+
+    At boot the server converges the live Docker/Headscale world to the persisted runs: a run whose
+    container survived the restart is adopted, one whose container is gone is closed out
+    (`crashed`), and a reservation whose deploy never finished is released. Before this, the only
+    record was a line in serve.log, and a reconcile that failed outright said nothing at all.
+
+      pending  the reconcile has not started yet
+      running  it is converging now (it runs in the background, after the server answers)
+      done     finished; the counts say what it did
+      failed   a whole step failed (`error`); the steps after it still ran, and the next start
+               retries. Single runs that could not be converged are listed in `failed`
+               whatever the state.
+    """
+
+    state: Literal["pending", "running", "done", "failed"] = "pending"
+    finished_at: datetime | None = None
+    adopted: int = 0  # still running after the restart, left running
+    aborted: int = 0  # container gone, closed out as crashed (never graded)
+    released: int = 0  # reservation whose deploy never finished, torn down and dropped
+    # Unfinished deploys whose teardown FAILED: closed as deploy_failed rather than dropped (the
+    # row is the only record of their environment), and retried by the release sweeper.
+    release_pending: tuple[str, ...] = ()
+    # Runs the reconcile raised on: left as they were, so the next start retries them.
+    failed: tuple[str, ...] = ()
+    error: str = ""
+
+
 class SystemInfo(_Frozen):
     """Read-only Reflect view powering the GUI System / Modules / Catalog cards."""
 
@@ -189,3 +231,8 @@ class SystemInfo(_Frozen):
     # port — and, with the pid, stop it or repair the record instead of orphaning it. None from
     # a server that predates the field.
     pid: int | None = None
+    # Environments still up after a failed teardown. None from a server that predates the field.
+    releases: ReleaseBacklogView | None = None
+    # The start-up reconcile's outcome. None from a server that predates the field, or a role that
+    # does not run it.
+    boot_reconcile: BootReconcileView | None = None

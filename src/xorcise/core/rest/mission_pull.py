@@ -141,7 +141,8 @@ def _real_docker_driver() -> DockerDriver:
         return DockerSdkDriver(platform=get_settings().docker_platform)
     except Exception as exc:  # daemon unreachable / docker.from_env failure
         raise RuntimeError(
-            "Docker daemon is not reachable — start Docker or set XORCISE_USE_STUBS=1"
+            # The real fix only: stub mode is for testing, not a remedy (see _probe_headscale).
+            "Docker daemon is not reachable — start Docker"
         ) from exc
 
 

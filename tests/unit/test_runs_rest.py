@@ -498,6 +498,15 @@ def test_delete_run_active_is_409(migrated_home):
     )
     r = _client().delete(f"/api/runs/{run.run_id}")
     assert r.status_code == 409
+    # Review of #185: the same body DELETE /agents returns (contracts.run.DeleteRefusal), naming
+    # the state rather than calling a never-started run "running".
+    body = r.json()
+    assert (body["reason"], body["run_ids"], body["forceable"]) == (
+        "running",
+        ["run-del-active"],
+        False,
+    )
+    assert "run run-del-active (state: created) has not finished" in body["detail"]
     assert runs.get(run.run_id) is not None  # not deleted
 
 
@@ -836,3 +845,105 @@ def test_regrade_refuses_an_environment_failure(migrated_home):
     assert r.status_code == 409
     assert "deploy_failed" in r.json()["detail"]
     assert reporting.get_result(run_id) is None
+
+
+# --- #173: a delete must not drop a run whose environment is still up -------------------------
+
+
+def _finished_lab_run(run_id: str, agent_id: str = "a1") -> None:
+    from datetime import UTC, datetime
+
+    from xorcise.core import runs
+
+    runs.reserve_run(run_id, agent_id, "c1", network_cidr="10.200.9.0/24", entry_cidrs="")
+    runs.finalize_run(run_id, budget_seconds=300, prompt="P")
+    runs.mark_terminal(run_id, "done", datetime.now(UTC))
+
+
+def _stub_release(monkeypatch, *, released: bool) -> list[str]:
+    from xorcise.core.rest import run_teardown
+
+    called: list[str] = []
+
+    def teardown(run_id: str) -> run_teardown.ReleaseOutcome:
+        called.append(run_id)
+        return run_teardown.ReleaseOutcome(
+            released=released, error="" if released else "tailnet: Headscale is not reachable"
+        )
+
+    monkeypatch.setattr(run_teardown, "teardown_run", teardown)
+    return called
+
+
+def test_delete_releases_an_unreleased_environment_first(migrated_home, monkeypatch):
+    from xorcise.core import runs
+
+    _finished_lab_run("run-del-rel")
+    called = _stub_release(monkeypatch, released=True)
+    assert _client().delete("/api/runs/run-del-rel").status_code == 204
+    assert called == ["run-del-rel"]
+    assert runs.get("run-del-rel") is None
+
+
+def test_delete_refuses_while_the_environment_cannot_be_released(migrated_home, monkeypatch):
+    # The row is the release sweeper's only handle on the run: deleting it would leak the
+    # container until the next boot and the tailnet nodes forever.
+    from xorcise.core import runs
+
+    _finished_lab_run("run-del-stuck")
+    _stub_release(monkeypatch, released=False)
+    c = _client()
+    r = c.delete("/api/runs/run-del-stuck")
+    assert r.status_code == 409
+    body = r.json()
+    assert "run-del-stuck" in body["detail"]
+    assert "Headscale is not reachable" in body["detail"]
+    assert (body["reason"], body["run_ids"], body["forceable"]) == (
+        "unreleased",
+        ["run-del-stuck"],
+        True,
+    )
+    assert runs.get("run-del-stuck") is not None
+    # force accepts the leak
+    assert c.delete("/api/runs/run-del-stuck?force=true").status_code == 204
+    assert runs.get("run-del-stuck") is None
+
+
+def test_delete_refuses_while_the_run_is_being_graded(migrated_home, monkeypatch):
+    # Grading may still need the environment; tearing it down mid-grade is what the sweeper's
+    # settled check exists to prevent. Not forceable: it settles on its own.
+    from xorcise.core import runs
+    from xorcise.core.rest import run_terminate
+
+    _finished_lab_run("run-del-grading")
+    called = _stub_release(monkeypatch, released=True)
+    monkeypatch.setattr(run_terminate, "_grading_in_flight", {"run-del-grading"})
+    r = _client().delete("/api/runs/run-del-grading?force=true")
+    assert r.status_code == 409
+    assert (r.json()["reason"], r.json()["forceable"]) == ("grading", False)
+    assert called == []
+    assert runs.get("run-del-grading") is not None
+
+
+def test_delete_of_a_released_run_does_not_tear_down_again(migrated_home, monkeypatch):
+    from datetime import UTC, datetime
+
+    from xorcise.core import runs
+
+    _finished_lab_run("run-del-done")
+    runs.mark_released("run-del-done", datetime.now(UTC))
+    called = _stub_release(monkeypatch, released=False)
+    assert _client().delete("/api/runs/run-del-done").status_code == 204
+    assert called == []
+
+
+def test_both_deletes_declare_their_409_body(migrated_home):
+    """Review of #185: the refusal body is a contract now, so the spec (and the generated
+    frontend types) must say so for both endpoints."""
+    spec = _client().get("/openapi.json").json()
+    for path in ("/api/runs/{run_id}", "/api/agents/{name}"):
+        conflict = spec["paths"][path]["delete"]["responses"]["409"]
+        ref = conflict["content"]["application/json"]["schema"]["$ref"]
+        assert ref.endswith("/DeleteRefusal"), (path, ref)
+    fields = spec["components"]["schemas"]["DeleteRefusal"]["properties"]
+    assert set(fields) == {"detail", "reason", "run_ids", "forceable"}

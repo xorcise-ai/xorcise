@@ -14,6 +14,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from typing import Any
 
 import httpx
 import typer
@@ -502,7 +503,40 @@ def up(
         notice = check_update()
         if notice:
             console.print(notice)
+    _report_boot_reconcile(f"http://{settings.host}:{settings.rest_port}/api/system")
     console.print(next_steps_block(ui_url()))
+
+
+# How long `up` waits for the start-up reconcile to report. It runs in the background once the
+# server answers, and is usually done in well under a second; a slow Docker or Headscale should not
+# hold `up` hostage, so past this it says where to look instead.
+_RECONCILE_WAIT_SECONDS = 5.0
+
+
+def _report_boot_reconcile(system_url: str) -> None:
+    """Tell the operator what the server recovered at start: runs picked back up, closed out as
+    crashed, or kept because their teardown failed (#173). Silent on a clean start."""
+    from xorcise.core.cli.commands.system import boot_reconcile_lines
+
+    deadline = time.monotonic() + _RECONCILE_WAIT_SECONDS
+    view: dict[str, Any] | None = None
+    while True:
+        try:
+            body = httpx.get(system_url, timeout=2, trust_env=False).json()
+            view = body.get("boot_reconcile") if isinstance(body, dict) else None
+        except Exception:  # noqa: BLE001 — a status line is never worth failing `up` over
+            return
+        if not view or view.get("state") in {"done", "failed"}:
+            break
+        if time.monotonic() >= deadline:
+            console.print(
+                "boot reconcile: still checking the runs that were live before this start — "
+                "see [value]xorcise system[/value]"
+            )
+            return
+        time.sleep(0.25)
+    for line in boot_reconcile_lines(view):
+        console.print(line)
 
 
 def _runtime_port_overlay() -> dict[str, int]:

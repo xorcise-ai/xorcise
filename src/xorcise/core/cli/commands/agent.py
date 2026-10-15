@@ -316,13 +316,24 @@ def agent_history(
 def remove_agent(
     name: str = typer.Argument(..., help="Agent name to remove."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Remove even if a finished run's environment cannot be torn down (Docker or "
+        "Headscale is down). Its container or tailnet nodes may be left running.",
+    ),
 ) -> None:
     """Remove a registered agent by name. Available as both `rm` and `delete`.
 
-    Removes the agent, its version history, and its recorded runs/results.
+    Removes the agent, its version history, and its recorded runs/results. \
+Refused while any of its runs is still running or being graded. A finished \
+run's environment is torn down first; if that fails, the removal is refused \
+unless --force.
     """
     client = RestClient()
     name = resolve_agent_name(client, name)
     confirm_or_abort(f"Remove agent '{name}' and its recorded runs?", assume_yes=yes)
-    client.delete(f"/agents/{name}")
+    # The server may first tear down the environment of each of the agent's finished runs (#173),
+    # one after another, so allow far more than the 5 s default.
+    client.delete(f"/agents/{name}" + ("?force=true" if force else ""), timeout=600.0)
     console.print(f"removed agent '{name}'")

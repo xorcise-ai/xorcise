@@ -142,7 +142,22 @@ def test_probe_headscale_remediation_when_unreachable() -> None:
 
     with pytest.raises(RuntimeError, match="not reachable") as ei:
         rc._probe_headscale(_Down(), "headscale")
-    assert "XORCISE_USE_STUBS" in str(ei.value)
+    assert "run 'xorcise up' to provision a local one" in str(ei.value)
+    # Review of #185: never stub mode as the remedy. This text is also a failed teardown's error
+    # on the run page and /system, and stubs would "release" real runs with nothing removed.
+    assert "XORCISE_USE_STUBS" not in str(ei.value)
+
+
+def test_the_docker_unreachable_message_names_only_the_real_fix(monkeypatch) -> None:
+    import xorcise.core.rest.mission_pull as mp
+
+    def boom(*a, **k):
+        raise RuntimeError("Cannot connect to the Docker daemon")
+
+    monkeypatch.setattr("xorcise.core.runner.docker.driver.DockerSdkDriver", boom)
+    with pytest.raises(RuntimeError, match="Docker daemon is not reachable") as ei:
+        mp._real_docker_driver()
+    assert str(ei.value) == "Docker daemon is not reachable — start Docker"
 
 
 def test_probe_headscale_ok_when_reachable() -> None:

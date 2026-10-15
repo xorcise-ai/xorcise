@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Trash2 } from "lucide-react";
 import { Dialog } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { errorDetail } from "@/lib/api/client";
+import { errorDetail, isForceableRefusal } from "@/lib/api/client";
 import { useDeleteRun } from "./queries";
 
 /** Confirm-and-delete modal for a single run and everything recorded for it.
@@ -26,9 +26,9 @@ export function DeleteRunDialog({
 }) {
   const del = useDeleteRun();
 
-  async function confirm() {
+  async function confirm(force = false) {
     try {
-      await del.mutateAsync(runId);
+      await del.mutateAsync({ runId, force });
     } catch {
       return; // surfaced inline via del.error below
     }
@@ -37,9 +37,18 @@ export function DeleteRunDialog({
   }
 
   const detail = errorDetail(del.error);
+  // The run's environment could not be torn down: the one refusal the operator may override.
+  const forceable = isForceableRefusal(del.error);
+
+  // Forget the last refusal on close: the dialog stays mounted, and reopening it must not show a
+  // stale refusal with "Delete anyway" as the main button.
+  function close() {
+    del.reset();
+    onClose();
+  }
 
   return (
-    <Dialog open={open} onClose={onClose} title="Delete this run?">
+    <Dialog open={open} onClose={close} title="Delete this run?">
       <p className="prose-block text-body text-text-secondary">
         This permanently deletes the run with its <strong>result, telemetry and files</strong>. It will be
         removed from the runs list, this agent&apos;s history, and the results view. This
@@ -49,15 +58,15 @@ export function DeleteRunDialog({
         <p className="mt-2 text-body text-err">{detail ?? "Delete failed."}</p>
       )}
       <div className="mt-4 flex justify-end gap-2">
-        <Button variant="ghost" onClick={onClose}>
+        <Button variant="ghost" onClick={close}>
           Cancel
         </Button>
         <Button
           variant="destructive"
-          onClick={confirm}
+          onClick={() => confirm(forceable)}
           disabled={del.isPending}
         >
-          {del.isPending ? "Deleting…" : "Delete permanently"}
+          {del.isPending ? "Deleting…" : forceable ? "Delete anyway" : "Delete permanently"}
         </Button>
       </div>
     </Dialog>
