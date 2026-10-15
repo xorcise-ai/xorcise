@@ -18,9 +18,11 @@ import httpx
 
 from xorcise.core.config import Settings
 from xorcise.core.contracts.config import (
+    BootReconcileView,
     CatalogStatusView,
     MissionBaseView,
     PlaneStatus,
+    ReleaseBacklogView,
     SystemInfo,
 )
 from xorcise.core.rest.catalog_view import build_catalog_view_deps
@@ -276,6 +278,33 @@ def build_system_info(settings: Settings) -> SystemInfo:
         mission_base=_cached("mission_base", lambda: _mission_base_view(source)),
         host_platform=_host_platform(settings),
         pid=os.getpid(),  # lets `down`/`up`/`db upgrade` find this instance without the pid file
+        releases=_release_backlog(),
+        boot_reconcile=_boot_reconcile(),
+    )
+
+
+def _boot_reconcile() -> BootReconcileView:
+    """The start-up reconcile's outcome. Every role builds its REST app with build_rest_app, which
+    schedules the reconcile, so this is always meaningful."""
+    from xorcise.core.rest.reconcile import boot_reconcile_status
+
+    return boot_reconcile_status()
+
+
+def _release_backlog() -> ReleaseBacklogView | None:
+    """Runs a teardown failed to release (#173). Read live, not memoised: it is one query, and
+    the count is what an operator watches fall back to zero once a plane is back. None if it
+    cannot be read: a diagnostics view must not fail on one of its parts."""
+    from xorcise.core import runs
+
+    try:
+        backlog = runs.release_backlog()
+    except Exception:  # noqa: BLE001 — degrade this one field, never the whole /system view
+        return None
+    return ReleaseBacklogView(
+        pending=backlog.pending,
+        oldest_ended_at=backlog.oldest_ended_at,
+        oldest_error=backlog.oldest_error or "",
     )
 
 

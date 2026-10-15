@@ -207,6 +207,53 @@ describe("RunLive", () => {
     expect(screen.queryByText(/View partial result/i)).not.toBeInTheDocument();
   });
 
+  it("states a failed teardown in words, not only in the chip's tooltip", async () => {
+    // Review of #185: the error sat in a `title` on an element that cannot take focus, so
+    // keyboard and touch users could not read it.
+    const detail = "teardown failed 2 time(s), retrying automatically: tailnet: unreachable";
+    server.use(
+      http.get("*/api/runs", () =>
+        HttpResponse.json([runFixture({ run_id: "rtf", state: "terminal", terminal_trigger: "done" })]),
+      ),
+      http.get("*/api/runs/rtf/events", () => HttpResponse.json(eventsView("rtf", []))),
+      http.get("*/api/runs/rtf/environment", () =>
+        HttpResponse.json({
+          run_id: "rtf",
+          state: "releasing",
+          ready: false,
+          detail,
+          release_attempts: 2,
+        }),
+      ),
+    );
+    renderWithProviders(<RunLive runId="rtf" />);
+    const line = await screen.findByTestId("teardown-failed");
+    expect(line).toHaveAttribute("role", "status");
+    expect(line.textContent).toContain(detail);
+    expect(screen.getByText("Teardown failed")).toBeInTheDocument();
+  });
+
+  it("says nothing extra while a finished run is merely waiting for its grade", async () => {
+    server.use(
+      http.get("*/api/runs", () =>
+        HttpResponse.json([runFixture({ run_id: "rwg", state: "terminal", terminal_trigger: "done" })]),
+      ),
+      http.get("*/api/runs/rwg/events", () => HttpResponse.json(eventsView("rwg", []))),
+      http.get("*/api/runs/rwg/environment", () =>
+        HttpResponse.json({
+          run_id: "rwg",
+          state: "releasing",
+          ready: false,
+          detail: "the environment is torn down once grading finishes",
+          release_attempts: 0,
+        }),
+      ),
+    );
+    renderWithProviders(<RunLive runId="rwg" />);
+    expect(await screen.findByText("Releasing")).toBeInTheDocument();
+    expect(screen.queryByTestId("teardown-failed")).toBeNull();
+  });
+
   it("auto-updates to the terminal state without a manual refresh", async () => {
     let gets = 0;
     server.use(

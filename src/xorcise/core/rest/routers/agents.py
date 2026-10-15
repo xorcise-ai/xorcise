@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Response
+from fastapi.responses import JSONResponse
 
 from xorcise.core import agents, reporting, runs
 from xorcise.core.contracts.agent import AgentDeclaration, AgentEntry, kind_warning
 from xorcise.core.contracts.reporting import AgentHistoryEntry
-from xorcise.core.contracts.run import RunStatus, run_status
+from xorcise.core.contracts.run import DeleteRefusal, RunStatus, run_status
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -116,12 +117,27 @@ def agent_history(name: str) -> list[AgentHistoryView]:
     ]
 
 
-@router.delete("/{name}", status_code=204)
-def remove_agent(name: str) -> Response:
-    """Remove an agent and cascade-delete its runs + results."""
+@router.delete("/{name}", status_code=204, responses={409: {"model": DeleteRefusal}})
+def remove_agent(name: str, force: bool = False) -> Response:
+    """Remove an agent and cascade-delete its runs + results.
+
+    The runs' rows are the release sweeper's only handle on their environments (#173), so the
+    cascade is refused (409) while any of the agent's runs is still running or being graded, and
+    when a finished run's environment cannot be released. `force=true` overrides only the last,
+    accepting that a container or tailnet nodes may be left running. The 409 body carries
+    `reason`, `run_ids` and `forceable` beside `detail`."""
     agent = agents.get(name)
     if agent is None:
         raise HTTPException(status_code=404, detail=f"no agent named '{name}'")
+    from xorcise.core.rest.run_teardown import check_deletable
+
+    blocked = check_deletable(
+        [r.run_id for r in runs.list_runs() if r.agent_id == agent.id], force=force
+    )
+    if blocked is not None:
+        body = blocked.body()
+        body["detail"] = f"cannot remove agent '{name}': {body['detail']}"
+        return JSONResponse(status_code=409, content=body)
     reporting.delete_for_agent(agent.id)
     runs.delete_for_agent(agent.id)
     agents.remove(name)

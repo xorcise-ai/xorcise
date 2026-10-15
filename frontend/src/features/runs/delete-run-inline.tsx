@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import { AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { errorDetail } from "@/lib/api/client";
+import { errorDetail, isForceableRefusal } from "@/lib/api/client";
 import { useDeleteRun } from "./queries";
 
 /**
@@ -48,9 +48,9 @@ export function DeleteRunInline({
     return () => window.removeEventListener("keydown", onKey);
   }, [onCancel]);
 
-  async function confirm() {
+  async function confirm(force = false) {
     try {
-      await del.mutateAsync(runId);
+      await del.mutateAsync({ runId, force });
     } catch {
       return; // the server's refusal is rendered inline below
     }
@@ -58,6 +58,8 @@ export function DeleteRunInline({
   }
 
   const detail = errorDetail(del.error);
+  // The run's environment could not be torn down: the one refusal the operator may override.
+  const forceable = isForceableRefusal(del.error);
 
   return (
     <div
@@ -88,11 +90,11 @@ export function DeleteRunInline({
         <Button
           variant="destructive"
           size="sm"
-          onClick={confirm}
+          onClick={() => confirm(forceable)}
           disabled={del.isPending}
           className="h-7 px-2.5"
         >
-          {del.isPending ? "Deleting…" : "Delete"}
+          {del.isPending ? "Deleting…" : forceable ? "Delete anyway" : "Delete"}
         </Button>
         <Button
           ref={cancelRef}

@@ -1680,3 +1680,116 @@ def test_bracketed_tokens_render_literally_in_usage_errors():
     result = runner.invoke(app, ["run", "events", "[abc]"])
     assert result.exit_code == 2
     assert "xorcise run events export [abc]" in result.stderr
+
+
+# --- #173: a refused delete names the one next step ---------------------------------------------
+
+
+def _refuse_delete(monkeypatch, tmp_path, body: dict[str, object]) -> list[str]:
+    import httpx as _httpx
+
+    monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
+    paths: list[str] = []
+
+    def fake_delete(url, timeout=None, **kwargs):
+        paths.append(url)
+        if "force=true" in url and body.get("forceable"):
+            return _httpx.Response(204, request=_httpx.Request("DELETE", url))
+        return _httpx.Response(409, request=_httpx.Request("DELETE", url), json=body)
+
+    monkeypatch.setattr(httpx, "delete", fake_delete)
+    monkeypatch.setattr("xorcise.core.cli.commands.run._resolve_id", lambda client, given: given)
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.agent.resolve_agent_name", lambda client, name: name
+    )
+    return paths
+
+
+def test_a_failed_teardown_refusal_points_at_force(monkeypatch, tmp_path):
+    rid = "a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6"
+    paths = _refuse_delete(
+        monkeypatch,
+        tmp_path,
+        {
+            "detail": f"the environment of run {rid} could not be torn down (tailnet: down).",
+            "reason": "unreleased",
+            "run_ids": [rid],
+            "forceable": True,
+        },
+    )
+    result = runner.invoke(app, ["run", "delete", rid, "--yes"])
+    assert result.exit_code == 1
+    assert "could not be torn down" in result.stderr
+    assert "re-run with --force" in result.stderr
+    assert not paths[0].endswith("force=true")
+
+    result = runner.invoke(app, ["run", "delete", rid, "--yes", "--force"])
+    assert result.exit_code == 0
+    assert paths[-1].endswith(f"/runs/{rid}?force=true")
+
+
+def test_a_running_run_refusal_names_the_terminate_command(monkeypatch, tmp_path):
+    live = "f" * 32
+    _refuse_delete(
+        monkeypatch,
+        tmp_path,
+        {
+            "detail": f"cannot remove agent 'alpha': run {live} is still running. Terminate it "
+            "first.",
+            "reason": "running",
+            "run_ids": [live],
+            "forceable": False,
+        },
+    )
+    result = runner.invoke(app, ["agent", "rm", "alpha", "--yes", "--force"])
+    assert result.exit_code == 1
+    assert "cannot remove agent 'alpha'" in result.stderr
+    assert "xorcise run terminate ffffffff" in result.stderr
+    assert "--force" not in result.stderr  # forcing cannot help here, so it is not offered
+
+
+def test_up_reports_what_the_boot_reconcile_recovered(monkeypatch):
+    """#173: `up` says what the server recovered at start, once the reconcile has finished."""
+    import httpx as _httpx
+
+    answers = iter(
+        [
+            {"boot_reconcile": {"state": "running"}},
+            {"boot_reconcile": {"state": "done", "aborted": 2}},
+        ]
+    )
+
+    def fake_get(url, timeout=None, **kwargs):
+        return _httpx.Response(200, request=_httpx.Request("GET", url), json=next(answers))
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr("xorcise.core.cli.commands.lifecycle.time.sleep", lambda s: None)
+    printed: list[str] = []
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.lifecycle.console.print",
+        lambda *a, **k: printed.append(str(a[0])),
+    )
+    lifecycle._report_boot_reconcile("http://x/api/system")
+    assert printed == ["boot reconcile: 2 closed out as crashed (not graded)"]
+
+
+def test_up_does_not_wait_forever_for_the_boot_reconcile(monkeypatch):
+    import httpx as _httpx
+
+    def fake_get(url, timeout=None, **kwargs):
+        body = {"boot_reconcile": {"state": "running"}}
+        return _httpx.Response(200, request=_httpx.Request("GET", url), json=body)
+
+    clock = iter(range(0, 100))
+    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.lifecycle.time.monotonic", lambda: float(next(clock))
+    )
+    monkeypatch.setattr("xorcise.core.cli.commands.lifecycle.time.sleep", lambda s: None)
+    printed: list[str] = []
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.lifecycle.console.print",
+        lambda *a, **k: printed.append(str(a[0])),
+    )
+    lifecycle._report_boot_reconcile("http://x/api/system")
+    assert len(printed) == 1 and "still checking" in printed[0]

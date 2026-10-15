@@ -489,6 +489,7 @@ def run_status(
     if r.get("status") == "not_graded":
         # Final, not progress: exit 0 so a `while … run status` poll stops here.
         _print_not_graded(run_id, r)
+        _print_unreleased(client, run_id)
         return
     if r.get("status") == "grading":
         # Terminal but not graded yet — grading is async after /complete.
@@ -506,6 +507,7 @@ def run_status(
         )
         raise typer.Exit(3)
     _render_result(r, verbose=verbose, telemetry=telemetry)
+    _print_unreleased(client, run_id)
 
 
 @run_app.command("terminate")
@@ -591,17 +593,28 @@ the fresh grade lands and prints it; pass --no-wait to return on the ack.
 def run_delete(
     run_id: str = typer.Argument(..., help=_RUN_ID_HELP),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Delete even if the run's environment cannot be torn down (Docker or Headscale is "
+        "down). Its container or tailnet nodes may be left running.",
+    ),
 ) -> None:
     """Delete a run's result + record. Available as both `delete` and `rm`.
 
     Removes the recorded result and the run row, so the run leaves the runs \
 list, agent history, and results view. A still-running run cannot be \
-deleted — stop it first with `xorcise run terminate`.
+deleted — stop it first with `xorcise run terminate`. A finished run's \
+environment is torn down first; if that fails, the delete is refused \
+unless --force.
     """
     client = RestClient()
     run_id = _resolve_id(client, run_id)
     confirm_or_abort(f"Delete run {short_id(run_id)} and its recorded result?", assume_yes=yes)
-    client.delete(f"/runs/{run_id}")
+    # A delete may first tear down the run's environment on the server (#173): Docker and
+    # Headscale calls that outlast the 5 s default, so a slow teardown would read as a failure
+    # while the server carried on.
+    client.delete(f"/runs/{run_id}" + ("?force=true" if force else ""), timeout=120.0)
     console.print(f"deleted run '{run_id}'")
 
 
@@ -645,6 +658,16 @@ def _not_graded_envelope(body: str) -> dict[str, Any] | None:
     if isinstance(parsed, dict) and parsed.get("status") == "not_graded":
         return parsed
     return None
+
+
+def _print_unreleased(client: RestClient, run_id: str) -> None:
+    """Warn when a finished run's environment is still up because its teardown failed (#173).
+
+    Silent while the teardown simply has not run yet (grading just finished), and against an older
+    server without the field: the warning is for a plane that refused the release."""
+    env = client.get_or_none(f"/runs/{run_id}/environment") or {}
+    if env.get("state") == "releasing" and env.get("release_attempts"):
+        console.print(f"[warn]environment not released[/] — {escape(str(env.get('detail') or ''))}")
 
 
 def _print_not_graded(run_id: str, envelope: dict[str, Any]) -> None:

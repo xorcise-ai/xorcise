@@ -836,7 +836,11 @@ def test_a_closed_stdin_lets_a_destructive_confirm_proceed_unprompted(monkeypatc
 
     captured: dict[str, object] = {}
     monkeypatch.setattr(RestClient, "get", lambda self, path: [{"name": "alpha"}])
-    monkeypatch.setattr(RestClient, "delete", lambda self, path: captured.setdefault("path", path))
+    monkeypatch.setattr(
+        RestClient,
+        "delete",
+        lambda self, path, timeout=None: captured.setdefault("path", path),
+    )
 
     assert invoke_cli_with_stdin(["agent", "rm", "alpha"], None) == 0
     assert captured["path"] == "/agents/alpha"
@@ -1073,10 +1077,16 @@ def test_agent_rm_calls_delete(monkeypatch):
     # rm resolves the name against the live list first; CliRunner stdin is
     # non-interactive, so the TTY confirm never prompts.
     monkeypatch.setattr(RestClient, "get", lambda self, path: [{"name": "alpha"}])
-    monkeypatch.setattr(RestClient, "delete", lambda self, path: captured.setdefault("path", path))
+
+    def fake_delete(self, path, timeout=None):  # noqa: ANN001, ANN202 — test stub
+        captured.update(path=path, timeout=timeout)
+
+    monkeypatch.setattr(RestClient, "delete", fake_delete)
     result = runner.invoke(app, ["agent", "rm", "alpha"])
     assert result.exit_code == 0
     assert captured["path"] == "/agents/alpha"
+    # The server may tear down each finished run's environment first (#173): not a 5 s request.
+    assert captured["timeout"] == 600.0
     assert "removed agent 'alpha'" in result.stdout
 
 

@@ -83,8 +83,9 @@ export function useUpdateAgent() {
 export function useDeleteAgent() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (name: string) =>
-      api.del(`/agents/${encodeURIComponent(name)}`),
+    // `force` overrides only a failed environment teardown (see isForceableRefusal).
+    mutationFn: ({ name, force = false }: { name: string; force?: boolean }) =>
+      api.del(`/agents/${encodeURIComponent(name)}${force ? "?force=true" : ""}`),
     onSuccess: () => invalidateAgentList(qc),
   });
 }

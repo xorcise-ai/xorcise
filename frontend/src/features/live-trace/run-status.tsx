@@ -94,10 +94,18 @@ export function environmentChip(env: RunEnvironment | undefined): ConnectionChip
     starting: { value: "Starting", tone: "amber" },
     ready: { value: "Ready", tone: "green" },
     failed: { value: "Failed", tone: "red" },
+    // Finished, but the container or tailnet nodes are not torn down yet: normally just until
+    // grading ends. It used to read "Released" for every finished run, even one whose teardown
+    // had failed and left the environment running (#173).
+    releasing: { value: "Releasing", tone: "amber" },
     released: { value: "Released", tone: "muted" },
   };
   // Not loaded yet → the honest "still coming up", never an invented ready/failed verdict.
-  const { value, tone } = byState[env?.state ?? "starting"];
+  const { value, tone } =
+    env?.state === "releasing" && env.release_attempts
+      ? // A plane refused the teardown: the environment is still up, and that needs a look.
+        { value: "Teardown failed", tone: "red" as const }
+      : byState[env?.state ?? "starting"];
   return {
     icon: Boxes,
     label: "Environment",

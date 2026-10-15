@@ -30,6 +30,20 @@ export function errorDetail(err: unknown): string | null {
   return null;
 }
 
+/** True when the server refused a delete only because a run's environment could not be torn
+ *  down (#173): the one refusal the caller may override, accepting that a container or tailnet
+ *  nodes may be left running. Every other refusal (a run still running, or still being graded)
+ *  is not forceable, and the UI must not offer to. */
+export function isForceableRefusal(err: unknown): boolean {
+  if (!(err instanceof ApiError) || err.status !== 409) return false;
+  const body = err.body;
+  return (
+    !!body &&
+    typeof body === "object" &&
+    (body as { forceable?: unknown }).forceable === true
+  );
+}
+
 async function request<T>(
   method: string,
   path: string,

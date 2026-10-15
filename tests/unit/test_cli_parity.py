@@ -336,6 +336,80 @@ def test_system_renders_planes_table_and_environment(monkeypatch):
         assert internal not in out
 
 
+def test_system_warns_about_environments_a_teardown_left_up(monkeypatch):
+    """#173: finished runs whose container or tailnet nodes are still up after a failed teardown
+    are counted, so a plane that is down gets noticed. Nothing is printed when there are none."""
+    info = {
+        **_SYSTEM_INFO,
+        "releases": {
+            "pending": 2,
+            "oldest_ended_at": "2026-10-14T12:00:00Z",
+            "oldest_error": "tailnet: Headscale control plane 'headscale' is not reachable",
+        },
+    }
+    monkeypatch.setattr(RestClient, "get", lambda self, path: info)
+    out = runner.invoke(app, ["system"]).stdout
+    assert "2 finished run(s) still hold their container or tailnet nodes" in out
+    assert "retried automatically" in out
+    assert "Headscale control plane 'headscale' is not reachable" in out
+
+    for quiet in ({**_SYSTEM_INFO, "releases": {"pending": 0}}, _SYSTEM_INFO):
+        monkeypatch.setattr(RestClient, "get", lambda self, path, quiet=quiet: quiet)
+        assert "releases:" not in runner.invoke(app, ["system"]).stdout
+
+
+@pytest.mark.parametrize(
+    ("view", "expected", "absent"),
+    [
+        (
+            {"state": "failed", "error": "runs: Headscale control plane is not reachable"},
+            ["boot reconcile failed", "Headscale control plane is not reachable", "next start"],
+            [],
+        ),
+        (
+            {
+                "state": "done",
+                "adopted": 1,
+                "aborted": 2,
+                "released": 1,
+                "release_pending": ["d" * 32],
+                "failed": ["e" * 32],
+            },
+            [
+                "1 still running (picked back up)",
+                "2 closed out as crashed (not graded)",
+                "1 unfinished deploy(s) cleaned up",
+                "1 unfinished deploy(s) could not be torn down",
+                "closed as deploy failed (not graded); the teardown is retried automatically",
+                "dddddddd",
+                "1 run(s) could not be checked",
+                "eeeeeeee",
+            ],
+            [],
+        ),
+        # A clean start, or one still in progress, is not worth a line in the default view.
+        ({"state": "done"}, [], ["boot reconcile"]),
+        ({"state": "running"}, [], ["boot reconcile"]),
+    ],
+)
+def test_system_reports_what_the_boot_reconcile_did(monkeypatch, view, expected, absent):
+    """#173: what the server recovered at start used to be a line in serve.log, and a reconcile
+    that failed outright said nothing at all."""
+    info = {**_SYSTEM_INFO, "boot_reconcile": view}
+    monkeypatch.setattr(RestClient, "get", lambda self, path: info)
+    out = " ".join(runner.invoke(app, ["system"]).stdout.split())
+    for text in expected:
+        assert text in out
+    for text in absent:
+        assert text not in out
+
+
+def test_system_verbose_says_when_the_boot_reconcile_had_nothing_to_do(monkeypatch):
+    info = {**_SYSTEM_INFO, "boot_reconcile": {"state": "done"}}
+    monkeypatch.setattr(RestClient, "get", lambda self, path: info)
+    assert "boot reconcile: nothing to recover" in runner.invoke(app, ["system", "-v"]).stdout
+
+
 def test_system_verbose_reveals_deployment_internals(monkeypatch):
     monkeypatch.setattr(RestClient, "get", lambda self, path: _SYSTEM_INFO)
     result = runner.invoke(app, ["system", "--verbose"])

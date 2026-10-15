@@ -40,6 +40,12 @@ export interface paths {
         /**
          * Remove Agent
          * @description Remove an agent and cascade-delete its runs + results.
+         *
+         *     The runs' rows are the release sweeper's only handle on their environments (#173), so the
+         *     cascade is refused (409) while any of the agent's runs is still running or being graded, and
+         *     when a finished run's environment cannot be released. `force=true` overrides only the last,
+         *     accepting that a container or tailnet nodes may be left running. The 409 body carries
+         *     `reason`, `run_ids` and `forceable` beside `detail`.
          */
         delete: operations["remove_agent_api_agents__name__delete"];
         options?: never;
@@ -410,8 +416,9 @@ export interface paths {
          *     tags — that no install record, live run, container or in-flight pull uses. Removal is never
          *     forced; an image that turns out to be in use is reported under `failed` and the rest still
          *     go. `image_ids` limits the removal to images the operator confirmed: one that is no longer
-         *     a candidate is reported under `skipped` and kept. 409 when an install record cannot be read (its image is unknown, so nothing is removed)
-         *     or when this server does not manage Docker images at all.
+         *     a candidate is reported under `skipped` and kept. 409 when an install record cannot be read
+         *     (its image is unknown, so nothing is removed) or when this server does not manage Docker
+         *     images at all.
          */
         post: operations["prune_images_api_missions_prune_post"];
         delete?: never;
@@ -687,9 +694,13 @@ export interface paths {
          *
          *     The narrow, per-run counterpart to the agent-scoped cascade (DELETE /agents/{name}): removes
          *     the recorded result and the run row so the run leaves the runs list, the agent history, and the
-         *     results view. 404 if the run is unknown; 409 if it has not reached a terminal state — it must be
-         *     terminated first (deleting it would strand its container/tailnet env). Idempotent on the result
-         *     (delete of an ungraded terminal run still removes the record).
+         *     results view. 404 if the run is unknown. Idempotent on the result (delete of an ungraded
+         *     terminal run still removes the record).
+         *
+         *     409 (contracts.run.DeleteRefusal) while the run has not finished, while its grade is in
+         *     flight, or when its environment, released here first, cannot be torn down (#173). Only the
+         *     last is overridable: `force=true` accepts that the container or tailnet nodes may be left
+         *     running.
          */
         delete: operations["delete_run_api_runs__run_id__delete"];
         options?: never;
@@ -1634,6 +1645,62 @@ export interface components {
             running: boolean;
         };
         /**
+         * BootReconcileView
+         * @description What this server's start-up reconcile did, so the CLI can say it (#173).
+         *
+         *     At boot the server converges the live Docker/Headscale world to the persisted runs: a run whose
+         *     container survived the restart is adopted, one whose container is gone is closed out
+         *     (`crashed`), and a reservation whose deploy never finished is released. Before this, the only
+         *     record was a line in serve.log, and a reconcile that failed outright said nothing at all.
+         *
+         *       pending  the reconcile has not started yet
+         *       running  it is converging now (it runs in the background, after the server answers)
+         *       done     finished; the counts say what it did
+         *       failed   a whole step failed (`error`); the steps after it still ran, and the next start
+         *                retries. Single runs that could not be converged are listed in `failed`
+         *                whatever the state.
+         */
+        BootReconcileView: {
+            /**
+             * Aborted
+             * @default 0
+             */
+            aborted: number;
+            /**
+             * Adopted
+             * @default 0
+             */
+            adopted: number;
+            /**
+             * Error
+             * @default
+             */
+            error: string;
+            /**
+             * Failed
+             * @default []
+             */
+            failed: string[];
+            /** Finished At */
+            finished_at?: string | null;
+            /**
+             * Release Pending
+             * @default []
+             */
+            release_pending: string[];
+            /**
+             * Released
+             * @default 0
+             */
+            released: number;
+            /**
+             * State
+             * @default pending
+             * @enum {string}
+             */
+            state: "pending" | "running" | "done" | "failed";
+        };
+        /**
          * CatalogConfigUpdate
          * @description Flip the remote-catalog connect/disconnect switch (persists catalog_enabled).
          */
@@ -1917,6 +1984,31 @@ export interface components {
             text: string;
             /** Weight */
             weight: number;
+        };
+        /**
+         * DeleteRefusal
+         * @description The 409 body of DELETE /runs/{id} and DELETE /agents/{name} (#173).
+         *
+         *     A run's row is the only handle anything has on its environment, so a delete is refused while
+         *     that environment may still be up:
+         *       running     a run has not finished (any state but terminal). Terminate it first.
+         *       grading     its grade is in flight, and grading may still need the environment.
+         *       unreleased  a finished run's environment could not be torn down (Docker or Headscale down).
+         *     Only `unreleased` is `forceable`: `force=true` deletes anyway, accepting that a container or
+         *     tailnet nodes may be left running.
+         */
+        DeleteRefusal: {
+            /** Detail */
+            detail: string;
+            /** Forceable */
+            forceable: boolean;
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "running" | "grading" | "unreleased";
+            /** Run Ids */
+            run_ids: string[];
         };
         /**
          * EnvironmentSpec
@@ -2626,6 +2718,26 @@ export interface components {
             trace_id?: string | null;
         };
         /**
+         * ReleaseBacklogView
+         * @description Finished runs whose environment a teardown failed to release (#173): their container or
+         *     tailnet nodes are still up, and the release sweeper keeps retrying. Runs merely waiting for
+         *     their grade to finish are not counted — that is normal, not something to act on.
+         */
+        ReleaseBacklogView: {
+            /** Oldest Ended At */
+            oldest_ended_at?: string | null;
+            /**
+             * Oldest Error
+             * @default
+             */
+            oldest_error: string;
+            /**
+             * Pending
+             * @default 0
+             */
+            pending: number;
+        };
+        /**
          * ResolvedTerrainV2
          * @description The v2 resolved terrain wire DTO — the run-scoped network/infrastructure map
          *     with groups, nodes, edges, and an updates stream for state transitions.
@@ -2918,6 +3030,8 @@ export interface components {
          *       starting  deployed; the mission services / subnet router are still coming up
          *       ready     every inner service is running and the run's router is on the tailnet
          *       failed    the environment exited or never came up (the run is closed out as deploy_failed)
+         *       releasing terminal run — the container or tailnet nodes are not torn down yet: grading has
+         *                 not finished, or a teardown failed and is being retried (#173)
          *       released  terminal run — the environment has been torn down
          */
         RunEnvironmentView: {
@@ -2931,13 +3045,18 @@ export interface components {
              * @default false
              */
             ready: boolean;
+            /**
+             * Release Attempts
+             * @default 0
+             */
+            release_attempts: number;
             /** Run Id */
             run_id: string;
             /**
              * State
              * @enum {string}
              */
-            state: "none" | "starting" | "ready" | "failed" | "released";
+            state: "none" | "starting" | "ready" | "failed" | "releasing" | "released";
         };
         /**
          * RunEventsView
@@ -3133,6 +3252,7 @@ export interface components {
          * @description Read-only Reflect view powering the GUI System / Modules / Catalog cards.
          */
         SystemInfo: {
+            boot_reconcile?: components["schemas"]["BootReconcileView"] | null;
             catalog: components["schemas"]["CatalogStatusView"];
             /**
              * Db Schema
@@ -3156,6 +3276,7 @@ export interface components {
             pid?: number | null;
             /** Planes */
             planes: components["schemas"]["PlaneStatus"][];
+            releases?: components["schemas"]["ReleaseBacklogView"] | null;
             /**
              * Remotes
              * @default []
@@ -3538,7 +3659,9 @@ export interface operations {
     };
     remove_agent_api_agents__name__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                force?: boolean;
+            };
             header?: never;
             path: {
                 name: string;
@@ -3553,6 +3676,15 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteRefusal"];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -4387,7 +4519,9 @@ export interface operations {
     };
     delete_run_api_runs__run_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                force?: boolean;
+            };
             header?: never;
             path: {
                 run_id: string;
@@ -4402,6 +4536,15 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteRefusal"];
+                };
             };
             /** @description Validation Error */
             422: {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+import pytest
 from typer.testing import CliRunner
 
 import xorcise.core.cli.app  # noqa: F401  -- importing registers the command groups
@@ -130,6 +131,50 @@ def test_run_status_renders_scores_and_hardfail(monkeypatch):
     # An undeclared model reads "model: not disclosed" — the label already says model, so the
     # shared renderer does not repeat it (it also fills the report's "Agent model" row).
     assert "model: not disclosed" in res.stdout
+
+
+def test_run_status_warns_when_a_teardown_left_the_environment_up(monkeypatch):
+    """#173: a graded run whose teardown failed still has its container or tailnet nodes up."""
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.get_run_result",
+        lambda self, p, verify=False: _grade_payload(),
+    )
+    env = {
+        "state": "releasing",
+        "release_attempts": 3,
+        "detail": "teardown failed 3 time(s), retrying automatically: tailnet: unreachable",
+    }
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.get_or_none",
+        lambda self, path, timeout=None: env if path.endswith("/environment") else None,
+    )
+    res = runner.invoke(app, ["run", "status", RID])
+    assert res.exit_code == 0
+    assert "environment not released" in res.stdout
+    assert "tailnet: unreachable" in res.stdout
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"state": "released", "release_attempts": 0, "detail": ""},
+        # Not yet torn down because grading only just finished: normal, nothing to say.
+        {"state": "releasing", "release_attempts": 0, "detail": "torn down once grading ends"},
+        None,  # an older server without the endpoint
+    ],
+)
+def test_run_status_is_quiet_when_nothing_failed(monkeypatch, env):
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.get_run_result",
+        lambda self, p, verify=False: _grade_payload(),
+    )
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.get_or_none",
+        lambda self, path, timeout=None: env if path.endswith("/environment") else None,
+    )
+    res = runner.invoke(app, ["run", "status", RID])
+    assert res.exit_code == 0
+    assert "environment not released" not in res.stdout
 
 
 def test_run_status_low_score_no_hardfails_omits_hardfail_marker(monkeypatch):
@@ -725,14 +770,17 @@ def test_run_delete_calls_delete_endpoint(monkeypatch):
     # `xorcise run delete <id>` deletes the run's result + record via DELETE /runs/{id}.
     seen: dict[str, str] = {}
 
-    def fake_delete(self, path: str):  # noqa: ANN001, ANN202 — test stub
+    def fake_delete(self, path: str, timeout: float | None = None):  # noqa: ANN001, ANN202
         seen["path"] = path
+        seen["timeout"] = str(timeout)
         return None
 
     monkeypatch.setattr("xorcise.core.cli.commands.run.RestClient.delete", fake_delete)
     result = runner.invoke(app, ["run", "delete", RID])
     assert result.exit_code == 0
     assert seen["path"] == f"/runs/{RID}"
+    # The server may tear down the run's environment first (#173): not a 5 s request.
+    assert seen["timeout"] == "120.0"
     assert f"deleted run '{RID}'" in result.output
 
 
