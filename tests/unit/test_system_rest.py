@@ -72,7 +72,14 @@ def test_system_reports_the_boot_reconcile(migrated_home, monkeypatch) -> None:
     from xorcise.core.rest import reconcile
 
     monkeypatch.setattr(
-        reconcile, "_status", BootReconcileView(state="done", aborted=1, deferred=("r1",))
+        reconcile,
+        "_status",
+        BootReconcileView(state="done", aborted=1, release_pending=("r1",), failed=("r2",)),
     )
     view = _client().get("/api/system").json()["boot_reconcile"]
-    assert (view["state"], view["aborted"], view["deferred"]) == ("done", 1, ["r1"])
+    assert (view["state"], view["aborted"], view["release_pending"], view["failed"]) == (
+        "done",
+        1,
+        ["r1"],
+        ["r2"],
+    )

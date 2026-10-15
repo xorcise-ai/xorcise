@@ -9,7 +9,8 @@ What it does, per non-terminal run:
   * re-assert the DB-authoritative ACL once (a crash mid-create could have left a rule un-rendered);
   * a run still only RESERVED (deploy never finalized — crash between reserve and finalize) is
     released: tear down whatever environment exists and delete the reservation (it never ran, so
-    nothing is graded and its subnet is freed);
+    nothing is graded and its subnet is freed). If that teardown fails, the reservation is closed
+    as `deploy_failed` instead, and the release sweeper retries the teardown;
   * a DEPLOYED run whose container is still live is adopted (left running — the watchdog owns its
     deadline); one whose container is gone is aborted WITHOUT grading (a server crash is our infra
     failure, so we do not penalise the agent with a phantom score) — mark terminal + release.
@@ -76,8 +77,10 @@ class ReconcileReport:
     adopted: list[str] = field(default_factory=list)  # container still live — left running
     aborted: list[str] = field(default_factory=list)  # deployed but container gone — closed out
     released: list[str] = field(default_factory=list)  # reserved only, deploy never finished
-    # reserved only, but the teardown failed: the reservation is KEPT so the next boot retries it
-    deferred: list[str] = field(default_factory=list)
+    # reserved only, but the teardown failed: closed as deploy_failed, the sweeper retries it
+    release_pending: list[str] = field(default_factory=list)
+    # raised while converging: left non-terminal, so the next boot retries it
+    failed: list[str] = field(default_factory=list)
 
 
 def _teardown_env(deps: _ReconcileDeps, run_id: str) -> str:
@@ -117,15 +120,26 @@ def _reconcile_one(
         # leaked environment.
         error = _teardown_env(deps, run_id)
         if error:
-            # Keep the reservation: it is the only record that this environment exists. Dropped,
-            # its tailnet user and router node would leak for good (#173); kept, the next boot
-            # retries the teardown.
+            # The row is the only record that this environment exists: dropped, its tailnet user
+            # and router node would leak for good (#173). Kept as a reservation, it would read as
+            # a live run that only the next boot retries, blocking `agent rm` meanwhile. So close
+            # it as what it is, a deploy that never finished: an ungraded trigger, so nothing is
+            # scored, and terminal, so the release sweeper retries the teardown.
+            runs.mark_terminal(
+                run_id,
+                "deploy_failed",
+                now_fn(),
+                "the server stopped before this run's deploy finished; its environment is torn "
+                "down automatically",
+            )
+            runs.record_release_failure(run_id, error)
             log.warning(
-                "reconcile: kept reservation %s for the next start (teardown failed: %s)",
+                "reconcile: closed unfinished deploy %s as deploy_failed; its teardown failed "
+                "(%s) and is retried by the release sweeper",
                 run_id,
                 error,
             )
-            report.deferred.append(run_id)
+            report.release_pending.append(run_id)
             return
         runs.delete_run(run_id)
         report.released.append(run_id)
@@ -194,6 +208,7 @@ def reconcile_on_startup(
             log.warning(
                 "reconcile: failed to reconcile %s (left for the next boot)", run_id, exc_info=True
             )
+            report.failed.append(run_id)
     log.info(
         "reconcile: adopted=%d aborted=%d released=%d",
         len(report.adopted),
@@ -269,7 +284,8 @@ def reconcile_all_on_startup(*, now_fn: Callable[[], datetime] = lambda: datetim
             adopted=len(report.adopted),
             aborted=len(report.aborted),
             released=len(report.released),
-            deferred=tuple(report.deferred),
+            release_pending=tuple(report.release_pending),
+            failed=tuple(report.failed),
             error="; ".join(f"{name}: {_first_line(exc)}" for name, exc in errors),
         )
     )

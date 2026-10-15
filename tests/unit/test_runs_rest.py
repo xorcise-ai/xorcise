@@ -498,6 +498,15 @@ def test_delete_run_active_is_409(migrated_home):
     )
     r = _client().delete(f"/api/runs/{run.run_id}")
     assert r.status_code == 409
+    # Review of #185: the same body DELETE /agents returns (contracts.run.DeleteRefusal), naming
+    # the state rather than calling a never-started run "running".
+    body = r.json()
+    assert (body["reason"], body["run_ids"], body["forceable"]) == (
+        "running",
+        ["run-del-active"],
+        False,
+    )
+    assert "run run-del-active (state: created) has not finished" in body["detail"]
     assert runs.get(run.run_id) is not None  # not deleted
 
 
@@ -926,3 +935,15 @@ def test_delete_of_a_released_run_does_not_tear_down_again(migrated_home, monkey
     called = _stub_release(monkeypatch, released=False)
     assert _client().delete("/api/runs/run-del-done").status_code == 204
     assert called == []
+
+
+def test_both_deletes_declare_their_409_body(migrated_home):
+    """Review of #185: the refusal body is a contract now, so the spec (and the generated
+    frontend types) must say so for both endpoints."""
+    spec = _client().get("/openapi.json").json()
+    for path in ("/api/runs/{run_id}", "/api/agents/{name}"):
+        conflict = spec["paths"][path]["delete"]["responses"]["409"]
+        ref = conflict["content"]["application/json"]["schema"]["$ref"]
+        assert ref.endswith("/DeleteRefusal"), (path, ref)
+    fields = spec["components"]["schemas"]["DeleteRefusal"]["properties"]
+    assert set(fields) == {"detail", "reason", "run_ids", "forceable"}

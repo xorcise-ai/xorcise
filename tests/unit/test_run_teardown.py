@@ -220,7 +220,8 @@ def test_a_running_run_blocks_a_delete_and_force_cannot_override_it(migrated_hom
         blocked = check_deletable(["live"], force=force)
         assert blocked is not None
         assert (blocked.reason, blocked.run_ids, blocked.forceable) == ("running", ("live",), False)
-        assert "run live is still running. Terminate it first" in blocked.detail
+        assert "run live (state: " in blocked.detail
+        assert "has not finished. Terminate it first" in blocked.detail
 
 
 def test_a_run_being_graded_blocks_a_delete(migrated_home, monkeypatch) -> None:

@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from xorcise.core import agents, reporting, runs
 from xorcise.core.contracts.agent import AgentDeclaration, AgentEntry, kind_warning
 from xorcise.core.contracts.reporting import AgentHistoryEntry
-from xorcise.core.contracts.run import RunStatus, run_status
+from xorcise.core.contracts.run import DeleteRefusal, RunStatus, run_status
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -117,7 +117,7 @@ def agent_history(name: str) -> list[AgentHistoryView]:
     ]
 
 
-@router.delete("/{name}", status_code=204)
+@router.delete("/{name}", status_code=204, responses={409: {"model": DeleteRefusal}})
 def remove_agent(name: str, force: bool = False) -> Response:
     """Remove an agent and cascade-delete its runs + results.
 

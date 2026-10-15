@@ -57,12 +57,18 @@ def boot_reconcile_lines(view: dict[str, Any] | None, *, verbose: bool = False) 
         lines.append("boot reconcile: " + "; ".join(parts))
     elif verbose:
         lines.append("boot reconcile: nothing to recover")
-    deferred = [str(r) for r in view.get("deferred") or ()]
-    if deferred:
+    pending = [str(r) for r in view.get("release_pending") or ()]
+    if pending:
         lines.append(
-            f"[warn]boot reconcile: {len(deferred)} unfinished deploy(s) could not be torn down"
-            "[/warn] and are kept for the next start, so their tailnet nodes are not lost: "
-            + ", ".join(short_id(r) for r in deferred)
+            f"[warn]boot reconcile: {len(pending)} unfinished deploy(s) could not be torn down"
+            "[/warn] — closed as deploy failed (not graded); the teardown is retried "
+            "automatically: " + ", ".join(short_id(r) for r in pending)
+        )
+    failed = [str(r) for r in view.get("failed") or ()]
+    if failed:
+        lines.append(
+            f"[warn]boot reconcile: {len(failed)} run(s) could not be checked[/warn] and are "
+            "retried on the next start: " + ", ".join(short_id(r) for r in failed)
         )
     return lines
 

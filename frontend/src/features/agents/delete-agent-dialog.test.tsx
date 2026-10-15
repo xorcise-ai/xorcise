@@ -64,4 +64,27 @@ describe("DeleteAgentButton", () => {
     await waitFor(() => expect(onDeleted).toHaveBeenCalled());
     expect(searches).toEqual(["", "?force=true"]);
   });
+
+  it("forgets a refusal when closed, so reopening starts clean", async () => {
+    server.use(
+      http.delete("*/api/agents/alpha", () =>
+        HttpResponse.json(
+          {
+            detail: "cannot remove agent 'alpha': the environment of run r1 could not be torn down.",
+            reason: "unreleased",
+            run_ids: ["r1"],
+            forceable: true,
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+    renderWithProviders(<DeleteAgentButton name="alpha" onDeleted={vi.fn()} />);
+    openAndConfirm();
+    expect(await screen.findByRole("button", { name: /delete anyway/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+    fireEvent.click(screen.getByRole("button", { name: /delete agent/i }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: /delete permanently/i })).toBeInTheDocument();
+  });
 });

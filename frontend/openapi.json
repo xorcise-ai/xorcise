@@ -882,7 +882,7 @@
       },
       "BootReconcileView": {
         "additionalProperties": false,
-        "description": "What this server's start-up reconcile did, so the CLI can say it (#173).\n\nAt boot the server converges the live Docker/Headscale world to the persisted runs: a run whose\ncontainer survived the restart is adopted, one whose container is gone is closed out\n(`crashed`), and a reservation whose deploy never finished is released. Before this, the only\nrecord was a line in serve.log, and a reconcile that failed outright said nothing at all.\n\n  pending  the reconcile has not started yet\n  running  it is converging now (it runs in the background, after the server answers)\n  done     finished; the counts say what it did\n  failed   a step failed (`error`); the steps after it still ran, and the next start retries",
+        "description": "What this server's start-up reconcile did, so the CLI can say it (#173).\n\nAt boot the server converges the live Docker/Headscale world to the persisted runs: a run whose\ncontainer survived the restart is adopted, one whose container is gone is closed out\n(`crashed`), and a reservation whose deploy never finished is released. Before this, the only\nrecord was a line in serve.log, and a reconcile that failed outright said nothing at all.\n\n  pending  the reconcile has not started yet\n  running  it is converging now (it runs in the background, after the server answers)\n  done     finished; the counts say what it did\n  failed   a whole step failed (`error`); the steps after it still ran, and the next start\n           retries. Single runs that could not be converged are listed in `failed`\n           whatever the state.",
         "properties": {
           "aborted": {
             "default": 0,
@@ -894,18 +894,18 @@
             "title": "Adopted",
             "type": "integer"
           },
-          "deferred": {
-            "default": [],
-            "items": {
-              "type": "string"
-            },
-            "title": "Deferred",
-            "type": "array"
-          },
           "error": {
             "default": "",
             "title": "Error",
             "type": "string"
+          },
+          "failed": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Failed",
+            "type": "array"
           },
           "finished_at": {
             "anyOf": [
@@ -918,6 +918,14 @@
               }
             ],
             "title": "Finished At"
+          },
+          "release_pending": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Release Pending",
+            "type": "array"
           },
           "released": {
             "default": 0,
@@ -1596,6 +1604,43 @@
           "reason"
         ],
         "title": "CriterionScore",
+        "type": "object"
+      },
+      "DeleteRefusal": {
+        "description": "The 409 body of DELETE /runs/{id} and DELETE /agents/{name} (#173).\n\nA run's row is the only handle anything has on its environment, so a delete is refused while\nthat environment may still be up:\n  running     a run has not finished (any state but terminal). Terminate it first.\n  grading     its grade is in flight, and grading may still need the environment.\n  unreleased  a finished run's environment could not be torn down (Docker or Headscale down).\nOnly `unreleased` is `forceable`: `force=true` deletes anyway, accepting that a container or\ntailnet nodes may be left running.",
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "forceable": {
+            "title": "Forceable",
+            "type": "boolean"
+          },
+          "reason": {
+            "enum": [
+              "running",
+              "grading",
+              "unreleased"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "run_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Run Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "detail",
+          "reason",
+          "run_ids",
+          "forceable"
+        ],
+        "title": "DeleteRefusal",
         "type": "object"
       },
       "EnvironmentSpec": {
@@ -5226,6 +5271,16 @@
           "204": {
             "description": "Successful Response"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteRefusal"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -6406,7 +6461,7 @@
     },
     "/api/runs/{run_id}": {
       "delete": {
-        "description": "Operator-initiated delete of a single run's result + record.\n\nThe narrow, per-run counterpart to the agent-scoped cascade (DELETE /agents/{name}): removes\nthe recorded result and the run row so the run leaves the runs list, the agent history, and the\nresults view. 404 if the run is unknown; 409 if it has not reached a terminal state \u2014 it must be\nterminated first (deleting it would strand its container/tailnet env). Idempotent on the result\n(delete of an ungraded terminal run still removes the record).\n\nA finished run whose environment is still up is released first (#173). 409 while its grade is\nin flight, or when the release fails; `force=true` overrides only the latter, accepting that\nthe container or tailnet nodes may be left running. The 409 body carries `reason`, `run_ids`\nand `forceable` beside `detail`.",
+        "description": "Operator-initiated delete of a single run's result + record.\n\nThe narrow, per-run counterpart to the agent-scoped cascade (DELETE /agents/{name}): removes\nthe recorded result and the run row so the run leaves the runs list, the agent history, and the\nresults view. 404 if the run is unknown. Idempotent on the result (delete of an ungraded\nterminal run still removes the record).\n\n409 (contracts.run.DeleteRefusal) while the run has not finished, while its grade is in\nflight, or when its environment, released here first, cannot be torn down (#173). Only the\nlast is overridable: `force=true` accepts that the container or tailnet nodes may be left\nrunning.",
         "operationId": "delete_run_api_runs__run_id__delete",
         "parameters": [
           {
@@ -6432,6 +6487,16 @@
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteRefusal"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "422": {
             "content": {

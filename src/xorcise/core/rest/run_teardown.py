@@ -16,10 +16,10 @@ import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal
 
 from xorcise.core import runs
 from xorcise.core.config import get_settings
+from xorcise.core.contracts.run import DeleteRefusal, DeleteRefusalReason
 from xorcise.core.rest.run_create import (
     CONTROL_API_KEY,
     build_teardown_control,
@@ -115,27 +115,26 @@ def _released_meanwhile(run_id: str) -> bool:
 
 # --- deleting a run without stranding its environment -------------------------------------------
 
-DeleteRefusal = Literal["running", "grading", "unreleased"]
-
 
 @dataclass(frozen=True)
 class DeleteBlocked:
     """Why runs cannot be deleted yet. `forceable` says whether the caller may override it."""
 
-    reason: DeleteRefusal
+    reason: DeleteRefusalReason
     run_ids: tuple[str, ...]
     detail: str
     forceable: bool
 
     def body(self) -> dict[str, object]:
-        """The 409 body. `detail` is the sentence every surface shows; the rest lets a client
-        offer the one action that unblocks the delete (the GUI's "Delete anyway")."""
-        return {
-            "detail": self.detail,
-            "reason": self.reason,
-            "run_ids": list(self.run_ids),
-            "forceable": self.forceable,
-        }
+        """The 409 body (contracts.run.DeleteRefusal). `detail` is the sentence every surface
+        shows; the rest lets a client offer the one action that unblocks the delete (the GUI's
+        "Delete anyway")."""
+        return DeleteRefusal(
+            detail=self.detail,
+            reason=self.reason,
+            run_ids=self.run_ids,
+            forceable=self.forceable,
+        ).model_dump(mode="json")
 
 
 def check_deletable(run_ids: Sequence[str], *, force: bool = False) -> DeleteBlocked | None:
@@ -154,14 +153,23 @@ def check_deletable(run_ids: Sequence[str], *, force: bool = False) -> DeleteBlo
     """
     from xorcise.core.rest.run_terminate import is_grading
 
-    running = [r for r in run_ids if not runs.terminal_state(r)[0] and runs.get(r) is not None]
-    if running:
+    unfinished = [
+        (r, entry.state)
+        for r in run_ids
+        if (entry := runs.get(r)) is not None and not runs.terminal_state(r)[0]
+    ]
+    if unfinished:
+        # Name each run's state rather than calling it "running": the gate is `state !=
+        # "terminal"`, which also catches a `created` run that never started, where "still
+        # running" describes nothing that is happening.
+        named = ", ".join(f"{r} (state: {state})" for r, state in unfinished)
+        plural = len(unfinished) > 1
         return DeleteBlocked(
             "running",
-            tuple(running),
-            f"{_runs_phrase(running)} still running. Terminate "
-            f"{'it' if len(running) == 1 else 'them'} first: deleting a live run would leave its "
-            "environment up with nothing left to clean it up.",
+            tuple(r for r, _ in unfinished),
+            f"{'runs' if plural else 'run'} {named} {'have' if plural else 'has'} not finished. "
+            f"Terminate {'them' if plural else 'it'} first: deleting a run that has not finished "
+            "would leave its environment up with nothing left to clean it up.",
             forceable=False,
         )
     grading = [r for r in run_ids if is_grading(r)]

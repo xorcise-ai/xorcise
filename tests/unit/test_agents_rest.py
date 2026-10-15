@@ -295,6 +295,7 @@ def test_delete_agent_refuses_while_one_of_its_runs_is_still_running(migrated_ho
             ["r-live"],
             False,
         )
-        assert "run r-live is still running. Terminate it first" in body["detail"]
+        assert "run r-live (state: " in body["detail"]
+        assert "has not finished. Terminate it first" in body["detail"]
     assert agents.get("beta") is not None
     assert runs.get("r-live") is not None

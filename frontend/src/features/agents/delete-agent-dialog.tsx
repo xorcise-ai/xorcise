@@ -35,13 +35,19 @@ export function DeleteAgentButton({
   const detail = errorDetail(del.error);
   const forceable = isForceableRefusal(del.error);
 
+  // Forget the last refusal on close, so reopening never shows a stale one with "Delete anyway".
+  function close() {
+    del.reset();
+    setOpen(false);
+  }
+
   return (
     <>
       <Button variant="outline" onClick={() => setOpen(true)}>
         <Trash2 className="size-4" />
         Delete agent
       </Button>
-      <Dialog open={open} onClose={() => setOpen(false)} title={`Delete “${name}”?`}>
+      <Dialog open={open} onClose={close} title={`Delete “${name}”?`}>
         <p className="max-w-[68ch] text-body text-text-secondary">
           This permanently deletes the agent <strong>and all its runs and results</strong>. They
           do not outlive the agent. This can&apos;t be undone.
@@ -52,7 +58,7 @@ export function DeleteAgentButton({
           </p>
         )}
         <div className="mt-4 flex justify-end gap-2">
-          <Button variant="ghost" onClick={() => setOpen(false)}>
+          <Button variant="ghost" onClick={close}>
             Cancel
           </Button>
           <Button

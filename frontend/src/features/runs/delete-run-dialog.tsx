@@ -40,8 +40,15 @@ export function DeleteRunDialog({
   // The run's environment could not be torn down: the one refusal the operator may override.
   const forceable = isForceableRefusal(del.error);
 
+  // Forget the last refusal on close: the dialog stays mounted, and reopening it must not show a
+  // stale refusal with "Delete anyway" as the main button.
+  function close() {
+    del.reset();
+    onClose();
+  }
+
   return (
-    <Dialog open={open} onClose={onClose} title="Delete this run?">
+    <Dialog open={open} onClose={close} title="Delete this run?">
       <p className="prose-block text-body text-text-secondary">
         This permanently deletes the run&apos;s <strong>result and record</strong>. It will be
         removed from the runs list, this agent&apos;s history, and the results view. This
@@ -51,7 +58,7 @@ export function DeleteRunDialog({
         <p className="mt-2 text-body text-err">{detail ?? "Delete failed."}</p>
       )}
       <div className="mt-4 flex justify-end gap-2">
-        <Button variant="ghost" onClick={onClose}>
+        <Button variant="ghost" onClick={close}>
           Cancel
         </Button>
         <Button

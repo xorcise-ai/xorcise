@@ -193,7 +193,9 @@ class BootReconcileView(_Frozen):
       pending  the reconcile has not started yet
       running  it is converging now (it runs in the background, after the server answers)
       done     finished; the counts say what it did
-      failed   a step failed (`error`); the steps after it still ran, and the next start retries
+      failed   a whole step failed (`error`); the steps after it still ran, and the next start
+               retries. Single runs that could not be converged are listed in `failed`
+               whatever the state.
     """
 
     state: Literal["pending", "running", "done", "failed"] = "pending"
@@ -201,9 +203,11 @@ class BootReconcileView(_Frozen):
     adopted: int = 0  # still running after the restart, left running
     aborted: int = 0  # container gone, closed out as crashed (never graded)
     released: int = 0  # reservation whose deploy never finished, torn down and dropped
-    # Reservations whose teardown FAILED: kept, not dropped, so the next start retries them
-    # (dropping the row would leak their tailnet nodes for good).
-    deferred: tuple[str, ...] = ()
+    # Unfinished deploys whose teardown FAILED: closed as deploy_failed rather than dropped (the
+    # row is the only record of their environment), and retried by the release sweeper.
+    release_pending: tuple[str, ...] = ()
+    # Runs the reconcile raised on: left as they were, so the next start retries them.
+    failed: tuple[str, ...] = ()
     error: str = ""
 
 

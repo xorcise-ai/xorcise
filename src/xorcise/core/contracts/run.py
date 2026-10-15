@@ -232,6 +232,26 @@ class RunEnvironmentView(BaseModel):
     release_attempts: int = 0
 
 
+DeleteRefusalReason = Literal["running", "grading", "unreleased"]
+
+
+class DeleteRefusal(BaseModel):
+    """The 409 body of DELETE /runs/{id} and DELETE /agents/{name} (#173).
+
+    A run's row is the only handle anything has on its environment, so a delete is refused while
+    that environment may still be up:
+      running     a run has not finished (any state but terminal). Terminate it first.
+      grading     its grade is in flight, and grading may still need the environment.
+      unreleased  a finished run's environment could not be torn down (Docker or Headscale down).
+    Only `unreleased` is `forceable`: `force=true` deletes anyway, accepting that a container or
+    tailnet nodes may be left running."""
+
+    detail: str
+    reason: DeleteRefusalReason
+    run_ids: tuple[str, ...]
+    forceable: bool
+
+
 class RunCreatedEntry(RunEntry):
     """The 201-create response shape — extends RunEntry with the freshly-minted bearer.
 

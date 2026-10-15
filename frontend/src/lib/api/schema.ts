@@ -694,14 +694,13 @@ export interface paths {
          *
          *     The narrow, per-run counterpart to the agent-scoped cascade (DELETE /agents/{name}): removes
          *     the recorded result and the run row so the run leaves the runs list, the agent history, and the
-         *     results view. 404 if the run is unknown; 409 if it has not reached a terminal state — it must be
-         *     terminated first (deleting it would strand its container/tailnet env). Idempotent on the result
-         *     (delete of an ungraded terminal run still removes the record).
+         *     results view. 404 if the run is unknown. Idempotent on the result (delete of an ungraded
+         *     terminal run still removes the record).
          *
-         *     A finished run whose environment is still up is released first (#173). 409 while its grade is
-         *     in flight, or when the release fails; `force=true` overrides only the latter, accepting that
-         *     the container or tailnet nodes may be left running. The 409 body carries `reason`, `run_ids`
-         *     and `forceable` beside `detail`.
+         *     409 (contracts.run.DeleteRefusal) while the run has not finished, while its grade is in
+         *     flight, or when its environment, released here first, cannot be torn down (#173). Only the
+         *     last is overridable: `force=true` accepts that the container or tailnet nodes may be left
+         *     running.
          */
         delete: operations["delete_run_api_runs__run_id__delete"];
         options?: never;
@@ -1657,7 +1656,9 @@ export interface components {
          *       pending  the reconcile has not started yet
          *       running  it is converging now (it runs in the background, after the server answers)
          *       done     finished; the counts say what it did
-         *       failed   a step failed (`error`); the steps after it still ran, and the next start retries
+         *       failed   a whole step failed (`error`); the steps after it still ran, and the next start
+         *                retries. Single runs that could not be converged are listed in `failed`
+         *                whatever the state.
          */
         BootReconcileView: {
             /**
@@ -1671,17 +1672,22 @@ export interface components {
              */
             adopted: number;
             /**
-             * Deferred
-             * @default []
-             */
-            deferred: string[];
-            /**
              * Error
              * @default
              */
             error: string;
+            /**
+             * Failed
+             * @default []
+             */
+            failed: string[];
             /** Finished At */
             finished_at?: string | null;
+            /**
+             * Release Pending
+             * @default []
+             */
+            release_pending: string[];
             /**
              * Released
              * @default 0
@@ -1978,6 +1984,31 @@ export interface components {
             text: string;
             /** Weight */
             weight: number;
+        };
+        /**
+         * DeleteRefusal
+         * @description The 409 body of DELETE /runs/{id} and DELETE /agents/{name} (#173).
+         *
+         *     A run's row is the only handle anything has on its environment, so a delete is refused while
+         *     that environment may still be up:
+         *       running     a run has not finished (any state but terminal). Terminate it first.
+         *       grading     its grade is in flight, and grading may still need the environment.
+         *       unreleased  a finished run's environment could not be torn down (Docker or Headscale down).
+         *     Only `unreleased` is `forceable`: `force=true` deletes anyway, accepting that a container or
+         *     tailnet nodes may be left running.
+         */
+        DeleteRefusal: {
+            /** Detail */
+            detail: string;
+            /** Forceable */
+            forceable: boolean;
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "running" | "grading" | "unreleased";
+            /** Run Ids */
+            run_ids: string[];
         };
         /**
          * EnvironmentSpec
@@ -3646,6 +3677,15 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteRefusal"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -4496,6 +4536,15 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteRefusal"];
+                };
             };
             /** @description Validation Error */
             422: {

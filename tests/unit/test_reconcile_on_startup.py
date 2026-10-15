@@ -279,20 +279,41 @@ def test_a_failed_step_does_not_skip_the_others_and_is_published(migrated_home, 
     assert status.error == "runs: Headscale control plane 'headscale' is not reachable"
 
 
-def test_a_reservation_whose_teardown_fails_is_kept_for_the_next_boot(migrated_home):
-    """#173: the reservation is the only record that the environment exists. Dropping it after a
-    failed teardown leaked its tailnet user and router node for good."""
+def test_a_reservation_whose_teardown_fails_is_closed_for_the_sweeper(migrated_home):
+    """#173: the reservation is the only record that the environment exists, so it is never
+    dropped after a failed teardown (that leaked its tailnet user and router node for good). Nor is
+    it kept as a reservation: that read as a live run until the next boot, blocking `agent rm`, and
+    the suggested "terminate it" recorded a graded 0.0 (review of #185). It is closed as an
+    ungraded deploy_failed, and the release sweeper retries the teardown."""
+    from xorcise.core.contracts.run import UNGRADED_TRIGGERS
+
     runs.reserve_run("res", "a1", "c", network_cidr="10.200.7.0/24", entry_cidrs="")
     fence = _FakeFence()
     fence.fail = True
     report = reconcile_on_startup(_Deps(_FakeControl(set()), fence), now_fn=_now)
-    assert report.deferred == ["res"]
+    assert report.release_pending == ["res"]
     assert report.released == []
-    assert runs.get("res") is not None
-    # the next boot, with Headscale back, releases it
+    is_term, trigger, _ = runs.terminal_state("res")
+    assert is_term and trigger == "deploy_failed" and trigger in UNGRADED_TRIGGERS
+    entry = runs.get("res")
+    assert entry is not None and "deploy finished" in (entry.terminal_detail or "")
+    state = runs.release_state("res")
+    assert state is not None and state.released_at is None and state.attempts == 1
+    assert [a.run_id for a in runs.terminal_runs_awaiting_release()] == ["res"]
+
+
+def test_a_run_that_fails_to_converge_is_reported(migrated_home, monkeypatch):
+    """Review of #185: the status could read `done` with zero counts while runs were skipped."""
+    import xorcise.core.rest.reconcile as reconcile_mod
+
+    _deployed("boom", "10.200.9.0/24")
+
+    def explode(*a, **k):
+        raise RuntimeError("docker inspect failed")
+
+    monkeypatch.setattr(reconcile_mod, "_reconcile_one", explode)
     report = reconcile_on_startup(_Deps(_FakeControl(set()), _FakeFence()), now_fn=_now)
-    assert report.released == ["res"]
-    assert runs.get("res") is None
+    assert report.failed == ["boom"]
 
 
 def test_an_aborted_run_whose_teardown_fails_is_left_to_the_sweeper(migrated_home):
