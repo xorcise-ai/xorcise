@@ -14,6 +14,7 @@ import shlex
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -32,6 +33,7 @@ from xorcise.core.contracts.control import DeployRequest, MissionRef, NetworkSpe
 from xorcise.core.contracts.run import RunEntry
 from xorcise.core.missions import get_installed
 from xorcise.core.rest.mission_pull import PullDeps, build_pull_deps, pull_mission
+from xorcise.core.rest.reconcile import first_line, release_reservation
 from xorcise.core.runcontrol.intel_policy import allowed_intel
 from xorcise.core.runs.observed import (
     InMemoryObservedFactsStore,
@@ -548,8 +550,8 @@ def _reserve_run_subnet(
 
     Returns (cidr, entry_subnets). Retries on the partial-unique-index collision — a concurrent
     cross-process reservation of the same subnet — picking the next free one. The reserved row is
-    state 'created' with network_cidr + entry_cidrs set; finalize_run fills the rest and delete_run
-    releases it if the create fails before finalize."""
+    state 'created' with network_cidr + entry_cidrs set; finalize_run fills the rest and
+    release_reservation releases it if the create fails before finalize."""
     from sqlalchemy.exc import IntegrityError
 
     from xorcise.core.headscale import allocate_cidr  # lazy: keep headscale off the boot path
@@ -715,7 +717,7 @@ def create_run(
     entry_networks = tuple(installed.environment.entry_networks) or ("default",)
     # reserve the run's subnet as a DB row BEFORE deploy — durable + visible to every
     # process the instant it's taken (retires the in-memory _RESERVED_CIDRS). On any failure before
-    # finalize, delete the reservation to free the subnet.
+    # finalize, release the reservation: tear down what the create started, then free the subnet.
     cidr, entry_subnets = _reserve_run_subnet(
         deps,
         run_id,
@@ -742,8 +744,14 @@ def create_run(
             entry_subnets=entry_subnets,
             intel_policy=policy,
         )
-    except Exception:
-        runs.delete_run(run_id)  # release the reservation on failure
+    except Exception as exc:
+        release_reservation(
+            deps,
+            run_id,
+            detail=f"the create failed before this run's deploy finished ({first_line(exc)}); "
+            "its environment is torn down automatically",
+            at=datetime.now(UTC),
+        )
         raise
 
 
