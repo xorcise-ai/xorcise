@@ -333,5 +333,7 @@ unless --force.
     client = RestClient()
     name = resolve_agent_name(client, name)
     confirm_or_abort(f"Remove agent '{name}' and its recorded runs?", assume_yes=yes)
-    client.delete(f"/agents/{name}" + ("?force=true" if force else ""))
+    # The server may first tear down the environment of each of the agent's finished runs (#173),
+    # one after another, so allow far more than the 5 s default.
+    client.delete(f"/agents/{name}" + ("?force=true" if force else ""), timeout=600.0)
     console.print(f"removed agent '{name}'")

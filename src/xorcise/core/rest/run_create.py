@@ -150,9 +150,14 @@ def _use_real_headscale(settings: Settings) -> bool:
 def _probe_headscale(cli: HeadscaleCli, container: str) -> None:
     """Fail loud with a remediation if the Headscale control plane is unreachable.
 
-    Mirrors the Docker fail-loud path: the remediation (which names XORCISE_USE_STUBS) lives here
-    in the rest layer, not in the headscale part-island. Without this, a missing/stopped container
-    surfaces as a bare HeadscaleError ('No such container') deep inside create_run."""
+    Mirrors the Docker fail-loud path: the remediation lives here in the rest layer, not in the
+    headscale part-island. Without this, a missing/stopped container surfaces as a bare
+    HeadscaleError ('No such container') deep inside create_run.
+
+    The remediation names the real fix only, never stub mode: this message also reaches the run
+    page and /system as a failed teardown's error (#173), and an operator who switched stubs on as
+    the "fix" would have every pending release recorded as done with nothing removed. Stubs are
+    for testing (`xorcise up --stub`), not a remedy."""
     from xorcise.core.headscale import HeadscaleError
 
     try:
@@ -160,7 +165,7 @@ def _probe_headscale(cli: HeadscaleCli, container: str) -> None:
     except HeadscaleError as exc:
         raise RuntimeError(
             f"Headscale control plane {container!r} is not reachable — run 'xorcise up' "
-            "to provision a local one, or set XORCISE_USE_STUBS=1"
+            "to provision a local one"
         ) from exc
 
 
@@ -304,9 +309,7 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
             except Exception as exc:  # daemon down / from_env failure — DockerException is NOT a
                 # RuntimeError, so unwrapped it escapes the runs router's except clauses as a raw
                 # 500; RuntimeError maps to a clean 503 with a remediation (mirrors mission_pull).
-                raise RuntimeError(
-                    "Docker daemon is not reachable — start Docker or set XORCISE_USE_STUBS=1"
-                ) from exc
+                raise RuntimeError("Docker daemon is not reachable — start Docker") from exc
 
         def require_nested(platform: str | None) -> None:
             require_nested_support(settings, _client, platform=platform)

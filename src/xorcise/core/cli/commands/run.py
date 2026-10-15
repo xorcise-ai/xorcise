@@ -611,7 +611,10 @@ unless --force.
     client = RestClient()
     run_id = _resolve_id(client, run_id)
     confirm_or_abort(f"Delete run {short_id(run_id)} and its recorded result?", assume_yes=yes)
-    client.delete(f"/runs/{run_id}" + ("?force=true" if force else ""))
+    # A delete may first tear down the run's environment on the server (#173): Docker and
+    # Headscale calls that outlast the 5 s default, so a slow teardown would read as a failure
+    # while the server carried on.
+    client.delete(f"/runs/{run_id}" + ("?force=true" if force else ""), timeout=120.0)
     console.print(f"deleted run '{run_id}'")
 
 

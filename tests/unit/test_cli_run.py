@@ -770,14 +770,17 @@ def test_run_delete_calls_delete_endpoint(monkeypatch):
     # `xorcise run delete <id>` deletes the run's result + record via DELETE /runs/{id}.
     seen: dict[str, str] = {}
 
-    def fake_delete(self, path: str):  # noqa: ANN001, ANN202 — test stub
+    def fake_delete(self, path: str, timeout: float | None = None):  # noqa: ANN001, ANN202
         seen["path"] = path
+        seen["timeout"] = str(timeout)
         return None
 
     monkeypatch.setattr("xorcise.core.cli.commands.run.RestClient.delete", fake_delete)
     result = runner.invoke(app, ["run", "delete", RID])
     assert result.exit_code == 0
     assert seen["path"] == f"/runs/{RID}"
+    # The server may tear down the run's environment first (#173): not a 5 s request.
+    assert seen["timeout"] == "120.0"
     assert f"deleted run '{RID}'" in result.output
 
 

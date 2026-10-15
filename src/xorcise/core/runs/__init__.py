@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from xorcise.core.runs.repository import (
     AwaitingRelease,
+    ReleaseBacklog,
     ReleaseState,
     active_cidrs,
     active_run_networks,
@@ -32,6 +33,7 @@ from xorcise.core.runs.repository import (
     mark_released,
     mark_terminal,
     record_release_failure,
+    release_backlog,
     release_state,
     reserve_run,
     terminal_runs_awaiting_release,
@@ -40,6 +42,7 @@ from xorcise.core.runs.repository import (
 
 __all__ = [
     "AwaitingRelease",
+    "ReleaseBacklog",
     "ReleaseState",
     "active_cidrs",
     "active_run_networks",
@@ -62,6 +65,7 @@ __all__ = [
     "mark_released",
     "mark_terminal",
     "record_release_failure",
+    "release_backlog",
     "release_state",
     "reserve_run",
     "terminal_runs_awaiting_release",

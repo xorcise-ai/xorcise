@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from xorcise.core.contracts.run import RunEntry, TerminalTrigger, as_terminal_trigger
 from xorcise.core.db import session_scope
@@ -436,6 +436,33 @@ def terminal_runs_awaiting_release() -> list[AwaitingRelease]:
             )
             for r in rows
         ]
+
+
+@dataclass(frozen=True)
+class ReleaseBacklog:
+    """Finished runs whose teardown FAILED and is still being retried (#173)."""
+
+    pending: int
+    oldest_ended_at: datetime | None
+    oldest_error: str | None
+
+
+def release_backlog() -> ReleaseBacklog:
+    """A count and the oldest of them, for /system. Two small queries rather than loading every
+    unreleased row: the GUI polls /system, and right after an upgrade the backlog can be long.
+    Runs merely waiting for their grade (no failed attempt yet) are not counted."""
+    failed = (
+        RunRow.state == "terminal",
+        RunRow.released_at.is_(None),
+        RunRow.network_cidr != "",
+        RunRow.release_attempts > 0,
+    )
+    with session_scope() as s:
+        pending = s.scalar(select(func.count()).select_from(RunRow).where(*failed)) or 0
+        oldest = s.scalar(select(RunRow).where(*failed).order_by(RunRow.completed_at).limit(1))
+        if oldest is None:
+            return ReleaseBacklog(pending, None, None)
+        return ReleaseBacklog(pending, _utc(oldest.completed_at), oldest.release_error)
 
 
 def is_budget_expired(run_id: str, now: datetime) -> bool:

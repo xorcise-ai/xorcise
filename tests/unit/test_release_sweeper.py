@@ -157,21 +157,46 @@ def test_a_raising_release_does_not_stop_the_scan() -> None:
     assert released == ["b"]
 
 
-def test_a_run_still_unreleased_after_an_hour_is_logged_once_at_error(caplog) -> None:
+def test_overdue_releases_are_summarised_once_an_hour_at_error(caplog) -> None:
+    # Review of #185: one ERROR per run fired at once for every historic run while a plane was
+    # down. Now one summary line, at most hourly, naming the count and the oldest.
     clock = _Clock()
-    item = AwaitingRelease("r1", "done", T0, 4, "tailnet: Headscale is not reachable")
-    sweeper = _sweeper([item], lambda rid: False, clock=clock)
+    backlog = [
+        AwaitingRelease("old", "done", T0, 4, "tailnet: Headscale is not reachable"),
+        AwaitingRelease("new", "done", T0 + timedelta(minutes=5), 1, "tailnet: same"),
+        AwaitingRelease("fresh", "done", T0 + timedelta(hours=2), 0, None),  # not overdue
+    ]
+    sweeper = _sweeper(backlog, lambda rid: False, clock=clock)
     with caplog.at_level("ERROR", logger=release_sweeper.__name__):
         clock.now = T0 + timedelta(minutes=59)
         sweeper.tick()
-        assert not caplog.records
-        for _ in range(3):
-            clock.now += timedelta(minutes=11)
-            sweeper.tick()
-    errors = [r for r in caplog.records if r.levelname == "ERROR"]
-    assert len(errors) == 1
-    assert "r1" in errors[0].getMessage()
-    assert "Headscale is not reachable" in errors[0].getMessage()
+        assert not caplog.records  # nothing has waited an hour yet
+        clock.now = T0 + timedelta(hours=2)
+        sweeper.tick()
+        clock.now += timedelta(minutes=30)
+        sweeper.tick()  # within the hour: quiet
+        clock.now += timedelta(minutes=31)
+        sweeper.tick()  # an hour on: said again
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 2
+    assert errors[0].startswith("2 finished run(s) still hold their container or tailnet nodes")
+    assert "Oldest: run old, ended 120 min ago (tailnet: Headscale is not reachable)" in errors[0]
+
+
+def test_a_settled_check_that_raises_does_not_stop_the_scan() -> None:
+    # Review of #185: the settled check reads the run's stored result, outside the per-run try.
+    # One row failing validation raised out of every scan, and no later run was ever released.
+    released: list[str] = []
+
+    def settled(item: AwaitingRelease, now: datetime) -> bool:
+        if item.run_id == "broken":
+            raise ValueError("1 validation error for GradeResult")
+        return True
+
+    sweeper = _sweeper([_item("broken"), _item("next")], _recording(released), settled=settled)
+    assert sweeper.tick() == 1
+    assert released == ["next"]
+    assert "broken" in sweeper._next_at  # backed off like any failure, not retried every scan
 
 
 def test_forgets_runs_that_left_the_backlog() -> None:

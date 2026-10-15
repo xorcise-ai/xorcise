@@ -11,8 +11,8 @@ environment, and a grade in flight releases the run itself when it finishes. A r
 lost waits for the grade to be re-driven (a result poll, or the boot regrade), which releases it.
 
 Each run backs off on its own (30 s doubling to 10 min) so a down plane is not hammered, and a scan
-attempts at most `batch` runs. A run still unreleased an hour after it ended is logged once at
-error level. It never gives up."""
+attempts at most `batch` runs. While any release has been failing for over an hour, one summary line
+is logged at error level, at most hourly. It never gives up."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ class ReleaseSweeper:
         self._batch = batch
         self._failures: dict[str, int] = {}
         self._next_at: dict[str, datetime] = {}
-        self._escalated: set[str] = set()
+        self._last_escalation: datetime | None = None
         self._task: asyncio.Task[None] | None = None
 
     def tick(self) -> int:
@@ -63,7 +63,6 @@ class ReleaseSweeper:
         live = {a.run_id for a in awaiting}
         self._failures = {k: v for k, v in self._failures.items() if k in live}
         self._next_at = {k: v for k, v in self._next_at.items() if k in live}
-        self._escalated &= live
         released = attempted = 0
         for item in awaiting:
             if attempted >= self._batch:
@@ -71,15 +70,16 @@ class ReleaseSweeper:
             due = self._next_at.get(item.run_id)
             if due is not None and now < due:
                 continue
-            if not self._settled(item, now):
-                continue
-            attempted += 1
-            # Isolate each run: one failure must not abort the scan (teardown_run itself never
-            # raises, but a DB error recording its outcome could).
+            # Isolate each run, the settled check included: it reads the run's stored result,
+            # and one row that fails to load must not stop every later run from being released.
             try:
+                if not self._settled(item, now):
+                    continue
+                attempted += 1
                 ok = self._release(item.run_id)
             except Exception:
                 log.warning("release sweep: releasing %s failed", item.run_id, exc_info=True)
+                attempted += 1
                 ok = False
             if ok:
                 released += 1
@@ -90,20 +90,36 @@ class ReleaseSweeper:
             self._next_at[item.run_id] = now + min(
                 _BACKOFF_BASE * 2 ** (failures - 1), _BACKOFF_MAX
             )
-            self._maybe_escalate(item, now)
+        self._maybe_escalate(awaiting, now)
         return released
 
-    def _maybe_escalate(self, item: AwaitingRelease, now: datetime) -> None:
-        ended = item.completed_at
-        if ended is None or item.run_id in self._escalated or now - ended < _ESCALATE_AFTER:
+    def _maybe_escalate(self, awaiting: list[AwaitingRelease], now: datetime) -> None:
+        """One ERROR line, at most hourly, while any release has been failing for over an hour.
+
+        A summary, not a line per run: after an upgrade, or with a plane down, many runs can be
+        overdue at once, and one line each would bury the log. Each restart may say it once more,
+        which is right — it is still true."""
+        if self._last_escalation is not None and now - self._last_escalation < _ESCALATE_AFTER:
             return
-        self._escalated.add(item.run_id)
+        overdue = [
+            (a, now - a.completed_at)
+            for a in awaiting
+            if (a.attempts > 0 or a.run_id in self._failures)
+            and a.completed_at is not None
+            and now - a.completed_at >= _ESCALATE_AFTER
+        ]
+        if not overdue:
+            return
+        self._last_escalation = now
+        oldest, waited = overdue[0]  # the listing is oldest-first
         log.error(
-            "the environment of run %s is still not released %d min after it ended (%s); "
-            "its container or tailnet nodes are still up, and the release keeps being retried",
-            item.run_id,
-            int((now - ended).total_seconds() // 60),
-            item.error or "no error recorded",
+            "%d finished run(s) still hold their container or tailnet nodes more than an hour "
+            "after they ended; the release keeps being retried. Oldest: run %s, ended %d min ago "
+            "(%s)",
+            len(overdue),
+            oldest.run_id,
+            int(waited.total_seconds() // 60),
+            oldest.error or "no error recorded",
         )
 
     async def run(self) -> None:

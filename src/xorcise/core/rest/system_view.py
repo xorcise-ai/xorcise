@@ -298,15 +298,13 @@ def _release_backlog() -> ReleaseBacklogView | None:
     from xorcise.core import runs
 
     try:
-        awaiting = runs.terminal_runs_awaiting_release()
+        backlog = runs.release_backlog()
     except Exception:  # noqa: BLE001 — degrade this one field, never the whole /system view
         return None
-    failed = [a for a in awaiting if a.attempts > 0]
-    if not failed:
-        return ReleaseBacklogView()
-    oldest = failed[0]  # the listing is oldest-first
     return ReleaseBacklogView(
-        pending=len(failed), oldest_ended_at=oldest.completed_at, oldest_error=oldest.error or ""
+        pending=backlog.pending,
+        oldest_ended_at=backlog.oldest_ended_at,
+        oldest_error=backlog.oldest_error or "",
     )
 
 
