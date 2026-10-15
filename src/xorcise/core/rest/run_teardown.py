@@ -16,6 +16,7 @@ import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Literal
 
 from xorcise.core import runs
 from xorcise.core.config import get_settings
@@ -55,7 +56,10 @@ def teardown_run(
     Idempotent: both underlying teardowns are keyed on the run id and no-op on what is already
     gone, so a retry is always safe. Logs a failure as a warning on the run's FIRST failed attempt
     only; the sweeper's retries log at debug, so a plane that is down for an hour does not flood
-    the log, and a release that finally lands after failures says so at info."""
+    the log, and a release that finally lands after failures says so at info.
+
+    Never raises, the bookkeeping included: grade_and_record calls this from a `finally`, and a
+    database error escaping there would skip the rest of finalisation (#173)."""
     failures: list[tuple[str, BaseException]] = []
     for half, release in (("container", _release_container), ("tailnet", _release_tailnet)):
         try:
@@ -63,13 +67,19 @@ def teardown_run(
         except Exception as exc:  # best-effort per half — never break grading or the other half
             failures.append((half, exc))
     if not failures:
-        before = runs.release_state(run_id)
-        runs.mark_released(run_id, now_fn())
-        if before is not None and before.released_at is None and before.attempts:
-            log.info("teardown: released %s after %d failed attempt(s)", run_id, before.attempts)
+        _record_released(run_id, now_fn())
         return ReleaseOutcome(released=True)
     error = "; ".join(f"{half}: {_one_line(exc)}" for half, exc in failures)
-    attempts = runs.record_release_failure(run_id, error)
+    try:
+        attempts = runs.record_release_failure(run_id, error)
+        if attempts == 0 and _released_meanwhile(run_id):
+            # Another caller (the sweeper, the grade's own teardown, a delete) released the run
+            # while this one failed. The environment is gone: reporting a failure would back the
+            # sweeper off, or refuse a delete, over a run that is in fact released.
+            return ReleaseOutcome(released=True)
+    except Exception:
+        log.warning("teardown: could not record the failed release of %s", run_id, exc_info=True)
+        attempts = 1  # unknown: log it as a first failure rather than hide it
     for half, failure in failures:
         if attempts <= 1:
             log.warning(
@@ -85,29 +95,119 @@ def teardown_run(
     return ReleaseOutcome(released=False, error=error)
 
 
-def release_before_delete(run_ids: Sequence[str]) -> list[str]:
-    """Release any of these terminal runs whose environment is still up. Returns the ones that
-    could not be released, each with its error; the caller must not delete those.
+def _record_released(run_id: str, at: datetime) -> None:
+    """Mark the run released. A database error is logged, not raised: the environment IS gone,
+    and the sweeper's next idempotent retry records it."""
+    try:
+        before = runs.release_state(run_id)
+        runs.mark_released(run_id, at)
+    except Exception:
+        log.warning("teardown: released %s but could not record it", run_id, exc_info=True)
+        return
+    if before is not None and before.released_at is None and before.attempts:
+        log.info("teardown: released %s after %d failed attempt(s)", run_id, before.attempts)
 
-    The run row is the release sweeper's only handle on a run (#173). Deleting it first would leave
-    the container until the next boot and the tailnet nodes forever, so a delete tries the release
-    here, synchronously, and goes ahead only once it has landed."""
-    failed: list[str] = []
+
+def _released_meanwhile(run_id: str) -> bool:
+    state = runs.release_state(run_id)
+    return state is not None and state.released_at is not None
+
+
+# --- deleting a run without stranding its environment -------------------------------------------
+
+DeleteRefusal = Literal["running", "grading", "unreleased"]
+
+
+@dataclass(frozen=True)
+class DeleteBlocked:
+    """Why runs cannot be deleted yet. `forceable` says whether the caller may override it."""
+
+    reason: DeleteRefusal
+    run_ids: tuple[str, ...]
+    detail: str
+    forceable: bool
+
+    def body(self) -> dict[str, object]:
+        """The 409 body. `detail` is the sentence every surface shows; the rest lets a client
+        offer the one action that unblocks the delete (the GUI's "Delete anyway")."""
+        return {
+            "detail": self.detail,
+            "reason": self.reason,
+            "run_ids": list(self.run_ids),
+            "forceable": self.forceable,
+        }
+
+
+def check_deletable(run_ids: Sequence[str], *, force: bool = False) -> DeleteBlocked | None:
+    """Make these runs safe to delete, or say why they are not.
+
+    The run row is the release sweeper's only handle on a run (#173): deleting it while the
+    environment is still up leaves the container until the next boot and the tailnet nodes
+    forever. So, in order:
+      running     a run that has not finished still has its environment up. Never forceable:
+                  terminate it first, which releases it.
+      grading     its grade is in flight, and grading may still need the environment. Never
+                  forceable: it settles on its own within moments.
+      unreleased  a finished run whose environment is still up is released here, synchronously.
+                  If that fails (Docker or Headscale down), the delete is refused unless `force`,
+                  which accepts the leak and is logged as such.
+    """
+    from xorcise.core.rest.run_terminate import is_grading
+
+    running = [r for r in run_ids if not runs.terminal_state(r)[0] and runs.get(r) is not None]
+    if running:
+        return DeleteBlocked(
+            "running",
+            tuple(running),
+            f"{_runs_phrase(running)} still running. Terminate "
+            f"{'it' if len(running) == 1 else 'them'} first: deleting a live run would leave its "
+            "environment up with nothing left to clean it up.",
+            forceable=False,
+        )
+    grading = [r for r in run_ids if is_grading(r)]
+    if grading:
+        return DeleteBlocked(
+            "grading",
+            tuple(grading),
+            f"{_runs_phrase(grading)} still being graded. Delete once the result is recorded, "
+            "usually within a minute.",
+            forceable=False,
+        )
+    failed: list[tuple[str, str]] = []
     for run_id in run_ids:
-        release = runs.release_state(run_id)
-        if release is None or release.released_at is not None or not runs.has_environment(run_id):
+        state = runs.release_state(run_id)
+        if state is None or state.released_at is not None or not runs.has_environment(run_id):
             continue
         outcome = teardown_run(run_id)
         if not outcome.released:
-            failed.append(f"{run_id} ({outcome.error})")
-    return failed
-
-
-def unreleased_detail(failed: Sequence[str]) -> str:
-    """The 409 detail for a delete refused by release_before_delete."""
-    return (
-        "could not tear down the environment of run "
-        + ", ".join(failed)
-        + ". Deleting it now would leak its container and tailnet nodes. The release is retried "
-        "automatically; delete again once it has landed"
+            failed.append((run_id, outcome.error))
+    if not failed:
+        return None
+    if force:
+        for run_id, error in failed:
+            log.warning(
+                "deleting %s with its environment possibly still up (forced; teardown: %s)",
+                run_id,
+                error,
+            )
+        return None
+    ids = [r for r, _ in failed]
+    errors = "; ".join(sorted({e for _, e in failed}))
+    return DeleteBlocked(
+        "unreleased",
+        tuple(ids),
+        f"the environment of {_runs_phrase(ids, verb='')} could not be torn down ({errors}). "
+        "Deleting now would leave its container or tailnet nodes running with nothing left to "
+        "clean them up. Once Docker and Headscale are back (xorcise up), the release is retried "
+        "automatically and the delete will go through; or delete anyway to accept the leak.",
+        forceable=True,
     )
+
+
+def _runs_phrase(run_ids: Sequence[str], *, verb: str = "is") -> str:
+    """'run abc is' / 'runs abc, def are' — names every run, so the refusal says which."""
+    plural = len(run_ids) > 1
+    head = f"runs {', '.join(run_ids)}" if plural else f"run {run_ids[0]}"
+    if not verb:
+        return head
+    return f"{head} {'are' if plural else verb}"

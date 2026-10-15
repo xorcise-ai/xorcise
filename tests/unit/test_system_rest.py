@@ -54,7 +54,7 @@ def test_system_counts_environments_a_teardown_left_up(migrated_home) -> None:
     releases = _client().get("/api/system").json()["releases"]
     assert releases["pending"] == 2
     assert releases["oldest_ended_at"].startswith("2026-10-14T12:00:00")
-    assert releases["last_error"] == "tailnet: Headscale is not reachable"
+    assert releases["oldest_error"] == "tailnet: Headscale is not reachable"
 
 
 @pytest.mark.unit
@@ -62,5 +62,17 @@ def test_system_reports_no_backlog_when_every_release_landed(migrated_home) -> N
     assert _client().get("/api/system").json()["releases"] == {
         "pending": 0,
         "oldest_ended_at": None,
-        "last_error": "",
+        "oldest_error": "",
     }
+
+
+@pytest.mark.unit
+def test_system_reports_the_boot_reconcile(migrated_home, monkeypatch) -> None:
+    from xorcise.core.contracts.config import BootReconcileView
+    from xorcise.core.rest import reconcile
+
+    monkeypatch.setattr(
+        reconcile, "_status", BootReconcileView(state="done", aborted=1, deferred=("r1",))
+    )
+    view = _client().get("/api/system").json()["boot_reconcile"]
+    assert (view["state"], view["aborted"], view["deferred"]) == ("done", 1, ["r1"])

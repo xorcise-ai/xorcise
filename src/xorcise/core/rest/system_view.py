@@ -18,6 +18,7 @@ import httpx
 
 from xorcise.core.config import Settings
 from xorcise.core.contracts.config import (
+    BootReconcileView,
     CatalogStatusView,
     MissionBaseView,
     PlaneStatus,
@@ -278,7 +279,16 @@ def build_system_info(settings: Settings) -> SystemInfo:
         host_platform=_host_platform(settings),
         pid=os.getpid(),  # lets `down`/`up`/`db upgrade` find this instance without the pid file
         releases=_release_backlog(),
+        boot_reconcile=_boot_reconcile(),
     )
+
+
+def _boot_reconcile() -> BootReconcileView:
+    """The start-up reconcile's outcome. Every role builds its REST app with build_rest_app, which
+    schedules the reconcile, so this is always meaningful."""
+    from xorcise.core.rest.reconcile import boot_reconcile_status
+
+    return boot_reconcile_status()
 
 
 def _release_backlog() -> ReleaseBacklogView | None:
@@ -296,7 +306,7 @@ def _release_backlog() -> ReleaseBacklogView | None:
         return ReleaseBacklogView()
     oldest = failed[0]  # the listing is oldest-first
     return ReleaseBacklogView(
-        pending=len(failed), oldest_ended_at=oldest.completed_at, last_error=oldest.error or ""
+        pending=len(failed), oldest_ended_at=oldest.completed_at, oldest_error=oldest.error or ""
     )
 
 

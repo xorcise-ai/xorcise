@@ -22,6 +22,7 @@ the real deps (build_run_create_deps).
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -29,6 +30,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from xorcise.core import runs
 from xorcise.core.config import get_settings
+from xorcise.core.contracts.config import BootReconcileView
 from xorcise.core.contracts.control import RunState
 from xorcise.core.contracts.errors import NotFoundError
 
@@ -74,22 +76,29 @@ class ReconcileReport:
     adopted: list[str] = field(default_factory=list)  # container still live — left running
     aborted: list[str] = field(default_factory=list)  # deployed but container gone — closed out
     released: list[str] = field(default_factory=list)  # reserved only, deploy never finished
+    # reserved only, but the teardown failed: the reservation is KEPT so the next boot retries it
+    deferred: list[str] = field(default_factory=list)
 
 
-def _teardown_env(deps: _ReconcileDeps, run_id: str) -> None:
+def _teardown_env(deps: _ReconcileDeps, run_id: str) -> str:
     """Best-effort release of a run's environment (container + tailnet nodes). Idempotent.
 
     Uses the injected deps (not rest.run_teardown, which builds its own) so reconcile stays
-    injectable. Both underlying teardowns are keyed on the run-id name, so they
-    act on containers/nodes this process never tracked. Failures are logged, never raised."""
+    injectable. Both underlying teardowns are keyed on the run-id name, so they act on
+    containers/nodes this process never tracked. Never raises; returns the error, one line per
+    failed half, or "" when both are released — the caller decides what a failure means (#173)."""
+    errors: list[str] = []
     try:
         deps.control.teardown(run_id, credential=deps.api_key)
-    except Exception:
+    except Exception as exc:
         log.warning("reconcile: control.teardown failed for %s", run_id, exc_info=True)
+        errors.append(f"container: {exc}")
     try:
         deps.fence.teardown_run_network(run_id)
-    except Exception:
+    except Exception as exc:
         log.warning("reconcile: fence.teardown_run_network failed for %s", run_id, exc_info=True)
+        errors.append(f"tailnet: {exc}")
+    return "; ".join(errors)
 
 
 def _reconcile_one(
@@ -106,7 +115,18 @@ def _reconcile_one(
         # exists then drop the reservation; nothing was graded (it never ran). Teardown BEFORE
         # delete so a crash in between leaves the reservation (revisited next boot), never a
         # leaked environment.
-        _teardown_env(deps, run_id)
+        error = _teardown_env(deps, run_id)
+        if error:
+            # Keep the reservation: it is the only record that this environment exists. Dropped,
+            # its tailnet user and router node would leak for good (#173); kept, the next boot
+            # retries the teardown.
+            log.warning(
+                "reconcile: kept reservation %s for the next start (teardown failed: %s)",
+                run_id,
+                error,
+            )
+            report.deferred.append(run_id)
+            return
         runs.delete_run(run_id)
         report.released.append(run_id)
         return
@@ -129,8 +149,12 @@ def _reconcile_one(
     # Teardown BEFORE mark_terminal (crash-safety): a crash in between leaves the
     # run NON-terminal so the next boot revisits + retries it, rather than terminal-but-leaked
     # (reconcile only scans non-terminal runs, so a terminal run is never revisited).
-    _teardown_env(deps, run_id)
+    error = _teardown_env(deps, run_id)
     runs.mark_terminal(run_id, "crashed", now_fn())
+    if error:
+        # Now terminal, so the release sweeper owns the retry; recording the failure puts it in
+        # the /system backlog straight away (#173).
+        runs.record_release_failure(run_id, error)
     report.aborted.append(run_id)
 
 
@@ -179,18 +203,75 @@ def reconcile_on_startup(
     return report
 
 
-def reconcile_all_on_startup() -> None:
+_status_lock = threading.Lock()
+_status = BootReconcileView()
+
+
+def boot_reconcile_status() -> BootReconcileView:
+    """This process's start-up reconcile outcome, for /system."""
+    with _status_lock:
+        return _status
+
+
+def _set_status(view: BootReconcileView) -> None:
+    global _status
+    with _status_lock:
+        _status = view
+
+
+def _first_line(exc: Exception) -> str:
+    lines = str(exc).strip().splitlines()
+    return lines[0] if lines else type(exc).__name__
+
+
+def reconcile_all_on_startup(*, now_fn: Callable[[], datetime] = lambda: datetime.now(UTC)) -> None:
     """Run every boot reconcile: the run/tailnet/docker convergence, the ingest
     and pull jobs, and the orphaned-grade sweep. The single entrypoint the role_all
     startup task schedules on a worker thread, so the boot wiring stays a trivial, obviously-correct
-    call."""
+    call.
+
+    Each step is isolated: one failing (Docker or Headscale down at boot makes the run
+    convergence raise) no longer skips the others, so a lost grade is still re-driven and an
+    interrupted pull still cleaned up. The outcome is published for /system (#173). Raises the
+    first error after every step has run, so the caller still logs it."""
     from xorcise.core.rest.ingest_jobs import reconcile_ingest_jobs
     from xorcise.core.rest.pull_jobs import reconcile_pull_jobs
     from xorcise.core.rest.run_terminate import regrade_orphaned_terminal_runs
 
-    reconcile_on_startup()
-    reconcile_ingest_jobs()
-    reconcile_pull_jobs()
-    # Heal any run wedged at "grading" because its background grade was lost to a stop/crash — the
-    # convergence above only touches NON-terminal runs, so a terminal-ungraded run needs this.
-    regrade_orphaned_terminal_runs()
+    _set_status(BootReconcileView(state="running"))
+    report = ReconcileReport()
+    errors: list[tuple[str, Exception]] = []
+
+    def converge_runs() -> None:
+        nonlocal report
+        report = reconcile_on_startup()
+
+    steps: list[tuple[str, Callable[[], object]]] = [
+        ("runs", converge_runs),
+        ("ingest jobs", reconcile_ingest_jobs),
+        ("pull jobs", reconcile_pull_jobs),
+        # Heal any run wedged at "grading" because its background grade was lost to a stop/crash —
+        # the convergence above only touches NON-terminal runs, so a terminal-ungraded run needs
+        # this.
+        ("lost grades", regrade_orphaned_terminal_runs),
+    ]
+    for name, step in steps:
+        try:
+            step()
+        except Exception as exc:  # isolate: the remaining steps still run
+            errors.append((name, exc))
+            log.warning("reconcile: the %s step failed: %s", name, exc)
+            log.debug("reconcile step failure detail", exc_info=True)
+    _set_status(
+        BootReconcileView(
+            state="failed" if errors else "done",
+            finished_at=now_fn(),
+            adopted=len(report.adopted),
+            aborted=len(report.aborted),
+            released=len(report.released),
+            deferred=tuple(report.deferred),
+            error="; ".join(f"{name}: {_first_line(exc)}" for name, exc in errors),
+        )
+    )
+    if errors:
+        raise errors[0][1]

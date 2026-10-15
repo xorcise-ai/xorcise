@@ -235,7 +235,7 @@ def terminate_run(run_id: str, background: BackgroundTasks) -> RunEntry:
 
 
 @router.delete("/{run_id}", status_code=204)
-def delete_run(run_id: str) -> Response:
+def delete_run(run_id: str, force: bool = False) -> Response:
     """Operator-initiated delete of a single run's result + record.
 
     The narrow, per-run counterpart to the agent-scoped cascade (DELETE /agents/{name}): removes
@@ -243,6 +243,11 @@ def delete_run(run_id: str) -> Response:
     results view. 404 if the run is unknown; 409 if it has not reached a terminal state — it must be
     terminated first (deleting it would strand its container/tailnet env). Idempotent on the result
     (delete of an ungraded terminal run still removes the record).
+
+    A finished run whose environment is still up is released first (#173). 409 while its grade is
+    in flight, or when the release fails; `force=true` overrides only the latter, accepting that
+    the container or tailnet nodes may be left running. The 409 body carries `reason`, `run_ids`
+    and `forceable` beside `detail`.
     """
     run = runs.get(run_id)
     if run is None:
@@ -259,11 +264,11 @@ def delete_run(run_id: str) -> Response:
                 f"terminate it before deleting"
             ),
         )
-    from xorcise.core.rest.run_teardown import release_before_delete, unreleased_detail
+    from xorcise.core.rest.run_teardown import check_deletable
 
-    unreleased = release_before_delete([run_id])
-    if unreleased:
-        raise HTTPException(status_code=409, detail=unreleased_detail(unreleased))
+    blocked = check_deletable([run_id], force=force)
+    if blocked is not None:
+        return JSONResponse(status_code=409, content=blocked.body())
     reporting.delete_result(run_id)
     runs.delete_run(run_id)
     return Response(status_code=204)

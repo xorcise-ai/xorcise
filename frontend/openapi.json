@@ -880,6 +880,65 @@
         "title": "AttributionStatus",
         "type": "object"
       },
+      "BootReconcileView": {
+        "additionalProperties": false,
+        "description": "What this server's start-up reconcile did, so the CLI can say it (#173).\n\nAt boot the server converges the live Docker/Headscale world to the persisted runs: a run whose\ncontainer survived the restart is adopted, one whose container is gone is closed out\n(`crashed`), and a reservation whose deploy never finished is released. Before this, the only\nrecord was a line in serve.log, and a reconcile that failed outright said nothing at all.\n\n  pending  the reconcile has not started yet\n  running  it is converging now (it runs in the background, after the server answers)\n  done     finished; the counts say what it did\n  failed   a step failed (`error`); the steps after it still ran, and the next start retries",
+        "properties": {
+          "aborted": {
+            "default": 0,
+            "title": "Aborted",
+            "type": "integer"
+          },
+          "adopted": {
+            "default": 0,
+            "title": "Adopted",
+            "type": "integer"
+          },
+          "deferred": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Deferred",
+            "type": "array"
+          },
+          "error": {
+            "default": "",
+            "title": "Error",
+            "type": "string"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "released": {
+            "default": 0,
+            "title": "Released",
+            "type": "integer"
+          },
+          "state": {
+            "default": "pending",
+            "enum": [
+              "pending",
+              "running",
+              "done",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "title": "BootReconcileView",
+        "type": "object"
+      },
       "CatalogConfigUpdate": {
         "additionalProperties": false,
         "description": "Flip the remote-catalog connect/disconnect switch (persists catalog_enabled).",
@@ -3158,11 +3217,6 @@
         "additionalProperties": false,
         "description": "Finished runs whose environment a teardown failed to release (#173): their container or\ntailnet nodes are still up, and the release sweeper keeps retrying. Runs merely waiting for\ntheir grade to finish are not counted \u2014 that is normal, not something to act on.",
         "properties": {
-          "last_error": {
-            "default": "",
-            "title": "Last Error",
-            "type": "string"
-          },
           "oldest_ended_at": {
             "anyOf": [
               {
@@ -3174,6 +3228,11 @@
               }
             ],
             "title": "Oldest Ended At"
+          },
+          "oldest_error": {
+            "default": "",
+            "title": "Oldest Error",
+            "type": "string"
           },
           "pending": {
             "default": 0,
@@ -4337,6 +4396,16 @@
         "additionalProperties": false,
         "description": "Read-only Reflect view powering the GUI System / Modules / Catalog cards.",
         "properties": {
+          "boot_reconcile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BootReconcileView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "catalog": {
             "$ref": "#/components/schemas/CatalogStatusView"
           },
@@ -5130,7 +5199,7 @@
     },
     "/api/agents/{name}": {
       "delete": {
-        "description": "Remove an agent and cascade-delete its runs + results.",
+        "description": "Remove an agent and cascade-delete its runs + results.\n\nThe runs' rows are the release sweeper's only handle on their environments (#173), so the\ncascade is refused (409) while any of the agent's runs is still running or being graded, and\nwhen a finished run's environment cannot be released. `force=true` overrides only the last,\naccepting that a container or tailnet nodes may be left running. The 409 body carries\n`reason`, `run_ids` and `forceable` beside `detail`.",
         "operationId": "remove_agent_api_agents__name__delete",
         "parameters": [
           {
@@ -5140,6 +5209,16 @@
             "schema": {
               "title": "Name",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Force",
+              "type": "boolean"
             }
           }
         ],
@@ -6327,7 +6406,7 @@
     },
     "/api/runs/{run_id}": {
       "delete": {
-        "description": "Operator-initiated delete of a single run's result + record.\n\nThe narrow, per-run counterpart to the agent-scoped cascade (DELETE /agents/{name}): removes\nthe recorded result and the run row so the run leaves the runs list, the agent history, and the\nresults view. 404 if the run is unknown; 409 if it has not reached a terminal state \u2014 it must be\nterminated first (deleting it would strand its container/tailnet env). Idempotent on the result\n(delete of an ungraded terminal run still removes the record).",
+        "description": "Operator-initiated delete of a single run's result + record.\n\nThe narrow, per-run counterpart to the agent-scoped cascade (DELETE /agents/{name}): removes\nthe recorded result and the run row so the run leaves the runs list, the agent history, and the\nresults view. 404 if the run is unknown; 409 if it has not reached a terminal state \u2014 it must be\nterminated first (deleting it would strand its container/tailnet env). Idempotent on the result\n(delete of an ungraded terminal run still removes the record).\n\nA finished run whose environment is still up is released first (#173). 409 while its grade is\nin flight, or when the release fails; `force=true` overrides only the latter, accepting that\nthe container or tailnet nodes may be left running. The 409 body carries `reason`, `run_ids`\nand `forceable` beside `detail`.",
         "operationId": "delete_run_api_runs__run_id__delete",
         "parameters": [
           {
@@ -6337,6 +6416,16 @@
             "schema": {
               "title": "Run Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Force",
+              "type": "boolean"
             }
           }
         ],

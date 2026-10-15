@@ -4,10 +4,14 @@ import { useState } from "react";
 import { Trash2 } from "lucide-react";
 import { Dialog } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { errorDetail, isForceableRefusal } from "@/lib/api/client";
 import { useDeleteAgent } from "./queries";
 
 /** Delete an agent after a confirm that spells out the runs+results cascade. `onDeleted`
- *  fires on success (the detail page routes back to the list). */
+ *  fires on success (the detail page routes back to the list). A refusal is shown in the
+ *  server's own words, which name the runs in the way and what unblocks them: terminate a run
+ *  that is still running, wait for one being graded, or, when a finished run's environment
+ *  could not be torn down, "Delete anyway" (#173). */
 export function DeleteAgentButton({
   name,
   onDeleted,
@@ -18,11 +22,18 @@ export function DeleteAgentButton({
   const [open, setOpen] = useState(false);
   const del = useDeleteAgent();
 
-  async function confirm() {
-    await del.mutateAsync(name);
+  async function confirm(force = false) {
+    try {
+      await del.mutateAsync({ name, force });
+    } catch {
+      return; // the server's refusal is rendered inline below
+    }
     setOpen(false);
     onDeleted();
   }
+
+  const detail = errorDetail(del.error);
+  const forceable = isForceableRefusal(del.error);
 
   return (
     <>
@@ -35,13 +46,21 @@ export function DeleteAgentButton({
           This permanently deletes the agent <strong>and all its runs and results</strong>. They
           do not outlive the agent. This can&apos;t be undone.
         </p>
-        {del.isError && <p className="mt-2 text-body text-err">Delete failed.</p>}
+        {del.isError && (
+          <p role="alert" className="mt-2 text-body text-err">
+            {detail ?? "Delete failed."}
+          </p>
+        )}
         <div className="mt-4 flex justify-end gap-2">
           <Button variant="ghost" onClick={() => setOpen(false)}>
             Cancel
           </Button>
-          <Button variant="destructive" onClick={confirm} disabled={del.isPending}>
-            {del.isPending ? "Deleting…" : "Delete permanently"}
+          <Button
+            variant="destructive"
+            onClick={() => confirm(forceable)}
+            disabled={del.isPending}
+          >
+            {del.isPending ? "Deleting…" : forceable ? "Delete anyway" : "Delete permanently"}
           </Button>
         </div>
       </Dialog>

@@ -883,11 +883,37 @@ def test_delete_refuses_while_the_environment_cannot_be_released(migrated_home, 
 
     _finished_lab_run("run-del-stuck")
     _stub_release(monkeypatch, released=False)
-    r = _client().delete("/api/runs/run-del-stuck")
+    c = _client()
+    r = c.delete("/api/runs/run-del-stuck")
     assert r.status_code == 409
-    assert "run-del-stuck" in r.json()["detail"]
-    assert "Headscale is not reachable" in r.json()["detail"]
+    body = r.json()
+    assert "run-del-stuck" in body["detail"]
+    assert "Headscale is not reachable" in body["detail"]
+    assert (body["reason"], body["run_ids"], body["forceable"]) == (
+        "unreleased",
+        ["run-del-stuck"],
+        True,
+    )
     assert runs.get("run-del-stuck") is not None
+    # force accepts the leak
+    assert c.delete("/api/runs/run-del-stuck?force=true").status_code == 204
+    assert runs.get("run-del-stuck") is None
+
+
+def test_delete_refuses_while_the_run_is_being_graded(migrated_home, monkeypatch):
+    # Grading may still need the environment; tearing it down mid-grade is what the sweeper's
+    # settled check exists to prevent. Not forceable: it settles on its own.
+    from xorcise.core import runs
+    from xorcise.core.rest import run_terminate
+
+    _finished_lab_run("run-del-grading")
+    called = _stub_release(monkeypatch, released=True)
+    monkeypatch.setattr(run_terminate, "_grading_in_flight", {"run-del-grading"})
+    r = _client().delete("/api/runs/run-del-grading?force=true")
+    assert r.status_code == 409
+    assert (r.json()["reason"], r.json()["forceable"]) == ("grading", False)
+    assert called == []
+    assert runs.get("run-del-grading") is not None
 
 
 def test_delete_of_a_released_run_does_not_tear_down_again(migrated_home, monkeypatch):

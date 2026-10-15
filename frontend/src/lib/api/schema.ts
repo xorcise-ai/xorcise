@@ -40,6 +40,12 @@ export interface paths {
         /**
          * Remove Agent
          * @description Remove an agent and cascade-delete its runs + results.
+         *
+         *     The runs' rows are the release sweeper's only handle on their environments (#173), so the
+         *     cascade is refused (409) while any of the agent's runs is still running or being graded, and
+         *     when a finished run's environment cannot be released. `force=true` overrides only the last,
+         *     accepting that a container or tailnet nodes may be left running. The 409 body carries
+         *     `reason`, `run_ids` and `forceable` beside `detail`.
          */
         delete: operations["remove_agent_api_agents__name__delete"];
         options?: never;
@@ -691,6 +697,11 @@ export interface paths {
          *     results view. 404 if the run is unknown; 409 if it has not reached a terminal state — it must be
          *     terminated first (deleting it would strand its container/tailnet env). Idempotent on the result
          *     (delete of an ungraded terminal run still removes the record).
+         *
+         *     A finished run whose environment is still up is released first (#173). 409 while its grade is
+         *     in flight, or when the release fails; `force=true` overrides only the latter, accepting that
+         *     the container or tailnet nodes may be left running. The 409 body carries `reason`, `run_ids`
+         *     and `forceable` beside `detail`.
          */
         delete: operations["delete_run_api_runs__run_id__delete"];
         options?: never;
@@ -1633,6 +1644,55 @@ export interface components {
              * @default false
              */
             running: boolean;
+        };
+        /**
+         * BootReconcileView
+         * @description What this server's start-up reconcile did, so the CLI can say it (#173).
+         *
+         *     At boot the server converges the live Docker/Headscale world to the persisted runs: a run whose
+         *     container survived the restart is adopted, one whose container is gone is closed out
+         *     (`crashed`), and a reservation whose deploy never finished is released. Before this, the only
+         *     record was a line in serve.log, and a reconcile that failed outright said nothing at all.
+         *
+         *       pending  the reconcile has not started yet
+         *       running  it is converging now (it runs in the background, after the server answers)
+         *       done     finished; the counts say what it did
+         *       failed   a step failed (`error`); the steps after it still ran, and the next start retries
+         */
+        BootReconcileView: {
+            /**
+             * Aborted
+             * @default 0
+             */
+            aborted: number;
+            /**
+             * Adopted
+             * @default 0
+             */
+            adopted: number;
+            /**
+             * Deferred
+             * @default []
+             */
+            deferred: string[];
+            /**
+             * Error
+             * @default
+             */
+            error: string;
+            /** Finished At */
+            finished_at?: string | null;
+            /**
+             * Released
+             * @default 0
+             */
+            released: number;
+            /**
+             * State
+             * @default pending
+             * @enum {string}
+             */
+            state: "pending" | "running" | "done" | "failed";
         };
         /**
          * CatalogConfigUpdate
@@ -2633,13 +2693,13 @@ export interface components {
          *     their grade to finish are not counted — that is normal, not something to act on.
          */
         ReleaseBacklogView: {
-            /**
-             * Last Error
-             * @default
-             */
-            last_error: string;
             /** Oldest Ended At */
             oldest_ended_at?: string | null;
+            /**
+             * Oldest Error
+             * @default
+             */
+            oldest_error: string;
             /**
              * Pending
              * @default 0
@@ -3161,6 +3221,7 @@ export interface components {
          * @description Read-only Reflect view powering the GUI System / Modules / Catalog cards.
          */
         SystemInfo: {
+            boot_reconcile?: components["schemas"]["BootReconcileView"] | null;
             catalog: components["schemas"]["CatalogStatusView"];
             /**
              * Db Schema
@@ -3567,7 +3628,9 @@ export interface operations {
     };
     remove_agent_api_agents__name__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                force?: boolean;
+            };
             header?: never;
             path: {
                 name: string;
@@ -4416,7 +4479,9 @@ export interface operations {
     };
     delete_run_api_runs__run_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                force?: boolean;
+            };
             header?: never;
             path: {
                 run_id: string;

@@ -11,6 +11,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+import pytest
+
 from xorcise.core import runs
 from xorcise.core.contracts.control import RunState, StatusResult, TeardownResult
 from xorcise.core.contracts.errors import NotFoundError
@@ -40,11 +42,14 @@ class _FakeFence:
     def __init__(self) -> None:
         self.reconciled = 0
         self.networks_torn: list[str] = []
+        self.fail = False  # the teardown raises, as a Headscale call does when the plane is down
 
     def reconcile_acl(self) -> None:
         self.reconciled += 1
 
     def teardown_run_network(self, run_id: str) -> None:
+        if self.fail:
+            raise RuntimeError("Headscale control plane 'headscale' is not reachable")
         self.networks_torn.append(run_id)
 
 
@@ -231,10 +236,76 @@ def test_reconcile_all_on_startup_runs_runs_then_ingest(migrated_home, monkeypat
     import xorcise.core.rest.reconcile as reconcile_mod
 
     calls: list[str] = []
-    monkeypatch.setattr(reconcile_mod, "reconcile_on_startup", lambda: calls.append("runs"))
+
+    def converge() -> reconcile_mod.ReconcileReport:
+        calls.append("runs")
+        return reconcile_mod.ReconcileReport(adopted=["a"], aborted=["b", "c"])
+
+    monkeypatch.setattr(reconcile_mod, "reconcile_on_startup", converge)
     monkeypatch.setattr(ingest_jobs, "reconcile_ingest_jobs", lambda: calls.append("ingest"))
-    reconcile_mod.reconcile_all_on_startup()
+    reconcile_mod.reconcile_all_on_startup(now_fn=_now)
     assert calls == ["runs", "ingest"]
+    status = reconcile_mod.boot_reconcile_status()
+    assert (status.state, status.adopted, status.aborted, status.finished_at) == (
+        "done",
+        1,
+        2,
+        _now(),
+    )
+
+
+def test_a_failed_step_does_not_skip_the_others_and_is_published(migrated_home, monkeypatch):
+    """#173: Headscale down at boot makes the run convergence raise. That used to skip every later
+    step (a lost grade was never re-driven) and say nothing outside serve.log."""
+    import xorcise.core.rest.ingest_jobs as ingest_jobs
+    import xorcise.core.rest.reconcile as reconcile_mod
+    import xorcise.core.rest.run_terminate as run_terminate
+
+    calls: list[str] = []
+
+    def converge() -> reconcile_mod.ReconcileReport:
+        raise RuntimeError("Headscale control plane 'headscale' is not reachable\nmore detail")
+
+    monkeypatch.setattr(reconcile_mod, "reconcile_on_startup", converge)
+    monkeypatch.setattr(ingest_jobs, "reconcile_ingest_jobs", lambda: calls.append("ingest"))
+    monkeypatch.setattr(
+        run_terminate, "regrade_orphaned_terminal_runs", lambda: calls.append("regrade")
+    )
+    with pytest.raises(RuntimeError, match="not reachable"):
+        reconcile_mod.reconcile_all_on_startup(now_fn=_now)
+    assert calls == ["ingest", "regrade"]  # the later steps still ran
+    status = reconcile_mod.boot_reconcile_status()
+    assert status.state == "failed"
+    assert status.error == "runs: Headscale control plane 'headscale' is not reachable"
+
+
+def test_a_reservation_whose_teardown_fails_is_kept_for_the_next_boot(migrated_home):
+    """#173: the reservation is the only record that the environment exists. Dropping it after a
+    failed teardown leaked its tailnet user and router node for good."""
+    runs.reserve_run("res", "a1", "c", network_cidr="10.200.7.0/24", entry_cidrs="")
+    fence = _FakeFence()
+    fence.fail = True
+    report = reconcile_on_startup(_Deps(_FakeControl(set()), fence), now_fn=_now)
+    assert report.deferred == ["res"]
+    assert report.released == []
+    assert runs.get("res") is not None
+    # the next boot, with Headscale back, releases it
+    report = reconcile_on_startup(_Deps(_FakeControl(set()), _FakeFence()), now_fn=_now)
+    assert report.released == ["res"]
+    assert runs.get("res") is None
+
+
+def test_an_aborted_run_whose_teardown_fails_is_left_to_the_sweeper(migrated_home):
+    _deployed("gone", "10.200.8.0/24")
+    fence = _FakeFence()
+    fence.fail = True
+    report = reconcile_on_startup(_Deps(_FakeControl(set()), fence), now_fn=_now)
+    assert report.aborted == ["gone"]
+    state = runs.release_state("gone")
+    assert state is not None
+    assert state.released_at is None
+    assert state.attempts == 1
+    assert state.error is not None and state.error.startswith("tailnet: ")
 
 
 def test_terminal_runs_are_left_untouched(migrated_home):

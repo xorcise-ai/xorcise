@@ -15,7 +15,7 @@ import typer
 from rich.markup import escape
 
 from xorcise.core.cli._shared import err_console
-from xorcise.core.cli._ux import command_path_from_argv
+from xorcise.core.cli._ux import command_path_from_argv, short_id
 from xorcise.core.config import get_settings
 from xorcise.core.home import pid_file, read_runtime_ports, xorcise_home
 
@@ -309,6 +309,7 @@ class RestClient:
             raise typer.Exit(1) from exc
         if resp.is_error:
             detail = ""
+            body: object = None
             try:
                 body = resp.json()
                 if isinstance(body, dict):
@@ -321,6 +322,8 @@ class RestClient:
                 # "run '…' is not terminal yet") reads in the CLI's own voice — HTTP
                 # jargon stays out of the headline, and it never looks like a crash.
                 err_console.print(f"[err]error[/err]: {escape(detail)}")
+                if resp.status_code == 409 and isinstance(body, dict):
+                    _print_refusal_hint(body)
             else:
                 err_console.print(
                     f"[err]request failed ({resp.status_code})[/err]: "
@@ -330,3 +333,17 @@ class RestClient:
         if base_url:
             _warn_if_foreign_instance(base_url)
         return resp
+
+
+def _print_refusal_hint(body: dict[str, Any]) -> None:
+    """The one next step for a refused delete (#173), from the fields the server sends beside
+    `detail`: terminate a run that is still running, or override a failed teardown with --force."""
+    run_ids = [str(r) for r in body.get("run_ids") or ()]
+    if body.get("reason") == "running":
+        for run_id in run_ids[:5]:
+            err_console.print(f"terminate: [value]xorcise run terminate {short_id(run_id)}[/value]")
+    elif body.get("forceable") is True:
+        err_console.print(
+            "to delete anyway, re-run with [value]--force[/value] — its container or tailnet "
+            "nodes may be left running"
+        )

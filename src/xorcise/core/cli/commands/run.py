@@ -593,17 +593,25 @@ the fresh grade lands and prints it; pass --no-wait to return on the ack.
 def run_delete(
     run_id: str = typer.Argument(..., help=_RUN_ID_HELP),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Delete even if the run's environment cannot be torn down (Docker or Headscale is "
+        "down). Its container or tailnet nodes may be left running.",
+    ),
 ) -> None:
     """Delete a run's result + record. Available as both `delete` and `rm`.
 
     Removes the recorded result and the run row, so the run leaves the runs \
 list, agent history, and results view. A still-running run cannot be \
-deleted — stop it first with `xorcise run terminate`.
+deleted — stop it first with `xorcise run terminate`. A finished run's \
+environment is torn down first; if that fails, the delete is refused \
+unless --force.
     """
     client = RestClient()
     run_id = _resolve_id(client, run_id)
     confirm_or_abort(f"Delete run {short_id(run_id)} and its recorded result?", assume_yes=yes)
-    client.delete(f"/runs/{run_id}")
+    client.delete(f"/runs/{run_id}" + ("?force=true" if force else ""))
     console.print(f"deleted run '{run_id}'")
 
 

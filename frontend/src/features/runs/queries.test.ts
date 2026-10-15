@@ -20,6 +20,14 @@ describe("environmentPollInterval", () => {
     expect(environmentPollInterval(false, env("releasing"))).toBe(10_000);
   });
 
+  it("keeps polling a run that just finished while its last state is still live", () => {
+    // The chip froze at Ready: the state read while the run was live is not "releasing", and
+    // stopping on it meant the finished run never showed Releasing or Released.
+    expect(environmentPollInterval(false, env("ready"))).toBe(2000);
+    expect(environmentPollInterval(false, env("starting"))).toBe(2000);
+    expect(environmentPollInterval(false, env("failed"))).toBe(2000);
+  });
+
   it("stops once a finished run's environment is released", () => {
     expect(environmentPollInterval(false, env("released"))).toBe(false);
     expect(environmentPollInterval(false, env("none"))).toBe(false);

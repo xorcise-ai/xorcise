@@ -166,3 +166,104 @@ def test_grade_and_record_triggers_teardown(migrated_home, monkeypatch) -> None:
     seal_terminal(r.run_id, "done", _now())
     grade_and_record(r.run_id)
     assert called == [r.run_id]
+
+
+# --- review of #185: the bookkeeping never raises, and a concurrent release is not a failure -----
+
+
+def test_a_database_error_recording_the_outcome_does_not_raise(migrated_home, monkeypatch) -> None:
+    # grade_and_record calls teardown_run from a `finally`: a `database is locked` escaping here
+    # would skip the rest of finalisation, which is the #173 symptom this PR fixes.
+    from xorcise.core.rest import run_teardown
+
+    rid = _lab_run()
+
+    def locked(*a, **k):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(runs, "mark_released", locked)
+    monkeypatch.setattr(runs, "record_release_failure", locked)
+    _planes(monkeypatch, {})
+    assert run_teardown.teardown_run(rid).released is True  # the environment IS gone
+    _planes(monkeypatch, {}, fence="down")
+    assert run_teardown.teardown_run(rid).released is False
+
+
+def test_a_run_released_by_another_caller_meanwhile_is_reported_released(
+    migrated_home, monkeypatch, caplog
+) -> None:
+    from xorcise.core.rest import run_teardown
+
+    rid = _lab_run()
+    _planes(monkeypatch, {}, fence="fail")
+    real = runs.record_release_failure
+
+    def released_first(run_id: str, error: str) -> int:
+        runs.mark_released(run_id, _now())  # the sweeper, or the grade's own teardown, won
+        return real(run_id, error)
+
+    monkeypatch.setattr(runs, "record_release_failure", released_first)
+    with caplog.at_level("WARNING", logger=run_teardown.__name__):
+        assert run_teardown.teardown_run(rid).released is True
+    assert not caplog.records  # no spurious first-failure warning
+
+
+# --- check_deletable ----------------------------------------------------------------------------
+
+
+def test_a_running_run_blocks_a_delete_and_force_cannot_override_it(migrated_home) -> None:
+    from xorcise.core.rest.run_teardown import check_deletable
+
+    runs.reserve_run("live", "a1", "c", network_cidr="10.200.5.0/24", entry_cidrs="")
+    runs.finalize_run("live", budget_seconds=300, prompt="P")
+    for force in (False, True):
+        blocked = check_deletable(["live"], force=force)
+        assert blocked is not None
+        assert (blocked.reason, blocked.run_ids, blocked.forceable) == ("running", ("live",), False)
+        assert "run live is still running. Terminate it first" in blocked.detail
+
+
+def test_a_run_being_graded_blocks_a_delete(migrated_home, monkeypatch) -> None:
+    from xorcise.core.rest import run_terminate
+    from xorcise.core.rest.run_teardown import check_deletable
+
+    rid = _lab_run()
+    monkeypatch.setattr(run_terminate, "_grading_in_flight", {rid})
+    blocked = check_deletable([rid], force=True)
+    assert blocked is not None
+    assert (blocked.reason, blocked.forceable) == ("grading", False)
+    assert "still being graded" in blocked.detail
+
+
+def test_a_failed_release_blocks_a_delete_unless_forced(migrated_home, monkeypatch, caplog) -> None:
+    from xorcise.core.rest import run_teardown
+
+    rid = _lab_run()
+    _planes(monkeypatch, {}, fence="down")
+    blocked = run_teardown.check_deletable([rid])
+    assert blocked is not None
+    assert (blocked.reason, blocked.run_ids, blocked.forceable) == ("unreleased", (rid,), True)
+    assert "could not be torn down (tailnet: Headscale control plane" in blocked.detail
+    assert blocked.body() == {
+        "detail": blocked.detail,
+        "reason": "unreleased",
+        "run_ids": [rid],
+        "forceable": True,
+    }
+    with caplog.at_level("WARNING", logger=run_teardown.__name__):
+        assert run_teardown.check_deletable([rid], force=True) is None
+    assert any("forced" in r.getMessage() for r in caplog.records)
+
+
+def test_released_and_static_runs_are_deletable_without_any_plane(
+    migrated_home, monkeypatch
+) -> None:
+    from xorcise.core.rest import run_teardown
+
+    rid = _lab_run()
+    runs.mark_released(rid, _now())
+    runs.reserve_run("static", "a1", "c", network_cidr="", entry_cidrs="")
+    runs.finalize_run("static", budget_seconds=300, prompt="P")
+    runs.mark_terminal("static", "done", _now())
+    _planes(monkeypatch, {}, control="down", fence="down")
+    assert run_teardown.check_deletable([rid, "static"]) is None

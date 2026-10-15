@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Trash2 } from "lucide-react";
 import { Dialog } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { errorDetail } from "@/lib/api/client";
+import { errorDetail, isForceableRefusal } from "@/lib/api/client";
 import { useDeleteRun } from "./queries";
 
 /** Confirm-and-delete modal for a single run's result + record.
@@ -26,9 +26,9 @@ export function DeleteRunDialog({
 }) {
   const del = useDeleteRun();
 
-  async function confirm() {
+  async function confirm(force = false) {
     try {
-      await del.mutateAsync(runId);
+      await del.mutateAsync({ runId, force });
     } catch {
       return; // surfaced inline via del.error below
     }
@@ -37,6 +37,8 @@ export function DeleteRunDialog({
   }
 
   const detail = errorDetail(del.error);
+  // The run's environment could not be torn down: the one refusal the operator may override.
+  const forceable = isForceableRefusal(del.error);
 
   return (
     <Dialog open={open} onClose={onClose} title="Delete this run?">
@@ -54,10 +56,10 @@ export function DeleteRunDialog({
         </Button>
         <Button
           variant="destructive"
-          onClick={confirm}
+          onClick={() => confirm(forceable)}
           disabled={del.isPending}
         >
-          {del.isPending ? "Deleting…" : "Delete permanently"}
+          {del.isPending ? "Deleting…" : forceable ? "Delete anyway" : "Delete permanently"}
         </Button>
       </div>
     </Dialog>
