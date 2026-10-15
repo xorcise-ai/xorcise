@@ -600,17 +600,19 @@ def run_delete(
         "down). Its container or tailnet nodes may be left running.",
     ),
 ) -> None:
-    """Delete a run's result + record. Available as both `delete` and `rm`.
+    """Delete a run and everything recorded for it. Available as both `delete` and `rm`.
 
-    Removes the recorded result and the run row, so the run leaves the runs \
-list, agent history, and results view. A still-running run cannot be \
-deleted — stop it first with `xorcise run terminate`. A finished run's \
-environment is torn down first; if that fails, the delete is refused \
-unless --force.
+    Removes its result, telemetry, submissions and exported files, then the \
+run itself, so it leaves the runs list, agent history, and results view. A \
+still-running run cannot be deleted — stop it first with `xorcise run terminate`. \
+A finished run's environment is torn down first; if that fails, the delete is \
+refused unless --force.
     """
     client = RestClient()
     run_id = _resolve_id(client, run_id)
-    confirm_or_abort(f"Delete run {short_id(run_id)} and its recorded result?", assume_yes=yes)
+    confirm_or_abort(
+        f"Delete run {short_id(run_id)} with its result, telemetry and files?", assume_yes=yes
+    )
     # A delete may first tear down the run's environment on the server (#173): Docker and
     # Headscale calls that outlast the 5 s default, so a slow teardown would read as a failure
     # while the server carried on.

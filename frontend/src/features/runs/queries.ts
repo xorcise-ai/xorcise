@@ -100,7 +100,7 @@ export function useRunLaunchProfile(runId: string, launchMode: LaunchMode = "hos
   });
 }
 
-// Delete a run's result + record. 409 if the run is still active (terminate first);
+// Delete a run and everything recorded for it. 409 if the run is still active (terminate first);
 // surfaces as an ApiError the caller can show. Invalidates the runs list and agent history so the
 // deleted run leaves every view.
 export function useDeleteRun() {

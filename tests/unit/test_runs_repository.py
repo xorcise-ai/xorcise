@@ -223,15 +223,6 @@ def test_create_run_versions_default_one(migrated_home):
     assert entry.install_revision == 1
 
 
-def test_delete_for_agent_removes_only_that_agent(migrated_home):
-    runs.create_run(agent_id="a1", mission="c1")
-    runs.create_run(agent_id="a2", mission="c2")
-    assert runs.delete_for_agent("a1") == 1
-    remaining = runs.list_runs()
-    assert all(r.agent_id == "a2" for r in remaining)
-    assert len(remaining) == 1
-
-
 def test_create_run_persists_join_key_and_narrow_getter_reads_it(migrated_home):
     # the per-run tailnet join key is persisted (for the /connect endpoint) but read only
     # via the narrow getter — it must never ride RunEntry (which "never carries the bearer").

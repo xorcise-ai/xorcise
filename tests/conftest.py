@@ -8,6 +8,8 @@ always cover all tests in that lane — no per-file marker maintenance.
 from __future__ import annotations
 
 import os
+import shutil
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -29,6 +31,27 @@ import pytest
 os.environ.setdefault("_TYPER_FORCE_DISABLE_TERMINAL", "1")
 
 _LANES = {"unit", "adapters", "topology", "integration", "e2e"}
+
+_throwaway_home: str | None = None
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Point XORCISE_HOME at a throwaway directory for the session, unless the caller set one.
+
+    `migrated_home` and friends set it per test, but a test that undoes its monkeypatch, or writes
+    before setting it, otherwise lands in the developer's real ~/.xorcise: each unit-lane run once
+    left a `runs/<id>/` there. xdist workers inherit the controller's value, so the controller
+    alone creates and removes the directory.
+    """
+    global _throwaway_home
+    if "XORCISE_HOME" not in os.environ:
+        _throwaway_home = tempfile.mkdtemp(prefix="xorcise-test-home-")
+        os.environ["XORCISE_HOME"] = _throwaway_home
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    if _throwaway_home is not None:
+        shutil.rmtree(_throwaway_home, ignore_errors=True)
 
 
 @pytest.fixture
@@ -221,8 +244,6 @@ def migrated_home(tmp_path, monkeypatch, _migrated_db_template):
     The schema is copied from the session-migrated template DB (`_migrated_db_template`) rather than
     re-run per test — see that fixture for why. End state is identical to `db.upgrade()`: an empty
     DB at head (alembic_version stamped), so a test that calls `db.upgrade()` again is a no-op."""
-    import shutil
-
     from xorcise.core import config, db
 
     monkeypatch.setenv("XORCISE_HOME", str(tmp_path))

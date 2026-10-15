@@ -3,9 +3,10 @@ and are cascade-deleted with it."""
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from xorcise.core.contracts.grading import GradeResult
 from xorcise.core.contracts.reporting import AgentHistoryEntry, ResultConditions, RunStats
@@ -162,20 +163,21 @@ def result_partial(run_id: str) -> tuple[bool, str | None]:
         return (row.partial, row.partial_trigger)
 
 
-def delete_for_agent(agent_id: str) -> int:
-    """Delete all results for an agent (the agent-delete cascade). Returns the count."""
+def held_run_ids() -> set[str]:
+    """Every run id that has a result recorded."""
     with session_scope() as s:
-        rows = s.scalars(select(ResultRow).where(ResultRow.agent_id == agent_id)).all()
-        for r in rows:
-            s.delete(r)
-        return len(rows)
+        return set(s.scalars(select(ResultRow.run_id).distinct()))
+
+
+def delete_for_runs(run_ids: Collection[str]) -> None:
+    """Delete these runs' results (the run-delete cascade)."""
+    with session_scope() as s:
+        s.execute(delete(ResultRow).where(ResultRow.run_id.in_(run_ids)))
 
 
 def delete_result(run_id: str) -> bool:
-    """Delete the recorded result for a single run. True if a row was removed.
-
-    Operator-facing per-run delete — the narrow counterpart to the agent-scoped
-    delete_for_agent cascade. A no-op returning False when no result was recorded for the run.
+    """Delete the recorded result for a single run, so a regrade records a fresh one. True if a
+    row was removed; a no-op returning False when no result was recorded for the run.
     """
     with session_scope() as s:
         row = s.scalar(select(ResultRow).where(ResultRow.run_id == run_id))

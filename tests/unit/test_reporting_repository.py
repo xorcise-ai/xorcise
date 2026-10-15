@@ -30,14 +30,6 @@ def test_history_is_scoped_per_agent(migrated_home):
     assert [h.run_id for h in reporting.agent_history("a1")] == ["r1"]
 
 
-def test_delete_for_agent_removes_only_that_agent(migrated_home):
-    reporting.record_result("r1", "a1", _result("r1"))
-    reporting.record_result("r2", "a2", _result("r2"))
-    assert reporting.delete_for_agent("a1") == 1
-    assert reporting.agent_history("a1") == []
-    assert [h.run_id for h in reporting.agent_history("a2")] == ["r2"]
-
-
 def test_delete_result_removes_only_that_run(migrated_home):
     """An operator can delete a single run's result, leaving the agent's others intact."""
     reporting.record_result("r1", "a1", _result("r1"))

@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import hmac
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from xorcise.core.contracts.run import RunEntry, TerminalTrigger, as_terminal_trigger
 from xorcise.core.db import session_scope
-from xorcise.core.runs.models import RunRow
+from xorcise.core.runs.models import RunObservedFactRow, RunRow, TerrainUpdateRow
 
 
 def _utc(dt: datetime | None) -> datetime | None:
@@ -298,13 +299,23 @@ def get(run_id: str) -> RunEntry | None:
         return _to_entry(row) if row is not None else None
 
 
-def delete_for_agent(agent_id: str) -> int:
-    """Delete all runs for an agent (the agent-delete cascade). Returns the count."""
+def held_run_ids() -> set[str]:
+    """Every run id that has a run row, an observed fact or a terrain update."""
     with session_scope() as s:
-        rows = s.scalars(select(RunRow).where(RunRow.agent_id == agent_id)).all()
-        for r in rows:
-            s.delete(r)
-        return len(rows)
+        return (
+            set(s.scalars(select(RunRow.id)))
+            | set(s.scalars(select(RunObservedFactRow.run_id).distinct()))
+            | set(s.scalars(select(TerrainUpdateRow.run_id).distinct()))
+        )
+
+
+def delete_for_runs(run_ids: Collection[str]) -> None:
+    """Delete these runs' observed facts and terrain updates, then their rows, in one
+    transaction (the run-delete cascade)."""
+    with session_scope() as s:
+        s.execute(delete(RunObservedFactRow).where(RunObservedFactRow.run_id.in_(run_ids)))
+        s.execute(delete(TerrainUpdateRow).where(TerrainUpdateRow.run_id.in_(run_ids)))
+        s.execute(delete(RunRow).where(RunRow.id.in_(run_ids)))
 
 
 def authenticate(run_id: str, key: str) -> bool:

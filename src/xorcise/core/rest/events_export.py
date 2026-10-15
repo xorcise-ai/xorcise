@@ -20,9 +20,14 @@ from pathlib import Path
 from xorcise.core.home import xorcise_home
 
 
+def runs_root() -> Path:
+    """`<home>/runs`, which holds one artifact directory per run."""
+    return xorcise_home() / "runs"
+
+
 def run_dir(run_id: str) -> Path:
     """The per-run artifact directory: `<home>/runs/<run_id>`."""
-    return xorcise_home() / "runs" / run_id
+    return runs_root() / run_id
 
 
 def default_export_path(run_id: str) -> Path:

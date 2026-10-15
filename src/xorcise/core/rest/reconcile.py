@@ -240,8 +240,8 @@ def _first_line(exc: Exception) -> str:
 
 
 def reconcile_all_on_startup(*, now_fn: Callable[[], datetime] = lambda: datetime.now(UTC)) -> None:
-    """Run every boot reconcile: the run/tailnet/docker convergence, the ingest
-    and pull jobs, and the orphaned-grade sweep. The single entrypoint the role_all
+    """Run every boot reconcile: the orphaned-run sweep, the run/tailnet/docker convergence, the
+    ingest and pull jobs, and the orphaned-grade sweep. The single entrypoint the role_all
     startup task schedules on a worker thread, so the boot wiring stays a trivial, obviously-correct
     call.
 
@@ -251,6 +251,7 @@ def reconcile_all_on_startup(*, now_fn: Callable[[], datetime] = lambda: datetim
     first error after every step has run, so the caller still logs it."""
     from xorcise.core.rest.ingest_jobs import reconcile_ingest_jobs
     from xorcise.core.rest.pull_jobs import reconcile_pull_jobs
+    from xorcise.core.rest.run_purge import sweep_orphaned_runs
     from xorcise.core.rest.run_terminate import regrade_orphaned_terminal_runs
 
     _set_status(BootReconcileView(state="running"))
@@ -262,6 +263,9 @@ def reconcile_all_on_startup(*, now_fn: Callable[[], datetime] = lambda: datetim
         report = reconcile_on_startup()
 
     steps: list[tuple[str, Callable[[], object]]] = [
+        # First: it needs only the database and the disk, so a Docker or Headscale failure in a
+        # later step cannot skip it.
+        ("orphaned runs", sweep_orphaned_runs),
         ("runs", converge_runs),
         ("ingest jobs", reconcile_ingest_jobs),
         ("pull jobs", reconcile_pull_jobs),

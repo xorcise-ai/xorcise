@@ -237,12 +237,13 @@ def terminate_run(run_id: str, background: BackgroundTasks) -> RunEntry:
 
 @router.delete("/{run_id}", status_code=204, responses={409: {"model": DeleteRefusal}})
 def delete_run(run_id: str, force: bool = False) -> Response:
-    """Operator-initiated delete of a single run's result + record.
+    """Operator-initiated delete of a single run and everything recorded for it.
 
-    The narrow, per-run counterpart to the agent-scoped cascade (DELETE /agents/{name}): removes
-    the recorded result and the run row so the run leaves the runs list, the agent history, and the
-    results view. 404 if the run is unknown. Idempotent on the result (delete of an ungraded
-    terminal run still removes the record).
+    The per-run counterpart to the agent-scoped cascade (DELETE /agents/{name}): removes the run's
+    telemetry, submissions and row, then its result and run directory (rest.run_purge), so the run
+    leaves the runs list, the agent history and the results view. 404 if the run is unknown. A
+    delete that fails before the row goes leaves the run and its result, so repeating it finishes;
+    anything a later failure leaves is cleared by the next boot.
 
     409 (contracts.run.DeleteRefusal) while the run has not finished, while its grade is in
     flight, or when its environment, released here first, cannot be torn down (#173). Only the
@@ -252,13 +253,13 @@ def delete_run(run_id: str, force: bool = False) -> Response:
     run = runs.get(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"no run '{run_id}'")
+    from xorcise.core.rest.run_purge import purge_runs
     from xorcise.core.rest.run_teardown import check_deletable
 
     blocked = check_deletable([run_id], force=force)
     if blocked is not None:
         return JSONResponse(status_code=409, content=blocked.body())
-    reporting.delete_result(run_id)
-    runs.delete_run(run_id)
+    purge_runs([run_id])
     return Response(status_code=204)
 
 

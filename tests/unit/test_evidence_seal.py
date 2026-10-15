@@ -826,10 +826,9 @@ def test_a_grade_that_dies_on_the_way_in_does_not_silence_the_next_regrade(
     def locked(run_id: str) -> None:
         raise RuntimeError("database is locked")
 
-    monkeypatch.setattr("xorcise.core.rest.run_terminate.reporting.get_result", locked)
-    with pytest.raises(RuntimeError):
+    with monkeypatch.context() as m, pytest.raises(RuntimeError):
+        m.setattr("xorcise.core.rest.run_terminate.reporting.get_result", locked)
         grade_and_record(run.run_id)
-    monkeypatch.undo()
 
     # Evidence moves while the run sits terminal and ungraded; the re-drive must still say so.
     with session_scope() as s:

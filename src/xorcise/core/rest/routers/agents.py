@@ -119,7 +119,7 @@ def agent_history(name: str) -> list[AgentHistoryView]:
 
 @router.delete("/{name}", status_code=204, responses={409: {"model": DeleteRefusal}})
 def remove_agent(name: str, force: bool = False) -> Response:
-    """Remove an agent and cascade-delete its runs + results.
+    """Remove an agent and everything recorded for its runs.
 
     The runs' rows are the release sweeper's only handle on their environments (#173), so the
     cascade is refused (409) while any of the agent's runs is still running or being graded, and
@@ -138,7 +138,8 @@ def remove_agent(name: str, force: bool = False) -> Response:
         body = blocked.body()
         body["detail"] = f"cannot remove agent '{name}': {body['detail']}"
         return JSONResponse(status_code=409, content=body)
-    reporting.delete_for_agent(agent.id)
-    runs.delete_for_agent(agent.id)
+    from xorcise.core.rest.run_purge import purge_runs
+
+    purge_runs([r.run_id for r in runs.list_runs() if r.agent_id == agent.id])
     agents.remove(name)
     return Response(status_code=204)
