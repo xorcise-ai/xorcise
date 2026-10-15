@@ -38,22 +38,28 @@ def _delete_run_dirs(run_ids: Collection[str]) -> None:
     # Only a name already listed under runs/ is removed. Run ids also come from rows an OTLP
     # export names, so joining one onto a path unchecked could reach outside runs/.
     for run_id in _run_dir_ids().intersection(run_ids):
-        shutil.rmtree(run_dir(run_id))
+        try:
+            shutil.rmtree(run_dir(run_id))
+        except OSError:
+            # Its run row is already gone, so this is now an orphan the boot sweep removes.
+            log.warning("could not remove the directory of deleted run %s", run_id, exc_info=True)
 
 
-# The runs rows go last: a purge that fails partway leaves the run row in place, so the run still
-# shows and deleting it again finishes the job.
+# The order is what keeps a partial failure harmless. A run row without its result is the one
+# state that does damage: the boot regrade grades it again from whatever evidence is left. So the
+# result goes only after the run row. A failure before the row leaves the run, result intact, to be
+# deleted again; a failure after it leaves orphans, which the boot sweep removes.
 _STORES = (
     _RunScopedStore(otel_store.held_run_ids, otel_store.delete_for_runs),
     _RunScopedStore(submissions.held_run_ids, submissions.delete_for_runs),
+    _RunScopedStore(runs.held_run_ids, runs.delete_for_runs),
     _RunScopedStore(reporting.held_run_ids, reporting.delete_for_runs),
     _RunScopedStore(_run_dir_ids, _delete_run_dirs),
-    _RunScopedStore(runs.held_run_ids, runs.delete_for_runs),
 )
 
 
 def purge_runs(run_ids: Collection[str]) -> None:
-    """Delete every record and file of these runs, their run rows last."""
+    """Delete every record and file of these runs, the result only after the run row."""
     if not run_ids:
         return
     for store in _STORES:

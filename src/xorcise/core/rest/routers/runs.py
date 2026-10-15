@@ -240,9 +240,10 @@ def delete_run(run_id: str, force: bool = False) -> Response:
     """Operator-initiated delete of a single run and everything recorded for it.
 
     The per-run counterpart to the agent-scoped cascade (DELETE /agents/{name}): removes the run's
-    telemetry, submissions, result, run directory and, last, its row (rest.run_purge), so the run
+    telemetry, submissions and row, then its result and run directory (rest.run_purge), so the run
     leaves the runs list, the agent history and the results view. 404 if the run is unknown. A
-    delete that fails partway leaves the row, so repeating it finishes.
+    delete that fails before the row goes leaves the run and its result, so repeating it finishes;
+    anything a later failure leaves is cleared by the next boot.
 
     409 (contracts.run.DeleteRefusal) while the run has not finished, while its grade is in
     flight, or when its environment, released here first, cannot be torn down (#173). Only the

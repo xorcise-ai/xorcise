@@ -16,7 +16,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import MetaData, Table, func, insert, select, text
 from sqlalchemy.exc import OperationalError
 
-from xorcise.core import agents, runs
+from xorcise.core import agents, reporting, runs
+from xorcise.core.contracts.grading import GradeResult, ScoreBreakdown
 from xorcise.core.db import get_engine
 from xorcise.core.roles.boot.role_all import build_rest_app
 
@@ -141,23 +142,60 @@ def test_delete_agent_removes_every_record_and_file_of_its_runs_only(migrated_ho
     assert _listed_runs() == ["beta-1"]
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
-def test_a_delete_that_fails_partway_keeps_the_run_and_a_retry_finishes_it(migrated_home):
+def test_a_delete_that_stops_at_the_run_row_keeps_its_grade_through_a_boot(
+    migrated_home, monkeypatch
+):
+    """A restart between a failed delete and its retry must not grade the run again: the boot
+    regrade grades any finished run that has no result, from whatever evidence is left. So a
+    delete that stops at the run row must still find the run's own result there."""
     run_id = _terminal_run(migrated_home, "alpha", "run-stuck")
-    run_dir = migrated_home / "runs" / run_id
-    run_dir.chmod(0o500)
+    reporting.delete_result(run_id)
+    graded = GradeResult(run_id=run_id, overall=0.5, breakdown=ScoreBreakdown(deterministic=0.5))
+    reporting.record_result(run_id, "a1", graded)
+    with get_engine().begin() as conn:
+        conn.execute(text("ALTER TABLE run_observed_facts RENAME TO run_observed_facts_unreadable"))
     try:
         failed = _client(raise_server_exceptions=False).delete(f"/api/runs/{run_id}")
     finally:
-        run_dir.chmod(0o700)
+        with get_engine().begin() as conn:
+            conn.execute(
+                text("ALTER TABLE run_observed_facts_unreadable RENAME TO run_observed_facts")
+            )
 
     assert failed.status_code == 500
     assert _listed_runs() == ["run-stuck"]
+
+    assert _boot(monkeypatch) == ["runs"]
+    result = reporting.get_result(run_id)
+    assert result is not None and result.overall == 0.5
 
     assert _client().delete(f"/api/runs/{run_id}").status_code == 204
     assert _rows(run_id) == _none()
     assert _run_dirs(migrated_home) == []
     assert _listed_runs() == []
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_a_run_directory_that_cannot_be_removed_is_left_for_the_boot_sweep(
+    migrated_home, monkeypatch, caplog
+):
+    run_id = _terminal_run(migrated_home, "alpha", "run-stuck")
+    run_dir = migrated_home / "runs" / run_id
+    run_dir.chmod(0o500)
+    try:
+        with caplog.at_level(logging.WARNING):
+            deleted = _client().delete(f"/api/runs/{run_id}")
+    finally:
+        run_dir.chmod(0o700)
+
+    assert deleted.status_code == 204
+    assert _rows(run_id) == _none()
+    assert _listed_runs() == []
+    assert _run_dirs(migrated_home) == ["run-stuck"]
+    assert "could not remove the directory of deleted run run-stuck" in caplog.text
+
+    assert _boot(monkeypatch) == ["runs"]
+    assert _run_dirs(migrated_home) == []
 
 
 def _boot(monkeypatch) -> list[str]:
