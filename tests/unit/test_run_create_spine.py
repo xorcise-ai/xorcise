@@ -607,6 +607,35 @@ def test_a_failed_create_whose_teardown_fails_is_kept_for_the_release_sweeper(
     assert [a.run_id for a in runs.terminal_runs_awaiting_release()] == [run_id]
 
 
+def test_a_release_that_fails_does_not_hide_why_the_create_failed(
+    migrated_home, install_root, monkeypatch
+):
+    """Review of #189: a purge that hit a locked database replaced the create's own error, so a
+    deploy failure was reported as a database error. The row stays a reservation either way."""
+    import xorcise.core.rest.run_purge as run_purge
+
+    class _DeployFailsPartway(InProcessControlStub):
+        def deploy(self, request, *, credential):
+            super().deploy(request, credential=credential)
+            raise RuntimeError("the mission stack did not start")
+
+    def locked(run_ids: object) -> None:
+        raise OperationalError(
+            "DELETE FROM traces", {}, sqlite3.OperationalError("database is locked")
+        )
+
+    agents.register("alice", endpoint="http://a")
+    _write_installed(install_root)
+    monkeypatch.setattr(run_purge, "purge_runs", locked)
+    control = _DeployFailsPartway(api_key="k")
+    deps = dataclasses.replace(_deps(install_root), control=control)
+    with pytest.raises(RuntimeError, match="the mission stack did not start"):
+        create_run(agent_name="alice", mission_slug="sqli-login", budget_seconds=None, deps=deps)
+    [entry] = runs.list_runs()
+    assert entry.state == "created"
+    assert control.status(entry.run_id, credential="k").state is RunState.TORN_DOWN
+
+
 class _RecordingFence(NetworkFencePort):
     """Wraps a fence, recording the entry_cidrs each run is handed (collision checks)."""
 
