@@ -50,6 +50,11 @@ class SqliteSealStore(SealStore):
 
         # Under the admission lock, so a batch being admitted right now either commits first, and
         # is in whatever the caller hashes next, or waits and then sees this seal (#184).
+        #
+        # NOT dead code, although SQLite would pass without it: SQLite has one write lock for the
+        # whole file, which already orders this insert against `append_next`. An engine that locks
+        # rows does not, and there only this lock keeps a batch from landing during the hash.
+        # `test_seal_takes_the_admission_lock` pins it, since no SQLite race test can.
         under_admission(run_id, close_admission)
 
     def is_sealed(self, run_id: str) -> bool:
