@@ -745,13 +745,23 @@ def create_run(
             intel_policy=policy,
         )
     except Exception as exc:
-        release_reservation(
-            deps,
-            run_id,
-            detail=f"the create failed before this run's deploy finished ({first_line(exc)}); "
-            "its environment is torn down automatically",
-            at=datetime.now(UTC),
-        )
+        try:
+            release_reservation(
+                deps,
+                run_id,
+                detail=f"the create failed before this run's deploy finished ({first_line(exc)}); "
+                "its environment is torn down automatically",
+                at=datetime.now(UTC),
+            )
+        except Exception:
+            # Raising here would report the release's error, often a locked database, in place of
+            # why the create failed.
+            log.warning(
+                "create: releasing failed run %s did not finish; boot reconcile or the release "
+                "sweeper completes it",
+                run_id,
+                exc_info=True,
+            )
         raise
 
 
