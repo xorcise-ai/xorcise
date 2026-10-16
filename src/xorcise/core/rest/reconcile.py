@@ -94,14 +94,46 @@ def _teardown_env(deps: _ReconcileDeps, run_id: str) -> str:
     try:
         deps.control.teardown(run_id, credential=deps.api_key)
     except Exception as exc:
-        log.warning("reconcile: control.teardown failed for %s", run_id, exc_info=True)
+        log.warning("teardown: control.teardown failed for %s", run_id, exc_info=True)
         errors.append(f"container: {exc}")
     try:
         deps.fence.teardown_run_network(run_id)
     except Exception as exc:
-        log.warning("reconcile: fence.teardown_run_network failed for %s", run_id, exc_info=True)
+        log.warning("teardown: fence.teardown_run_network failed for %s", run_id, exc_info=True)
         errors.append(f"tailnet: {exc}")
     return "; ".join(errors)
+
+
+def release_reservation(deps: _ReconcileDeps, run_id: str, *, detail: str, at: datetime) -> str:
+    """Release a run that was reserved but never deployed: a create that failed (#167), or one the
+    server stopped in the middle of. Its subnet is allocated, and its tailnet user and container
+    may exist. Nothing was graded, because it never ran.
+
+    Teardown BEFORE the purge, so a crash in between leaves the reservation for the next boot,
+    never an environment no run row points at. If the teardown fails, the row is the only record
+    that the environment exists: dropped, its tailnet user and router node would leak for good
+    (#173). Kept as a reservation, it would read as a live run, blocking `agent rm`. So it is
+    closed as what it is, a deploy that never finished, with *detail* as the reason: an ungraded
+    trigger, so nothing is scored, and terminal, so the release sweeper retries the teardown.
+
+    Returns the teardown error, or "" when the run was released and purged."""
+    # Lazy: the control role imports this module through run_create, and the purge reaches the
+    # otel store, a plane that role must not load.
+    from xorcise.core.rest.run_purge import purge_runs
+
+    error = _teardown_env(deps, run_id)
+    if not error:
+        purge_runs([run_id])
+        return ""
+    runs.mark_terminal(run_id, "deploy_failed", at, detail)
+    runs.record_release_failure(run_id, error)
+    log.warning(
+        "teardown: closed unfinished deploy %s as deploy_failed; its teardown failed (%s) and is "
+        "retried by the release sweeper",
+        run_id,
+        error,
+    )
+    return error
 
 
 def _reconcile_one(
@@ -113,36 +145,14 @@ def _reconcile_one(
 ) -> None:
     """Converge one non-terminal run. Raises on an unexpected error so the caller can isolate it."""
     if not was_deployed:
-        # Reserved (subnet allocated, tailnet node maybe minted, container maybe created) but deploy
-        # never finalized — the server crashed between reserve and finalize. Release whatever
-        # exists then drop the reservation; nothing was graded (it never ran). Teardown BEFORE
-        # delete so a crash in between leaves the reservation (revisited next boot), never a
-        # leaked environment.
-        error = _teardown_env(deps, run_id)
-        if error:
-            # The row is the only record that this environment exists: dropped, its tailnet user
-            # and router node would leak for good (#173). Kept as a reservation, it would read as
-            # a live run that only the next boot retries, blocking `agent rm` meanwhile. So close
-            # it as what it is, a deploy that never finished: an ungraded trigger, so nothing is
-            # scored, and terminal, so the release sweeper retries the teardown.
-            runs.mark_terminal(
-                run_id,
-                "deploy_failed",
-                now_fn(),
-                "the server stopped before this run's deploy finished; its environment is torn "
-                "down automatically",
-            )
-            runs.record_release_failure(run_id, error)
-            log.warning(
-                "reconcile: closed unfinished deploy %s as deploy_failed; its teardown failed "
-                "(%s) and is retried by the release sweeper",
-                run_id,
-                error,
-            )
-            report.release_pending.append(run_id)
-            return
-        runs.delete_run(run_id)
-        report.released.append(run_id)
+        error = release_reservation(
+            deps,
+            run_id,
+            detail="the server stopped before this run's deploy finished; its environment is torn "
+            "down automatically",
+            at=now_fn(),
+        )
+        (report.release_pending if error else report.released).append(run_id)
         return
     try:
         # PENDING counts as LIVE: the environment is deployed and still coming up (inner services
@@ -234,7 +244,7 @@ def _set_status(view: BootReconcileView) -> None:
         _status = view
 
 
-def _first_line(exc: Exception) -> str:
+def first_line(exc: Exception) -> str:
     lines = str(exc).strip().splitlines()
     return lines[0] if lines else type(exc).__name__
 
@@ -290,7 +300,7 @@ def reconcile_all_on_startup(*, now_fn: Callable[[], datetime] = lambda: datetim
             released=len(report.released),
             release_pending=tuple(report.release_pending),
             failed=tuple(report.failed),
-            error="; ".join(f"{name}: {_first_line(exc)}" for name, exc in errors),
+            error="; ".join(f"{name}: {first_line(exc)}" for name, exc in errors),
         )
     )
     if errors:

@@ -1,12 +1,14 @@
 import dataclasses
+import sqlite3
 from pathlib import Path
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
 from xorcise.core import agents, runs
 from xorcise.core.catalog import StubCatalogSource
 from xorcise.core.config import Settings
-from xorcise.core.contracts.control import MissionRef
+from xorcise.core.contracts.control import MissionRef, RunState
 from xorcise.core.contracts.mission import EnvironmentSpec, MissionManifest, MissionMetadata
 from xorcise.core.headscale import NetworkController, StubHeadscaleCli
 from xorcise.core.missions.runtime import INSTALLED_FILE, InstalledMission
@@ -23,6 +25,7 @@ from xorcise.core.rest.run_create import (
     create_run,
 )
 from xorcise.core.runner.docker import StubDockerDriver
+from xorcise.core.runs.observed import SqliteObservedFactsStore
 from xorcise.core.runs.prompt import render_prompt_text
 
 
@@ -47,10 +50,10 @@ def _write_installed(install_root: Path, slug: str = "sqli-login", version: int 
     )
 
 
-def _deps(install_root: Path) -> RunCreateDeps:
+def _deps(install_root: Path, cli: StubHeadscaleCli | None = None) -> RunCreateDeps:
     fence = HeadscaleFenceClient(
         NetworkController(
-            StubHeadscaleCli(), router_tag="tag:router", orchestrator_user="orchestrator"
+            cli or StubHeadscaleCli(), router_tag="tag:router", orchestrator_user="orchestrator"
         )
     )
     return RunCreateDeps(
@@ -538,6 +541,99 @@ def test_create_run_failure_releases_the_reserved_subnet(migrated_home, install_
     with pytest.raises(RuntimeError, match="boom"):
         create_run(agent_name="alice", mission_slug="sqli-login", budget_seconds=None, deps=deps)
     assert runs.active_cidrs() == set()  # reservation released — no leaked subnet or orphan row
+
+
+def _lock_finalize(monkeypatch) -> list[str]:
+    """Fail the create after deploy the way a busy database does (#107), at finalize."""
+    seen: list[str] = []
+
+    def locked(run_id: str, **_: object) -> None:
+        seen.append(run_id)
+        raise OperationalError("UPDATE runs", {}, sqlite3.OperationalError("database is locked"))
+
+    monkeypatch.setattr(runs, "finalize_run", locked)
+    return seen
+
+
+def test_a_create_that_fails_after_deploy_releases_what_it_started(
+    migrated_home, install_root, monkeypatch
+):
+    """#167: the reservation was deleted with the container still running and the tailnet user
+    and observed facts still there, and nothing that scans run rows could find them again."""
+    agents.register("alice", endpoint="http://a")
+    _write_installed(install_root)
+    cli = StubHeadscaleCli()
+    deps = dataclasses.replace(_deps(install_root, cli), observed=SqliteObservedFactsStore())
+    seen = _lock_finalize(monkeypatch)
+    with pytest.raises(OperationalError, match="database is locked"):
+        create_run(agent_name="alice", mission_slug="sqli-login", budget_seconds=None, deps=deps)
+    [run_id] = seen
+    assert deps.control.status(run_id, credential="k").state is RunState.TORN_DOWN
+    assert cli.users_deleted == [f"run-{run_id[:8]}-agent"]
+    assert runs.get(run_id) is None
+    assert SqliteObservedFactsStore().list_for_run(run_id) == ()
+
+
+def test_a_failed_create_whose_teardown_fails_is_kept_for_the_release_sweeper(
+    migrated_home, install_root, monkeypatch
+):
+    """Teardown before delete: the row is the only record of what the create started, so a failed
+    teardown closes it as an ungraded deploy_failed, and the release sweeper retries it."""
+    from xorcise.core.contracts.run import UNGRADED_TRIGGERS
+
+    class _HeadscaleDownAtTeardown(HeadscaleFenceClient):
+        def teardown_run_network(self, run_id: str) -> None:
+            raise RuntimeError("Headscale is not reachable")
+
+    agents.register("alice", endpoint="http://a")
+    _write_installed(install_root)
+    fence = _HeadscaleDownAtTeardown(
+        NetworkController(
+            StubHeadscaleCli(), router_tag="tag:router", orchestrator_user="orchestrator"
+        )
+    )
+    deps = dataclasses.replace(_deps(install_root), fence=fence)
+    seen = _lock_finalize(monkeypatch)
+    with pytest.raises(OperationalError, match="database is locked"):
+        create_run(agent_name="alice", mission_slug="sqli-login", budget_seconds=None, deps=deps)
+    [run_id] = seen
+    is_term, trigger, _ = runs.terminal_state(run_id)
+    assert is_term and trigger == "deploy_failed" and trigger in UNGRADED_TRIGGERS
+    entry = runs.get(run_id)
+    assert entry is not None and "database is locked" in (entry.terminal_detail or "")
+    assert runs.release_state(run_id) == runs.ReleaseState(
+        released_at=None, attempts=1, error="tailnet: Headscale is not reachable"
+    )
+    assert [a.run_id for a in runs.terminal_runs_awaiting_release()] == [run_id]
+
+
+def test_a_release_that_fails_does_not_hide_why_the_create_failed(
+    migrated_home, install_root, monkeypatch
+):
+    """Review of #189: a purge that hit a locked database replaced the create's own error, so a
+    deploy failure was reported as a database error. The row stays a reservation either way."""
+    import xorcise.core.rest.run_purge as run_purge
+
+    class _DeployFailsPartway(InProcessControlStub):
+        def deploy(self, request, *, credential):
+            super().deploy(request, credential=credential)
+            raise RuntimeError("the mission stack did not start")
+
+    def locked(run_ids: object) -> None:
+        raise OperationalError(
+            "DELETE FROM traces", {}, sqlite3.OperationalError("database is locked")
+        )
+
+    agents.register("alice", endpoint="http://a")
+    _write_installed(install_root)
+    monkeypatch.setattr(run_purge, "purge_runs", locked)
+    control = _DeployFailsPartway(api_key="k")
+    deps = dataclasses.replace(_deps(install_root), control=control)
+    with pytest.raises(RuntimeError, match="the mission stack did not start"):
+        create_run(agent_name="alice", mission_slug="sqli-login", budget_seconds=None, deps=deps)
+    [entry] = runs.list_runs()
+    assert entry.state == "created"
+    assert control.status(entry.run_id, credential="k").state is RunState.TORN_DOWN
 
 
 class _RecordingFence(NetworkFencePort):
