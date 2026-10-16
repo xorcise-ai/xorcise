@@ -6,6 +6,175 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are derived from git tags (hatch-vcs).
 
+## [0.2.0] - 2026-10-16
+
+<p align="center"><img src="https://raw.githubusercontent.com/xorcise-ai/xorcise/v0.2.0/assets/releases/v0.2.0/banner.webp" width="880" alt="XORCISE v0.2.0"></p>
+
+**Upgrading.** This release adds database migrations `0003` to `0008`. Migrations never run on
+boot, and `xorcise up` refuses a database that is behind. Run `xorcise down` before you install
+this release, because `xorcise up` adopts a 0.1.3 server that is still running instead of
+migrating. Then back up `~/.xorcise/xorcise.db`, since `0005` deletes scores and its downgrade
+restores nothing, and run:
+
+```
+xorcise db upgrade
+xorcise up
+```
+
+- **`0003` records why a run ended, with the logs the readiness gate read.** (#98)
+- **`0004` stores the evidence digest taken when a run seals.** (#139)
+- **`0005` deletes the scores of runs that ended `deploy_failed` or `crashed`.** Some may be
+  above zero. The runs, their telemetry and their events stay. (#164)
+- **`0006` sets every agent with a missing or blank kind to `generic`.** (#176)
+- **`0007` records when a run's environment was released.** Finished lab runs from before the
+  upgrade read Releasing until the release sweeper revisits each one once. (#185)
+- **`0008` makes telemetry batch numbers unique per run.** A run that already holds a duplicate
+  is renumbered and named in a warning. No payload changes. (#190)
+
+### Breaking changes
+
+- **Run status is one closed vocabulary, worded by the server.** `RunEntry.terminal_trigger`
+  accepts only `done`, `timeout`, `operator`, `deploy_failed` and `crashed`. `RunEntry` gains
+  required read-only `outcome` and `status` fields, and `GET /agents/{name}/history` rows gain
+  `status`. The CLI and the console print one label set (Completed, Timed out, Stopped, Deploy
+  failed, Crashed, Created, Running, Ended), and the report's Status row prints the label
+  instead of `terminal (timeout)`. To migrate, render `status` instead of mapping triggers
+  yourself, and upgrade the CLI with the server. An older CLI fails on `xorcise run status` for
+  a run that was not graded. (#164, fixes #159, #165)
+- **A run cut short by an environment failure is never graded.** A run that ends `deploy_failed`
+  or `crashed` is still sealed, released and exported, but gets no score.
+  `GET /runs/{id}/result`, `/report` and `/stats` answer `200 {"status": "not_graded", ...}`,
+  `POST /runs/{id}/regrade` answers 409, and `xorcise run report` exits 1. These runs count
+  under Runs and a new Infra failed column (`infra_failed` in `xorcise leaderboard --json`), but
+  not in Avg, Best, the completion and partial rates, or the dashboard's pass rate. Migration
+  `0005` deletes the scores already recorded for them. To migrate, branch on
+  `status == "not_graded"` as you do on `"grading"`, and stop polling when you see it.
+  (#164, fixes #109)
+- **Every agent has a kind, `generic` by default.** `AgentEntry.kind` is now a required string,
+  so `GET /agents`, `POST /agents` and `PUT /agents/{name}` return `generic` where they returned
+  `null`. `kind` stays optional on input, and an agent saved without one, including by a `PUT`
+  that omits it, is stored as `generic`. Runs are unaffected. To migrate, read `generic` where
+  you read `null`, and run `xorcise db upgrade` for migration `0006`. (#176, fixes #141)
+- **A finished run reports `releasing` until its environment is gone, and deletes can refuse.**
+  `GET /runs/{id}/environment` gains the state `releasing`, which a finished lab run reports
+  until its teardown lands. It used to answer `released` for every finished lab run.
+  `DELETE /runs/{id}` and `DELETE /agents/{name}` can answer 409 with `reason` (`running`,
+  `grading` or `unreleased`), `run_ids` and `forceable`. Deleting an agent whose run is still
+  running is refused, where it used to delete the run too. To migrate, treat `releasing` as
+  "finished, not torn down yet" and show the 409's `detail`. Terminate a running run before
+  deleting it, retry a `grading` refusal once the grade settles, and send `force=true` only when
+  `forceable` is true (`xorcise run delete --force`, `xorcise agent rm --force`).
+  (#185, fixes #173)
+
+### Added
+
+- **Mission image disk can be reclaimed and repaired.** `xorcise mission prune` lists the
+  mission images nothing uses, and `--yes` removes them. `xorcise mission delete <id> --purge`
+  removes the image with the install, and `xorcise mission pull <id> --refresh` downloads an
+  installed mission's image again to repair a damaged layer. The console offers all three. Prune
+  never removes an image in use by an install, an unfinished run, a container or an active pull.
+  (#174, fixes #44)
+- **`xorcise run export` exports a set of runs at once.** Select with `--mission`, `--agent`,
+  `--since` and `--genuine-only`. Each finished run lands in `<out>/<run-id8>/` with its report,
+  `result.json`, `traces.otlp.jsonl` and `events.jsonl`. A run that was not graded has no
+  report. (#140, fixes #114)
+- **XORCISE Remote announcements show as banners.** Maintenance windows, incidents and
+  all-clears appear below the header or in the XORCISE Remote catalog tab. The console reads
+  `GET /api/announcements` when a page loads, retries a failed fetch up to twice, and never
+  polls. With the remote catalog disabled or unreachable, nothing shows.
+  (#137, #163, fixes #136, #162)
+- **The OTLP receiver records the batches it drops.** A batch that matches no run, or arrives
+  after its run sealed, is logged and counted under `drops` on the receiver's `/healthz`. Set
+  `otel_drop_spool_enabled = true` in `config.toml` to keep those batches in a bounded spool.
+  (#132)
+
+### Changed
+
+- **Every mission install now contacts the registry.** `xorcise mission pull`, `mission update`,
+  the console's Pull and the auto-pull in `xorcise run create` pull even when the image is
+  already local, at the cost of one round trip. If the registry is unreachable the install fails
+  instead of reusing the local copy, so check setups that pre-load images with `docker load`.
+  Installed missions are not affected. (#174)
+- **An agent kind no harness answers to is flagged everywhere.** `xorcise agent register` and
+  `agent update` warn, suggest the closest harness and ask y/N, and exit 2 without a terminal
+  unless `--yes` is given. `POST /agents` and `PUT /agents/{name}` return the warning in
+  `warnings`, and the console shows it. The console's Custom harness card is now Generic, and
+  `xorcise run list` gains a Harness column. (#131, #176, fixes #119, #141)
+- **Telemetry that XORCISE cannot interpret is labelled as such.** In a run rendered by the
+  generic adapter, a span no rule recognises shows as unclassified with its raw name, instead of
+  as a tool call with an invented body. A run whose telemetry carries no content gets a warning
+  in the replay, the report and `xorcise run status`. Older runs are re-counted on first read,
+  so their tool-call counts can drop. (#129, #130, fixes #120)
+- **The console moves from Next.js 15 to 16 and from React 18 to 19.** The pinned
+  `opentelemetry-proto` moves from 1.42.1 to 1.44.0. Frontend test tooling moves to vitest 4,
+  jsdom 30 (from 25) and `@testing-library/jest-dom` 7.
+  (#9, #70, #85, #89, #90, #100, #101, #103, #104, #108)
+- **Contributor tooling.** CI runs the Docker-heavy lanes on every pull request that changes
+  more than documentation, a test fails when a config names a label `.github/labels.yml` does
+  not declare, and `CLAUDE.md` installs from `uv.lock`. A frontend call that only failed under
+  jsdom is fixed. (#88, #91, #92, #94, #180, fixes #87, #93, #106)
+
+### Fixed
+
+- **Lab missions run on arm64 Linux hosts.** The nested-container check always probed at
+  `linux/amd64`, so it refused every lab run on an arm64 Linux host without x86 emulation. It
+  now probes at the mission's own platform, and a refusal shows the probe's output.
+  (#80, fixes #79)
+- **`up`, `down`, `status`, `ui` and `db upgrade` agree on whether a server is running.** A
+  `down` whose kill fails now exits 1 instead of reporting "stopped", and `up` adopts a running
+  server instead of starting a second one on the same database. `status` and `ui` no longer
+  report a running server as stopped when `HTTP_PROXY` is set.
+  (#82, #97, fixes #72, #73, #74, #86)
+- **Background jobs run once and no longer freeze the server.** `serve` started reconcile, the
+  budget watchdog and the readiness gate once per listen address. They now start once, and the
+  budget watchdog grades a timed-out run on a worker thread, so REST and OTLP keep answering.
+  OTLP ingest also left that loop and numbers each batch once, instead of re-reading the run's
+  whole trace for every batch. A database too busy to take a batch now answers 503 with
+  `Retry-After`, which exporters retry, instead of a 500 they drop.
+  (#81, #183, #190, fixes #43, #147, #166)
+- **A deploy failure fails closed and keeps its evidence.** An inner Docker daemon that does not
+  answer now reads as not ready instead of ready. The readiness gate records the container and
+  daemon logs, shown on the run page, and tears down once. Its default window is 300 s, up from
+  90 s (`XORCISE_READINESS_TIMEOUT_SECONDS`). `xorcise doctor` now says when this host's address
+  has changed since `xorcise up` provisioned the control plane. (#98, #99, fixes #43, #62)
+- **A failed environment teardown is retried until it lands.** A brief Docker or Headscale
+  outage used to leak a run's container until the next boot, and its tailnet nodes for good. A
+  release sweeper now retries with backoff (`release_sweep_interval_seconds`, `0` disables),
+  `xorcise system` counts failed teardowns, and a failed run create tears down what it started.
+  A run whose teardown keeps failing stays listed as an ungraded Deploy failed run while the
+  sweeper retries. (#185, #189, fixes #167, #173)
+- **Deleting a run removes everything recorded for it.** Telemetry, the seal, agent events,
+  observed facts and `runs/<id>/` used to stay behind. Deletes now remove them, and the next
+  boot clears what older deletes left. Restoring an older `xorcise.db` makes that boot remove
+  the `runs/<id>/` directories of runs newer than the backup. (#186, fixes #117)
+- **Commits no longer fail with "database is locked" behind an open read.** SQLite now runs in
+  WAL mode. While a server runs, `xorcise.db-wal` sits beside `xorcise.db`, so back up both.
+  (#181, fixes #107)
+- **The judge works with strict chat templates.** Each criterion call ended with a system
+  message, which templates that require it first (Qwen) reject, so the judge half came back
+  unavailable. The new order also suits strict-alternation templates (Mistral-family on vLLM),
+  and `xorcise config test` probes with the same shape. (#127, fixes #111, #144, #145)
+- **Scores and reports say what they rest on.** `xorcise run status`, `run list` (`0.50*`) and
+  the leaderboard (a No judge column) flag a score with no judge half. Reports show the model
+  the harness reported, and a Telemetry window row beside Duration, so an agent that died after
+  a second no longer reads as 30 minutes of work. (#128, #133, #134, fixes #110, #113)
+- **A build from a git checkout reports the right version.** Source, editable and nightly
+  builds took their version from the mission base image's `mission-base-v*` tags and reported
+  `2.0.x`. They now read the package's own release tags. A PyPI install was never affected.
+  (#123, fixes #67)
+
+### Security
+
+- **The evidence seal is tamper-evident.** At seal time XORCISE records a SHA-256 over the run's
+  raw spans, raw logs, submitted artifacts and observed facts, after any telemetry batch in
+  flight has landed. The report and a regrade re-hash and say whether it still matches.
+  `GET /runs/{id}/result` carries `evidence_status` and re-hashes only with `?verify=1`. Older
+  runs read as unknown, never tampered. This detects modification. It is not a signature.
+  (#139, #190, fixes #116, #184)
+- **A model key no longer has to pass through argv.** `xorcise config set-model --key-stdin` and
+  `config set-terrain-model --key-stdin` read the key from a pipe or a hidden prompt, which
+  keeps it out of shell history and the process list. (#125, fixes #115)
+
 ## [0.1.3] - 2026-08-21
 
 ### Added
