@@ -8,8 +8,6 @@ Versions are derived from git tags (hatch-vcs).
 
 ## [0.2.0] - 2026-10-16
 
-<p align="center"><img src="https://raw.githubusercontent.com/xorcise-ai/xorcise/v0.2.0/assets/releases/v0.2.0/banner.webp" width="880" alt="XORCISE v0.2.0"></p>
-
 **Upgrading.** This release adds database migrations `0003` to `0008`. Migrations never run on
 boot, and `xorcise up` refuses a database that is behind. Run `xorcise down` before you install
 this release, because `xorcise up` adopts a 0.1.3 server that is still running instead of
