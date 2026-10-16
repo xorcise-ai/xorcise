@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterator
 
 from xorcise.core.contracts.telemetry import TraceRecord
@@ -11,6 +12,15 @@ from xorcise.core.otel.ports import TraceStore
 class InMemoryTraceStore(TraceStore):
     def __init__(self) -> None:
         self._records: dict[str, list[TraceRecord]] = {}
+        self._lock = threading.Lock()
+
+    def append_next(self, run_id: str, payload: str) -> int:
+        # No seal state here: the receiver's own seal check is all a test double needs.
+        with self._lock:
+            records = self._records.setdefault(run_id, [])
+            seq = max((r.seq for r in records), default=-1) + 1  # MAX + 1, as the SQL store
+            records.append(TraceRecord(run_id=run_id, seq=seq, payload=payload))
+            return seq
 
     def append(self, record: TraceRecord) -> None:
         self._records.setdefault(record.run_id, []).append(record)

@@ -9,8 +9,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from sqlalchemy.orm import Session
+
 from xorcise.core.db import session_scope
 from xorcise.core.otel.ports import SealStore
+from xorcise.core.otel.store.admission import under_admission
 from xorcise.core.otel.store.models import TraceSealRow
 
 
@@ -39,11 +42,20 @@ class InMemorySealStore(SealStore):
 
 class SqliteSealStore(SealStore):
     def seal(self, run_id: str, digest: str | None = None) -> None:
-        with session_scope() as s:
+        def close_admission(s: Session) -> None:
             # First seal wins, digest included. A later seal must NOT overwrite it: whoever can
             # re-seal could otherwise launder edited evidence into a clean verification.
             if s.get(TraceSealRow, run_id) is None:
                 s.add(TraceSealRow(run_id=run_id, evidence_digest=digest))
+
+        # Under the admission lock, so a batch being admitted right now either commits first, and
+        # is in whatever the caller hashes next, or waits and then sees this seal (#184).
+        #
+        # NOT dead code, although SQLite would pass without it: SQLite has one write lock for the
+        # whole file, which already orders this insert against `append_next`. An engine that locks
+        # rows does not, and there only this lock keeps a batch from landing during the hash.
+        # `test_seal_takes_the_admission_lock` pins it, since no SQLite race test can.
+        under_admission(run_id, close_admission)
 
     def is_sealed(self, run_id: str) -> bool:
         with session_scope() as s:

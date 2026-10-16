@@ -241,28 +241,35 @@ def test_hashing_never_materialises_trace_records(migrated_home, monkeypatch) ->
     assert compute_evidence_digest("r1")
 
 
-def test_duplicate_seq_hashes_the_same_whatever_order_the_rows_arrived(migrated_home) -> None:
-    """Ingest assigns `seq = len(read(run_id))` non-atomically and nothing makes `(run_id, seq)`
-    unique, so two concurrent OTLP posts can collide. Sorting on `seq` alone then leaves the order
-    to whatever the rows happen to sit in — stable today via rowid, but a dump/restore that
-    reassigns ids flips it and an untouched run reads as tampered."""
-    from xorcise.core.db import session_scope
+def test_the_store_refuses_a_second_batch_at_the_same_seq(migrated_home) -> None:
+    """The digest hashes in seq order, so two batches sharing one would leave their order to where
+    the rows happen to sit, and a dump/restore could flip it into a false mismatch (#147). The
+    database now refuses the second batch rather than hashing around it."""
+    from sqlalchemy.exc import IntegrityError
+
     from xorcise.core.otel.store import SqliteTraceStore
-    from xorcise.core.otel.store.models import TraceRow
-    from xorcise.core.rest.evidence_seal import compute_evidence_digest
 
     store = SqliteTraceStore()
     store.append(_record("r1", 1, '{"span":"alpha"}'))
-    store.append(_record("r1", 1, '{"span":"beta"}'))
-    first = compute_evidence_digest("r1")
+    with pytest.raises(IntegrityError):
+        store.append(_record("r1", 1, '{"span":"beta"}'))
+    store.append(_record("r2", 1, '{"span":"beta"}'))  # per run: another run may use the seq
 
-    # Re-insert the same two payloads in the opposite order, as a dump/restore would.
-    with session_scope() as s:
-        s.query(TraceRow).filter_by(run_id="r1").delete()
-    store.append(_record("r1", 1, '{"span":"beta"}'))
-    store.append(_record("r1", 1, '{"span":"alpha"}'))
 
-    assert compute_evidence_digest("r1") == first
+def test_a_seal_renumbered_by_migration_0008_is_unverifiable_never_a_mismatch(
+    migrated_home,
+) -> None:
+    """0008 renames the scheme of a sealed run whose duplicate seqs it renumbered, because the
+    renumbered evidence no longer matches the digest. That must read as unknown, not tampered."""
+    from xorcise.core.otel.store import SqliteSealStore
+    from xorcise.core.rest.evidence_seal import evidence_seal_view, verify_evidence
+
+    _seed("r1")
+    SqliteSealStore().seal("r1", digest="xorcise-evidence-v1-renumbered-0008:" + "ab" * 32)
+
+    view = evidence_seal_view("r1")
+    assert (view.status, view.verified, view.digest) == ("unverifiable", None, "ab" * 32)
+    assert verify_evidence("r1") is None
 
 
 def test_an_edit_outside_the_hash_does_not_trip_verification(migrated_home) -> None:

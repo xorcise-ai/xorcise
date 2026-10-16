@@ -213,6 +213,86 @@ def test_upgrade_adds_the_release_columns_without_backfilling(tmp_path, monkeypa
     assert not {"released_at", "release_attempts", "release_error"} & cols
 
 
+def test_upgrade_makes_seq_unique_and_renumbers_existing_duplicates(tmp_path, monkeypatch, caplog):
+    """0008 (#147): a run already holding a duplicate seq is renumbered in the digest's
+    (seq, payload) order and named in a WARNING, never a failed upgrade. A sealed one has its
+    digest scheme renamed, so it reads as unverifiable rather than as tampered. The unique indexes
+    replace the run_id ones, the admission table exists, and the downgrade reverses both."""
+    import logging
+
+    from alembic import command
+    from sqlalchemy import text
+
+    from xorcise.core.db.migrate import _alembic_config
+
+    monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
+    config.get_settings.cache_clear()
+    db.get_engine.cache_clear()
+    db.upgrade()
+    command.downgrade(_alembic_config(), "0007_record_environment_release")
+    rows = [
+        ("dup-sealed", 0, "b"),
+        ("dup-sealed", 0, "a"),
+        ("dup-sealed", 1, "c"),
+        ("clean", 0, "x"),
+        ("clean", 1, "y"),
+    ]
+    with db.get_engine().begin() as conn:
+        for table in ("traces", "logs"):
+            for run_id, seq, payload in rows:
+                conn.execute(
+                    text(
+                        f"INSERT INTO {table} (run_id, seq, payload, created_at) "
+                        "VALUES (:r, :s, :p, :now)"
+                    ),
+                    {"r": run_id, "s": seq, "p": payload, "now": _NOW},
+                )
+        for run_id in ("dup-sealed", "clean"):
+            conn.execute(
+                text(
+                    "INSERT INTO trace_seals (run_id, sealed_at, evidence_digest) "
+                    "VALUES (:r, :now, 'xorcise-evidence-v1:abc123')"
+                ),
+                {"r": run_id, "now": _NOW},
+            )
+
+    with caplog.at_level(logging.WARNING):
+        db.upgrade()
+
+    with db.get_engine().begin() as conn:
+        for table in ("traces", "logs"):
+            got = conn.execute(
+                text(f"SELECT run_id, seq, payload FROM {table} ORDER BY run_id, seq")
+            ).all()
+            assert [tuple(r) for r in got] == [
+                ("clean", 0, "x"),
+                ("clean", 1, "y"),
+                ("dup-sealed", 0, "a"),
+                ("dup-sealed", 1, "b"),
+                ("dup-sealed", 2, "c"),
+            ]
+        seal_rows = conn.execute(text("SELECT run_id, evidence_digest FROM trace_seals")).all()
+    digests = {row.run_id: row.evidence_digest for row in seal_rows}
+    assert digests == {
+        "dup-sealed": "xorcise-evidence-v1-renumbered-0008:abc123",
+        "clean": "xorcise-evidence-v1:abc123",  # never renumbered, so still verifiable
+    }
+    [warning] = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert "dup-sealed" in warning and "clean" not in warning
+    engine_inspect = inspect(db.get_engine())
+    for table in ("traces", "logs"):
+        indexes = engine_inspect.get_indexes(table)
+        assert [(i["column_names"], i["unique"]) for i in indexes] == [(["run_id", "seq"], True)]
+    assert engine_inspect.has_table("otel_admissions")
+
+    command.downgrade(_alembic_config(), "0007_record_environment_release")
+    engine_inspect = inspect(db.get_engine())
+    assert not engine_inspect.has_table("otel_admissions")
+    for table in ("traces", "logs"):
+        indexes = engine_inspect.get_indexes(table)
+        assert [(i["column_names"], i["unique"]) for i in indexes] == [(["run_id"], False)]
+
+
 def test_upgrade_is_idempotent(tmp_path, monkeypatch):
     monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
     config.get_settings.cache_clear()
@@ -241,7 +321,7 @@ def test_head_revision_is_the_latest_migration(tmp_path, monkeypatch):
     monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
     config.get_settings.cache_clear()
     db.get_engine.cache_clear()
-    assert db.head_revision() == "0007_record_environment_release"
+    assert db.head_revision() == "0008_unique_telemetry_seq"
 
 
 def test_boot_state_fresh_on_empty_db(tmp_path, monkeypatch):

@@ -12,12 +12,16 @@ from xorcise.core.db import Base
 
 class TraceRow(Base):
     __tablename__ = "traces"
+    # One seq per batch within a run. The digest hashes evidence in seq order, so two batches
+    # sharing one would leave that order to row placement (#147). Also the index MAX(seq) seeks,
+    # and every lookup by run_id, which leads it: a separate run_id index would only cost writes.
+    __table_args__ = (Index("uq_traces_run_seq", "run_id", "seq", unique=True),)
 
     # One row per persisted OTLP export payload, keyed by run_id. run_id is a
     # plain indexed column (no cross-module FK): otel is a part-island that
     # cannot import the runs table (the plain-id pattern).
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    run_id: Mapped[str] = mapped_column(String(36), index=True)
+    run_id: Mapped[str] = mapped_column(String(36))
     seq: Mapped[int] = mapped_column(Integer)
     payload: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
@@ -27,17 +31,29 @@ class TraceRow(Base):
 
 class LogRow(Base):
     __tablename__ = "logs"
+    __table_args__ = (Index("uq_logs_run_seq", "run_id", "seq", unique=True),)
 
     # One row per persisted OTLP *logs* export payload, keyed by run_id — the RAW logs
     # signal (assistant responses, api bodies, the claude_code.events stream), the peer of `traces`.
     # RAW-canonical; run_id is a plain indexed column (the plain-id pattern).
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    run_id: Mapped[str] = mapped_column(String(36), index=True)
+    run_id: Mapped[str] = mapped_column(String(36))
     seq: Mapped[int] = mapped_column(Integer)
     payload: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
+
+
+class AdmissionRow(Base):
+    __tablename__ = "otel_admissions"
+
+    # One row per run that has exported or been sealed: the lock that orders admitting a batch
+    # against sealing the run. Both update this row before anything else in their transaction, so
+    # on any database one waits for the other's commit (#184). `batches` is what the update
+    # writes; it counts admissions plus seals and means nothing beyond that. Plain run_id PK.
+    run_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    batches: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class TraceSealRow(Base):
