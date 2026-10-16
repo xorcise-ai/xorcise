@@ -169,10 +169,10 @@ def seal_with_digest(run_id: str) -> None:
     # False immediately — the seal accusing itself. `seal()` is first-wins and idempotent, so this
     # is safe to reach twice.
     #
-    # This narrows the window rather than closing it completely: a request that already passed
-    # `is_sealed()` can still land while we hash. That is a receiver-level race needing a barrier,
-    # not something ordering alone can fix — but it is now bounded by requests genuinely in flight
-    # at the moment of sealing, instead of by however long hashing takes.
+    # Ordering alone left a window: a batch that had already passed the receiver's seal check could
+    # still land while we hashed (#184). `seal()` and the receiver's `append_next` now take the same
+    # per-run admission lock, so once `seal()` returns, every batch is either committed, and in the
+    # hash below, or refused.
     seals.seal(run_id)
     try:
         digest = compute_evidence_digest(run_id)

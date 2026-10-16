@@ -8,6 +8,7 @@ from sqlalchemy import delete, select
 
 from xorcise.core.db import session_scope
 from xorcise.core.otel.store.models import (
+    AdmissionRow,
     AgentEventRow,
     AgentEventRunRow,
     LogRow,
@@ -15,7 +16,7 @@ from xorcise.core.otel.store.models import (
     TraceSealRow,
 )
 
-_RUN_TABLES = (TraceRow, LogRow, TraceSealRow, AgentEventRunRow, AgentEventRow)
+_RUN_TABLES = (TraceRow, LogRow, TraceSealRow, AdmissionRow, AgentEventRunRow, AgentEventRow)
 
 
 def held_run_ids() -> set[str]:

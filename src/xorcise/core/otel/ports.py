@@ -30,7 +30,19 @@ class OtelIngest(ABC):
 
 class TraceStore(ABC):
     @abstractmethod
-    def append(self, record: TraceRecord) -> None: ...
+    def append_next(self, run_id: str, payload: str) -> int | None:
+        """Append `payload` as the run's next seq and return that seq; None if the run is sealed.
+
+        The ingest write. Allocating the seq, checking the seal and appending are ONE step: a
+        concurrent append cannot take the same seq, and a concurrent `SealStore.seal` on the same
+        backend either sees this batch committed or is seen by it (#147, #184). A store with no
+        seal state of its own never returns None.
+        """
+
+    @abstractmethod
+    def append(self, record: TraceRecord) -> None:
+        """Store `record` at the seq it carries. For restoring and seeding; ingest uses
+        `append_next`, which is what keeps seq unique and the seal honest."""
 
     @abstractmethod
     def read(self, run_id: str) -> list[TraceRecord]: ...
