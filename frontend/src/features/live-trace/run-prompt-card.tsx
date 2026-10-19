@@ -222,8 +222,9 @@ export function RunPromptCard({
               <ModeToggle modes={launchModes} active={launchMode} onSelect={setLaunchMode} />
               <CorrelationNote correlation={correlation} />
               <p className="max-w-[68ch] text-body text-text-secondary">
-                Run this single block — it exports the telemetry env and starts the harness with
-                this run’s prompt embedded, so it reports back to <em>this</em> run.
+                Run this single block — it exports the telemetry env and this run’s token, then
+                starts the harness with this run’s prompt embedded, so it reports back to{" "}
+                <em>this</em> run.
               </p>
               <div className="flex items-center gap-1.5">
                 <Radio className="size-3.5 text-primary" />

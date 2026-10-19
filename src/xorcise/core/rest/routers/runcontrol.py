@@ -13,7 +13,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Path, Request
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, Response
 
 from xorcise.core.config import Settings, get_settings
 from xorcise.core.contracts.runcontrol import (
@@ -150,6 +150,32 @@ def get_mission(run_id: str = Path(...), authorization: str | None = Header(None
     return info
 
 
+@router.get("/{run_id}/alive", status_code=204, response_class=Response)
+def get_alive(run_id: str = Path(...), authorization: str | None = Header(None)) -> Response:
+    """Liveness probe for the join script's self-reaper: 204 while the run is live, 409 once it
+    has ended (the same run-over gate every other endpoint applies), 401 otherwise.
+
+    Authenticated by the run's watch token, NOT the run-control bearer — the reaper must hold a
+    credential where a local user can read it (BusyBox ``wget`` in the sidecar can only take a
+    header on argv), so it gets one that discloses a single bit. The bearer is refused here, so a
+    leaked watch token and the bearer are never interchangeable in either direction. Polling here
+    rather than ``/mission`` also keeps the reaper from recording that the agent read its brief.
+
+    A run that no longer exists (deleted) is over too, so it answers 409, not 401: the token is
+    derived from the run's row, so a 401 there would be permanent, and both reapers stop only on
+    409 — they would otherwise hold tailscaled and poll until their hard cap. This tells a caller
+    no more than that a 128-bit random run id is not live."""
+    from xorcise.core import runs
+    from xorcise.core.rest.run_terminate import make_gate
+
+    if runs.get(run_id) is None:
+        raise HTTPException(status_code=409, detail="mission-over: this run no longer exists")
+    if not runs.authenticate_watch(run_id, _bearer(authorization)):
+        raise HTTPException(status_code=401, detail="invalid run watch credential")
+    _guard(lambda: make_gate(lambda: datetime.now(UTC))(run_id))
+    return Response(status_code=204)
+
+
 @router.get("/{run_id}/connect")
 def get_connect(
     run_id: str = Path(...), authorization: str | None = Header(None)
@@ -200,7 +226,8 @@ def get_join_script(
 ) -> PlainTextResponse:
     """Serve the runnable one-shot tailnet join script (join ergonomics). Same bundle as GET
     /connect (by-IP login server, per-run key, control-plane CA), rendered into a self-contained
-    script the agent runs with ``curl -fsS -H 'Authorization: Bearer <key>' <base>/join.sh | sh``.
+    script the agent pipes to ``sh``, fetching it with the bearer on curl's stdin (``-K -``), as the
+    prompt's recipe shows.
     Collapses the reconstruct-the-join-by-hand friction into one command; works non-root. The
     script is handed the same base + bearer so it can pull the pinned client from /tailscale.tgz
     (air-gapped) before falling back to the public CDN."""
@@ -229,6 +256,8 @@ def get_join_script(
         ca_cert=ca,
         run_control_base=_runcontrol_base(request),
         run_control_key=_bearer(authorization),
+        # require_run just proved this bearer is the run's own, so derive from it: no lookup.
+        watch_token=runs.derive_watch_token(_bearer(authorization), rid),
         reap_cap_seconds=reap_cap,
     )
 

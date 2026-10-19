@@ -16,6 +16,7 @@ def _script(reap_cap_seconds: int = 86400, **over: str) -> str:
         ca_cert=_CA_PEM,
         run_control_base="http://127.0.0.1:3001/api/runs/run-1",
         run_control_key="rk-SECRET",
+        watch_token="wk-SECRET",
     )
     kw.update(over)
     return render_join_script(reap_cap_seconds=reap_cap_seconds, **kw)
@@ -95,7 +96,7 @@ def test_self_reaper_tears_down_this_runs_daemon_on_termination():
     # ends, so a host run never leaks its userspace tailscaled. No pidfile is written.
     s = _script()
     assert "$DETACH sh -c" in s  # a detached watcher process (setsid or, on macOS, nohup)
-    assert "/mission" in s  # polls run-control for terminal state
+    assert '"$base/alive"' in s  # polls run-control's liveness probe for terminal state
     assert '"409"' in s  # 409 = mission over (covers agent `complete` AND the budget timeout)
     assert "XORCISE_REAP_MAX" in s  # a hard cap so the watcher itself can never leak
     assert "down" in s  # logs the node out of the control plane before killing the daemon
@@ -194,8 +195,12 @@ def test_sidecar_uses_pinned_image_and_mounts_ca_read_only():
 def test_sidecar_key_is_sent_over_stdin_not_docker_args_or_environment():
     s = _script()
     sidecar = s[s.index('if [ "$TS_MODE" = sidecar ]') : s.index("# 2) Native Linux")]
-    assert 'printf \'%s\\n\' "$AUTHKEY" | docker exec -i "$SIDECAR"' in sidecar
-    assert '--authkey="$key"' in sidecar
+    assert 'printf \'%s\' "$AUTHKEY" | docker exec -i "$SIDECAR"' in sidecar
+    # In the container the key lands in a private file `up` reads — never an argv, because on a
+    # Linux host the container's processes are listed by the host's `ps` (#172).
+    assert "--auth-key=file:/tmp/xorcise-authkey" in sidecar
+    assert "rm -f /tmp/xorcise-authkey" in sidecar
+    assert '--authkey="$key"' not in sidecar
     assert "TS_AUTHKEY" not in sidecar
     assert "-e AUTHKEY" not in sidecar
     assert '--authkey="$AUTHKEY"' not in sidecar
@@ -376,3 +381,94 @@ def test_the_portable_socks_handle_is_written_in_every_proxy_mode():
     # userspace block — additive; the standard ALL_PROXY convenience stays
     assert "export XORCISE_SOCKS5=$PROXY_ADDR:$SOCKS" in s
     assert "export ALL_PROXY=socks5://$PROXY_ADDR:$SOCKS" in s
+
+
+# --- #172: no secret on any process command line --------------------------------------------
+# Any local user can read every argv through `ps` or /proc/<pid>/cmdline, and on a Linux host that
+# includes the sidecar container's processes. test_join_script_argv.py runs the script and checks
+# the real argv of everything it starts; these pin the template shapes that make that true.
+
+
+def test_the_join_key_is_never_an_argument_in_either_mode():
+    s = _script()
+    # The key is never a flag's value, in either spelling: only a `file:` path is.
+    assert '--authkey="$' not in s and '--auth-key="$' not in s
+    assert '"$AUTHKEY_FLAG=file:$WORK/authkey"' in s  # native
+    assert "--auth-key=file:/tmp/xorcise-authkey" in s  # sidecar
+    native = s[s.index("# 4) Join.") : s.index("# 5) Poll")]
+    assert native.index('>"$WORK/authkey"') < native.index("up \\")
+    assert 'rm -f "$WORK/authkey"' in native  # gone as soon as `up` returns
+    assert "trap 'rm -f \"$WORK/authkey\"' EXIT" in s  # and on an abort before that,
+    for signal_exit in ("trap 'exit 129' HUP", "trap 'exit 130' INT", "trap 'exit 143' TERM"):
+        assert signal_exit in s  # including a kill, which would otherwise skip the EXIT trap
+
+
+def test_the_bearer_reaches_curl_on_stdin_never_as_a_header_argument():
+    s = _script()
+    assert '-H "Authorization' not in s
+    assert '--header="Authorization: Bearer $RC_KEY' not in s
+    # Exactly two uses of the bearer: its assignment, and the -K config the printf builtin pipes.
+    uses = [line.strip() for line in s.splitlines() if "$RC_KEY" in line]
+    assert uses == ['printf \'header = "Authorization: Bearer %s"\\n\' "$RC_KEY" |']
+    fetch = s[s.index("printf 'header = ") :]
+    assert fetch.splitlines()[1].strip().startswith("curl -fsSL -K - ")
+
+
+def test_both_reapers_hold_the_watch_token_never_the_bearer():
+    s = _script()
+    assert 'WATCH_KEY="wk-SECRET"' in s
+    sidecar = s[s.index('if [ "$TS_MODE" = sidecar ]') : s.index("# 2) Native Linux")]
+    assert "printf '%s\\n' \"$WATCH_KEY\"" in sidecar  # what the in-container watcher is armed with
+    reaper = s[s.index("# 7) Self-reaper") :]
+    assert 'XORCISE_WATCH_KEY="$WATCH_KEY" $DETACH sh -c' in reaper  # environment, not argv
+    assert "unset XORCISE_WATCH_KEY" in reaper  # not inherited by curl or tailscale
+    assert '-K - "$base/alive"' in reaper
+    launch = reaper.splitlines()[-1]
+    assert launch.startswith(" ' _ ") and "KEY" not in launch  # no secret in the reaper's argv
+
+
+def test_the_work_dir_is_private_and_never_a_predictable_path():
+    s = _script()
+    assert s.index("umask 077") < s.index("WORK=")  # the key file and daemon state are 0600
+    assert "echo /tmp/xorcise-ts" not in s  # the fixed fallback another user could pre-create
+    assert 'TS_PARENT="${XORCISE_TS_DIR:-${TMPDIR:-/tmp}}"' in s  # the override is a parent
+    assert 'WORK=$(mktemp -d "$TS_PARENT/xorcise-ts.XXXXXX")' in s
+    assert 'if ! ts_parent_is_safe "$TS_PARENT"; then' in s  # a parent others could write: refused
+    # The reaper removes the dir this join made, wherever its parent is (not only under /tmp).
+    assert 'case "${w##*/}" in xorcise-ts.*) rm -rf "$w"' in s
+    assert '[ -s "$CA" ] && chmod 644 "$CA"' in s  # the public CA stays mountable in the sidecar
+
+
+def test_a_client_too_old_for_a_key_file_stops_the_join_rather_than_expose_the_key():
+    s = _script()
+    native = s[s.index("# 2) Native Linux") : s.index("# 4) Join.")]
+    assert 'TS_HELP=$("$TS" up --help 2>&1 || true)' in native
+    assert "printf '%s\\n' \"$TS_HELP\" | grep -q '\"file:\"'" in native
+    assert "too old to read its auth key from a file" in native
+    assert "XORCISE_TAILSCALE_CLIENT=fetched" in native  # the documented way forward
+    assert "nothing is installed on this system" in native
+
+
+def test_the_key_flag_follows_the_spelling_the_client_documents():
+    # Clients from before the `--auth-key` spelling read key files too but know only `--authkey`.
+    s = _script()
+    native = s[s.index("# 2) Native Linux") : s.index("# 4) Join.")]
+    assert "AUTHKEY_FLAG=--authkey" in native
+    assert "grep -q -- '-auth-key'; then AUTHKEY_FLAG=--auth-key; fi" in native
+    # The client's help is read once per client and serves both checks.
+    assert native.count("up --help 2>&1") == 2  # the PATH client, or the fetched one
+
+
+def test_the_client_choice_is_validated_before_the_mode_is_picked():
+    s = _script()
+    assert s.index("invalid XORCISE_TAILSCALE_CLIENT") < s.index('case "$TS_MODE" in')
+
+
+def test_macos_is_never_told_to_use_a_fetched_client_that_cannot_exist():
+    s = _script()
+    native = s[s.index("# 2) Native Linux") : s.index("# 4) Join.")]
+    old = native[native.index("too old to read its auth key") :]
+    darwin = old[: old.index("else")]
+    assert "brew upgrade tailscale" in darwin
+    assert "XORCISE_TAILSCALE_CLIENT=fetched" not in darwin
+    assert "XORCISE_TAILSCALE_CLIENT=fetched is Linux-only" in native

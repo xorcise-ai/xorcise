@@ -41,8 +41,9 @@ class CodexLaunchProvider(HarnessLaunchProvider):
         "-c otel.exporter.otlp-http.protocol='\"binary\"' "
         "-c otel.metrics_exporter='\"none\"' "
         # Capture the user prompt in the logs (else codex logs it as "[REDACTED]" and the replay
-        # can't show the task). Mirrors Claude Code's OTEL_LOG_USER_PROMPTS=1; the prompt (with the
-        # run-control bearer) goes only to THIS run's own collector — same trust domain.
+        # can't show the task). Mirrors Claude Code's OTEL_LOG_USER_PROMPTS=1. The prompt goes only
+        # to THIS run's own collector, and it carries no secret: the run-control bearer reaches the
+        # agent as $XORCISE_RUN_BEARER from the launch block, not in the prompt (#172).
         "-c otel.log_user_prompt=true "
         "{mission}"
     )
