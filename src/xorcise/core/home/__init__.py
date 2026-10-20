@@ -113,13 +113,32 @@ def scaffold_config(home: Path) -> None:
         env.chmod(0o600)
 
 
+def has_line_break(value: str) -> bool:
+    """True when `value` would not survive as one ``KEY=value`` line of ``.env``.
+
+    The test is the one the writer below reads the file back with, ``str.splitlines()``, not
+    a search for ``\\n``/``\\r``: splitlines also breaks on ``\\v``, ``\\f``, ``\\x1c``-``\\x1e``,
+    ``\\x85``, ``\\u2028`` and ``\\u2029``, and any of those splits the line just as surely. The
+    REST setters and the CLI's piped-key check refuse a value on this same test (#160)."""
+    return "".join(value.splitlines()) != value  # splitlines drops every separator it splits on
+
+
 def set_env_vars(home: Path, values: dict[str, str | None]) -> None:
     """Upsert ``KEY=value`` lines in ``<home>/.env``, preserving every other line.
 
     The single guided writer for the local config surface: the GUI/CLI judge-model
     setters land here. A ``None``/empty value removes the key. Comments and unrelated vars are
     left untouched; the file is (re)written at 0600. Creates the file if absent.
+
+    Raises ValueError, before anything is read or written, for a value with a line break in it:
+    values are written unquoted, so the break would split the line, dotenv would read back only
+    the first fragment, and the rest would persist as a line this writer cannot parse and so
+    preserves on every later write (#160). The message names the variable, never the value — it
+    may be a secret.
     """
+    for name, value in values.items():
+        if value and has_line_break(value):
+            raise ValueError(f"{name} must be a single line — it contains a line break")
     home.mkdir(parents=True, exist_ok=True)
     env = home / ".env"
     lines = env.read_text().splitlines() if env.exists() else []

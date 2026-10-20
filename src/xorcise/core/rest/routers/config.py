@@ -7,7 +7,8 @@ writable — the generic Settings model is deliberately NOT exposed for edit.
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from xorcise.core.config import get_settings
 from xorcise.core.contracts.config import (
@@ -18,7 +19,7 @@ from xorcise.core.contracts.config import (
     NetworkConfigUpdate,
     TerrainModelConfigUpdate,
 )
-from xorcise.core.home import xorcise_home
+from xorcise.core.home import has_line_break, xorcise_home
 from xorcise.core.rest.config_view import (
     apply_catalog_update,
     apply_model_update,
@@ -32,6 +33,22 @@ from xorcise.core.rest.config_view import (
 router = APIRouter(prefix="/config", tags=["config"])
 
 
+def _refuse_multi_line(update: BaseModel) -> None:
+    """422 a text field with a line break in it, before anything is written (#160).
+
+    Every text field these setters take lands in ~/.xorcise/.env unquoted, where a line break
+    splits the line and corrupts the file. The CLI refuses a multi-line piped key, but the GUI,
+    a script or `--key` on argv reach this route directly. The field is named, never its value:
+    it may be the API key."""
+    for field, value in update.model_dump().items():
+        if isinstance(value, str) and has_line_break(value):
+            raise HTTPException(
+                status_code=422,
+                detail=f"{field} must be a single line — it contains a line break, which would "
+                "corrupt ~/.xorcise/.env. Nothing was changed.",
+            )
+
+
 @router.get("")
 def get_config() -> ConfigView:
     return build_config_view(get_settings())
@@ -39,6 +56,7 @@ def get_config() -> ConfigView:
 
 @router.put("/model")
 def put_model_config(update: ModelConfigUpdate) -> ConfigView:
+    _refuse_multi_line(update)
     return apply_model_update(xorcise_home(), update)
 
 
@@ -62,6 +80,7 @@ def put_network_config(update: NetworkConfigUpdate) -> ConfigView:
     """Set the distributed-mode network addresses (Headscale URL / advertise host).
 
     Persisted to ~/.xorcise/.env; applies at the next server start (the GUI notes this)."""
+    _refuse_multi_line(update)
     return apply_network_update(xorcise_home(), update)
 
 
@@ -69,6 +88,7 @@ def put_network_config(update: NetworkConfigUpdate) -> ConfigView:
 def put_terrain_model_config(update: TerrainModelConfigUpdate) -> ConfigView:
     """Set (or clear, via empty strings) the terrain-attribution model override. Defaults to the
     judge model when unset."""
+    _refuse_multi_line(update)
     return apply_terrain_model_update(xorcise_home(), update)
 
 
