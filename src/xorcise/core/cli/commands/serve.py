@@ -196,8 +196,23 @@ async def serve_bound(bound: list[BoundSpec]) -> list[BaseException]:
     A failure is an exception that escaped a Server OR a Server that never started: when an
     app's lifespan startup fails, uvicorn logs it, skips the main loop and returns normally
     (`Server.serve()` → None, `started` False), so without the second check `serve` would exit
-    0 having served nothing — and `up` would report only "did not become healthy"."""
+    0 having served nothing — and `up` would report only "did not become healthy".
+
+    uvicorn >= 0.53 calls sys.exit(3) on that same failure instead of returning (#122). A task
+    that raises SystemExit is not captured by gather: asyncio re-raises it straight out of
+    asyncio.run, past the failure report below, and `serve` exits 3 with no message. So each
+    server runs inside `_serve_one`, which swallows uvicorn's exit and returns, as older uvicorn
+    does — leaving the `not server.started` check below to report it, the same way for both."""
     import uvicorn
+
+    async def _serve_one(server: uvicorn.Server, b: BoundSpec) -> None:
+        try:
+            await server.serve(sockets=b.sockets)
+        except SystemExit:
+            # Only uvicorn's own startup exit is turned back into a return. A SystemExit from a
+            # server that had started is someone else's, and keeps propagating as it always has.
+            if server.started:
+                raise
 
     servers = [
         # Config's host/port are inert on this path — the listeners are the sockets handed to
@@ -205,7 +220,7 @@ async def serve_bound(bound: list[BoundSpec]) -> list[BaseException]:
         (uvicorn.Server(uvicorn.Config(b.spec.app, log_level=b.spec.log_level)), b)
         for b in bound
     ]
-    tasks = [asyncio.create_task(server.serve(sockets=b.sockets)) for server, b in servers]
+    tasks = [asyncio.create_task(_serve_one(server, b)) for server, b in servers]
     await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     for server, _ in servers:
         server.should_exit = True
