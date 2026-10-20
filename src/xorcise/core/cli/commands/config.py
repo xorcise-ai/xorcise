@@ -299,10 +299,13 @@ verify it answers with: xorcise config test."""
     # Resolve the key BEFORE the "nothing to set" guard: `--key-stdin` alone is a complete
     # instruction, and the guard only sees it once the value has been read.
     key = _resolve_key(key, key_stdin, command="set-model")
-    if all(v is None for v in (key, base_url, name, timeout, transcript_max_tokens, tokenizer)):
+    if all(
+        v is None
+        for v in (key, base_url, name, timeout, transcript_max_tokens, span_max_tokens, tokenizer)
+    ):
         fail(
             "nothing to set — pass at least one of --name / --base-url / --key-stdin / "
-            "--timeout / --transcript-max-tokens / --tokenizer",
+            "--timeout / --transcript-max-tokens / --span-max-tokens / --tokenizer",
             example="xorcise config set-model --name gpt-4o-mini --key-stdin",
             code=2,
         )
