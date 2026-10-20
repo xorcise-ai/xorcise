@@ -42,6 +42,7 @@ from xorcise.core.runs.observed import (
     network_facts,
 )
 from xorcise.core.runs.prompt import (
+    RUN_BEARER_ENV,
     assemble_mission_prompt,
     rebase_run_control_host,
     render_prompt_text,
@@ -421,6 +422,7 @@ def build_startup_tips(
     *,
     otlp_traces_endpoint: str = "",
     otlp_logs_endpoint: str = "",
+    run_bearer: str = "",
 ) -> StartupTips:
     """Assemble copy-paste launch tips from a LaunchProfile + the harness's command template
     + per-harness launch tips.
@@ -431,8 +433,25 @@ def build_startup_tips(
     reference ``{otlp_traces_endpoint}`` / ``{otlp_logs_endpoint}``; both are filled here from the
     mode-aware per-signal collector URLs the caller computed. Templates that omit these placeholders
     (Claude Code) are unaffected — the extra keys are simply unused. ``shell_block`` =
-    ``export K=<quoted V>`` lines then the command (omitted when the harness has no template)."""
+    ``export K=<quoted V>`` lines then the command (omitted when the harness has no template).
+
+    ``run_bearer`` is the run-control token. With a launch command it is exported as
+    XORCISE_RUN_BEARER beside the OTel env — the prompt refers to that variable rather than carrying
+    the token, so the token never rides the command's argv (#172). ``export`` is a shell builtin,
+    so pasting the block puts it on no command line either. It lives ONLY in the block: ``env``
+    stays the telemetry env, because ``xorcise run launch-profile`` prints that as a dotenv file
+    an operator may save anywhere. Without a command there is no block to carry it, and the served
+    prompt inlines it instead (routers/runs.run_prompt)."""
     lines = [f"export {k}={shlex.quote(v)}" for k, v in profile.env]
+    notes = tuple(profile.notes)
+    if command_template and run_bearer:
+        lines.append(f"export {RUN_BEARER_ENV}={shlex.quote(run_bearer)}")
+        notes += (
+            f"The block also exports {RUN_BEARER_ENV}, this run's run-control token; the agent "
+            "reads it from its environment. A command that starts the agent somewhere else — a "
+            "container, a remote host — must pass it through, e.g. "
+            f"docker run -e {RUN_BEARER_ENV}.",
+        )
     command: str | None = None
     if command_template:
         filled = shlex.quote(mission) if mission else "<mission>"
@@ -447,7 +466,7 @@ def build_startup_tips(
         command=command,
         shell_block="\n".join(lines),
         correlation=profile.correlation,
-        notes=profile.notes,
+        notes=notes,
         tips=tuple(tips),
     )
 

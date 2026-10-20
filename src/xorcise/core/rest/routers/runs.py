@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Response
 from fastapi.responses import JSONResponse
@@ -43,6 +43,10 @@ from xorcise.core.rest.run_create import (
 from xorcise.core.rest.run_create import (
     create_run as create_run_spine,
 )
+
+if TYPE_CHECKING:
+    from xorcise.core.contracts.agent import AgentEntry
+    from xorcise.core.runs.launch.base import HarnessLaunchProvider
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -307,6 +311,23 @@ def regrade_run(run_id: str, background: BackgroundTasks) -> JSONResponse:
     return _grading(run_id)
 
 
+def _command_template(
+    launch: HarnessLaunchProvider, registered_agent: AgentEntry | None
+) -> str | None:
+    """The launch command this run's operator is handed: the registered agent's own template,
+    else the launch provider's (with the agent's disclosed model). None = a prompt-only harness,
+    which gets no launch block. An agent registered with an empty template has cleared the
+    command, so it is None too — one answer for every caller, never "" meaning something else."""
+    if registered_agent is not None and registered_agent.launch_command_template is not None:
+        return registered_agent.launch_command_template or None
+    return (
+        launch.command_template_for(
+            registered_agent.model if registered_agent is not None else None
+        )
+        or None
+    )
+
+
 @router.get("/{run_id}/prompt")
 def run_prompt(run_id: str, launch_mode: str = "container") -> dict[str, str]:
     """The agent-facing mission prompt for a run. *launch_mode* rebases the run-control
@@ -314,10 +335,17 @@ def run_prompt(run_id: str, launch_mode: str = "container") -> dict[str, str]:
     (the server's loopback bind, a terminal CLI) vs ``container`` (host.docker.internal, resolvable
     only inside a container). Defaults to ``container`` so a non-GUI caller keeps the baked host;
     the GUI passes the launch-mode toggle so the whole hand-off — not just the telemetry env —
-    follows the operator's choice."""
+    follows the operator's choice.
+
+    The stored prompt refers to $XORCISE_RUN_BEARER rather than carrying the run-control token
+    (#172), and only the launch command (/launch-profile) is built from that form, beside the
+    export that sets it. This endpoint is the "give this to your agent" hand-off — the GUI's copy
+    button, ``xorcise run prompt`` — and an agent started from it has no such export, so the token
+    is always inlined here."""
     from xorcise.core.harness_adapters import load_launch_providers
     from xorcise.core.rest.run_create import rebase_prompt_to_launch_mode
     from xorcise.core.runs.launch.registry import select as select_launch
+    from xorcise.core.runs.prompt import inline_run_bearer
 
     prompt = runs.get_prompt(run_id)
     if prompt is None:
@@ -338,7 +366,8 @@ def run_prompt(run_id: str, launch_mode: str = "container") -> dict[str, str]:
         launch_mode=launch_mode,
         launch_modes=launch_modes,
     )
-    return {"run_id": run_id, "prompt": rebased or prompt}
+    served = inline_run_bearer(rebased or prompt, runs.get_run_control_key(run_id) or "")
+    return {"run_id": run_id, "prompt": served}
 
 
 @router.get("/{run_id}/launch-profile")
@@ -400,13 +429,7 @@ def run_launch_profile(run_id: str, launch_mode: str = "container") -> dict[str,
     # fill the mode-aware per-signal collector URLs into the template. Harnesses whose template
     # omits these placeholders (Claude Code) are unaffected.
     traces_ep, logs_ep = otlp_signal_endpoints(get_settings(), mode)
-    command_template = (
-        registered_agent.launch_command_template
-        if registered_agent is not None and registered_agent.launch_command_template is not None
-        else launch.command_template_for(
-            registered_agent.model if registered_agent is not None else None
-        )
-    )
+    command_template = _command_template(launch, registered_agent)
     launch_tips = (
         registered_agent.launch_tips
         if registered_agent is not None and registered_agent.launch_tips is not None
@@ -419,12 +442,13 @@ def run_launch_profile(run_id: str, launch_mode: str = "container") -> dict[str,
         launch_tips,
         otlp_traces_endpoint=traces_ep,
         otlp_logs_endpoint=logs_ep,
+        run_bearer=runs.get_run_control_key(run_id) or "",
     )
     return {
         "run_id": run_id,
         "env": dict(profile.env),
         "correlation": profile.correlation,
-        "notes": list(profile.notes),
+        "notes": list(tips.notes),
         "fallback": fallback,
         "launch_mode": mode,
         "launch_modes": list(launch_modes),

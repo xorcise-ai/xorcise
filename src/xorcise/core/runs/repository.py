@@ -331,6 +331,47 @@ def authenticate(run_id: str, key: str) -> bool:
         return hmac.compare_digest(row.run_control_key, key)
 
 
+# Domain-separation label for the watch token. Bump the version to invalidate every token at once.
+_WATCH_TOKEN_LABEL = "xorcise-reaper-v1:"
+
+
+def derive_watch_token(run_control_key: str, run_id: str) -> str:
+    """The watch token for a bearer already in hand — no lookup. Pure."""
+    return hmac.new(
+        run_control_key.encode(), (_WATCH_TOKEN_LABEL + run_id).encode(), "sha256"
+    ).hexdigest()
+
+
+def watch_token(run_id: str) -> str | None:
+    """The run's liveness-only watch token, or None if the run is absent or has no bearer.
+
+    Derived from the run-control bearer (HMAC, domain-separated), so it needs no column and dies
+    with the run. It authenticates ONLY the liveness probe — the join script's self-reaper polls
+    with it — so it can sit somewhere the bearer must not (BusyBox ``wget`` has no way to read a
+    header except from argv) and leaking it discloses only whether the run is still going."""
+    with session_scope() as s:
+        row = s.scalar(select(RunRow).where(RunRow.id == run_id))
+        if row is None or not row.run_control_key:
+            return None
+        return derive_watch_token(row.run_control_key, run_id)
+
+
+def authenticate_watch(run_id: str, token: str) -> bool:
+    """True iff `token` is `run_id`'s watch token. Constant-time; the bearer itself is refused."""
+    expected = watch_token(run_id) if token else None
+    return expected is not None and hmac.compare_digest(expected, token)
+
+
+def get_run_control_key(run_id: str) -> str | None:
+    """The per-run run-control bearer (secret), or None if the run is absent.
+
+    Narrow getter, like get_join_key: the bearer never rides RunEntry. The launch block exports it
+    as XORCISE_RUN_BEARER, and a prompt served to a harness with no launch block gets it inlined."""
+    with session_scope() as s:
+        row = s.scalar(select(RunRow).where(RunRow.id == run_id))
+        return row.run_control_key if row is not None else None
+
+
 def get_join_key(run_id: str) -> str | None:
     """The per-run tailnet join key (secret), or None if the run is absent.
 

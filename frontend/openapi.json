@@ -5244,7 +5244,7 @@
     },
     "/api/agents/{name}": {
       "delete": {
-        "description": "Remove an agent and cascade-delete its runs + results.\n\nThe runs' rows are the release sweeper's only handle on their environments (#173), so the\ncascade is refused (409) while any of the agent's runs is still running or being graded, and\nwhen a finished run's environment cannot be released. `force=true` overrides only the last,\naccepting that a container or tailnet nodes may be left running. The 409 body carries\n`reason`, `run_ids` and `forceable` beside `detail`.",
+        "description": "Remove an agent and everything recorded for its runs.\n\nThe runs' rows are the release sweeper's only handle on their environments (#173), so the\ncascade is refused (409) while any of the agent's runs is still running or being graded, and\nwhen a finished run's environment cannot be released. `force=true` overrides only the last,\naccepting that a container or tailnet nodes may be left running. The 409 body carries\n`reason`, `run_ids` and `forceable` beside `detail`.",
         "operationId": "remove_agent_api_agents__name__delete",
         "parameters": [
           {
@@ -6461,7 +6461,7 @@
     },
     "/api/runs/{run_id}": {
       "delete": {
-        "description": "Operator-initiated delete of a single run's result + record.\n\nThe narrow, per-run counterpart to the agent-scoped cascade (DELETE /agents/{name}): removes\nthe recorded result and the run row so the run leaves the runs list, the agent history, and the\nresults view. 404 if the run is unknown. Idempotent on the result (delete of an ungraded\nterminal run still removes the record).\n\n409 (contracts.run.DeleteRefusal) while the run has not finished, while its grade is in\nflight, or when its environment, released here first, cannot be torn down (#173). Only the\nlast is overridable: `force=true` accepts that the container or tailnet nodes may be left\nrunning.",
+        "description": "Operator-initiated delete of a single run and everything recorded for it.\n\nThe per-run counterpart to the agent-scoped cascade (DELETE /agents/{name}): removes the run's\ntelemetry, submissions and row, then its result and run directory (rest.run_purge), so the run\nleaves the runs list, the agent history and the results view. 404 if the run is unknown. A\ndelete that fails before the row goes leaves the run and its result, so repeating it finishes;\nanything a later failure leaves is cleared by the next boot.\n\n409 (contracts.run.DeleteRefusal) while the run has not finished, while its grade is in\nflight, or when its environment, released here first, cannot be torn down (#173). Only the\nlast is overridable: `force=true` accepts that the container or tailnet nodes may be left\nrunning.",
         "operationId": "delete_run_api_runs__run_id__delete",
         "parameters": [
           {
@@ -6512,6 +6512,58 @@
         "summary": "Delete Run",
         "tags": [
           "runs"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/alive": {
+      "get": {
+        "description": "Liveness probe for the join script's self-reaper: 204 while the run is live, 409 once it\nhas ended (the same run-over gate every other endpoint applies), 401 otherwise.\n\nAuthenticated by the run's watch token, NOT the run-control bearer \u2014 the reaper must hold a\ncredential where a local user can read it (BusyBox ``wget`` in the sidecar can only take a\nheader on argv), so it gets one that discloses a single bit. The bearer is refused here, so a\nleaked watch token and the bearer are never interchangeable in either direction. Polling here\nrather than ``/mission`` also keeps the reaper from recording that the agent read its brief.\n\nA run that no longer exists (deleted) is over too, so it answers 409, not 401: the token is\nderived from the run's row, so a 401 there would be permanent, and both reapers stop only on\n409 \u2014 they would otherwise hold tailscaled and poll until their hard cap. This tells a caller\nno more than that a 128-bit random run id is not live.",
+        "operationId": "get_alive_api_runs__run_id__alive_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Alive",
+        "tags": [
+          "run-control"
         ]
       }
     },
@@ -7143,7 +7195,7 @@
     },
     "/api/runs/{run_id}/join.sh": {
       "get": {
-        "description": "Serve the runnable one-shot tailnet join script (join ergonomics). Same bundle as GET\n/connect (by-IP login server, per-run key, control-plane CA), rendered into a self-contained\nscript the agent runs with ``curl -fsS -H 'Authorization: Bearer <key>' <base>/join.sh | sh``.\nCollapses the reconstruct-the-join-by-hand friction into one command; works non-root. The\nscript is handed the same base + bearer so it can pull the pinned client from /tailscale.tgz\n(air-gapped) before falling back to the public CDN.",
+        "description": "Serve the runnable one-shot tailnet join script (join ergonomics). Same bundle as GET\n/connect (by-IP login server, per-run key, control-plane CA), rendered into a self-contained\nscript the agent pipes to ``sh``, fetching it with the bearer on curl's stdin (``-K -``), as the\nprompt's recipe shows.\nCollapses the reconstruct-the-join-by-hand friction into one command; works non-root. The\nscript is handed the same base + bearer so it can pull the pinned client from /tailscale.tgz\n(air-gapped) before falling back to the public CDN.",
         "operationId": "get_join_script_api_runs__run_id__join_sh_get",
         "parameters": [
           {
@@ -7354,7 +7406,7 @@
     },
     "/api/runs/{run_id}/prompt": {
       "get": {
-        "description": "The agent-facing mission prompt for a run. *launch_mode* rebases the run-control\nBase URL \u2014 and the container-only --add-host note \u2014 to where the agent actually runs: ``host``\n(the server's loopback bind, a terminal CLI) vs ``container`` (host.docker.internal, resolvable\nonly inside a container). Defaults to ``container`` so a non-GUI caller keeps the baked host;\nthe GUI passes the launch-mode toggle so the whole hand-off \u2014 not just the telemetry env \u2014\nfollows the operator's choice.",
+        "description": "The agent-facing mission prompt for a run. *launch_mode* rebases the run-control\nBase URL \u2014 and the container-only --add-host note \u2014 to where the agent actually runs: ``host``\n(the server's loopback bind, a terminal CLI) vs ``container`` (host.docker.internal, resolvable\nonly inside a container). Defaults to ``container`` so a non-GUI caller keeps the baked host;\nthe GUI passes the launch-mode toggle so the whole hand-off \u2014 not just the telemetry env \u2014\nfollows the operator's choice.\n\nThe stored prompt refers to $XORCISE_RUN_BEARER rather than carrying the run-control token\n(#172), and only the launch command (/launch-profile) is built from that form, beside the\nexport that sets it. This endpoint is the \"give this to your agent\" hand-off \u2014 the GUI's copy\nbutton, ``xorcise run prompt`` \u2014 and an agent started from it has no such export, so the token\nis always inlined here.",
         "operationId": "run_prompt_api_runs__run_id__prompt_get",
         "parameters": [
           {
