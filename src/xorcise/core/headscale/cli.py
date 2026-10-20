@@ -180,7 +180,8 @@ class StubHeadscaleCli(HeadscaleCli):
 
 
 class DockerExecHeadscaleCli(HeadscaleCli):
-    """Real adapter: `docker exec -i <container> headscale <args>` (Headscale v0.28.x).
+    """Real adapter: `docker exec -i <container> headscale <args>` (Headscale v0.29.x, the
+    release provision.HEADSCALE_IMAGE_PIN runs; bump the two together).
 
     Version-specific behaviours: `preauthkeys create -u` wants the numeric user id;
     the distroless image has no shell, so policy is staged via `docker cp` then

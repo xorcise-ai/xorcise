@@ -1,3 +1,5 @@
+import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -44,7 +46,53 @@ def test_render_compose_pins_workdir_and_ports():
     # Control plane published on host 443 → container 8443; external 8443 publish is gone.
     assert '"172.17.0.1:443:8443"' in out
     assert "8443:8443" not in out
-    assert "headscale/headscale:stable" in out
+    assert f"image: {provision.HEADSCALE_IMAGE_PIN}" in out
+    assert ":stable" not in out  # neither service may float
+
+
+def test_headscale_image_is_pinned_by_tag_and_digest():
+    # #171: `:stable` handed fresh installs whatever upstream released last. The pin names a
+    # release tag (what DockerExecHeadscaleCli targets) AND the multi-arch index digest.
+    assert re.fullmatch(r"headscale/headscale:v\d+\.\d+\.\d+", provision.HEADSCALE_IMAGE_TAG)
+    assert re.fullmatch(r"sha256:[0-9a-f]{64}", provision.HEADSCALE_IMAGE_DIGEST)
+    assert (
+        f"{provision.HEADSCALE_IMAGE_TAG}@{provision.HEADSCALE_IMAGE_DIGEST}"
+    ) == provision.HEADSCALE_IMAGE_PIN
+
+
+def test_tag_pinned_image_retags_the_digest_pull_and_never_raises(monkeypatch):
+    # an image pulled by tag@digest is stored untagged (dangling) and would fall to a routine
+    # `docker image prune`; the plain tag protects it. A failed tag must not fail provisioning.
+    seen: list[list[str]] = []
+
+    def _run(cmd, **kw):
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 1, "", "no such image")
+
+    monkeypatch.setattr("xorcise.core.headscale.provision.subprocess.run", _run)
+    provision._tag_pinned_image()
+    assert seen == [["docker", "tag", provision.HEADSCALE_IMAGE_PIN, provision.HEADSCALE_IMAGE_TAG]]
+
+
+def test_compose_mounts_keep_private_keys_out_of_the_router(tmp_path):
+    """#171: the router reads only ca.pem, so it must not see the server's TLS key; no service
+    may see the CA key or the directory that holds it."""
+    import yaml
+
+    out = provision.render_compose(
+        tmp_path, "headscale.local", collector_route="172.17.0.1/32", host_ip="172.17.0.1"
+    )
+    services = yaml.safe_load(out)["services"]
+    ca_dir = str(provision.ca_key_path(tmp_path).parent)
+    for name, svc in services.items():
+        for vol in svc.get("volumes", []):
+            source = vol.split(":")[0]
+            assert not source.startswith(ca_dir), (name, vol)
+            assert not source.endswith("ca.key"), (name, vol)
+    assert services["orchestrator-router"]["volumes"] == [
+        f"{tmp_path}/certs/ca.pem:/etc/headscale/certs/ca.pem:ro"
+    ]
+    assert f"{tmp_path}/certs:/etc/headscale/certs:ro" in services["headscale"]["volumes"]
 
 
 def test_render_compose_gateway_scopes_the_443_publish_when_host_ip_given():
@@ -298,6 +346,117 @@ def test_gen_certs_noop_when_ip_san_unchanged(tmp_path):
     assert ca.read_bytes() == first
 
 
+def _verifies(ca: Path, crt: Path) -> bool:
+    return (
+        subprocess.run(
+            ["openssl", "verify", "-CAfile", str(ca), str(crt)], capture_output=True
+        ).returncode
+        == 0
+    )
+
+
+def _serial(crt: Path) -> str:
+    return subprocess.run(
+        ["openssl", "x509", "-in", str(crt), "-noout", "-serial"], capture_output=True, text=True
+    ).stdout
+
+
+@pytest.fixture(scope="module")
+def _issued_once(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    # RSA-4096 generation dominates this file's runtime: issue one CA + server cert per module
+    # and hand each test a copy (copytree keeps the 0700/0600 modes).
+    wd = tmp_path_factory.mktemp("issued")
+    gen_certs(wd, "headscale.local", host_ip="172.17.0.1")
+    return wd
+
+
+@pytest.fixture
+def issued(_issued_once: Path, tmp_path: Path) -> Path:
+    wd = tmp_path / "hs"
+    shutil.copytree(_issued_once, wd)
+    return wd
+
+
+def test_gen_certs_keeps_the_ca_key_out_of_the_mounted_certs_dir(issued):
+    # #171: certs/ is bind-mounted into the Headscale container; the CA key must not be there.
+    key = provision.ca_key_path(issued)
+    assert key == issued / "ca" / "ca.key"
+    assert key.exists()
+    assert not (issued / "certs" / "ca.key").exists()
+    assert key.stat().st_mode & 0o777 == 0o600
+    assert key.parent.stat().st_mode & 0o777 == 0o700
+    # nothing else (serial file, CSR, SAN config) is left behind
+    assert sorted(p.name for p in (issued / "certs").iterdir()) == [
+        "ca.pem",
+        "headscale.local.crt",
+        "headscale.local.key",
+    ]
+    assert [p.name for p in key.parent.iterdir()] == ["ca.key"]
+
+
+def test_gen_certs_resigns_with_the_same_ca_when_the_ip_changes(issued):
+    """A host IP change re-signs only the server cert: ca.pem stays byte-identical, so runs
+    and routers that already trust it keep validating the new cert."""
+    ca, crt, _ = provision.cert_paths(issued, "headscale.local")
+    ca_before = ca.read_bytes()
+    key_before = provision.ca_key_path(issued).read_bytes()
+    serial_before = _serial(crt)
+    gen_certs(issued, "headscale.local", host_ip="10.0.0.5")
+    assert ca.read_bytes() == ca_before
+    assert provision.ca_key_path(issued).read_bytes() == key_before
+    txt = _cert_text(crt)
+    assert "IP Address:10.0.0.5" in txt and "IP Address:172.17.0.1" not in txt
+    assert _verifies(ca, crt)
+    assert _serial(crt) != serial_before  # a reused CA never repeats a serial
+
+
+def test_gen_certs_migrates_a_legacy_ca_key_without_rotating(issued):
+    # an install from before #171 has ca.key inside certs/; it moves out, and the CA is kept
+    ca, crt, _ = provision.cert_paths(issued, "headscale.local")
+    key = provision.ca_key_path(issued)
+    legacy = issued / "certs" / "ca.key"
+    key.replace(legacy)
+    key.parent.rmdir()
+    ca_before, crt_before = ca.read_bytes(), crt.read_bytes()
+
+    gen_certs(issued, "headscale.local", host_ip="172.17.0.1")
+
+    assert not legacy.exists()
+    assert key.exists() and key.stat().st_mode & 0o777 == 0o600
+    assert key.parent.stat().st_mode & 0o777 == 0o700
+    assert ca.read_bytes() == ca_before  # not rotated
+    assert crt.read_bytes() == crt_before  # nothing else to do: cert still current
+
+
+def test_gen_certs_removes_the_legacy_copy_when_both_exist(issued):
+    key = provision.ca_key_path(issued)
+    legacy = issued / "certs" / "ca.key"
+    legacy.write_bytes(key.read_bytes())
+    gen_certs(issued, "headscale.local", host_ip="172.17.0.1")
+    assert not legacy.exists() and key.exists()
+
+
+def test_gen_certs_mints_a_new_ca_when_its_key_is_lost(issued):
+    # without the matching key the CA can never sign again, so a fresh pair is the only way on
+    ca, crt, _ = provision.cert_paths(issued, "headscale.local")
+    ca_before = ca.read_bytes()
+    provision.ca_key_path(issued).unlink()
+    gen_certs(issued, "headscale.local", host_ip="172.17.0.1")
+    assert ca.read_bytes() != ca_before
+    assert _verifies(ca, crt)
+
+
+def test_ca_matches_key_rejects_a_key_from_another_pair(issued, tmp_path):
+    ca, _, _ = provision.cert_paths(issued, "headscale.local")
+    assert provision._ca_matches_key(ca, provision.ca_key_path(issued))
+    stray = tmp_path / "stray.key"
+    subprocess.run(
+        ["openssl", "genrsa", "-out", str(stray), "2048"], check=True, capture_output=True
+    )
+    assert not provision._ca_matches_key(ca, stray)
+    assert not provision._ca_matches_key(ca, tmp_path / "missing.key")
+
+
 def test_managed_block_round_trip_preserves_other_config(tmp_path):
     conf = tmp_path / "config.toml"
     conf.write_text('host = "127.0.0.1"\n')
@@ -340,6 +499,7 @@ def test_ensure_up_writes_artifacts_block_and_marker(tmp_path, monkeypatch):
     monkeypatch.setattr(provision, "_wait_healthy", lambda retries: None)
     monkeypatch.setattr(provision, "_ensure_user", lambda user: None)
     monkeypatch.setattr(provision, "_mint_orchestrator_key", lambda user: "stub-orch-key")
+    monkeypatch.setattr(provision, "_tag_pinned_image", lambda: calls.append(("tag",)))
     monkeypatch.setattr(
         provision,
         "gen_certs",
@@ -363,6 +523,8 @@ def test_ensure_up_writes_artifacts_block_and_marker(tmp_path, monkeypatch):
     # First compose up is headscale-only; second is all services with the router
     assert ("up", "-d", "headscale") in calls
     assert ("up", "-d") in calls
+    # the pinned image is re-tagged right after the headscale-only up pulled it
+    assert calls.index(("tag",)) == calls.index(("up", "-d", "headscale")) + 1
 
 
 def test_render_compose_includes_orchestrator_router_when_route_given(tmp_path):
@@ -384,8 +546,8 @@ def test_render_compose_includes_orchestrator_router_when_route_given(tmp_path):
     assert "XORCISE_ORCH_AUTHKEY:" not in out or "${XORCISE_ORCH_AUTHKEY}" in out
     # Router must trust the self-signed CA
     assert "SSL_CERT_FILE=/etc/headscale/certs/ca.pem" in out
-    # Certs dir must be mounted
-    assert f"{tmp_path}/certs:/etc/headscale/certs:ro" in out
+    # The router mounts ca.pem alone (see test_compose_mounts_keep_private_keys_out_of_the_router)
+    assert f"{tmp_path}/certs/ca.pem:/etc/headscale/certs/ca.pem:ro" in out
     # Kernel mode caps
     assert "NET_ADMIN" in out
     assert "NET_RAW" in out
