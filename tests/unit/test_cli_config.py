@@ -464,6 +464,7 @@ def test_setting_only_the_name_never_touches_the_key(monkeypatch):
     [
         "line1\nline2\n",  # a key file with a trailing comment or a second secret
         "sk-abc\n\nsk-def\n",  # a blank line in the middle survives the end-strip
+        "sk-abc\u2028sk-def",  # a separator splitlines honours, and so splits the .env line (#160)
     ],
 )
 def test_a_multi_line_key_stdin_is_refused_before_any_request(monkeypatch, piped):

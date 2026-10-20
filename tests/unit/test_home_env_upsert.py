@@ -59,3 +59,25 @@ def test_mode_stays_0600_on_update(tmp_path: Path) -> None:
     set_env_vars(tmp_path, {"XORCISE_MODEL_NAME": "gpt-4o-mini"})
     env = tmp_path / ".env"
     assert stat.S_IMODE(env.stat().st_mode) == 0o600
+
+
+@pytest.mark.unit
+# \n and \r, plus separators the writer's own splitlines() splits on that a search for those two
+# misses — the gap the first version of this fix had.
+@pytest.mark.parametrize("brk", ["\n", "\r", "\r\n", "\v", "\x1e", "\x85", "\u2028", "\u2029"])
+def test_a_value_with_a_line_break_is_refused_and_the_file_is_untouched(
+    tmp_path: Path, brk: str
+) -> None:
+    """#160: written unquoted, the break would split the line and leave a junk line that every
+    later write preserves. Refused before anything is written, naming the variable but never the
+    value, which may be a secret."""
+    env = tmp_path / ".env"
+    env.write_text("XORCISE_MODEL_NAME=before\n")
+
+    with pytest.raises(ValueError, match="XORCISE_MODEL_KEY must be a single line") as refused:
+        set_env_vars(
+            tmp_path, {"XORCISE_MODEL_NAME": "after", "XORCISE_MODEL_KEY": f"sk-1{brk}sk-2"}
+        )
+
+    assert "sk-1" not in str(refused.value)
+    assert env.read_text() == "XORCISE_MODEL_NAME=before\n"  # not even the valid half
