@@ -39,7 +39,7 @@ export interface paths {
         post?: never;
         /**
          * Remove Agent
-         * @description Remove an agent and cascade-delete its runs + results.
+         * @description Remove an agent and everything recorded for its runs.
          *
          *     The runs' rows are the release sweeper's only handle on their environments (#173), so the
          *     cascade is refused (409) while any of the agent's runs is still running or being graded, and
@@ -690,12 +690,13 @@ export interface paths {
         post?: never;
         /**
          * Delete Run
-         * @description Operator-initiated delete of a single run's result + record.
+         * @description Operator-initiated delete of a single run and everything recorded for it.
          *
-         *     The narrow, per-run counterpart to the agent-scoped cascade (DELETE /agents/{name}): removes
-         *     the recorded result and the run row so the run leaves the runs list, the agent history, and the
-         *     results view. 404 if the run is unknown. Idempotent on the result (delete of an ungraded
-         *     terminal run still removes the record).
+         *     The per-run counterpart to the agent-scoped cascade (DELETE /agents/{name}): removes the run's
+         *     telemetry, submissions and row, then its result and run directory (rest.run_purge), so the run
+         *     leaves the runs list, the agent history and the results view. 404 if the run is unknown. A
+         *     delete that fails before the row goes leaves the run and its result, so repeating it finishes;
+         *     anything a later failure leaves is cleared by the next boot.
          *
          *     409 (contracts.run.DeleteRefusal) while the run has not finished, while its grade is in
          *     flight, or when its environment, released here first, cannot be torn down (#173). Only the
@@ -703,6 +704,38 @@ export interface paths {
          *     running.
          */
         delete: operations["delete_run_api_runs__run_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/alive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Alive
+         * @description Liveness probe for the join script's self-reaper: 204 while the run is live, 409 once it
+         *     has ended (the same run-over gate every other endpoint applies), 401 otherwise.
+         *
+         *     Authenticated by the run's watch token, NOT the run-control bearer — the reaper must hold a
+         *     credential where a local user can read it (BusyBox ``wget`` in the sidecar can only take a
+         *     header on argv), so it gets one that discloses a single bit. The bearer is refused here, so a
+         *     leaked watch token and the bearer are never interchangeable in either direction. Polling here
+         *     rather than ``/mission`` also keeps the reaper from recording that the agent read its brief.
+         *
+         *     A run that no longer exists (deleted) is over too, so it answers 409, not 401: the token is
+         *     derived from the run's row, so a 401 there would be permanent, and both reapers stop only on
+         *     409 — they would otherwise hold tailscaled and poll until their hard cap. This tells a caller
+         *     no more than that a 128-bit random run id is not live.
+         */
+        get: operations["get_alive_api_runs__run_id__alive_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -917,7 +950,8 @@ export interface paths {
          * Get Join Script
          * @description Serve the runnable one-shot tailnet join script (join ergonomics). Same bundle as GET
          *     /connect (by-IP login server, per-run key, control-plane CA), rendered into a self-contained
-         *     script the agent runs with ``curl -fsS -H 'Authorization: Bearer <key>' <base>/join.sh | sh``.
+         *     script the agent pipes to ``sh``, fetching it with the bearer on curl's stdin (``-K -``), as the
+         *     prompt's recipe shows.
          *     Collapses the reconstruct-the-join-by-hand friction into one command; works non-root. The
          *     script is handed the same base + bearer so it can pull the pinned client from /tailscale.tgz
          *     (air-gapped) before falling back to the public CDN.
@@ -1020,6 +1054,12 @@ export interface paths {
          *     only inside a container). Defaults to ``container`` so a non-GUI caller keeps the baked host;
          *     the GUI passes the launch-mode toggle so the whole hand-off — not just the telemetry env —
          *     follows the operator's choice.
+         *
+         *     The stored prompt refers to $XORCISE_RUN_BEARER rather than carrying the run-control token
+         *     (#172), and only the launch command (/launch-profile) is built from that form, beside the
+         *     export that sets it. This endpoint is the "give this to your agent" hand-off — the GUI's copy
+         *     button, ``xorcise run prompt`` — and an agent started from it has no such export, so the token
+         *     is always inlined here.
          */
         get: operations["run_prompt_api_runs__run_id__prompt_get"];
         put?: never;
@@ -4545,6 +4585,37 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["DeleteRefusal"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_alive_api_runs__run_id__alive_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
