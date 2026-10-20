@@ -587,3 +587,44 @@ def test_the_real_stdin_harness_will_not_pass_off_a_rejected_argv_as_a_refusal(m
 
     # The message click would have printed, so the failure still says what was wrong with argv.
     assert "--key-stdinX" in str(rejected.value)
+
+
+# --- every option is enough on its own (#124) ---------------------------------------------------
+#
+# Each setter's "nothing to set" guard names its options by hand, and `--span-max-tokens` was left
+# out of set-model's — so it alone was refused while every other option worked alone. Deriving the
+# cases from the commands themselves means an option added later is covered without anyone
+# remembering to list it here.
+
+
+def _setter_options() -> list[tuple[str, str, str]]:
+    """(setter, option, a value it accepts) for every value-taking option of both model setters."""
+    import typer.main
+
+    group = typer.main.get_command(app).commands["config"]  # type: ignore[attr-defined]
+    cases = []
+    for setter in ("set-model", "set-terrain-model"):
+        for param in group.commands[setter].params:
+            # --key-stdin reads the pipe, which the stdin tests above already cover on their own.
+            if param.param_type_name != "option" or param.is_flag:
+                continue
+            # typer vendors its own click, so the type is told apart by name, not by class.
+            numeric = param.type.name in ("int", "float")
+            cases.append((setter, param.opts[0], "500" if numeric else "v"))
+    return cases
+
+
+@pytest.mark.parametrize(("setter", "option", "value"), _setter_options())
+def test_every_setter_option_is_enough_on_its_own(monkeypatch, setter, option, value):
+    from xorcise.core.cli.commands import config as cfg_cmd
+
+    rec = _Recorder()
+    monkeypatch.setattr(cfg_cmd, "RestClient", lambda: rec)
+
+    result = CliRunner().invoke(app, ["config", setter, option, value])
+
+    assert result.exit_code == 0, result.output
+    # Exactly one field reached the server, and it is the one passed.
+    sent = [v for v in rec.json.values() if v is not None]
+    assert len(sent) == 1
+    assert str(sent[0]) in (value, f"{value}.0")  # a --timeout arrives as a float
