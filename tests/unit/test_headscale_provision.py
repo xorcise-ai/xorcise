@@ -412,7 +412,7 @@ def test_gen_certs_noop_when_ip_san_unchanged(issued):
     host_ip is an idempotent no-op (the cached CA/cert/key bytes are untouched)."""
     ca, crt, key = provision.cert_paths(issued, "headscale.local")
     before = (ca.read_bytes(), crt.read_bytes(), key.read_bytes())
-    gen_certs(issued, "headscale.local", host_ip="172.17.0.1")
+    assert gen_certs(issued, "headscale.local", host_ip="172.17.0.1") is False
     assert (ca.read_bytes(), crt.read_bytes(), key.read_bytes()) == before
 
 
@@ -471,7 +471,7 @@ def test_gen_certs_resigns_with_the_same_ca_when_the_ip_changes(issued):
     ca_before = ca.read_bytes()
     key_before = provision.ca_key_path(issued).read_bytes()
     serial_before = _serial(crt)
-    gen_certs(issued, "headscale.local", host_ip="10.0.0.5")
+    assert gen_certs(issued, "headscale.local", host_ip="10.0.0.5") is True
     assert ca.read_bytes() == ca_before
     assert provision.ca_key_path(issued).read_bytes() == key_before
     txt = _cert_text(crt)
@@ -489,7 +489,7 @@ def test_gen_certs_migrates_a_legacy_ca_key_without_rotating(issued):
     key.parent.rmdir()
     ca_before, crt_before = ca.read_bytes(), crt.read_bytes()
 
-    gen_certs(issued, "headscale.local", host_ip="172.17.0.1")
+    assert gen_certs(issued, "headscale.local", host_ip="172.17.0.1") is False
 
     assert not legacy.exists()
     assert key.exists() and key.stat().st_mode & 0o777 == 0o600
@@ -511,7 +511,7 @@ def test_gen_certs_mints_a_new_ca_when_its_key_is_lost(issued):
     ca, crt, _ = provision.cert_paths(issued, "headscale.local")
     ca_before = ca.read_bytes()
     provision.ca_key_path(issued).unlink()
-    gen_certs(issued, "headscale.local", host_ip="172.17.0.1")
+    assert gen_certs(issued, "headscale.local", host_ip="172.17.0.1") is True
     assert ca.read_bytes() != ca_before
     assert _verifies(ca, crt)
 
@@ -655,19 +655,26 @@ def test_ownership_marker(tmp_path):
     assert provision.is_owned(tmp_path) is False
 
 
-def test_ensure_up_writes_artifacts_block_and_marker(tmp_path, monkeypatch):
+def _stub_ensure_up(monkeypatch, *, renewed: bool) -> list[tuple[object, ...]]:
     calls: list[tuple[object, ...]] = []
+
+    def _gen_certs(wd: Path, hn: str, host_ip: str | None = None) -> bool:
+        (wd / "certs").mkdir(parents=True, exist_ok=True)
+        calls.append(("certs",))
+        return renewed
+
     monkeypatch.setattr(provision, "_compose", lambda wd, *a, extra_env=None: calls.append(a))
     monkeypatch.setattr(provision, "_wait_healthy", lambda retries: None)
     monkeypatch.setattr(provision, "_ensure_user", lambda user: None)
     monkeypatch.setattr(provision, "_mint_orchestrator_key", lambda user: "stub-orch-key")
     monkeypatch.setattr(provision, "_refuse_headscale_downgrade", lambda: calls.append(("guard",)))
     monkeypatch.setattr(provision, "_ensure_pinned_image", lambda: calls.append(("image",)))
-    monkeypatch.setattr(
-        provision,
-        "gen_certs",
-        lambda wd, hn, host_ip=None: (wd / "certs").mkdir(parents=True, exist_ok=True),
-    )
+    monkeypatch.setattr(provision, "gen_certs", _gen_certs)
+    return calls
+
+
+def test_ensure_up_writes_artifacts_block_and_marker(tmp_path, monkeypatch):
+    calls = _stub_ensure_up(monkeypatch, renewed=False)
 
     wd = tmp_path / "hs"
     conf = tmp_path / "config.toml"
@@ -686,8 +693,20 @@ def test_ensure_up_writes_artifacts_block_and_marker(tmp_path, monkeypatch):
     # First compose up is headscale-only; second is all services with the router
     assert ("up", "-d", "headscale") in calls
     assert ("up", "-d") in calls
-    # the downgrade guard and the image check both run before compose first touches headscale
-    assert calls[:3] == [("guard",), ("image",), ("up", "-d", "headscale")]
+    # the downgrade guard and the image check both run before the certs are touched, and
+    # unchanged certs leave a running Headscale alone
+    assert calls[:4] == [("guard",), ("image",), ("certs",), ("up", "-d", "headscale")]
+
+
+def test_ensure_up_recreates_headscale_when_its_cert_was_replaced(tmp_path, monkeypatch):
+    # Headscale reads its cert only at startup and compose sees no config change, so without a
+    # forced recreate it keeps serving the old cert while the router trusts only the new ca.pem.
+    calls = _stub_ensure_up(monkeypatch, renewed=True)
+    provision.ensure_up(
+        tmp_path / "hs", tmp_path / "config.toml", hostname="headscale.local", host_ip="172.17.0.1"
+    )
+    assert ("up", "-d", "--force-recreate", "headscale") in calls
+    assert ("up", "-d", "headscale") not in calls
 
 
 def test_render_compose_includes_orchestrator_router_when_route_given(tmp_path):

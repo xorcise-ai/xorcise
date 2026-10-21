@@ -326,8 +326,8 @@ def default_host_ip(override: str | None = None) -> str:
 _STAGING_PREFIX = ".certs-staging-"
 
 
-def gen_certs(workdir: Path, hostname: str, host_ip: str | None = None) -> None:
-    """Self-signed CA + SAN-signed server cert (idempotent).
+def gen_certs(workdir: Path, hostname: str, host_ip: str | None = None) -> bool:
+    """Self-signed CA + SAN-signed server cert (idempotent). Returns whether it replaced them.
 
     ca.pem and the server cert + key go to workdir/certs/, which is mounted into the Headscale
     container; the CA key goes to workdir/ca/, which is mounted nowhere (see ca_key_path).
@@ -344,7 +344,10 @@ def gen_certs(workdir: Path, hostname: str, host_ip: str | None = None) -> None:
     Everything is generated in a private staging dir beside certs/ (never inside the mount) and
     renamed into place only once every step has succeeded, so a running container never sees a
     key without its cert. A run cut off between two renames is healed on the next call by
-    _server_cert_current, which re-signs anything that does not chain to ca.pem."""
+    _server_cert_current, which re-signs anything that does not chain to ca.pem.
+
+    Headscale reads its certificate only at startup, so a True return obliges the caller to
+    recreate the container (ensure_up does); otherwise it keeps serving the old cert."""
     ca, crt, key = cert_paths(workdir, hostname)
     workdir.mkdir(parents=True, exist_ok=True)
     for stale in workdir.glob(f"{_STAGING_PREFIX}*"):
@@ -353,7 +356,7 @@ def gen_certs(workdir: Path, hostname: str, host_ip: str | None = None) -> None:
     ca_key = ca_key_path(workdir)
     ca_ok = _ca_reusable(ca, ca_key)
     if ca_ok and _server_cert_current(ca, crt, key, host_ip):
-        return
+        return False
     certs = workdir / "certs"
     certs.mkdir(parents=True, exist_ok=True)
     _private_dir(ca_key.parent)
@@ -415,6 +418,7 @@ def gen_certs(workdir: Path, hostname: str, host_ip: str | None = None) -> None:
         os.replace(s_crt, crt)
     finally:
         shutil.rmtree(stage, ignore_errors=True)
+    return True
 
 
 def _strip_block_text(text: str) -> str:
@@ -826,12 +830,17 @@ def ensure_up(
     (workdir / "compose.yaml").write_text(
         render_compose(workdir, hostname, collector_route=collector_route, host_ip=ip)
     )
-    gen_certs(workdir, hostname, host_ip=ip)  # IP SAN → by-IP tailnet join
-    # Step 2: Bring up headscale only first so we can wait for it to be healthy before minting
-    # the orchestrator key. The router service is declared in compose.yaml but not started yet.
+    # Both checks run before the certs are touched: one that fails after gen_certs replaced
+    # them would leave the next `up` seeing current certs and never recreating Headscale.
     _refuse_headscale_downgrade()
     _ensure_pinned_image()  # compose then finds it locally and never pulls
-    _compose(workdir, "up", "-d", "headscale")
+    renewed = gen_certs(workdir, hostname, host_ip=ip)  # IP SAN → by-IP tailnet join
+    # Step 2: Bring up headscale only first so we can wait for it to be healthy before minting
+    # the orchestrator key. The router service is declared in compose.yaml but not started yet.
+    # Headscale loads its cert only at startup and compose sees no config change when only the
+    # cert files changed, so a renewed cert forces the recreate; otherwise the router (recreated
+    # on every `up`) would trust only the new ca.pem and sit at NeedsLogin.
+    _compose(workdir, "up", "-d", *(("--force-recreate",) if renewed else ()), "headscale")
     # Step 3: Wait for headscale to be ready.
     _wait_healthy(health_retries)
     # Step 4: Ensure the orchestrator Headscale user exists.
