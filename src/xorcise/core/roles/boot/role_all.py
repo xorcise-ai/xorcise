@@ -11,7 +11,8 @@ import socket
 import subprocess
 from typing import TYPE_CHECKING
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from xorcise.core.config import LOOPBACK, LOOPBACK_HOSTS, get_settings
 from xorcise.core.rest.app import create_app, mount_ui
@@ -28,6 +29,7 @@ from xorcise.core.rest.routers import (
     runs,
     system,
 )
+from xorcise.core.rest.runner_wiring import RunnerUnavailableError, runner_available
 from xorcise.core.roles.boot import AppSpec
 
 if TYPE_CHECKING:
@@ -36,11 +38,18 @@ if TYPE_CHECKING:
     from xorcise.core.rest.run_readiness import ReadinessWatchdog
 
 
+async def _runner_unavailable(_request: Request, exc: Exception) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
 def build_rest_app() -> FastAPI:
     """Compose the REST app: bare factory + routers + /ui static mount."""
     from datetime import UTC, datetime
 
     app = create_app()
+    # A request that needs a runner on a server with none: refused where its runner would be
+    # built, answered here as one 503 for every route (#168).
+    app.add_exception_handler(RunnerUnavailableError, _runner_unavailable)
     app.include_router(health.router, prefix="/api")
     app.include_router(agents.router, prefix="/api")
     app.include_router(runs.router, prefix="/api")
@@ -158,6 +167,10 @@ def build_rest_app() -> FastAPI:
         settings = get_settings()
         if settings.release_sweep_interval_seconds <= 0:
             return  # explicitly disabled
+        if not runner_available(settings):
+            # Every release would be refused, retried forever and logged: role all's sweeper
+            # releases these runs on its next start (#168).
+            return
         _release_sweeper = ReleaseSweeper(
             release=release_run,
             list_awaiting=runs.terminal_runs_awaiting_release,
@@ -202,6 +215,10 @@ def build_rest_app() -> FastAPI:
         settings = get_settings()
         if settings.readiness_timeout_seconds <= 0:
             return  # explicitly disabled
+        if not runner_available(settings):
+            # Nothing to watch with: building the deps would refuse anyway, and the gate's job is
+            # to close out runs whose environment never came up, which only a runner can see (#168).
+            return
         try:
             # Worker thread: wiring the real deps probes Docker/Headscale.
             deps = await asyncio.to_thread(build_run_create_deps, settings)

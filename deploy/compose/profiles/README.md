@@ -13,7 +13,7 @@ Starting one gives you a container that runs `xorcise serve --role <role>` and n
 | File | Role | What that role does today |
 |---|---|---|
 | `all.yaml` | every plane in one process | The complete install. `xorcise up` runs this role in-process, not through this file. |
-| `control.yaml` | the REST API and web UI | Never launches a run, yet `POST /api/runs` answers 201 with a run id. The run stays `created`. Only `all` and `runner` own the Docker and Headscale planes. |
+| `control.yaml` | the REST API and web UI | Cannot launch runs or pull or build missions: those requests answer 503. It cannot release a run's environment either, so a delete that needs a release is refused with a 409. Only `all` and `runner` own the Docker and Headscale planes. |
 | `runner.yaml` | the Docker-driving runner | Serves only `GET /healthz`. The runner control service is not built yet. |
 | `headscale.yaml` | the tailnet control plane | Serves only `GET /healthz`. Runs use the Headscale container that `xorcise up` provisions. |
 | `collector.yaml` | the OTLP receiver | Receives and stores OTLP. |

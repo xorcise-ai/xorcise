@@ -34,6 +34,7 @@ from xorcise.core.rest.mission_pull import (
     update_mission,
 )
 from xorcise.core.rest.pull_jobs import PullJob, pull_job_store
+from xorcise.core.rest.runner_wiring import require_runner
 
 router = APIRouter(prefix="/missions", tags=["missions"])
 
@@ -212,6 +213,8 @@ def ingest(payload: IngestRequest, background: BackgroundTasks) -> IngestStarted
     to hang a browser request — so it runs on a background task; poll GET /missions/ingest/{id}
     for status + progress logs (the CLI and the GUI both do). Routes the install through the
     controller so the server remains the single writer (parity with /pull)."""
+    # Refused here, not in the worker: the build runs after the 202, too late to answer 503 (#168).
+    require_runner(get_settings(), "build missions")
     job_id = job_store().start()
     background.add_task(_run_ingest, job_id, payload.bundle_dir)
     return IngestStarted(job_id=job_id)
@@ -468,6 +471,8 @@ def start_pull_job(
     The body is optional. `refresh: true` pulls again even when the mission is installed and
     its image is local. A refresh that arrives while a pull is already active joins that pull
     as-is: the running job does not turn into a refresh."""
+    # Refused here, not in the worker: the pull runs after the 202, too late to answer 503 (#168).
+    require_runner(get_settings(), "pull missions")
     job_id, created = pull_job_store().start(mission_id)
     if created:
         refresh = payload is not None and payload.refresh

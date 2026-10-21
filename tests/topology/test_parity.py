@@ -143,9 +143,11 @@ def test_system_view_role_modules_mirrors_the_manifest_roles() -> None:
 
 def test_only_docker_owning_roles_are_expected_to_run_the_runner_modules() -> None:
     """The roles expected to run docker/headscale must be exactly the roles that get the REAL
-    Docker and Headscale adapters (`_use_real_docker` / `_use_real_headscale` == {all, runner}).
-    If these disagree, a host either shows a module it never drives or hides one it does."""
+    Docker and Headscale adapters (RUNNER_ROLES, which `_use_real_docker` / `_use_real_headscale`
+    key off). If these disagree, a host either shows a module it never drives or hides one it
+    does."""
+    from xorcise.core.rest.runner_wiring import RUNNER_ROLES
     from xorcise.core.rest.system_view import _ROLE_MODULES
 
     drives_docker = {role for role, mods in _ROLE_MODULES.items() if "docker" in mods}
-    assert drives_docker == {"all", "runner"}
+    assert drives_docker == RUNNER_ROLES

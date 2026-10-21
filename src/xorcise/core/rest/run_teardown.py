@@ -22,9 +22,11 @@ from xorcise.core.config import get_settings
 from xorcise.core.contracts.run import DeleteRefusal, DeleteRefusalReason
 from xorcise.core.rest.run_create import (
     CONTROL_API_KEY,
+    RELEASE,
     build_teardown_control,
     build_teardown_fence,
 )
+from xorcise.core.rest.runner_wiring import runner_unavailable
 
 log = logging.getLogger(__name__)
 
@@ -59,7 +61,21 @@ def teardown_run(
     the log, and a release that finally lands after failures says so at info.
 
     Never raises, the bookkeeping included: grade_and_record calls this from a `finally`, and a
-    database error escaping there would skip the rest of finalisation (#173)."""
+    database error escaping there would skip the rest of finalisation (#173).
+
+    A server with no runner records the release as failed, once and in one sentence, and logs it
+    at info: it can never release, and role all's sweeper releases the run on its next start
+    (#168). Both halves would refuse alike, so trying them only doubled the message."""
+    if (unavailable := runner_unavailable(get_settings(), RELEASE)) is not None:
+        error = str(unavailable)
+        try:
+            runs.record_release_failure(run_id, error)
+        except Exception:
+            log.warning(
+                "teardown: could not record the failed release of %s", run_id, exc_info=True
+            )
+        log.info("teardown: %s left unreleased: %s", run_id, error)
+        return ReleaseOutcome(released=False, error=error)
     failures: list[tuple[str, BaseException]] = []
     for half, release in (("container", _release_container), ("tailnet", _release_tailnet)):
         try:
@@ -181,11 +197,33 @@ def check_deletable(run_ids: Sequence[str], *, force: bool = False) -> DeleteBlo
             "usually within a minute.",
             forceable=False,
         )
+    unreleased = [
+        run_id
+        for run_id in run_ids
+        if (state := runs.release_state(run_id)) is not None
+        and state.released_at is None
+        and runs.has_environment(run_id)
+    ]
+    unavailable = runner_unavailable(get_settings(), RELEASE)
+    if unreleased and unavailable is not None:
+        # Nothing is down, so "retried once Docker is back" would be wrong: this server can never
+        # release. Said once, with where it can be done (#168).
+        if force:
+            for run_id in unreleased:
+                log.warning(
+                    "deleting %s with its environment still up (forced; %s)", run_id, unavailable
+                )
+            return None
+        return DeleteBlocked(
+            "unreleased",
+            tuple(unreleased),
+            f"the environment of {_runs_phrase(unreleased, verb='')} is still up, and "
+            f"{unavailable} Deleting it here would leave its container and tailnet nodes running "
+            "with nothing left to clean them up. Delete anyway only to accept that leak.",
+            forceable=True,
+        )
     failed: list[tuple[str, str]] = []
-    for run_id in run_ids:
-        state = runs.release_state(run_id)
-        if state is None or state.released_at is not None or not runs.has_environment(run_id):
-            continue
+    for run_id in unreleased:
         outcome = teardown_run(run_id)
         if not outcome.released:
             failed.append((run_id, outcome.error))

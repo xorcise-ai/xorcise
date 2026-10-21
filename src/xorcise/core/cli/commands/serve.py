@@ -62,9 +62,9 @@ _EXPERIMENTAL_ROLES = frozenset({"control", "runner", "headscale", "collector"})
 # Ordered worst-surprise-first inside each message.
 _ROLE_CAVEATS: dict[str, tuple[str, ...]] = {
     "control": (
-        "Run execution is SILENTLY STUBBED on this role: POST /runs answers 201 and returns a "
-        "run id and image ref, but no container is ever launched and the run stays 'created'.",
-        "Only 'all' and 'runner' own the Docker/Headscale planes (rest/run_create.py).",
+        "This role cannot launch runs or pull or build missions (those requests answer 503), "
+        "nor release a run's environment.",
+        "Only 'all' and 'runner' own the Docker/Headscale planes (rest/runner_wiring.py).",
     ),
     "runner": (
         "This role serves only GET /healthz — the real runner control-service is not built yet, "

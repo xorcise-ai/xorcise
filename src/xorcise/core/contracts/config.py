@@ -208,6 +208,8 @@ class BootReconcileView(_Frozen):
     release_pending: tuple[str, ...] = ()
     # Runs the reconcile raised on: left as they were, so the next start retries them.
     failed: tuple[str, ...] = ()
+    # failed: the step that failed and why. done: what was deliberately not checked, if anything,
+    # e.g. the runs on a server with no runner to check them with (#168).
     error: str = ""
 
 

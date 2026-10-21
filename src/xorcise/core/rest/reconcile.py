@@ -263,13 +263,25 @@ def reconcile_all_on_startup(*, now_fn: Callable[[], datetime] = lambda: datetim
     from xorcise.core.rest.pull_jobs import reconcile_pull_jobs
     from xorcise.core.rest.run_purge import sweep_orphaned_runs
     from xorcise.core.rest.run_terminate import regrade_orphaned_terminal_runs
+    from xorcise.core.rest.runner_wiring import runner_unavailable
 
     _set_status(BootReconcileView(state="running"))
     report = ReconcileReport()
     errors: list[tuple[str, Exception]] = []
+    # Said in the status rather than left out: a "done" with nothing to recover would claim the
+    # runs were checked.
+    skipped = ""
 
     def converge_runs() -> None:
-        nonlocal report
+        nonlocal report, skipped
+        # A server with no runner sees every container as gone, so converging would close live
+        # runs and drop reservations whose environments are still up. Role all's next start
+        # converges them (#168).
+        unavailable = runner_unavailable(get_settings(), "check the runs that were live")
+        if unavailable is not None:
+            skipped = f"runs not checked: {unavailable}"
+            log.info("reconcile: %s", skipped)
+            return
         report = reconcile_on_startup()
 
     steps: list[tuple[str, Callable[[], object]]] = [
@@ -300,7 +312,7 @@ def reconcile_all_on_startup(*, now_fn: Callable[[], datetime] = lambda: datetim
             released=len(report.released),
             release_pending=tuple(report.release_pending),
             failed=tuple(report.failed),
-            error="; ".join(f"{name}: {first_line(exc)}" for name, exc in errors),
+            error="; ".join(f"{name}: {first_line(exc)}" for name, exc in errors) or skipped,
         )
     )
     if errors:

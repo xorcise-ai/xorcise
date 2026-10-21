@@ -70,6 +70,7 @@ from xorcise.core.home import (
     write_runtime_ports,
     xorcise_home,
 )
+from xorcise.core.rest.runner_wiring import RUNNER_ROLES
 from xorcise.core.roles.boot import AppSpec
 
 
@@ -217,9 +218,10 @@ def _maybe_provision_headscale(
         # distributed topology keeps a local container here is not something this command can
         # establish, and refusing to start would break any setup that does work. The point is
         # that `up` must not imply run creation is ready when it cannot confirm that.
-        serves_runs = not getattr(settings, "use_stubs", False) and getattr(
-            settings, "role", "all"
-        ) in {"all", "runner"}
+        serves_runs = (
+            not getattr(settings, "use_stubs", False)
+            and getattr(settings, "role", "all") in RUNNER_ROLES
+        )
         if serves_runs:
             local = control_plane(getattr(settings, "headscale_container", "headscale"))
             if not local.ok:
