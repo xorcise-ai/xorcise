@@ -281,6 +281,7 @@ def serve(
     init_home()
     scaffold_config(xorcise_home())
     lifecycle._ensure_db_ready()
+    lifecycle._refuse_loopback_only_distributed()
     # Resolve ports BEFORE activate(): role_<x>.apps() captures get_settings() ports at
     # build time, so the resolved values must already be stamped when specs are built.
     resolved = lifecycle._resolve_role_ports(role_name, {"rest": port, "otlp": otlp_port})

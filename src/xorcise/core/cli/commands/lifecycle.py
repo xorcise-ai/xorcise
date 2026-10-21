@@ -293,6 +293,16 @@ def _apply_runtime_env(role: str, *, stub: bool, ports: dict[str, int] | None = 
     get_settings.cache_clear()
 
 
+def _refuse_loopback_only_distributed() -> None:
+    """Exit 1 when the distributed topology would listen on loopback only (#169)."""
+    from xorcise.core.roles.boot.role_all import distributed_bind_refusal
+
+    refusal = distributed_bind_refusal(get_settings())
+    if refusal is not None:
+        err_console.print(f"[err]error[/err]: {refusal}", highlight=False)
+        raise typer.Exit(1)
+
+
 def _role_bind_hosts(role: str, configured_host: str) -> list[str]:
     """The addresses the role's planes will listen on — the SAME set `serve` binds, from the
     same function role_all builds it with — so port resolution probes what will be bound and
@@ -426,6 +436,10 @@ def up(
     # surface ~20 lines in, after the home was created, the DB migrated and two RSA
     # keys generated — as a raw `docker compose … failed` with no remediation.
     _require_prerequisites(stub=stub)
+    # Before anything is written. A topology set in config.toml needs a home that already exists,
+    # so checking ahead of init_home misses nothing.
+    get_settings.cache_clear()
+    _refuse_loopback_only_distributed()
 
     init_home()
     scaffold_config(xorcise_home())

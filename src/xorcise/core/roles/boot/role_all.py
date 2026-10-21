@@ -6,6 +6,7 @@ registration, generalised to all roles).
 
 from __future__ import annotations
 
+import ipaddress
 import platform
 import socket
 import subprocess
@@ -14,7 +15,7 @@ from typing import TYPE_CHECKING
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from xorcise.core.config import LOOPBACK, LOOPBACK_HOSTS, get_settings
+from xorcise.core.config import LOOPBACK, LOOPBACK_HOSTS, Settings, get_settings
 from xorcise.core.rest.app import create_app, mount_ui
 from xorcise.core.rest.routers import (
     agents,
@@ -376,6 +377,40 @@ def agent_facing_loopbacks(configured_host: str) -> tuple[str, ...]:
     if configured_host not in hosts and configured_host not in LOOPBACK_HOSTS:
         hosts = (*hosts, configured_host)
     return hosts
+
+
+def _is_loopback(host: str) -> bool:
+    # Neither case nor a trailing root dot changes the name a resolver looks up.
+    if host.lower().rstrip(".") in LOOPBACK_HOSTS:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False  # a hostname: what it resolves to is not this check's call
+
+
+def distributed_bind_refusal(settings: Settings) -> str | None:
+    """Why the server must not start in this topology, or None when it may (#169).
+
+    In the distributed topology the agent-facing apps bind the configured host, which defaults to
+    loopback, while agents, the collector ACL and the tailnet route are all pointed at the
+    advertised host. Nothing would answer there, and every run would fail with no diagnosis. This
+    is the stopgap: refuse to start. Binding the advertised address belongs to the unfinished
+    multi-machine work. The suggested fix is the advertised address, not 0.0.0.0, which would
+    expose the unauthenticated /api on every network the host is on, and it goes in config.toml,
+    not a shell export: the CLI finds the server at the same `host`, so a one-shell setting would
+    leave every later command knocking on the loopback address."""
+    if settings.deployment_topology != "distributed" or not _is_loopback(settings.host):
+        return None
+    from xorcise.core.home import xorcise_home
+
+    target = settings.headscale_advertise_host or "<the address agents use>"
+    return (
+        f"deployment_topology is 'distributed', but XORCISE would listen only on "
+        f"{settings.host}, so agents on other machines could not reach it. Distributed deployment "
+        f'is unfinished. Use the local topology, or set host = "{target}" in '
+        f"{xorcise_home() / 'config.toml'}."
+    )
 
 
 def apps() -> list[AppSpec]:
