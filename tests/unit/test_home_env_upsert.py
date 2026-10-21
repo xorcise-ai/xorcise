@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import stat
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -81,3 +82,80 @@ def test_a_value_with_a_line_break_is_refused_and_the_file_is_untouched(
 
     assert "sk-1" not in str(refused.value)
     assert env.read_text() == "XORCISE_MODEL_NAME=before\n"  # not even the valid half
+
+
+# --- the key is never readable by others, even mid-write ---------------------------------------
+#
+# Found while fixing #160: the writer used write_text then chmod(0o600), so under a 022 umask a new
+# .env holding the API key was 0644 until the chmod landed.
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("existing", [False, True])
+def test_the_key_is_never_written_into_a_file_others_can_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing: bool
+) -> None:
+    """Catch the file at the moment the key goes into it. Its mode must already be 0600, under
+    the permissive umask that made the old window real, and for a file an older version left
+    0644 as well as a new one."""
+    import os
+
+    env = tmp_path / ".env"
+    if existing:
+        env.write_text("OTHER=1\n")
+        env.chmod(0o644)
+    modes_at_write: list[int] = []
+    real_fdopen = os.fdopen
+
+    def spying_fdopen(fd: int, *args: Any, **kwargs: Any) -> Any:
+        f = real_fdopen(fd, *args, **kwargs)
+        real_write = f.write
+
+        def write(text: str) -> int:
+            modes_at_write.append(stat.S_IMODE(os.fstat(fd).st_mode))
+            return int(real_write(text))
+
+        f.write = write
+        return f
+
+    monkeypatch.setattr(os, "fdopen", spying_fdopen)
+    old_umask = os.umask(0o022)
+    try:
+        set_env_vars(tmp_path, {"XORCISE_MODEL_KEY": "sk-secret"})
+    finally:
+        os.umask(old_umask)
+
+    assert modes_at_write == [0o600]
+    assert stat.S_IMODE(env.stat().st_mode) == 0o600
+    assert "XORCISE_MODEL_KEY=sk-secret" in _read(env)
+
+
+@pytest.mark.unit
+def test_a_symlinked_env_is_written_through_not_replaced(tmp_path: Path) -> None:
+    real = tmp_path / "secrets" / "xorcise.env"
+    real.parent.mkdir()
+    real.write_text("OTHER=1\n")
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".env").symlink_to(real)
+
+    set_env_vars(home, {"XORCISE_MODEL_KEY": "sk-abc"})
+
+    assert (home / ".env").is_symlink()
+    assert _read(real) == ["OTHER=1", "XORCISE_MODEL_KEY=sk-abc"]
+
+
+@pytest.mark.unit
+def test_the_env_file_is_rewritten_in_place(tmp_path: Path) -> None:
+    """Same inode, so its owner and any hard link to it survive, and nothing is left beside it."""
+    env = tmp_path / ".env"
+    env.write_text("OTHER=1\n")
+    linked = tmp_path / "linked.env"
+    linked.hardlink_to(env)
+    inode = env.stat().st_ino
+
+    set_env_vars(tmp_path, {"XORCISE_MODEL_KEY": "sk-abc"})
+
+    assert env.stat().st_ino == inode
+    assert "XORCISE_MODEL_KEY=sk-abc" in _read(linked)
+    assert sorted(p.name for p in tmp_path.iterdir()) == [".env", "linked.env"]
