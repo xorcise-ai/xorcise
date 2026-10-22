@@ -82,7 +82,7 @@ describe("ResultsByMission: grader agreement per mission version", () => {
     expect(scored.style.bottom).toBe("30%");
     expect(early.dataset.bucket).toBe("stopped");
     fireEvent.mouseEnter(early);
-    expect(screen.getByTestId("agreement-hover")).toHaveTextContent("stopped by an operator");
+    expect(screen.getByTestId("agreement-hover")).toHaveTextContent("Stopped · left out");
     fireEvent.mouseLeave(early);
     // The no-judge run has no judge score to place: it sits on the rail at its checks score.
     expect(screen.getAllByTestId("agreement-rail")).toHaveLength(1);
@@ -164,7 +164,9 @@ describe("ResultsByMission: grader agreement per mission version", () => {
     fireEvent.mouseEnter(r1);
     const label = screen.getByTestId("agreement-hover");
     expect(label).toHaveTextContent("recon · median 68% · judge 65 below checks");
-    expect(label).toHaveTextContent("judge 30%");
+    // The shared inspector: the run's kind, then its scores.
+    expect(label).toHaveTextContent("Scored · in the median");
+    expect(label).toHaveTextContent("Judge30%");
     const dimmed = screen
       .getAllByTestId("agreement-point")
       .map((p) => p.parentElement!.className.includes("opacity-20"));

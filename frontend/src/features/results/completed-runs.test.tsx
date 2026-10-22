@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { server } from "@/test/msw/server";
 import { renderWithProviders } from "@/test/render";
@@ -14,7 +14,7 @@ vi.mock("next/link", () => ({
   }: {
     href: string;
     children: React.ReactNode;
-  }) => (
+  } & React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
     <a href={href} {...props}>
       {children}
     </a>
@@ -36,9 +36,44 @@ function serve(scores: RunScore[], summaries: ScoreSummary[]) {
   );
 }
 
-const cards = () => screen.getAllByRole("img").map((s) => s.getAttribute("aria-label"));
+// The strip's group carries the card's summary in words: one per card.
+const strips = () =>
+  screen
+    .getAllByRole("group")
+    .map((g) => g.getAttribute("aria-label") ?? "")
+    .filter((l) => / runs?, /.test(l));
 
-describe("CompletedRuns: the run strip (agent-centric §14)", () => {
+const KINDS: RunScore[] = [
+  scoreFixture({ run_id: "full" }),
+  scoreFixture({
+    run_id: "part",
+    judge_status: "partial",
+    judge: 0.4,
+    judge_upper: 0.9,
+    overall: 0.7,
+    overall_upper: 0.95,
+  }),
+  scoreFixture({
+    run_id: "nojudge",
+    bucket: "no_judge",
+    judge_status: "unavailable",
+    judge: 0,
+    overall: 0.5,
+  }),
+  scoreFixture({ run_id: "stopped", bucket: "stopped", outcome: "partial", terminal_trigger: "operator" }),
+  scoreFixture({ run_id: "timeout", timed_out: true, outcome: "partial", terminal_trigger: "timeout" }),
+  scoreFixture({
+    run_id: "env",
+    bucket: "infra_failed",
+    outcome: "infra_failed",
+    deterministic: null,
+    judge: null,
+    judge_status: null,
+    overall: null,
+  }),
+];
+
+describe("CompletedRuns: one card per agent, around its run strip", () => {
   it("ranks agents by the median of their scored runs, unscored last", async () => {
     serve(
       [],
@@ -49,116 +84,79 @@ describe("CompletedRuns: the run strip (agent-centric §14)", () => {
       ],
     );
     renderWithProviders(<CompletedRuns />);
-    await waitFor(() => expect(screen.getAllByRole("img")).toHaveLength(3));
-    expect(cards().map((l) => l?.split(":")[0])).toEqual(["raptor", "scout", "ghost"]);
+    await waitFor(() => expect(strips()).toHaveLength(3));
+    expect(strips().map((l) => l.split(":")[0])).toEqual(["raptor", "scout", "ghost"]);
   });
 
-  it("headlines the median and how many runs it covers, and links to the profile", async () => {
+  it("says the median once, what it covers, and links the name to the profile", async () => {
     serve(
       [scoreFixture({ run_id: "s1" })],
       [summaryFixture({ agent_id: "agent-1", runs: 4, scored: 3, median: 0.75 })],
     );
     renderWithProviders(<CompletedRuns />);
-    const card = (await screen.findByText("scout")).closest("a")!;
-    expect(card).toHaveAttribute("href", "/agents/detail?name=scout");
-    expect(within(card).getByText("Median")).toBeInTheDocument();
-    expect(within(card).getAllByText("75%").length).toBeGreaterThan(0);
-    expect(within(card).getByText("3 of 4")).toBeInTheDocument();
+    const name = await screen.findByRole("link", { name: "scout: view profile" });
+    expect(name).toHaveAttribute("href", "/agents/detail?name=scout");
+    expect(screen.getAllByText("75%")).toHaveLength(1);
+    expect(screen.getAllByText("median")).toHaveLength(1);
+    // " · 1 left out" is its own unbreakable span, so match the line by its whole text.
+    expect(
+      screen.getByText((_, el) => el?.textContent === "3 of 4 runs in the median · 1 left out" && el.tagName === "SPAN" && !!el.querySelector("span")),
+    ).toBeInTheDocument();
   });
 
-  it("says which runs are left out of the median, and why", async () => {
-    serve(
-      [],
-      [
-        summaryFixture({
-          agent_id: "agent-1",
-          runs: 6,
-          scored: 2,
-          no_judge: 2,
-          stopped: 1,
-          timed_out: 1,
-          infra_failed: 1,
-          partial_judge: 1,
-        }),
-      ],
-    );
-    renderWithProviders(<CompletedRuns />);
-    expect(
-      await screen.findByText(
-        "2 no judge · 1 stopped · 1 environment failure: not in the median.",
-      ),
-    ).toBeInTheDocument();
-    // A timed-out run is IN the median: said apart from the runs that are not.
-    expect(
-      screen.getByText("1 timed out: in the median at the score it earned."),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText("1 judged on part of the rubric, counted at the lower bound."),
-    ).toBeInTheDocument();
-    expect(cards()[0]).toContain("not in the median");
-  });
-
-  it("draws each kind of run by what was measured", async () => {
-    serve(
-      [
-        scoreFixture({ run_id: "full" }),
-        scoreFixture({
-          run_id: "part",
-          judge_status: "partial",
-          judge: 0.4,
-          judge_upper: 0.9,
-          overall: 0.7,
-          overall_upper: 0.95,
-        }),
-        scoreFixture({
-          run_id: "nojudge",
-          bucket: "no_judge",
-          judge_status: "unavailable",
-          judge: 0,
-          overall: 0.5,
-        }),
-        scoreFixture({
-          run_id: "stopped",
-          bucket: "stopped",
-          outcome: "partial",
-          terminal_trigger: "operator",
-        }),
-        scoreFixture({
-          run_id: "timeout",
-          timed_out: true,
-          outcome: "partial",
-          terminal_trigger: "timeout",
-        }),
-        scoreFixture({
-          run_id: "env",
-          bucket: "infra_failed",
-          outcome: "infra_failed",
-          deterministic: null,
-          judge: null,
-          judge_status: null,
-          overall: null,
-        }),
-      ],
-      [summaryFixture({ agent_id: "agent-1" })],
-    );
+  it("tells each kind of run apart by the column itself, with no marks beside it", async () => {
+    serve(KINDS, [summaryFixture({ agent_id: "agent-1" })]);
     renderWithProviders(<CompletedRuns />);
     await waitFor(() => expect(screen.getAllByTestId("strip-column")).toHaveLength(6));
-    const [full, part, nojudge, stopped, timedOut, env] = screen.getAllByTestId("strip-column");
-    expect(full.querySelector("[data-part]")).toBeNull();
-    expect(part.querySelector('[data-part="judge-range"]')).not.toBeNull();
+    const col = (kind: string) =>
+      screen.getAllByTestId("strip-column").find((c) => c.dataset.kind === kind)!;
+    expect(col("scored").querySelector("[data-part=cap], [data-part=unmeasured]")).toBeNull();
+    expect(col("partial_judge").querySelector('[data-part="judge-range"]')).not.toBeNull();
     // The judge half that was never measured is an outline, not a zero.
-    expect(nojudge.querySelector('[data-part="unmeasured"]')).not.toBeNull();
-    expect(nojudge.title).toContain("no judge");
-    // Stopped by an operator: out of the median, so faded.
-    expect(stopped.className).toContain("opacity-40");
-    expect(stopped.title).toContain("stopped by an operator");
-    // Timed out: in the median at what it earned, so drawn in full and marked, not faded.
-    expect(timedOut.className).not.toContain("opacity-40");
-    expect(timedOut.title).toContain("timed out");
-    expect(timedOut.title).not.toContain("not in the median");
-    // An environment failure is an empty slot, never a score.
-    expect(env.children).toHaveLength(0);
-    expect(env.title).toContain("environment failure");
+    expect(col("no_judge").querySelector('[data-part="unmeasured"]')).not.toBeNull();
+    // Stopped: grey. Timed out: a red cap, in full colour, since it counts.
+    expect(col("stopped").querySelector('[data-part="bar"]')!.className).toContain("grayscale");
+    expect(col("timed_out").querySelector('[data-part="cap"]')!.className).toContain("bg-err");
+    expect(col("timed_out").querySelector('[data-part="bar"]')!.className).not.toContain("grayscale");
+    // An environment failure is an empty striped slot: never a score, never red.
+    const env = col("infra_failed").querySelector('[data-part="infra"]')!;
+    expect(env.className).not.toContain("err");
+    // Each column opens its run, and says what it is.
+    expect(col("timed_out")).toHaveAttribute("href", "/runs/result?id=timeout");
+    expect(col("timed_out")).toHaveAccessibleName(/timed out · in the median/);
+    expect(col("stopped")).toHaveAccessibleName(/stopped · left out/);
+  });
+
+  it("opens the inspector on a column and lights up its kind in the key", async () => {
+    serve(KINDS, [summaryFixture({ agent_id: "agent-1" })]);
+    renderWithProviders(<CompletedRuns />);
+    await waitFor(() => expect(screen.getAllByTestId("strip-column")).toHaveLength(6));
+    const timeout = screen.getAllByTestId("strip-column").find((c) => c.dataset.kind === "timed_out")!;
+    fireEvent.mouseEnter(timeout);
+    const inspector = screen.getByTestId("run-inspector");
+    expect(inspector).toHaveTextContent("Timed out · in the median");
+    expect(inspector).toHaveTextContent("Not finishing counts against the agent");
+    const keyItem = within(screen.getByRole("list", { name: "In the median" }))
+      .getAllByRole("listitem")
+      .find((li) => li.dataset.kind === "timed_out")!;
+    expect(keyItem).toHaveAttribute("data-active", "true");
+    fireEvent.mouseLeave(timeout);
+    expect(screen.queryByTestId("run-inspector")).toBeNull();
+    expect(keyItem).not.toHaveAttribute("data-active");
+  });
+
+  it("is one tab stop on the newest run, with the arrow keys moving between runs", async () => {
+    serve(KINDS, [summaryFixture({ agent_id: "agent-1" })]);
+    renderWithProviders(<CompletedRuns />);
+    await waitFor(() => expect(screen.getAllByTestId("strip-column")).toHaveLength(6));
+    const cols = screen.getAllByTestId("strip-column");
+    expect(cols.map((c) => c.tabIndex)).toEqual([-1, -1, -1, -1, -1, 0]);
+    act(() => cols[5].focus());
+    expect(screen.getByTestId("run-inspector")).toHaveTextContent("Environment failure · left out");
+    fireEvent.keyDown(cols[5], { key: "ArrowLeft" });
+    expect(document.activeElement).toBe(cols[4]);
+    fireEvent.keyDown(cols[4], { key: "Home" });
+    expect(document.activeElement).toBe(cols[0]);
   });
 
   it("shows the latest runs that fit, and says how many there are in all", async () => {
@@ -170,11 +168,15 @@ describe("CompletedRuns: the run strip (agent-centric §14)", () => {
     expect(screen.getAllByTestId("strip-column")).toHaveLength(24);
   });
 
-  it("draws the median line at the median", async () => {
-    serve([scoreFixture()], [summaryFixture({ agent_id: "agent-1", median: 0.62 })]);
+  it("draws the median line at the median, and names what the median leaves out", async () => {
+    serve(
+      [scoreFixture()],
+      [summaryFixture({ agent_id: "agent-1", median: 0.62, no_judge: 2, stopped: 1 })],
+    );
     renderWithProviders(<CompletedRuns />);
     const line = await screen.findByTestId("strip-median");
     expect(line.style.bottom).toBe("62%");
+    expect(strips()[0]).toContain("2 no judge · 1 stopped, not in the median");
   });
 
   it("shows a what/why/next empty state with Start run when nothing has finished", async () => {

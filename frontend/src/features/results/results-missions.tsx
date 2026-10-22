@@ -14,7 +14,7 @@ import type { RunScore, ScoreSummary } from "@/lib/api/types";
 import { useAgents } from "@/features/agents/queries";
 import { useMissions } from "@/features/missions/queries";
 import { useRunScores, useScoreSummary } from "./queries";
-import { asideLine, timedOutLine } from "./run-glyph";
+import { asideLine, timedOutLine, type RunKind } from "./run-glyph";
 import { AgreementPlot } from "./agreement-plot";
 import { RunKey } from "./run-key";
 import { LoadingCards } from "./loading-cards";
@@ -40,6 +40,8 @@ const versionKey = (
  * counts is the server's (GET /results/summary, reporting.scores).
  */
 export function ResultsByMission() {
+  // The kind of the run under the pointer in any plot, so the key can light it up.
+  const [activeKind, setActiveKind] = useState<RunKind | null>(null);
   const versions = useScoreSummary("mission");
   const perAgent = useScoreSummary("mission_agent");
   const scores = useRunScores();
@@ -112,7 +114,7 @@ export function ResultsByMission() {
 
       {versions.data && rows.length === 0 && <EmptyMissions />}
 
-      {rows.length > 0 && <RunKey view="plot" />}
+      {rows.length > 0 && <RunKey view="plot" active={activeKind} />}
 
       {rows.length > 0 && (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
@@ -126,6 +128,7 @@ export function ResultsByMission() {
                   runs={runsByVersion.get(k) ?? []}
                   agents={agentsByVersion.get(k) ?? []}
                   agentName={agentName}
+                  onInspect={setActiveKind}
                 />
               </Reveal>
             );
@@ -151,12 +154,14 @@ function MissionVersionRow({
   runs,
   agents,
   agentName,
+  onInspect,
 }: {
   summary: ScoreSummary;
   name: string;
   runs: RunScore[];
   agents: ScoreSummary[];
   agentName: (id: string) => string;
+  onInspect: (kind: RunKind | null) => void;
 }) {
   // `pinned` is the agent a chip was pressed for; `hovered` the one under the pointer or focus,
   // which wins while it lasts.
@@ -191,6 +196,7 @@ function MissionVersionRow({
         agentLabel={agentLabel}
         highlight={active}
         onHoverAgent={setHovered}
+        onInspect={onInspect}
         summary={plotSummary(name, version, summary)}
       />
       {agents.length > 0 && (

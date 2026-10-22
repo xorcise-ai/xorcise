@@ -3,12 +3,14 @@
 import { useState } from "react";
 import { cn } from "@/components/ui/cn";
 import type { RunScore } from "@/lib/api/types";
-import { hatch, runSentence } from "./run-glyph";
+import { hatch, runKind, type RunKind } from "./run-glyph";
+import { RunInspector } from "./run-inspector";
 
 /** The plot's marks, shared with the key's examples. */
 export const PLOT_MARK = {
   scored: "rounded-full bg-foreground",
-  timed_out: "rounded-full bg-foreground ring-[1.5px] ring-primary ring-offset-1 ring-offset-card",
+  // Red means only this, as on the strip and the ledger: the agent did not finish.
+  timed_out: "rounded-full bg-foreground ring-[1.5px] ring-err ring-offset-1 ring-offset-card",
   stopped: "rounded-full border-[1.5px] border-text-secondary",
   no_judge: "rounded-full border-[1.5px] border-dashed border-data bg-card",
   judgeRange: "opacity-60",
@@ -43,6 +45,7 @@ export function AgreementPlot({
   agentLabel,
   highlight,
   onHoverAgent,
+  onInspect,
   summary,
 }: {
   runs: RunScore[];
@@ -51,16 +54,20 @@ export function AgreementPlot({
   agentLabel: (id: string) => string;
   highlight?: string | null;
   onHoverAgent?: (id: string | null) => void;
+  /** The kind of the run under the pointer, for the page's key. */
+  onInspect?: (kind: RunKind | null) => void;
   summary: string;
 }) {
   const [hovered, setHovered] = useState<{ run: RunScore; onRail: boolean } | null>(null);
   const enter = (run: RunScore, onRail: boolean) => {
     setHovered({ run, onRail });
     onHoverAgent?.(run.agent_id);
+    onInspect?.(runKind(run));
   };
   const leave = () => {
     setHovered(null);
     onHoverAgent?.(null);
+    onInspect?.(null);
   };
   const placed = runs.filter((r) => r.bucket === "scored" || r.bucket === "stopped");
   const rail = runs.filter((r) => r.bucket === "no_judge");
@@ -172,25 +179,24 @@ export function AgreementPlot({
   );
 }
 
-/** The label beside the run under the pointer: whose run it is, then the run itself. Kept inside
- *  the plot: a run near either edge anchors the label on that side instead of centring it. */
+/** The run under the pointer, in the inspector every view shares, headed by whose run it is. Kept
+ *  inside the plot: a run near either edge anchors it on that side instead of centring it. */
 function HoverLabel({ run, onRail, agent }: { run: RunScore; onRail: boolean; agent: string }) {
   const x = run.deterministic ?? 0;
   const shift = x < 0.25 ? "0%" : x > 0.75 ? "-100%" : "-50%";
-  // A run near the top drops its label below it, so it stays inside the card.
-  const below = !onRail && (run.judge ?? 0) > 0.8;
+  // Open towards the side with more room: below a run in the upper half, above one in the lower.
+  const below = !onRail && (run.judge ?? 0) >= 0.5;
   return (
     <div
       data-testid="agreement-hover"
-      className="pointer-events-none absolute z-10 w-max max-w-[16rem] rounded-md border border-border-hover bg-raised px-2 py-1 shadow-lg"
+      className="pointer-events-none absolute z-20"
       style={{
         left: pctPos(x),
         bottom: onRail ? "0%" : pctPos(run.judge),
         transform: `translate(${shift}, ${below ? "calc(100% + 12px)" : "-12px"})`,
       }}
     >
-      <p className="text-caption font-bold text-heading">{agent}</p>
-      <p className="text-label text-text-secondary">{runSentence(run)}</p>
+      <RunInspector run={run} agent={agent} />
     </div>
   );
 }

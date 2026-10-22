@@ -5,9 +5,93 @@
 import { pct, shortTime } from "@/lib/api/format";
 import type { RunScore, ScoreBucket } from "@/lib/api/types";
 
+/**
+ * What a run is, for drawing and naming it: the server's `bucket`, with a scored run told apart by
+ * how it was scored. One kind per run; every view draws and names a run by its kind.
+ */
+export type RunKind =
+  | "scored"
+  | "timed_out"
+  | "partial_judge"
+  | "no_judge"
+  | "stopped"
+  | "infra_failed"
+  | "grading";
+
+export function runKind(r: RunScore): RunKind {
+  switch (r.bucket) {
+    case "infra_failed":
+    case "grading":
+    case "stopped":
+    case "no_judge":
+      return r.bucket;
+    default:
+      if (r.timed_out) return "timed_out";
+      if (r.judge_status === "partial" && r.judge_upper != null) return "partial_judge";
+      return "scored";
+  }
+}
+
+/** How each kind is named and explained, everywhere: the key, the inspector, "How to read this".
+ *  `inMedian` is the server's rule (reporting.scores), never decided here; null = not yet graded. */
+export const KIND_META: Record<
+  RunKind,
+  { label: string; title: string; inMedian: boolean | null; body: string }
+> = {
+  scored: {
+    label: "scored",
+    title: "Scored",
+    inMedian: true,
+    body: "Graded by the checks and the judge.",
+  },
+  timed_out: {
+    label: "timed out",
+    title: "Timed out",
+    inMedian: true,
+    body: "Ran out of its time budget. Not finishing counts against the agent, so it is in the median at the score it earned.",
+  },
+  partial_judge: {
+    label: "partial judge",
+    title: "Partial judge",
+    inMedian: true,
+    body: "The judge scored part of its rubric. Counted at the lower bound; the hatching runs to the upper.",
+  },
+  no_judge: {
+    label: "no judge",
+    title: "No judge",
+    inMedian: false,
+    body: "The judge never ran, so half the score is unmeasured, not zero.",
+  },
+  stopped: {
+    label: "stopped",
+    title: "Stopped",
+    inMedian: false,
+    body: "An operator ended it, so its score says nothing about the agent.",
+  },
+  infra_failed: {
+    label: "environment failure",
+    title: "Environment failure",
+    inMedian: false,
+    body: "Our environment cut it short. Never graded, and not the agent’s attempt.",
+  },
+  grading: {
+    label: "grading",
+    title: "Grading",
+    inMedian: null,
+    body: "Finished; its grade is not recorded yet.",
+  },
+};
+
+/** "Timed out · in the median": a kind and whether it counts, as the inspector heads a run. */
+export function kindHeading(kind: RunKind): string {
+  const { title, inMedian } = KIND_META[kind];
+  return `${title} · ${inMedian === null ? "not graded yet" : inMedian ? "in the median" : "left out"}`;
+}
+
 /** The parts of a run's column, each a fraction of the full 0–100 height. The deterministic
  *  checks and the judge each carry half of `overall`. */
 export interface RunGlyph {
+  kind: RunKind;
   bucket: ScoreBucket;
   /** Earned by the deterministic checks: deterministic × ½. */
   det: number;
@@ -17,15 +101,13 @@ export interface RunGlyph {
   judgeRange: number;
   /** The judge half that was never measured, because the judge never ran: always ½. */
   unmeasured: number;
-  /** An operator stopped it: drawn, but faded, because its score says nothing about the agent. */
-  faded: boolean;
-  /** Ran out of its budget. In the median at what it earned, and ringed so it reads as unfinished. */
-  timedOut: boolean;
-  /** No score to draw: an environment failure, or a grade not recorded yet. */
+  /** An operator stopped it: drawn in grey, because its score says nothing about the agent. */
+  grey: boolean;
+  /** Ran out of its budget: a red cap on top. Red means only this: the agent did not finish. */
+  cap: boolean;
+  /** No score to draw: an environment failure (a grey striped slot), or a grade not recorded. */
   empty: boolean;
-  /** One mark under the column: why the run reads differently from a plain scored one. */
-  mark: "" | "×" | "○" | "?" | "…" | "‖";
-  /** The whole run in words, for a tooltip. */
+  /** The whole run in words, for a screen reader or a tooltip. */
   label: string;
 }
 
@@ -64,37 +146,43 @@ function overallWords(r: RunScore): string {
   return `overall ${pct(r.overall)}`;
 }
 
+/** A run's scores in the inspector's three cells: "—" where there is no score to show. */
+export function runCells(r: RunScore): { checks: string; judge: string; overall: string } {
+  const none = r.bucket === "infra_failed" || r.bucket === "grading";
+  const judge = none || r.bucket === "no_judge"
+    ? "—"
+    : r.judge_status === "partial" && r.judge_upper != null
+      ? `${pct(r.judge)}–${pct(r.judge_upper)}`
+      : pct(r.judge);
+  const overall = none
+    ? "—"
+    : r.overall_upper != null && r.overall != null && r.overall_upper > r.overall
+      ? `${pct(r.overall)}–${pct(r.overall_upper)}`
+      : pct(r.overall);
+  return { checks: none ? "—" : pct(r.deterministic), judge, overall };
+}
+
 /** One sentence for a run, as a tooltip or a screen-reader list item would read it. */
 export function runSentence(r: RunScore): string {
   const when = shortTime(r.completed_at ?? r.created_at);
-  const timedOut = r.timed_out ? " · timed out" : "";
+  const heading = kindHeading(runKind(r)).toLowerCase();
   switch (r.bucket) {
     case "infra_failed":
       return `${when} · environment failure: not graded, and not an attempt by the agent`;
     case "grading":
       return `${when} · finished, grade not recorded yet`;
-    case "stopped":
-      return `${when} · stopped by an operator · deterministic ${pct(r.deterministic)} · ${judgeWords(r)} · ${overallWords(r)} · not in the median`;
     case "no_judge":
-      return `${when}${timedOut} · deterministic ${pct(r.deterministic)} · no judge · ${overallWords(r)} · not in the median`;
+      return `${when} · ${heading} · deterministic ${pct(r.deterministic)} · no judge · ${overallWords(r)}`;
     default:
-      return `${when}${timedOut} · deterministic ${pct(r.deterministic)} · ${judgeWords(r)} · ${overallWords(r)}`;
+      return `${when} · ${heading} · deterministic ${pct(r.deterministic)} · ${judgeWords(r)} · ${overallWords(r)}`;
   }
 }
 
 export function runGlyph(r: RunScore): RunGlyph {
-  const base = { bucket: r.bucket, label: runSentence(r), timedOut: !!r.timed_out };
+  const kind = runKind(r);
+  const base = { kind, bucket: r.bucket, label: runSentence(r), cap: kind === "timed_out" };
   if (r.bucket === "infra_failed" || r.bucket === "grading") {
-    return {
-      ...base,
-      det: 0,
-      judge: 0,
-      judgeRange: 0,
-      unmeasured: 0,
-      faded: false,
-      empty: true,
-      mark: r.bucket === "infra_failed" ? "×" : "…",
-    };
+    return { ...base, det: 0, judge: 0, judgeRange: 0, unmeasured: 0, grey: false, empty: true };
   }
   const noJudge = r.bucket === "no_judge";
   const partial = r.judge_status === "partial" && r.judge_upper != null;
@@ -104,9 +192,8 @@ export function runGlyph(r: RunScore): RunGlyph {
     judge: noJudge ? 0 : half(r.judge),
     judgeRange: partial ? Math.max(0, half(r.judge_upper) - half(r.judge)) : 0,
     unmeasured: noJudge ? 0.5 : 0,
-    faded: r.bucket === "stopped",
+    grey: r.bucket === "stopped",
     empty: false,
-    mark: r.bucket === "stopped" ? "‖" : noJudge ? "?" : r.timed_out ? "○" : "",
   };
 }
 

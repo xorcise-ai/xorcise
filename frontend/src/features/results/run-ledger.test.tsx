@@ -107,13 +107,15 @@ describe("RunLedger", () => {
     expect(full.querySelector('[data-part="judge"]')).not.toBeNull();
     expect(nj.querySelector('[data-part="unmeasured"]')).not.toBeNull();
     expect(part.querySelector('[data-part="judge-range"]')).not.toBeNull();
-    expect(env.textContent).toBe("×");
+    // An environment failure is an empty striped cell: never a score, never red.
+    expect(env.querySelector('[data-part="infra"]')).not.toBeNull();
+    expect(env.className).not.toContain("err");
     expect(env).toHaveAccessibleName(/environment failure/);
-    // Stopped: out of the median, faded. Timed out: in it at what it earned, ringed, not faded.
-    expect(stopped.className).toContain("opacity-40");
-    expect(timedOut.className).toContain("outline-primary");
-    expect(timedOut.className).not.toContain("opacity-40");
-    expect(timedOut).toHaveAccessibleName(/timed out/);
+    // Stopped: grey, left out. Timed out: a red cap, in full colour, since it counts.
+    expect(stopped.className).toContain("grayscale");
+    expect(timedOut.querySelector('[data-part="cap"]')!.className).toContain("bg-err");
+    expect(timedOut.className).not.toContain("grayscale");
+    expect(timedOut).toHaveAccessibleName(/timed out · in the median/);
   });
 
   it("is one tab stop, on the newest run, and the arrow keys move between runs", () => {
@@ -141,5 +143,27 @@ describe("RunLedger", () => {
     expect(screen.getAllByTestId("ledger-cell")).toHaveLength(32);
     expect(screen.getByText("+8 earlier ·")).toBeInTheDocument();
     expect(screen.getAllByTestId("ledger-cell").at(-1)).toHaveAttribute("href", "/runs/result?id=r39");
+  });
+
+  it("opens the inspector on a cell and reports its kind", () => {
+    const kinds: (string | null)[] = [];
+    render(
+      <RunLedger
+        rows={[
+          {
+            summary: v("sqli-login", "2.0.0", true, "2026-06-20T00:00:00Z"),
+            name: "SQLi Login",
+            runs: [scoreFixture({ run_id: "a" }), scoreFixture({ run_id: "b", bucket: "stopped", terminal_trigger: "operator" })],
+          },
+        ]}
+        onInspect={(k) => kinds.push(k)}
+      />,
+    );
+    const [, stopped] = screen.getAllByTestId("ledger-cell");
+    fireEvent.mouseEnter(stopped);
+    expect(screen.getByTestId("run-inspector")).toHaveTextContent("Stopped · left out");
+    fireEvent.mouseLeave(stopped);
+    expect(screen.queryByTestId("run-inspector")).toBeNull();
+    expect(kinds).toEqual(["stopped", null]);
   });
 });

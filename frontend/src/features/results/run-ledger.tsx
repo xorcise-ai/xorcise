@@ -6,7 +6,8 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/components/ui/cn";
 import { pct } from "@/lib/api/format";
 import type { RunScore, ScoreSummary } from "@/lib/api/types";
-import { asideLine, hatch, runGlyph } from "./run-glyph";
+import { asideLine, hatch, runGlyph, type RunKind } from "./run-glyph";
+import { RunInspector } from "./run-inspector";
 import { useFitCount } from "./use-fit-count";
 
 // Cell sizing. 14px keeps both halves of a cell readable as separate shades and is a workable
@@ -69,14 +70,22 @@ export function ledgerRows(
  * An agent's runs, one row per mission VERSION, one cell per run, oldest to newest. The lower half
  * of a cell is the deterministic score and the upper half the judge's, brighter for higher. A
  * judge that never ran leaves its half as a dashed outline; one that scored part of its rubric is
- * hatched. A run that timed out is ringed in amber, at the score it earned; one an operator
- * stopped is faded. An environment failure is a red ×, never a score. A run on a version that is no longer installed sits in its own row,
+ * hatched. Every other kind reads as it does on the run strip: a timed-out run carries a red cap,
+ * at the score it earned; one an operator stopped is grey; an environment failure is an empty grey
+ * striped cell, never a score. A run on a version that is no longer installed sits in its own row,
  * marked as older: its checks and rubric may not be the current version's.
  *
  * Each cell opens that run's result. The whole ledger is one stop in the tab order; the arrow keys
- * move between cells, Home and End to a row's ends.
+ * move between cells, Home and End to a row's ends. Pointing at or focusing a cell opens the run's
+ * inspector, and `onInspect` reports its kind so the key can light up the matching entry.
  */
-export function RunLedger({ rows }: { rows: LedgerRow[] }) {
+export function RunLedger({
+  rows,
+  onInspect,
+}: {
+  rows: LedgerRow[];
+  onInspect?: (kind: RunKind | null) => void;
+}) {
   const [active, setActive] = useState<{ row: number; col: number }>({ row: 0, col: -1 });
   const cells = useRef(new Map<string, HTMLAnchorElement>());
   const shownCounts = useRef<number[]>([]);
@@ -124,6 +133,7 @@ export function RunLedger({ rows }: { rows: LedgerRow[] }) {
             else cells.current.delete(`${i}:${col}`);
           }}
           onFocusCell={(col) => setActive({ row: i, col })}
+          onInspect={onInspect}
         />
       ))}
     </div>
@@ -137,6 +147,7 @@ function LedgerRowView({
   onShown,
   register,
   onFocusCell,
+  onInspect,
 }: {
   row: LedgerRow;
   index: number;
@@ -144,11 +155,17 @@ function LedgerRowView({
   onShown: (n: number) => void;
   register: (col: number, el: HTMLAnchorElement | null) => void;
   onFocusCell: (col: number) => void;
+  onInspect?: (kind: RunKind | null) => void;
 }) {
+  const [inspected, setInspected] = useState<number | null>(null);
   const [ref, fit] = useFitCount<HTMLDivElement>(MIN_CELL, GAP, MAX_CELLS, FALLBACK_CELLS);
   const shown = row.runs.slice(-fit);
   const earlier = row.runs.length - shown.length;
   onShown(shown.length);
+  const inspect = (col: number | null) => {
+    setInspected(col);
+    onInspect?.(col === null ? null : runGlyph(shown[col]).kind);
+  };
   const s = row.summary;
   const older = s.current_version === false;
   const aside = asideLine(s);
@@ -176,7 +193,7 @@ function LedgerRowView({
         <Badge variant="muted">v{s.mission_version}</Badge>
         {older && <Badge variant="warn">older</Badge>}
       </div>
-      <div ref={ref} className="flex min-w-0 items-center" style={{ gap: GAP }}>
+      <div ref={ref} className="relative flex min-w-0 items-center" style={{ gap: GAP }}>
         {earlier > 0 && (
           <span className="sr-only">{earlier} earlier runs not shown.</span>
         )}
@@ -186,9 +203,22 @@ function LedgerRowView({
             run={r}
             tabbable={col === stop}
             register={(el) => register(col, el)}
-            onFocus={() => onFocusCell(col)}
+            onFocus={() => {
+              onFocusCell(col);
+              inspect(col);
+            }}
+            onInspect={(on) => inspect(on ? col : null)}
           />
         ))}
+        {inspected !== null && shown[inspected] && (
+          <RunInspector
+            run={shown[inspected]}
+            className={cn(
+              "absolute top-full mt-2",
+              inspected >= shown.length / 2 ? "right-0" : "left-0",
+            )}
+          />
+        )}
       </div>
       <div className="flex items-baseline gap-2 text-caption md:justify-end">
         {earlier > 0 && <span className="text-text-tertiary">+{earlier} earlier ·</span>}
@@ -210,11 +240,13 @@ function LedgerCell({
   tabbable,
   register,
   onFocus,
+  onInspect,
 }: {
   run: RunScore;
   tabbable: boolean;
   register: (el: HTMLAnchorElement | null) => void;
   onFocus: () => void;
+  onInspect: (on: boolean) => void;
 }) {
   const g = runGlyph(run);
   return (
@@ -223,10 +255,13 @@ function LedgerCell({
       href={`/runs/result?id=${encodeURIComponent(run.run_id)}`}
       tabIndex={tabbable ? 0 : -1}
       onFocus={onFocus}
+      onBlur={() => onInspect(false)}
+      onMouseEnter={() => onInspect(true)}
+      onMouseLeave={() => onInspect(false)}
       aria-label={g.label}
-      title={g.label}
       data-testid="ledger-cell"
       data-bucket={g.bucket}
+      data-kind={g.kind}
       className={cn(
         "aspect-square min-w-0 max-w-5 flex-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         cellLook(run),
@@ -237,18 +272,16 @@ function LedgerCell({
   );
 }
 
-/** A cell's frame for its run: ringed in amber when it timed out (in the median at what it
- *  earned), faded when an operator stopped it (out of the median), a red box for an environment
- *  failure, dashed while grading. Shared with the key's examples. */
+/** A cell's frame for its run, in the run strip's language: grey when an operator stopped it,
+ *  an empty grey striped cell for an environment failure (never red: the failure is ours), dashed
+ *  while grading. Shared with the key's examples. */
 export function cellLook(run: RunScore): string {
   const g = runGlyph(run);
   return cn(
-    "relative flex flex-col rounded-[2px]",
-    g.faded && "opacity-40",
-    g.timedOut && "outline outline-[1.5px] -outline-offset-[1.5px] outline-primary",
-    g.bucket === "infra_failed" &&
-      "items-center justify-center border border-err text-caption leading-none text-err",
-    g.bucket === "grading" && "border border-dashed border-border-hover motion-safe:animate-pulse",
+    "relative flex flex-col overflow-hidden rounded-sm",
+    g.grey && "opacity-60 grayscale",
+    g.kind === "infra_failed" && "border border-dashed border-text-tertiary",
+    g.kind === "grading" && "border border-dashed border-border-hover motion-safe:animate-pulse",
   );
 }
 
@@ -256,16 +289,26 @@ export function cellLook(run: RunScore): string {
 export function CellFace({ run }: { run: RunScore }) {
   const g = runGlyph(run);
   const partial = g.judgeRange > 0;
+  if (g.kind === "infra_failed")
+    return (
+      <span
+        aria-hidden
+        data-part="infra"
+        className="size-full"
+        style={{ background: hatch("color-mix(in srgb, var(--color-heading) 10%, transparent)") }}
+      />
+    );
   return (
     <>
-      {g.bucket === "infra_failed" && <span aria-hidden>×</span>}
+      {/* A timed-out run's red cap, as on its strip column: it did not finish. */}
+      {g.cap && <span aria-hidden data-part="cap" className="absolute inset-x-0 top-0 z-10 h-[3px] bg-err" />}
       {!g.empty && (
         <>
           <span
             aria-hidden
             data-part={g.unmeasured ? "unmeasured" : partial ? "judge-range" : "judge"}
             className={cn(
-              "flex-1 rounded-t-[2px]",
+              "flex-1",
               g.unmeasured > 0 && "border border-b-0 border-dashed border-text-tertiary",
             )}
             style={
@@ -280,7 +323,7 @@ export function CellFace({ run }: { run: RunScore }) {
           />
           <span
             aria-hidden
-            className="flex-1 rounded-b-[2px]"
+            className="flex-1"
             style={{ background: mix("--color-data", run.deterministic ?? 0) }}
           />
         </>
