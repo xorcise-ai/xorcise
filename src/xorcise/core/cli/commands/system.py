@@ -55,7 +55,9 @@ def boot_reconcile_lines(view: dict[str, Any] | None, *, verbose: bool = False) 
     lines = []
     if parts:
         lines.append("boot reconcile: " + "; ".join(parts))
-    elif verbose:
+    if view.get("error"):  # done, but something was deliberately not checked
+        lines.append("[warn]boot reconcile[/warn]: " + escape(str(view["error"])))
+    elif not parts and verbose:
         lines.append("boot reconcile: nothing to recover")
     pending = [str(r) for r in view.get("release_pending") or ()]
     if pending:

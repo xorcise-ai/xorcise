@@ -38,8 +38,8 @@ _ROLES: dict[str, tuple[str, str, str, str]] = {
     "control": (
         "Control",
         "Run the API and control-plane services",
-        "This installation runs only the API and control-plane services. Run execution is "
-        "stubbed on this role — runs are accepted but never launched.",
+        "This installation runs only the API and control-plane services. It cannot launch "
+        "runs, pull or build missions, or release a run's environment.",
         _EXPERIMENTAL,
     ),
     "runner": (

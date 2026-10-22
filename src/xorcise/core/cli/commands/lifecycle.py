@@ -70,6 +70,7 @@ from xorcise.core.home import (
     write_runtime_ports,
     xorcise_home,
 )
+from xorcise.core.rest.runner_wiring import RUNNER_ROLES
 from xorcise.core.roles.boot import AppSpec
 
 
@@ -217,9 +218,10 @@ def _maybe_provision_headscale(
         # distributed topology keeps a local container here is not something this command can
         # establish, and refusing to start would break any setup that does work. The point is
         # that `up` must not imply run creation is ready when it cannot confirm that.
-        serves_runs = not getattr(settings, "use_stubs", False) and getattr(
-            settings, "role", "all"
-        ) in {"all", "runner"}
+        serves_runs = (
+            not getattr(settings, "use_stubs", False)
+            and getattr(settings, "role", "all") in RUNNER_ROLES
+        )
         if serves_runs:
             local = control_plane(getattr(settings, "headscale_container", "headscale"))
             if not local.ok:
@@ -289,6 +291,16 @@ def _apply_runtime_env(role: str, *, stub: bool, ports: dict[str, int] | None = 
             if getattr(s, f"{plane}_port") != value:
                 os.environ[_PLANE_ENV[plane]] = str(value)
     get_settings.cache_clear()
+
+
+def _refuse_loopback_only_distributed() -> None:
+    """Exit 1 when the distributed topology would listen on loopback only (#169)."""
+    from xorcise.core.roles.boot.role_all import distributed_bind_refusal
+
+    refusal = distributed_bind_refusal(get_settings())
+    if refusal is not None:
+        err_console.print(f"[err]error[/err]: {refusal}", highlight=False)
+        raise typer.Exit(1)
 
 
 def _role_bind_hosts(role: str, configured_host: str) -> list[str]:
@@ -424,6 +436,10 @@ def up(
     # surface ~20 lines in, after the home was created, the DB migrated and two RSA
     # keys generated — as a raw `docker compose … failed` with no remediation.
     _require_prerequisites(stub=stub)
+    # Before anything is written. A topology set in config.toml needs a home that already exists,
+    # so checking ahead of init_home misses nothing.
+    get_settings.cache_clear()
+    _refuse_loopback_only_distributed()
 
     init_home()
     scaffold_config(xorcise_home())

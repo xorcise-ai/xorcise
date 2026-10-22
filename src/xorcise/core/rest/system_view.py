@@ -44,7 +44,7 @@ _OWNER: dict[str, tuple[str, str]] = {
 # .importlinter (cli > roles > rest | frontend > …), so ROLE_MANIFEST.toml cannot be read
 # from here; this is a deliberate mirror, parity-checked against the manifest in the topology
 # lane. Docker + Headscale are listed for the roles that DRIVE them, which is what
-# rest/run_create.py::_use_real_docker already encodes ({"all", "runner"}).
+# rest/runner_wiring.py::RUNNER_ROLES already encodes.
 _ROLE_MODULES: dict[str, frozenset[str]] = {
     "all": frozenset({"rest", "otlp", "docker", "headscale"}),
     "control": frozenset({"rest"}),

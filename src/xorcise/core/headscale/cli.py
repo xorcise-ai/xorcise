@@ -180,12 +180,17 @@ class StubHeadscaleCli(HeadscaleCli):
 
 
 class DockerExecHeadscaleCli(HeadscaleCli):
-    """Real adapter: `docker exec -i <container> headscale <args>` (Headscale v0.28.x).
+    """Real adapter: `docker exec -i <container> headscale <args>` (Headscale TARGET_RELEASE).
 
     Version-specific behaviours: `preauthkeys create -u` wants the numeric user id;
     the distroless image has no shell, so policy is staged via `docker cp` then
     `policy check` -> `policy set` (atomic in database mode).
     """
+
+    # The release line these commands are written against. provision.HEADSCALE_IMAGE_TAG must
+    # stay on it (a unit test holds the two together): moving the pin to another line means
+    # re-checking every command above against that release first.
+    TARGET_RELEASE = "v0.29"
 
     def __init__(self, container: str = "headscale") -> None:
         self.container = container

@@ -25,8 +25,10 @@ DNS) live here now, in one place, exercised by every launch mode.
 
 from __future__ import annotations
 
-# Pinned to a client proven against headscale:stable. Bump when the control plane needs a newer
-# client; kept explicit (not "latest") so a run is reproducible and not at the mercy of upstream.
+# Pinned to a client proven against the pinned control plane (headscale.provision.
+# HEADSCALE_IMAGE_PIN; Headscale v0.29.x needs a client of v1.80.0 or later). Bump when the
+# control plane needs a newer client; kept explicit (not "latest") so a run is reproducible and
+# not at the mercy of upstream.
 TAILSCALE_CLIENT_VERSION = "1.98.9"
 
 # `%%NAME%%` placeholders are substituted below rather than via an f-string/`.format()` — the shell

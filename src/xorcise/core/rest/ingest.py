@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from xorcise.core.config import Settings
 from xorcise.core.rest.mission_pull import _use_real_docker
+from xorcise.core.rest.runner_wiring import require_runner
 
 if TYPE_CHECKING:
     from xorcise.core.catalog.source import CatalogSource
@@ -45,9 +46,12 @@ def _real_bundle_builder() -> BundleBuilder:
 
 
 def build_bundle_builder(settings: Settings) -> BundleBuilder:
-    """Real FusedImageBuilder on a Docker-owning role; StubBundleBuilder under use_stubs."""
+    """Real FusedImageBuilder on a Docker-owning role; StubBundleBuilder under use_stubs.
+    Raises RunnerUnavailableError on a server with no runner, whose stub builder would record a
+    mission as installed with no image ever built (#168)."""
     from xorcise.core.missions import StubBundleBuilder
 
+    require_runner(settings, "build missions")
     return _real_bundle_builder() if _use_real_docker(settings) else StubBundleBuilder()
 
 

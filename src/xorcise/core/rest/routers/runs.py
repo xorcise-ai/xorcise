@@ -161,7 +161,10 @@ def create_run(payload: RunCreate) -> RunCreatedEntry:
 
     Every failure maps to a clean JSON error (never a raw text/plain 500 that the CLI can't
     decode): the deps build + spine run share one try so the fail-loud
-    RuntimeError (Docker/Headscale unreachable) surfaces as a 503 with its remediation.
+    RuntimeError (Docker/Headscale unreachable) surfaces as a 503 with its remediation. So does
+    a server with no runner (RunnerUnavailableError, #168): the deps build refuses before a
+    mission is pulled or a run row written, where a stub used to answer 201 for a run that then
+    sat at `created` forever.
 
     The 201 response is RunCreatedEntry — a RunEntry superset that adds run_control_key so the
     agent can authenticate run-control calls. The key is NEVER returned by

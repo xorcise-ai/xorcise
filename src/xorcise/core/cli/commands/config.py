@@ -23,6 +23,7 @@ import typer
 from xorcise.core.cli._shared import app, console, emit_json, err_console
 from xorcise.core.cli._ux import DASH, _stdin_is_interactive, fail, field
 from xorcise.core.cli.rest_client import RestClient
+from xorcise.core.home import has_line_break
 
 config_app = typer.Typer(
     help="View and set evaluation settings (judge model, terrain model, network).",
@@ -95,7 +96,7 @@ def _resolve_key(key: str | None, key_stdin: object, *, command: str) -> str | N
             example=f"xorcise config {command} --key ''   # to clear it deliberately",
             code=2,
         )
-    if "\n" in from_stdin or "\r" in from_stdin:
+    if has_line_break(from_stdin):
         # An API key is one line, and only the ENDS are stripped — so `cat keyfile | …` on a file
         # with a second line sends the newline through. The server writes the value into
         # ~/.xorcise/.env unquoted: the newline splits the XORCISE_MODEL_KEY= line, dotenv reads
@@ -103,7 +104,9 @@ def _resolve_key(key: str | None, key_stdin: object, *, command: str) -> str | N
         # .env writer preserves for ever. Refuse it here rather than write a file that then has
         # to be repaired by hand.
         #
-        # The `\r` half is a live path, not a belt-and-braces addition: CPython opens POSIX
+        # The test is has_line_break, the server's own, so the two cannot disagree about what a
+        # line break is (\u2028 and the other separators splitlines honours count too). A bare
+        # `\r` is a live path, not a belt-and-braces addition: CPython opens POSIX
         # stdin with newline="\n", so universal-newline translation is Windows-only and a bare
         # CR arrives here verbatim — `printf 'a\rb' | xorcise config set-model --key-stdin`
         # is refused by this branch. Only click's test runner rewrites the CR, which is why the
@@ -299,10 +302,13 @@ verify it answers with: xorcise config test."""
     # Resolve the key BEFORE the "nothing to set" guard: `--key-stdin` alone is a complete
     # instruction, and the guard only sees it once the value has been read.
     key = _resolve_key(key, key_stdin, command="set-model")
-    if all(v is None for v in (key, base_url, name, timeout, transcript_max_tokens, tokenizer)):
+    if all(
+        v is None
+        for v in (key, base_url, name, timeout, transcript_max_tokens, span_max_tokens, tokenizer)
+    ):
         fail(
             "nothing to set — pass at least one of --name / --base-url / --key-stdin / "
-            "--timeout / --transcript-max-tokens / --tokenizer",
+            "--timeout / --transcript-max-tokens / --span-max-tokens / --tokenizer",
             example="xorcise config set-model --name gpt-4o-mini --key-stdin",
             code=2,
         )

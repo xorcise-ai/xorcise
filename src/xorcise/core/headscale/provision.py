@@ -15,8 +15,11 @@ import ipaddress
 import os
 import platform
 import re
+import secrets
+import shutil
 import socket
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +35,29 @@ _DATA_VOLUME = "xorcise-headscale-data"
 # fuse baked. This part-island cannot import runner.docker.build.ROUTER_PIN (island independence),
 # so the value is duplicated here; keep the two in step when bumping the router.
 ROUTER_IMAGE_PIN = "tailscale/tailscale:v1.102.2"
+
+# The Headscale image, PINNED by tag AND digest. `:stable` would hand a fresh install whatever
+# upstream released last, while DockerExecHeadscaleCli is written against one release's CLI
+# (its TARGET_RELEASE; a test keeps the two in step). The digest is the multi-arch index
+# (linux/amd64 + linux/arm64), so a pull gets the same build on every host and refuses a
+# re-pushed tag. Never bump below a release an install has already run: Headscale's database
+# migrations only go forward, the data volume outlives the container, and `ensure_up` refuses
+# that downgrade (_refuse_headscale_downgrade).
+HEADSCALE_IMAGE_TAG = "headscale/headscale:v0.29.5"
+HEADSCALE_IMAGE_DIGEST = "sha256:780ed2f9e85719a2211277433f2c8afb45105d0d25031949a6848a485f9e216d"
+HEADSCALE_IMAGE_PIN = f"{HEADSCALE_IMAGE_TAG}@{HEADSCALE_IMAGE_DIGEST}"
+# The image ids the pin may carry locally. The classic image store names an image by its
+# per-platform config digest, which `docker save` / `docker load` preserves (a loaded image has no
+# repo digest, so `tag@digest` alone would never match it offline); the containerd store names it
+# by the index digest. Bump these with the pin: `docker buildx imagetools inspect --raw` on each
+# platform manifest gives `config.digest`.
+_HEADSCALE_IMAGE_IDS = frozenset(
+    {
+        HEADSCALE_IMAGE_DIGEST,
+        "sha256:46a8a7728a6fa2774e093313fa587922f68e1b56dc82f8276117050f27661939",  # linux/amd64
+        "sha256:edd3681095a33fd0f76b1ee343571d3b5c2f7e263ea39da4d35be136f04faa8c",  # linux/arm64
+    }
+)
 _BEGIN = "# >>> xorcise headscale (managed) >>>"
 _END = "# <<< xorcise headscale (managed) <<<"
 
@@ -50,14 +76,103 @@ def cert_paths(workdir: Path, hostname: str) -> tuple[Path, Path, Path]:
     return certs / "ca.pem", certs / f"{hostname}.crt", certs / f"{hostname}.key"
 
 
-def _cert_has_ip_san(crt: Path, host_ip: str) -> bool:
-    """True if the server cert already carries *host_ip* as an IP SAN (freshness check)."""
-    out = subprocess.run(
-        ["openssl", "x509", "-in", str(crt), "-noout", "-text"],
+def ca_key_path(workdir: Path) -> Path:
+    """The CA private key. It lives in workdir/ca/, OUTSIDE certs/: certs/ is bind-mounted into
+    the Headscale container, and no container ever needs to sign anything."""
+    return workdir / "ca" / "ca.key"
+
+
+def _private_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    path.chmod(0o700)  # mkdir's mode is filtered by the umask; set it outright
+
+
+def _openssl(*args: str) -> str:
+    """Run openssl; its stdout, or ProvisionError carrying its stderr."""
+    r = subprocess.run(["openssl", *args], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise ProvisionError(f"openssl {' '.join(args)} failed:\n{r.stderr}")
+    return r.stdout
+
+
+def _cert_public_key(crt: Path) -> str:
+    return _openssl("x509", "-in", str(crt), "-noout", "-pubkey")
+
+
+def _key_public_key(key: Path) -> str:
+    return _openssl("pkey", "-in", str(key), "-pubout")
+
+
+def _migrate_legacy_ca_key(workdir: Path) -> None:
+    """Move a ca.key that an older release wrote into the mounted certs/ out to ca/.
+
+    The CA is kept, not rotated: rotating would break the TLS trust of any run in flight.
+    When both copies exist (an upgrade, a downgrade that re-minted, then this upgrade again),
+    the one that pairs with ca.pem is kept; ca/ wins a tie or an unreadable pair."""
+    legacy = workdir / "certs" / "ca.key"
+    if not legacy.exists():
+        return
+    key = ca_key_path(workdir)
+    _private_dir(key.parent)
+    if key.exists() and not _legacy_is_the_pair(workdir / "certs" / "ca.pem", legacy, key):
+        legacy.unlink()
+    else:
+        os.replace(legacy, key)  # same filesystem: atomic, never half-moved
+    key.chmod(0o600)
+
+
+def _legacy_is_the_pair(ca: Path, legacy: Path, key: Path) -> bool:
+    try:
+        ca_pub = _cert_public_key(ca)
+        return _key_public_key(legacy) == ca_pub and _key_public_key(key) != ca_pub
+    except ProvisionError:
+        return False
+
+
+# Re-mint a CA this close to its notAfter: every server cert it signs dies with it.
+_CA_MIN_REMAINING_SECONDS = 30 * 24 * 3600
+
+
+def _ca_reusable(ca: Path, ca_key: Path) -> bool:
+    """True if ca.pem and the CA key are one pair and the CA is not about to expire.
+
+    False (mint a new CA) only for a missing file, a genuine mismatch or an expiring CA. A
+    probe that FAILS raises instead: treating it as a mismatch would silently rotate the CA on
+    every `up`, breaking the trust of everything holding the current ca.pem."""
+    if not (ca.exists() and ca_key.exists()):
+        return False
+    try:
+        if _cert_public_key(ca) != _key_public_key(ca_key):
+            return False
+    except ProvisionError as exc:
+        raise ProvisionError(
+            f"cannot read the Headscale CA ({ca}, {ca_key}), so it can neither be reused nor "
+            "safely replaced. To mint a new CA, delete both files and run `xorcise up` again; "
+            f"runs in flight will lose their trust in the control plane.\n{exc}"
+        ) from exc
+    expiring = subprocess.run(
+        ["openssl", "x509", "-in", str(ca), "-noout", "-checkend", str(_CA_MIN_REMAINING_SECONDS)],
         capture_output=True,
-        text=True,
     )
-    return f"IP Address:{host_ip}" in out.stdout
+    return expiring.returncode == 0
+
+
+def _server_cert_current(ca: Path, crt: Path, key: Path, host_ip: str | None) -> bool:
+    """True if the server cert can be served as is: it pairs with its key, chains to ca.pem
+    (which also checks its validity window), and carries *host_ip* as an IP SAN.
+
+    Any failed probe reads as "not current", which only costs a re-sign with the same CA.
+    This is what heals a regeneration cut off before every file was replaced."""
+    if not (crt.exists() and key.exists()):
+        return False
+    try:
+        if _cert_public_key(crt) != _key_public_key(key):
+            return False
+        _openssl("verify", "-CAfile", str(ca), str(crt))
+        text = _openssl("x509", "-in", str(crt), "-noout", "-text")
+    except ProvisionError:
+        return False
+    return not host_ip or f"IP Address:{host_ip}" in text
 
 
 def _valid_ipv4(value: str) -> bool:
@@ -208,70 +323,102 @@ def default_host_ip(override: str | None = None) -> str:
     return ip
 
 
-def gen_certs(workdir: Path, hostname: str, host_ip: str | None = None) -> None:
-    """Self-signed CA + SAN-signed server cert into workdir/certs/ (idempotent).
+_STAGING_PREFIX = ".certs-staging-"
+
+
+def gen_certs(workdir: Path, hostname: str, host_ip: str | None = None) -> bool:
+    """Self-signed CA + SAN-signed server cert (idempotent). Returns whether it replaced them.
+
+    ca.pem and the server cert + key go to workdir/certs/, which is mounted into the Headscale
+    container; the CA key goes to workdir/ca/, which is mounted nowhere (see ca_key_path).
 
     When *host_ip* is given it is added as an IP SAN alongside the DNS name, so the
     tailnet join can target https://<ip>:443 and pass TLS without any /etc/hosts hostname
-    mapping. The DNS SAN is kept so the router's hostname-based join keeps validating."""
+    mapping. The DNS SAN is kept so the router's hostname-based join keeps validating.
+
+    A changed host IP re-signs only the server cert with the EXISTING CA. ca.pem stays
+    byte-identical, so everything that already trusts it (a run in flight, a router) keeps
+    validating. A new CA is minted only when there is none, its key is missing or does not
+    match it, or it is about to expire (_ca_reusable).
+
+    Everything is generated in a private staging dir beside certs/ (never inside the mount) and
+    renamed into place only once every step has succeeded, so a running container never sees a
+    key without its cert. A run cut off between two renames is healed on the next call by
+    _server_cert_current, which re-signs anything that does not chain to ca.pem.
+
+    Headscale reads its certificate only at startup, so a True return obliges the caller to
+    recreate the container (ensure_up does); otherwise it keeps serving the old cert."""
     ca, crt, key = cert_paths(workdir, hostname)
-    if ca.exists() and crt.exists() and (not host_ip or _cert_has_ip_san(crt, host_ip)):
-        # keep the cached cert only when it still carries the desired IP SAN. A changed
-        # host IP (DHCP / new network on macOS) must regenerate, or the by-IP TLS join would break.
-        return
+    workdir.mkdir(parents=True, exist_ok=True)
+    for stale in workdir.glob(f"{_STAGING_PREFIX}*"):
+        shutil.rmtree(stale, ignore_errors=True)  # left by a run killed mid-generation
+    _migrate_legacy_ca_key(workdir)
+    ca_key = ca_key_path(workdir)
+    ca_ok = _ca_reusable(ca, ca_key)
+    if ca_ok and _server_cert_current(ca, crt, key, host_ip):
+        return False
     certs = workdir / "certs"
     certs.mkdir(parents=True, exist_ok=True)
-    ca_key = certs / "ca.key"
-    csr = certs / "server.csr"
-    san = certs / "san.cnf"
-
-    def _ossl(*args: str) -> None:
-        r = subprocess.run(["openssl", *args], capture_output=True, text=True)
-        if r.returncode != 0:
-            raise ProvisionError(f"openssl {' '.join(args)} failed:\n{r.stderr}")
-
-    _ossl("genrsa", "-out", str(ca_key), "4096")
-    _ossl(
-        "req",
-        "-x509",
-        "-new",
-        "-nodes",
-        "-key",
-        str(ca_key),
-        "-sha256",
-        "-days",
-        "3650",
-        "-subj",
-        "/CN=XORCISE Headscale CA",
-        "-out",
-        str(ca),
-    )
-    _ossl("genrsa", "-out", str(key), "4096")
-    _ossl("req", "-new", "-key", str(key), "-subj", f"/CN={hostname}", "-out", str(csr))
-    alt = f"DNS:{hostname}"
-    if host_ip:
-        alt += f",IP:{host_ip}"  # by-IP join validates without a hosts mapping
-    san.write_text(f"subjectAltName={alt}\n")
-    _ossl(
-        "x509",
-        "-req",
-        "-in",
-        str(csr),
-        "-CA",
-        str(ca),
-        "-CAkey",
-        str(ca_key),
-        "-CAcreateserial",
-        "-days",
-        "3650",
-        "-sha256",
-        "-extfile",
-        str(san),
-        "-out",
-        str(crt),
-    )
-    for f in (csr, san, certs / "ca.srl"):
-        f.unlink(missing_ok=True)
+    _private_dir(ca_key.parent)
+    stage = Path(tempfile.mkdtemp(prefix=_STAGING_PREFIX, dir=workdir))  # 0700
+    try:
+        s_ca, s_ca_key = (ca, ca_key) if ca_ok else (stage / "ca.pem", stage / "ca.key")
+        if not ca_ok:
+            _openssl("genrsa", "-out", str(s_ca_key), "4096")
+            _openssl(
+                "req",
+                "-x509",
+                "-new",
+                "-nodes",
+                "-key",
+                str(s_ca_key),
+                "-sha256",
+                "-days",
+                "3650",
+                "-subj",
+                "/CN=XORCISE Headscale CA",
+                "-out",
+                str(s_ca),
+            )
+        s_key, s_crt, csr, san = (stage / n for n in ("server.key", "server.crt", "csr", "san"))
+        _openssl("genrsa", "-out", str(s_key), "4096")
+        _openssl("req", "-new", "-key", str(s_key), "-subj", f"/CN={hostname}", "-out", str(csr))
+        alt = f"DNS:{hostname}"
+        if host_ip:
+            alt += f",IP:{host_ip}"  # by-IP join validates without a hosts mapping
+        san.write_text(f"subjectAltName={alt}\n")
+        _openssl(
+            "x509",
+            "-req",
+            "-in",
+            str(csr),
+            "-CA",
+            str(s_ca),
+            "-CAkey",
+            str(s_ca_key),
+            # a fresh random serial per issue: the CA now outlives its server certs, and two
+            # certs with one serial from one issuer are rejected by some TLS clients. No serial
+            # file either, so nothing is left beside the key.
+            "-set_serial",
+            str(secrets.randbits(120)),
+            "-days",
+            "3650",
+            "-sha256",
+            "-extfile",
+            str(san),
+            "-out",
+            str(s_crt),
+        )
+        if not ca_ok:
+            s_ca_key.chmod(0o600)
+            os.replace(s_ca_key, ca_key)
+            os.replace(s_ca, ca)
+        s_key.chmod(0o600)
+        os.replace(s_key, key)
+        os.replace(s_crt, crt)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    return True
 
 
 def _strip_block_text(text: str) -> str:
@@ -425,6 +572,10 @@ def render_compose(
     pre-auth key is NOT written to the file — it stays as `${XORCISE_ORCH_AUTHKEY}` so `compose up`
     interpolates it from the subprocess env at runtime (same pattern as the per-run router's
     `${XORCISE_AUTHKEY}` in netoverride.py).
+
+    Each container mounts only what it reads: Headscale gets certs/ (ca.pem plus its own server
+    cert and key), the router gets ca.pem alone. The CA key is in workdir/ca/, which no service
+    mounts.
     """
     if not host_ip:
         # ensure_up always resolves a real IP via default_host_ip (or raises), so an empty
@@ -462,13 +613,13 @@ def render_compose(
       - TS_STATE_DIR=/var/lib/tailscale
       - SSL_CERT_FILE=/etc/headscale/certs/ca.pem
     volumes:
-      - {workdir}/certs:/etc/headscale/certs:ro
+      - {workdir}/certs/ca.pem:/etc/headscale/certs/ca.pem:ro
     restart: unless-stopped"""
 
     return f"""\
 services:
   headscale:
-    image: headscale/headscale:stable
+    image: {HEADSCALE_IMAGE_TAG}
     container_name: {CONTAINER}
     command: serve
     restart: unless-stopped
@@ -511,6 +662,66 @@ def _compose(workdir: Path, *args: str, extra_env: dict[str, str] | None = None)
         raise ProvisionError(f"docker compose {' '.join(args)} failed:\n{r.stderr or r.stdout}")
 
 
+def _image_id(ref: str) -> str:
+    r = subprocess.run(
+        ["docker", "image", "inspect", "--format", "{{.Id}}", ref], capture_output=True, text=True
+    )
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def _ensure_pinned_image() -> None:
+    """Make HEADSCALE_IMAGE_TAG name the pinned build locally, pulling it only if it does not.
+
+    compose names the image by its plain tag and finds it here, so it never pulls. Checking the
+    local image by id, not by `tag@digest`, keeps an image brought in with `docker load` usable
+    on a host with no registry (a loaded image has no repo digest), while a tag that names any
+    other build is still refused. Pulling by digest stores the image untagged, which a routine
+    `docker image prune` would delete after `xorcise down`; re-tagging it keeps it."""
+    if _image_id(HEADSCALE_IMAGE_TAG) in _HEADSCALE_IMAGE_IDS:
+        return
+    pulled = subprocess.run(["docker", "pull", HEADSCALE_IMAGE_PIN], capture_output=True, text=True)
+    if pulled.returncode != 0:
+        raise ProvisionError(
+            f"the pinned Headscale image {HEADSCALE_IMAGE_PIN} is not present and could not be "
+            "pulled. On a host without registry access, `docker pull` it on one that has it, "
+            f"`docker save` it, and `docker load` it here.\n{pulled.stderr}"
+        )
+    subprocess.run(["docker", "tag", HEADSCALE_IMAGE_PIN, HEADSCALE_IMAGE_TAG], capture_output=True)
+    if _image_id(HEADSCALE_IMAGE_TAG) not in _HEADSCALE_IMAGE_IDS:
+        raise ProvisionError(f"could not tag the pulled Headscale image as {HEADSCALE_IMAGE_TAG}")
+
+
+def _release(version_text: str) -> tuple[int, ...] | None:
+    found = re.search(r"v?(\d+)\.(\d+)\.(\d+)", version_text)
+    return tuple(int(n) for n in found.groups()) if found else None
+
+
+def _refuse_headscale_downgrade() -> None:
+    """Refuse to recreate the control plane on an older Headscale than the one it runs.
+
+    Headscale's database migrations only go forward: an install that ran a newer `:stable`
+    before the pin (or a later XORCISE) has a schema the pinned release cannot read. An unknown
+    version (no container, or a build that does not report one) is not a reason to refuse."""
+    image = subprocess.run(
+        ["docker", "inspect", "--format", "{{.Image}}", CONTAINER], capture_output=True, text=True
+    ).stdout.strip()
+    if not image or image in _HEADSCALE_IMAGE_IDS:
+        return
+    out = subprocess.run(
+        ["docker", "run", "--rm", image, "version"], capture_output=True, text=True
+    )
+    running, pinned = _release(out.stdout), _release(HEADSCALE_IMAGE_TAG)
+    if running and pinned and running > pinned:
+        have = ".".join(map(str, running))
+        want = ".".join(map(str, pinned))
+        raise ProvisionError(
+            f"the local Headscale runs v{have}, newer than the v{want} this XORCISE release "
+            "pins, and its database cannot move back to an older release. Use the XORCISE "
+            "release that pins it, or reset the control plane with `xorcise down` (this deletes "
+            "its tailnet state) and run `xorcise up` again."
+        )
+
+
 def _wait_healthy(retries: int) -> None:
     for _ in range(retries):
         ok = subprocess.run(
@@ -542,8 +753,9 @@ def _mint_orchestrator_key(orchestrator_user: str) -> str:
     """Mint a reusable 24-hour pre-auth key for the orchestrator router node.
 
     Mirrors DockerExecHeadscaleCli.create_preauth_key:
-      1. Fetch the numeric user id via `headscale users list -o json` (Headscale v0.28.x
-         requires a numeric uid for `preauthkeys create -u`).
+      1. Fetch the numeric user id via `headscale users list -o json` (Headscale v0.28 and
+         later, including the pinned HEADSCALE_IMAGE_TAG, require a numeric uid for
+         `preauthkeys create -u`).
       2. Run `headscale preauthkeys create -u {uid} -e 24h --reusable -o json`.
       3. Parse and return `data["key"]`.
 
@@ -618,10 +830,17 @@ def ensure_up(
     (workdir / "compose.yaml").write_text(
         render_compose(workdir, hostname, collector_route=collector_route, host_ip=ip)
     )
-    gen_certs(workdir, hostname, host_ip=ip)  # IP SAN → by-IP tailnet join
+    # Both checks run before the certs are touched: one that fails after gen_certs replaced
+    # them would leave the next `up` seeing current certs and never recreating Headscale.
+    _refuse_headscale_downgrade()
+    _ensure_pinned_image()  # compose then finds it locally and never pulls
+    renewed = gen_certs(workdir, hostname, host_ip=ip)  # IP SAN → by-IP tailnet join
     # Step 2: Bring up headscale only first so we can wait for it to be healthy before minting
     # the orchestrator key. The router service is declared in compose.yaml but not started yet.
-    _compose(workdir, "up", "-d", "headscale")
+    # Headscale loads its cert only at startup and compose sees no config change when only the
+    # cert files changed, so a renewed cert forces the recreate; otherwise the router (recreated
+    # on every `up`) would trust only the new ca.pem and sit at NeedsLogin.
+    _compose(workdir, "up", "-d", *(("--force-recreate",) if renewed else ()), "headscale")
     # Step 3: Wait for headscale to be ready.
     _wait_healthy(health_retries)
     # Step 4: Ensure the orchestrator Headscale user exists.

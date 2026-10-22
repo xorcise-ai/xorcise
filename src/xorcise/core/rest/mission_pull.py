@@ -34,6 +34,7 @@ from xorcise.core.contracts.errors import (
     PullCancelled,
     PullError,
 )
+from xorcise.core.rest.runner_wiring import RUNNER_ROLES, require_runner
 
 log = logging.getLogger(__name__)
 
@@ -116,7 +117,7 @@ class PullDeps:
 
 def _use_real_docker(settings: Settings) -> bool:
     """Real Docker iff this process owns the Docker plane and stubs aren't forced."""
-    return not settings.use_stubs and settings.role in {"all", "runner"}
+    return not settings.use_stubs and settings.role in RUNNER_ROLES
 
 
 def _real_docker_driver() -> DockerDriver:
@@ -157,10 +158,14 @@ def build_pull_deps(settings: Settings, *, use_docker: bool | None = None) -> Pu
     """Wire the pull deps. The catalog source is the real HTTP client when `catalog_url` is set,
     else the offline stub — no silent stub fallback when a remote is configured. The
     driver defaults to REAL on a Docker-owning role: `use_docker=None` derives from
-    settings (role + use_stubs); pass an explicit bool to override (tests inject False)."""
+    settings (role + use_stubs); pass an explicit bool to override (tests inject False).
+    Raises RunnerUnavailableError on a server with no runner: its stub driver would record a
+    mission as installed with no image ever pulled (#168)."""
     from xorcise.core.rest.catalog_view import build_catalog_source
     from xorcise.core.runner.docker import StubDockerDriver
 
+    if use_docker is None:
+        require_runner(settings, "pull missions")
     real = _use_real_docker(settings) if use_docker is None else use_docker
     driver = _real_docker_driver() if real else StubDockerDriver()
     return PullDeps(

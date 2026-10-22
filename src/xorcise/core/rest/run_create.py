@@ -34,6 +34,7 @@ from xorcise.core.contracts.run import RunEntry
 from xorcise.core.missions import get_installed
 from xorcise.core.rest.mission_pull import PullDeps, build_pull_deps, pull_mission
 from xorcise.core.rest.reconcile import first_line, release_reservation
+from xorcise.core.rest.runner_wiring import RUNNER_ROLES, require_runner
 from xorcise.core.runcontrol.intel_policy import allowed_intel
 from xorcise.core.runs.observed import (
     InMemoryObservedFactsStore,
@@ -147,7 +148,11 @@ CONTROL_API_KEY = "local"
 
 def _use_real_headscale(settings: Settings) -> bool:
     """Real fence iff this process owns the Headscale plane and stubs aren't forced."""
-    return not settings.use_stubs and settings.role in {"all", "runner"}
+    return not settings.use_stubs and settings.role in RUNNER_ROLES
+
+
+# The action a release names when this server has no runner to do it (#168).
+RELEASE = "release a run's environment"
 
 
 def _probe_headscale(cli: HeadscaleCli, container: str) -> None:
@@ -219,20 +224,24 @@ def build_teardown_fence(settings: Settings) -> NetworkFencePort:
 
     Separate from build_run_create_deps so a release builds only the plane it is about to use.
     Built together, a down Headscale raised before the Docker half existed, and the run's
-    container leaked although Docker was fine. Raises if Headscale is unreachable."""
+    container leaked although Docker was fine. Raises if Headscale is unreachable, and
+    RunnerUnavailableError on a server with no runner, whose stub fence would report the nodes
+    removed while they stay up (#168)."""
+    require_runner(settings, RELEASE)
     return _build_fence(settings, fence_real=_use_real_headscale(settings))
 
 
 def build_teardown_control(settings: Settings) -> ControlPort:
     """The control port alone, for releasing a run's container (#173). It skips what only a create
     needs (the nesting and base checks, the subnet lister), and a down Headscale cannot stop it.
-    Raises if Docker is unreachable."""
+    Raises if Docker is unreachable, and RunnerUnavailableError on a server with no runner."""
     from xorcise.core.orchestration.clients.control import (
         InProcessControlStub,
         RunnerControlAdapter,
     )
     from xorcise.core.rest.mission_pull import _real_docker_driver, _use_real_docker
 
+    require_runner(settings, RELEASE)
     if not _use_real_docker(settings):
         return InProcessControlStub(api_key=CONTROL_API_KEY)
     from xorcise.core.runner.service import RunnerControlService
@@ -249,8 +258,9 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
     Real-by-default: `use_docker=None` derives from settings — real DockerSdkDriver-backed
     control (`_use_real_docker`) and the real DockerExecHeadscaleCli fence
     (`_use_real_headscale`) on a Docker/Headscale-owning role (`all`/`runner`), stub
-    when `use_stubs` is set or the role doesn't own the plane. An explicit `use_docker` bool
-    overrides both (tests inject False; the integration loop passes True).
+    when `use_stubs` is set. An explicit `use_docker` bool overrides both (tests inject False;
+    the integration loop passes True). Raises RunnerUnavailableError on a server with no runner,
+    whose stub control port would accept a run, start nothing and report it ready forever (#168).
     """
     # Lazy by design: wiring the concrete adapters is the ONE place the server touches the
     # headscale/runner planes. Keeping these out of module scope lets the control plane
@@ -261,6 +271,8 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
     )
     from xorcise.core.rest.mission_pull import _real_docker_driver, _use_real_docker
 
+    if use_docker is None:
+        require_runner(settings, "launch runs")
     control_real = _use_real_docker(settings) if use_docker is None else use_docker
     fence_real = _use_real_headscale(settings) if use_docker is None else use_docker
 
