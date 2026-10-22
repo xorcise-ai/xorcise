@@ -4263,6 +4263,174 @@
         "title": "RunResultView",
         "type": "object"
       },
+      "RunScore": {
+        "description": "One finished run, as the performance views draw it.",
+        "properties": {
+          "agent_id": {
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "bucket": {
+            "enum": [
+              "scored",
+              "no_judge",
+              "ended_early",
+              "infra_failed",
+              "grading"
+            ],
+            "title": "Bucket",
+            "type": "string"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_version": {
+            "title": "Current Version",
+            "type": "boolean"
+          },
+          "deterministic": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deterministic"
+          },
+          "judge": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge"
+          },
+          "judge_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge Model"
+          },
+          "judge_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ok",
+                  "partial",
+                  "model-not-configured",
+                  "unavailable"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge Status"
+          },
+          "judge_upper": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge Upper"
+          },
+          "mission": {
+            "title": "Mission",
+            "type": "string"
+          },
+          "mission_version": {
+            "title": "Mission Version",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "completed",
+              "partial",
+              "infra_failed"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "overall": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overall"
+          },
+          "overall_upper": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overall Upper"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "terminal_trigger": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Trigger"
+          }
+        },
+        "required": [
+          "run_id",
+          "agent_id",
+          "mission",
+          "mission_version",
+          "current_version",
+          "created_at",
+          "outcome",
+          "bucket"
+        ],
+        "title": "RunScore",
+        "type": "object"
+      },
       "RunStats": {
         "description": "Per-run telemetry snapshot (XOR run-report). Agent-self-reported \u2192 display/comparison only,\npersisted beside the grade; NEVER an observed fact, NEVER a grading input.",
         "properties": {
@@ -4432,6 +4600,172 @@
           }
         },
         "title": "ScoreBreakdown",
+        "type": "object"
+      },
+      "ScoreSummary": {
+        "description": "A group of finished runs (one agent, one mission version, or one agent on one mission\nversion), summarised by the rules in `ScoreBucket`.",
+        "properties": {
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "best": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Best"
+          },
+          "completed": {
+            "default": 0,
+            "title": "Completed",
+            "type": "integer"
+          },
+          "current_version": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Version"
+          },
+          "ended_early": {
+            "default": 0,
+            "title": "Ended Early",
+            "type": "integer"
+          },
+          "grading": {
+            "default": 0,
+            "title": "Grading",
+            "type": "integer"
+          },
+          "infra_failed": {
+            "default": 0,
+            "title": "Infra Failed",
+            "type": "integer"
+          },
+          "judge_gap": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge Gap"
+          },
+          "judge_models": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Judge Models",
+            "type": "array"
+          },
+          "last_run": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Run"
+          },
+          "median": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median"
+          },
+          "mission": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mission"
+          },
+          "mission_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mission Version"
+          },
+          "no_judge": {
+            "default": 0,
+            "title": "No Judge",
+            "type": "integer"
+          },
+          "partial_judge": {
+            "default": 0,
+            "title": "Partial Judge",
+            "type": "integer"
+          },
+          "q1": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Q1"
+          },
+          "q3": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Q3"
+          },
+          "runs": {
+            "default": 0,
+            "title": "Runs",
+            "type": "integer"
+          },
+          "scored": {
+            "default": 0,
+            "title": "Scored",
+            "type": "integer"
+          }
+        },
+        "title": "ScoreSummary",
         "type": "object"
       },
       "SubmitArtifactRequest": {
@@ -6423,6 +6757,161 @@
         "summary": "Update",
         "tags": [
           "missions"
+        ]
+      }
+    },
+    "/api/results/runs": {
+      "get": {
+        "description": "Every finished run, oldest first, with its scores and how it counts (`bucket`).\n\n`agent` (an agent id) and `mission` (a mission slug) narrow it. A run still in progress is\nnot listed; one still being graded is, as `grading`.",
+        "operationId": "run_scores_api_results_runs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "agent",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agent"
+            }
+          },
+          {
+            "in": "query",
+            "name": "mission",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Mission"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RunScore"
+                  },
+                  "title": "Response Run Scores Api Results Runs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Scores",
+        "tags": [
+          "results"
+        ]
+      }
+    },
+    "/api/results/summary": {
+      "get": {
+        "description": "Finished runs summarised per agent, per mission version (`mission`), or per agent on each\nmission version (`mission_agent`).\n\nThe median is over runs that finished on the agent's own terms and were graded with a judge,\na partly-judged run counting at its lower bound. Runs with no judge, runs that ended early,\nenvironment failures and runs still grading are counted separately and never in it.",
+        "operationId": "score_summary_api_results_summary_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "by",
+            "required": false,
+            "schema": {
+              "default": "agent",
+              "enum": [
+                "agent",
+                "mission",
+                "mission_agent"
+              ],
+              "title": "By",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agent",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agent"
+            }
+          },
+          {
+            "in": "query",
+            "name": "mission",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Mission"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ScoreSummary"
+                  },
+                  "title": "Response Score Summary Api Results Summary Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Score Summary",
+        "tags": [
+          "results"
         ]
       }
     },

@@ -4,6 +4,7 @@ and are cascade-deleted with it."""
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Collection
 from typing import cast, get_args
 from uuid import uuid4
@@ -14,6 +15,8 @@ from xorcise.core.contracts.grading import GradeResult, JudgeStatus
 from xorcise.core.contracts.reporting import AgentHistoryEntry, ResultConditions, RunStats
 from xorcise.core.db import session_scope
 from xorcise.core.reporting.models import ResultRow
+
+log = logging.getLogger(__name__)
 
 
 def _judge_status(row: ResultRow) -> JudgeStatus | None:
@@ -118,6 +121,27 @@ def get_result(run_id: str) -> GradeResult | None:
         if row is None or not row.detail_json:
             return None
         return GradeResult.model_validate_json(row.detail_json)
+
+
+def recorded_grades(agent_id: str | None = None) -> dict[str, tuple[GradeResult, str | None]]:
+    """Every recorded grade with the judge model it was produced under, by run id: one query for
+    the performance views instead of one `/result` read per run. A grade that cannot be read back
+    is left out, so its run reads as not graded yet rather than as a score."""
+    query = select(ResultRow)
+    if agent_id is not None:
+        query = query.where(ResultRow.agent_id == agent_id)
+    grades: dict[str, tuple[GradeResult, str | None]] = {}
+    with session_scope() as s:
+        for row in s.scalars(query):
+            if not row.detail_json:
+                continue
+            try:
+                grade = GradeResult.model_validate_json(row.detail_json)
+            except ValueError:
+                log.warning("result for run %s cannot be read back; skipped", row.run_id)
+                continue
+            grades[row.run_id] = (grade, row.judge_model)
+    return grades
 
 
 def get_stats(run_id: str) -> RunStats | None:

@@ -24,9 +24,11 @@ from xorcise.core.reporting.repository import (
     held_run_ids,
     put_stats,
     record_result,
+    recorded_grades,
     result_conditions,
     result_partial,
 )
+from xorcise.core.reporting.scores import score_rows, summarize
 
 __all__ = [
     "ReportArtifact",
@@ -40,10 +42,13 @@ __all__ = [
     "held_run_ids",
     "put_stats",
     "record_result",
+    "recorded_grades",
     "render_html",
     "render_markdown",
     "report_filename",
     "result_conditions",
     "result_partial",
+    "score_rows",
+    "summarize",
     "telemetry_window_cell",
 ]
