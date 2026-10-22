@@ -125,3 +125,73 @@ class RunStats(BaseModel):
     # Results page and the replay never disagree about the same run. None on snapshots persisted
     # before this field existed — treated as stale.
     projection: str | None = None
+
+
+# ── run performance views (GET /results/runs, GET /results/summary) ──────────────────────────────
+
+#: How one finished run counts in a performance summary. Decided once, by the server, so the run
+#: strip, the agreement plot, the ledger and the CLI cannot count the same run differently.
+#: - `scored`: finished on the agent's own terms and graded with a judge — fully, or partly, in
+#:   which case `overall` is the lower bound. The only runs in the median.
+#: - `no_judge`: finished and graded, but the judge never ran (`unavailable` /
+#:   `model-not-configured`), so half the score is unmeasured. Out of the median, disclosed.
+#: - `ended_early`: timed out or stopped by an operator (`outcome` partial). Graded on what it
+#:   did, but not on its own terms. Out of the median, disclosed.
+#: - `infra_failed`: cut short by an environment failure. Never graded, not the agent's attempt.
+#: - `grading`: finished, grade not recorded yet.
+ScoreBucket = Literal["scored", "no_judge", "ended_early", "infra_failed", "grading"]
+
+
+class RunScore(BaseModel):
+    """One finished run, as the performance views draw it."""
+
+    run_id: str
+    agent_id: str
+    mission: str
+    # The version label the GUI already shows as `v…`: the creator SemVer, else the local install
+    # revision. Its checks and rubric can differ from another version's, so the views keep each
+    # version apart.
+    mission_version: str
+    # False when the run was on a version that is no longer the installed one (or, for a mission
+    # no longer installed, no longer the newest version it was run on).
+    current_version: bool
+    created_at: datetime
+    completed_at: datetime | None = None
+    outcome: Literal["completed", "partial", "infra_failed"]
+    terminal_trigger: str | None = None
+    bucket: ScoreBucket
+    deterministic: float | None = None
+    judge: float | None = None
+    judge_upper: float | None = None  # set only when the judge scored part of its rubric
+    # contracts.grading.JudgeStatus, spelled out (a contracts module imports nothing internal).
+    judge_status: Literal["ok", "partial", "model-not-configured", "unavailable"] | None = None
+    overall: float | None = None
+    overall_upper: float | None = None
+    judge_model: str | None = None
+
+
+class ScoreSummary(BaseModel):
+    """A group of finished runs (one agent, one mission version, or one agent on one mission
+    version), summarised by the rules in `ScoreBucket`."""
+
+    agent_id: str | None = None
+    mission: str | None = None
+    mission_version: str | None = None
+    current_version: bool | None = None
+    runs: int = 0
+    completed: int = 0  # finished on the agent's own terms
+    scored: int = 0  # in the median
+    partial_judge: int = 0  # of `scored`, judged on part of the rubric (counted at lower bound)
+    no_judge: int = 0
+    ended_early: int = 0
+    infra_failed: int = 0
+    grading: int = 0
+    median: float | None = None
+    q1: float | None = None  # the middle half of `scored`, for a spread
+    q3: float | None = None
+    best: float | None = None
+    # Mean of (judge - deterministic) over `scored` runs whose judge scored the whole rubric:
+    # negative when the judge rates the runs below what the checks gave them.
+    judge_gap: float | None = None
+    judge_models: tuple[str, ...] = ()
+    last_run: datetime | None = None
