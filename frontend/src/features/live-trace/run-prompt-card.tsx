@@ -58,7 +58,7 @@ function ModeToggle({
 function CorrelationNote({ correlation }: { correlation?: string }) {
   if (correlation === "resource-attr") {
     return (
-      <p className="flex max-w-[68ch] items-start gap-1.5 text-body text-primary">
+      <p className="flex items-start gap-1.5 text-body text-primary">
         <Check className="mt-1 size-3.5 shrink-0" aria-hidden />
         <span>
           This harness&rsquo;s traces will correlate to <em>this</em> run —{" "}
@@ -69,7 +69,7 @@ function CorrelationNote({ correlation }: { correlation?: string }) {
     );
   }
   return (
-    <p className="max-w-[68ch] text-body text-text-secondary">
+    <p className="text-body text-text-secondary">
       Best-effort correlation via the prompt marker only — some trace batches may not attach
       to this run.
     </p>
@@ -221,7 +221,7 @@ export function RunPromptCard({
             <>
               <ModeToggle modes={launchModes} active={launchMode} onSelect={setLaunchMode} />
               <CorrelationNote correlation={correlation} />
-              <p className="max-w-[68ch] text-body text-text-secondary">
+              <p className="text-body text-text-secondary">
                 Run this single block — it exports the telemetry env and this run’s token, then
                 starts the harness with this run’s prompt embedded, so it reports back to{" "}
                 <em>this</em> run.
@@ -296,7 +296,7 @@ export function RunPromptCard({
           ) : (
             /* ── Prompt-only harness: copyable prompt + (optional) telemetry-env block ── */
             <>
-              <p className="max-w-[68ch] text-body text-text-secondary">
+              <p className="text-body text-text-secondary">
                 Copy this prompt and paste it into your agent to begin the run. It carries the run
                 id, so your agent reports back to <em>this</em> run.
               </p>
@@ -321,7 +321,7 @@ export function RunPromptCard({
                   </div>
                   <ModeToggle modes={launchModes} active={launchMode} onSelect={setLaunchMode} />
                   <CorrelationNote correlation={correlation} />
-                  <p className="max-w-[68ch] text-body text-text-secondary">
+                  <p className="text-body text-text-secondary">
                     Export these before launching your agent (the reference <code>demo.py</code>,
                     or <code>set -a; source launch.env; set +a</code>) so it ships traces to this
                     run’s collector. Not needed for prompt-only agents.

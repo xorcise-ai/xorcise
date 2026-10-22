@@ -187,7 +187,7 @@ export function ResultsView({ runId }: { runId: string | null }) {
                   <p className="text-body font-medium text-foreground">
                     Partial — {run.data?.status.label ?? "did not finish"}
                   </p>
-                  <p className="mt-2 max-w-[70ch] text-body text-text-secondary">
+                  <p className="mt-2 text-body text-text-secondary">
                     {run.data?.status.detail ??
                       "This run did not finish on the agent's own terms."}{" "}
                     Scores below reflect only what was completed.

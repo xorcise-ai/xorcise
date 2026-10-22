@@ -448,7 +448,7 @@ export function RunLive({ runId }: { runId: string | null }) {
           >
             {r.status.label}
           </p>
-          <p className="mt-2 max-w-[68ch] text-body text-text-secondary">
+          <p className="mt-2 text-body text-text-secondary">
             {r.status.detail}
           </p>
           {r.terminal_detail && (

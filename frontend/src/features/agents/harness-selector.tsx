@@ -224,7 +224,7 @@ export function HarnessSelector({
         </div>
       </div>
       {!unrecognised && (
-        <p className={cn("max-w-[68ch] text-dense text-text-tertiary", compact && "xl:text-caption")}>
+        <p className={cn("text-dense text-text-tertiary", compact && "xl:text-caption")}>
           {help}
         </p>
       )}

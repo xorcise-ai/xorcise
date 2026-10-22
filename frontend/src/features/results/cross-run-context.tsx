@@ -43,7 +43,7 @@ export function CrossRunContext({
           <h2 className="mb-2 text-label uppercase text-text-tertiary">
             Cross-run context
           </h2>
-          <p className="max-w-[68ch] text-body text-text-secondary">
+          <p className="text-body text-text-secondary">
             First run for this agent on this mission — no prior results to compare against yet.
           </p>
         </CardContent>
