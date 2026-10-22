@@ -16,6 +16,7 @@ from xorcise.core.config import get_settings
 from xorcise.core.contracts.reporting import RunScore, ScoreSummary
 from xorcise.core.missions.runtime import get_installed
 from xorcise.core.reporting.scores import GroupBy
+from xorcise.core.runcontrol.store import disclosed_intel_counts
 
 router = APIRouter(prefix="/results", tags=["results"])
 
@@ -31,7 +32,9 @@ def _score_rows(agent: str | None, mission: str | None) -> list[RunScore]:
     for slug in {r.mission for r in entries}:
         if (ic := get_installed(slug, root)) is not None:
             installed[slug] = ic.mission_version or str(ic.install_revision)
-    return reporting.score_rows(entries, reporting.recorded_grades(agent), installed)
+    return reporting.score_rows(
+        entries, reporting.recorded_grades(agent), installed, disclosed_intel_counts()
+    )
 
 
 @router.get("/runs", response_model=list[RunScore])
@@ -47,10 +50,10 @@ def run_scores(agent: str | None = None, mission: str | None = None) -> list[Run
 def score_summary(
     by: GroupBy = "agent", agent: str | None = None, mission: str | None = None
 ) -> list[ScoreSummary]:
-    """Finished runs summarised per agent, per mission version (`mission`), or per agent on each
-    mission version (`mission_agent`).
+    """Finished runs summarised as one group (`all`), per agent, per mission version (`mission`),
+    or per agent on each mission version (`mission_agent`).
 
-    The median is over runs that finished on the agent's own terms and were graded with a judge,
-    a partly-judged run counting at its lower bound. Runs with no judge, runs that ended early,
-    environment failures and runs still grading are counted separately and never in it."""
+    The median is over runs graded with a judge, a partly-judged run counting at its lower bound.
+    A run that timed out is in it, at the score it earned. Runs with no judge, runs an operator
+    stopped, environment failures and runs still grading are counted separately and never in it."""
     return reporting.summarize(_score_rows(agent, mission), by)

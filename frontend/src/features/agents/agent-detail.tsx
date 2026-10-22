@@ -146,7 +146,6 @@ export function AgentDetail({ name }: { name: string | null }) {
           <section>
             <SectionHeading>Performance</SectionHeading>
             <AgentPerformance
-              history={history.data ?? []}
               summary={overall.data?.[0]}
               ledger={ledger}
             />

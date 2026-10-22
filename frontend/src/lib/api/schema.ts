@@ -675,12 +675,12 @@ export interface paths {
         };
         /**
          * Score Summary
-         * @description Finished runs summarised per agent, per mission version (`mission`), or per agent on each
-         *     mission version (`mission_agent`).
+         * @description Finished runs summarised as one group (`all`), per agent, per mission version (`mission`),
+         *     or per agent on each mission version (`mission_agent`).
          *
-         *     The median is over runs that finished on the agent's own terms and were graded with a judge,
-         *     a partly-judged run counting at its lower bound. Runs with no judge, runs that ended early,
-         *     environment failures and runs still grading are counted separately and never in it.
+         *     The median is over runs graded with a judge, a partly-judged run counting at its lower bound.
+         *     A run that timed out is in it, at the score it earned. Runs with no judge, runs an operator
+         *     stopped, environment failures and runs still grading are counted separately and never in it.
          */
         get: operations["score_summary_api_results_summary_get"];
         put?: never;
@@ -3234,7 +3234,7 @@ export interface components {
              * Bucket
              * @enum {string}
              */
-            bucket: "scored" | "no_judge" | "ended_early" | "infra_failed" | "grading";
+            bucket: "scored" | "no_judge" | "stopped" | "infra_failed" | "grading";
             /** Completed At */
             completed_at?: string | null;
             /**
@@ -3246,6 +3246,11 @@ export interface components {
             current_version: boolean;
             /** Deterministic */
             deterministic?: number | null;
+            /**
+             * Intel Disclosed
+             * @default 0
+             */
+            intel_disclosed: number;
             /** Judge */
             judge?: number | null;
             /** Judge Model */
@@ -3271,6 +3276,11 @@ export interface components {
             run_id: string;
             /** Terminal Trigger */
             terminal_trigger?: string | null;
+            /**
+             * Timed Out
+             * @default false
+             */
+            timed_out: boolean;
         };
         /**
          * RunStats
@@ -3378,12 +3388,17 @@ export interface components {
         };
         /**
          * ScoreSummary
-         * @description A group of finished runs (one agent, one mission version, or one agent on one mission
-         *     version), summarised by the rules in `ScoreBucket`.
+         * @description A group of finished runs (every run, one agent, one mission version, or one agent on one
+         *     mission version), summarised by the rules in `ScoreBucket`.
          */
         ScoreSummary: {
             /** Agent Id */
             agent_id?: string | null;
+            /**
+             * Assisted
+             * @default 0
+             */
+            assisted: number;
             /** Best */
             best?: number | null;
             /**
@@ -3393,11 +3408,6 @@ export interface components {
             completed: number;
             /** Current Version */
             current_version?: boolean | null;
-            /**
-             * Ended Early
-             * @default 0
-             */
-            ended_early: number;
             /**
              * Grading
              * @default 0
@@ -3417,6 +3427,10 @@ export interface components {
             judge_models: string[];
             /** Last Run */
             last_run?: string | null;
+            /** Mean Deterministic */
+            mean_deterministic?: number | null;
+            /** Mean Judge */
+            mean_judge?: number | null;
             /** Median */
             median?: number | null;
             /** Mission */
@@ -3447,6 +3461,16 @@ export interface components {
              * @default 0
              */
             scored: number;
+            /**
+             * Stopped
+             * @default 0
+             */
+            stopped: number;
+            /**
+             * Timed Out
+             * @default 0
+             */
+            timed_out: number;
         };
         /** SubmitArtifactRequest */
         SubmitArtifactRequest: {
@@ -4717,7 +4741,7 @@ export interface operations {
     score_summary_api_results_summary_get: {
         parameters: {
             query?: {
-                by?: "agent" | "mission" | "mission_agent";
+                by?: "all" | "agent" | "mission" | "mission_agent";
                 agent?: string | null;
                 mission?: string | null;
             };

@@ -3,7 +3,8 @@ import { screen, waitFor } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { server } from "@/test/msw/server";
 import { renderWithProviders } from "@/test/render";
-import { agentFixture, runFixture } from "@/test/fixtures";
+import { agentFixture, runFixture, scoreFixture, summaryFixture } from "@/test/fixtures";
+import type { ScoreSummary } from "@/lib/api/types";
 
 vi.mock("next/link", () => ({
   default: ({
@@ -23,44 +24,17 @@ vi.mock("next/link", () => ({
 import { FleetMetrics } from "./fleet-metrics";
 import { TopAgents, TopMissions } from "./leaderboards";
 
-// scout: two runs finished on-terms (0.8, 0.6) → scored. probe: one timeout (partial, excluded).
+// Every score on the dashboard is the server's summary (GET /results/summary): the same numbers
+// the Results page, the agent pages and `xorcise leaderboard` show. Only the outcome mix and the
+// pass rate come from the runs list, by each run's server-given `outcome`.
+
 const RUNS = [
-  runFixture({
-    run_id: "r1",
-    agent_id: "a1",
-    mission: "c1",
-    state: "terminal",
-    terminal_trigger: "done",
-    outcome: "completed",
-    completed_at: "2026-06-29T10:05:00Z",
-  }),
-  runFixture({
-    run_id: "r2",
-    agent_id: "a1",
-    mission: "c2",
-    state: "terminal",
-    terminal_trigger: "done",
-    outcome: "completed",
-    completed_at: "2026-06-29T11:05:00Z",
-  }),
-  runFixture({
-    run_id: "r3",
-    agent_id: "a2",
-    mission: "c1",
-    state: "terminal",
-    terminal_trigger: "timeout",
-    outcome: "partial",
-    completed_at: "2026-06-29T12:05:00Z",
-  }),
+  runFixture({ run_id: "r1", agent_id: "a1", state: "terminal", terminal_trigger: "done" }),
+  runFixture({ run_id: "r2", agent_id: "a1", state: "terminal", terminal_trigger: "done" }),
+  runFixture({ run_id: "r3", agent_id: "a2", state: "terminal", terminal_trigger: "timeout" }),
 ];
 
-const RESULT: Record<string, { overall: number; partial: boolean; judge_status?: string }> = {
-  r1: { overall: 0.8, partial: false },
-  r2: { overall: 0.6, partial: false },
-  r3: { overall: 0.1, partial: true },
-};
-
-function handlers() {
+function serve(summaries: Partial<Record<string, ScoreSummary[]>>, runs = RUNS) {
   server.use(
     http.get("*/api/agents", () =>
       HttpResponse.json([
@@ -68,140 +42,99 @@ function handlers() {
         agentFixture({ id: "a2", name: "probe" }),
       ]),
     ),
-    http.get("*/api/missions", () => HttpResponse.json([])),
-    http.get("*/api/runs", () => HttpResponse.json(RUNS)),
-    http.get("*/api/runs/:id/result", ({ params }) => {
-      const r = RESULT[String(params.id)];
-      return r
-        ? HttpResponse.json({
-            grade: { run_id: params.id, overall: r.overall, judge_status: r.judge_status },
-            conditions: {},
-            partial: r.partial,
-          })
-        : new HttpResponse(null, { status: 404 });
+    http.get("*/api/runs", () => HttpResponse.json(runs)),
+    http.get("*/api/results/runs", () =>
+      HttpResponse.json([
+        scoreFixture({ run_id: "r1", agent_id: "a1", overall: 0.6 }),
+        scoreFixture({ run_id: "r2", agent_id: "a1", overall: 0.8 }),
+      ]),
+    ),
+    http.get("*/api/results/summary", ({ request }) => {
+      const by = new URL(request.url).searchParams.get("by") ?? "";
+      return HttpResponse.json(summaries[by] ?? []);
     }),
   );
 }
 
 describe("Dashboard fleet performance", () => {
-  it("FleetMetrics averages only non-partial scores and shows the pass rate", async () => {
-    handlers();
+  it("FleetMetrics headlines the fleet's median from the server, and the pass rate", async () => {
+    serve({ all: [summaryFixture({ runs: 3, scored: 3, median: 0.6, best: 0.8, timed_out: 1 })] });
     renderWithProviders(<FleetMetrics />);
-    // Average of the two on-terms runs (0.8, 0.6) = 70%; best 80%; 3 evaluated; pass = 2/3 = 67%.
-    await waitFor(() => expect(screen.getByText("70%")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("60%")).toBeInTheDocument());
+    expect(screen.getByText("Median")).toBeInTheDocument();
     expect(screen.getByText("80%")).toBeInTheDocument();
-    expect(screen.getByText("3")).toBeInTheDocument(); // Evaluated
-    expect(screen.getByText("67%")).toBeInTheDocument(); // Pass rate
+    expect(screen.getByText("67%")).toBeInTheDocument(); // Pass rate: 2 of 3 completed
+    expect(screen.queryByText("Average")).toBeNull();
+    // The timed-out run is in the median, and the dashboard says so.
+    expect(
+      screen.getByText("1 timed out: in the median at the score it earned."),
+    ).toBeInTheDocument();
   });
 
   it("FleetMetrics keeps infra failures out of the pass rate and buckets the mix by outcome", async () => {
     // #109: a run our infrastructure cut short is not an attempt. Two of them beside the three
-    // runs above must leave the pass rate at 2/3 — not 2/5 — and land in their own segment.
-    // The timeout is a PARTIAL run: it used to fall in "Failed" because the mix keyed on the
-    // status tone (red), which left the Partial segment empty for every fleet.
-    handlers();
-    server.use(
-      http.get("*/api/runs", () =>
-        HttpResponse.json([
-          ...RUNS,
-          runFixture({ run_id: "r4", agent_id: "a1", state: "terminal", terminal_trigger: "crashed" }),
-          runFixture({
-            run_id: "r5",
-            agent_id: "a2",
-            state: "terminal",
-            terminal_trigger: "deploy_failed",
-          }),
-        ]),
-      ),
-    );
+    // runs above must leave the pass rate at 2/3, not 2/5, and land in their own segment.
+    serve({ all: [summaryFixture({ runs: 5, infra_failed: 2 })] }, [
+      ...RUNS,
+      runFixture({ run_id: "r4", agent_id: "a1", state: "terminal", terminal_trigger: "crashed" }),
+      runFixture({
+        run_id: "r5",
+        agent_id: "a2",
+        state: "terminal",
+        terminal_trigger: "deploy_failed",
+      }),
+    ]);
     renderWithProviders(<FleetMetrics />);
     await waitFor(() => expect(screen.getByText("5")).toBeInTheDocument()); // Evaluated
-    expect(screen.getByText("67%")).toBeInTheDocument(); // Pass rate over the 3 attempts
+    expect(screen.getByText("67%")).toBeInTheDocument();
     expect(screen.getByText("Partial").parentElement?.textContent).toBe("Partial1");
     expect(screen.getByText("Infra failed").parentElement?.textContent).toBe("Infra failed2");
+    expect(
+      await screen.findByText("2 environment failures: not in the median."),
+    ).toBeInTheDocument();
   });
 
-  it("TopAgents ranks scored agents and hides agents with no scored run", async () => {
-    handlers();
+  it("TopAgents ranks agents by median and hides agents with no scored run", async () => {
+    serve({
+      agent: [
+        summaryFixture({ agent_id: "a1", median: 0.7 }),
+        summaryFixture({ agent_id: "a2", median: null, scored: 0 }),
+        summaryFixture({ agent_id: "a3deadbeef", median: 0.9 }),
+      ],
+    });
     renderWithProviders(<TopAgents />);
     await waitFor(() => expect(screen.getByText("scout")).toBeInTheDocument());
+    const rows = screen.getAllByRole("listitem").map((li) => li.textContent ?? "");
+    // a3 is a deleted agent: its short id, ranked first on its median.
+    expect(rows[0]).toContain("a3deadbe");
+    expect(rows[1]).toContain("scout");
     expect(screen.getByText("70%")).toBeInTheDocument();
-    // probe's only run is a partial timeout → no scored run → excluded from the leaderboard.
     expect(screen.queryByText("probe")).toBeNull();
   });
 
-  it("TopMissions flags a mission whose average blends assisted runs", async () => {
-    // c1: two scored runs, one of them disclosed intel → the single average mixes assisted +
-    // unassisted, which the row must flag so it isn't read as like-for-like.
-    server.use(
-      http.get("*/api/agents", () =>
-        HttpResponse.json([agentFixture({ id: "a1", name: "scout" })]),
-      ),
-      http.get("*/api/missions", () => HttpResponse.json([])),
-      http.get("*/api/runs", () =>
-        HttpResponse.json([
-          runFixture({
-            run_id: "r1",
-            agent_id: "a1",
-            mission: "c1",
-            state: "terminal",
-            terminal_trigger: "done",
-            outcome: "completed",
-            completed_at: "2026-06-29T10:05:00Z",
-          }),
-          runFixture({
-            run_id: "r2",
-            agent_id: "a1",
-            mission: "c1",
-            state: "terminal",
-            terminal_trigger: "done",
-            outcome: "completed",
-            completed_at: "2026-06-29T11:05:00Z",
-          }),
-        ]),
-      ),
-      http.get("*/api/runs/:id/result", ({ params }) => {
-        const map: Record<string, { overall: number; intel: number }> = {
-          r1: { overall: 0.8, intel: 0 }, // unassisted
-          r2: { overall: 0.6, intel: 2 }, // assisted
-        };
-        const r = map[String(params.id)];
-        return r
-          ? HttpResponse.json({
-              grade: { run_id: params.id, overall: r.overall },
-              conditions: { intel_disclosed: r.intel },
-              partial: false,
-            })
-          : new HttpResponse(null, { status: 404 });
-      }),
-    );
+  it("TopMissions lists mission versions, and flags a median that blends assisted runs", async () => {
+    serve({
+      mission: [
+        summaryFixture({
+          mission: "c1",
+          mission_version: "2.0.0",
+          current_version: true,
+          runs: 3,
+          scored: 2,
+          assisted: 1,
+        }),
+        summaryFixture({ mission: "c1", mission_version: "1.0.0", current_version: false }),
+      ],
+    });
     renderWithProviders(<TopMissions />);
-    await waitFor(() => expect(screen.getByText("c1")).toBeInTheDocument());
-    expect(screen.getByText("avg blends 1/2 assisted")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("c1 v2.0.0")).toBeInTheDocument());
+    expect(screen.getByText("c1 v1.0.0 (older)")).toBeInTheDocument();
+    expect(screen.getByText("median blends 1/2 assisted")).toBeInTheDocument();
   });
 
-  it("discloses the runs in an average that were scored with no judge (#143)", async () => {
-    // r1 had no judge; r3 had none either, but it timed out, so it is in no average.
-    RESULT.r1.judge_status = "unavailable";
-    RESULT.r3.judge_status = "unavailable";
-    try {
-      handlers();
-      renderWithProviders(
-        <>
-          <FleetMetrics />
-          <TopAgents />
-        </>,
-      );
-      expect(
-        await screen.findByText(
-          "No judge on 1 of 2 scored runs: scored at 50% at most, and included in Average and Best.",
-        ),
-      ).toBeInTheDocument();
-      // scout (r1, r2) carries the flag; probe's only run is partial, so it is not ranked.
-      expect(screen.getByText("avg includes 1 with no judge")).toBeInTheDocument();
-    } finally {
-      delete RESULT.r1.judge_status;
-      delete RESULT.r3.judge_status;
-    }
+  it("says when runs with no judge are left out of an agent's median", async () => {
+    serve({ agent: [summaryFixture({ agent_id: "a1", no_judge: 2 })] });
+    renderWithProviders(<TopAgents />);
+    expect(await screen.findByText("2 with no judge left out")).toBeInTheDocument();
   });
 });

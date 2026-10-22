@@ -75,7 +75,8 @@ describe("CompletedRuns: the run strip (agent-centric §14)", () => {
           runs: 6,
           scored: 2,
           no_judge: 2,
-          ended_early: 1,
+          stopped: 1,
+          timed_out: 1,
           infra_failed: 1,
           partial_judge: 1,
         }),
@@ -84,8 +85,12 @@ describe("CompletedRuns: the run strip (agent-centric §14)", () => {
     renderWithProviders(<CompletedRuns />);
     expect(
       await screen.findByText(
-        "2 no judge · 1 timed out or stopped · 1 environment failure: not in the median.",
+        "2 no judge · 1 stopped · 1 environment failure: not in the median.",
       ),
+    ).toBeInTheDocument();
+    // A timed-out run is IN the median: said apart from the runs that are not.
+    expect(
+      screen.getByText("1 timed out: in the median at the score it earned."),
     ).toBeInTheDocument();
     expect(
       screen.getByText("1 judged on part of the rubric, counted at the lower bound."),
@@ -113,8 +118,14 @@ describe("CompletedRuns: the run strip (agent-centric §14)", () => {
           overall: 0.5,
         }),
         scoreFixture({
-          run_id: "early",
-          bucket: "ended_early",
+          run_id: "stopped",
+          bucket: "stopped",
+          outcome: "partial",
+          terminal_trigger: "operator",
+        }),
+        scoreFixture({
+          run_id: "timeout",
+          timed_out: true,
           outcome: "partial",
           terminal_trigger: "timeout",
         }),
@@ -131,15 +142,20 @@ describe("CompletedRuns: the run strip (agent-centric §14)", () => {
       [summaryFixture({ agent_id: "agent-1" })],
     );
     renderWithProviders(<CompletedRuns />);
-    await waitFor(() => expect(screen.getAllByTestId("strip-column")).toHaveLength(5));
-    const [full, part, nojudge, early, env] = screen.getAllByTestId("strip-column");
+    await waitFor(() => expect(screen.getAllByTestId("strip-column")).toHaveLength(6));
+    const [full, part, nojudge, stopped, timedOut, env] = screen.getAllByTestId("strip-column");
     expect(full.querySelector("[data-part]")).toBeNull();
     expect(part.querySelector('[data-part="judge-range"]')).not.toBeNull();
     // The judge half that was never measured is an outline, not a zero.
     expect(nojudge.querySelector('[data-part="unmeasured"]')).not.toBeNull();
     expect(nojudge.title).toContain("no judge");
-    expect(early.className).toContain("opacity-40");
-    expect(early.title).toContain("timed out");
+    // Stopped by an operator: out of the median, so faded.
+    expect(stopped.className).toContain("opacity-40");
+    expect(stopped.title).toContain("stopped by an operator");
+    // Timed out: in the median at what it earned, so drawn in full and marked, not faded.
+    expect(timedOut.className).not.toContain("opacity-40");
+    expect(timedOut.title).toContain("timed out");
+    expect(timedOut.title).not.toContain("not in the median");
     // An environment failure is an empty slot, never a score.
     expect(env.children).toHaveLength(0);
     expect(env.title).toContain("environment failure");

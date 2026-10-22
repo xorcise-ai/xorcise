@@ -1,9 +1,10 @@
-"""Run performance: how each finished run counts, and the summaries the performance views draw.
+"""Run performance: how each finished run counts, and the summaries every performance view draws.
 
-The median is over runs that finished on the agent's own terms and were graded with a judge, a
-partly-judged run counting at its lower bound. A run whose judge never ran, a run that timed out
-or was stopped, an environment failure and a run still grading are each counted and disclosed,
-never in the median. An older mission version is summarised apart from the current one.
+The median is over runs graded with a judge, a partly-judged run counting at its lower bound. A
+run that timed out is in it, at the score it earned: not finishing within the budget is the
+agent's failure. A run whose judge never ran, one an operator stopped, an environment failure and
+a run still grading are each counted and disclosed, never in the median. An older mission version
+is summarised apart from the current one.
 """
 
 from __future__ import annotations
@@ -67,8 +68,11 @@ def _grade(
         ("done", _grade("x", 1, 0.4, "partial", 0.9), "scored"),
         ("done", _grade("x", 1, 0, "unavailable"), "no_judge"),
         ("done", _grade("x", 1, 0, "model-not-configured"), "no_judge"),
-        ("timeout", _grade("x", 1, 0.8), "ended_early"),
-        ("operator", _grade("x", 1, 0.8), "ended_early"),
+        # Not finishing within the budget is the agent's failure: scored at what it earned.
+        ("timeout", _grade("x", 0.2, 0.1), "scored"),
+        ("timeout", _grade("x", 0.2, 0, "unavailable"), "no_judge"),
+        # An operator's stop says nothing about the agent.
+        ("operator", _grade("x", 1, 0.8), "stopped"),
         ("deploy_failed", None, "infra_failed"),
         ("crashed", None, "infra_failed"),
         ("done", None, "grading"),
@@ -91,8 +95,8 @@ def _summary(runs: list[RunEntry], grades: dict[str, GradeResult], by: Any = "ag
 
 
 def test_the_median_is_over_scored_runs_only() -> None:
-    """Only the three judged runs that finished on their own terms are in it; a 0.5 from a run
-    with no judge would have dragged it to 0.5."""
+    """The three judged runs that finished and the one that timed out are in it. A 0.5 from a run
+    with no judge, or an operator-stopped run's score, would have moved it."""
     runs = [
         _run(1),
         _run(2),
@@ -101,6 +105,7 @@ def test_the_median_is_over_scored_runs_only() -> None:
         _run(5, "timeout"),
         _run(6, "deploy_failed"),
         _run(7),  # grading
+        _run(8, "operator"),
     ]
     grades = {
         "r1": _grade("r1", 1, 0.8),
@@ -108,14 +113,41 @@ def test_the_median_is_over_scored_runs_only() -> None:
         "r3": _grade("r3", 0.8, 0.6),
         "r4": _grade("r4", 1, 0, "unavailable"),
         "r5": _grade("r5", 0.2, 0.1),
+        "r8": _grade("r8", 0, 0),
     }
     (s,) = _summary(runs, grades)
-    assert s.runs == 7
-    assert s.scored == 3
-    assert s.median == pytest.approx(0.8)
-    assert (s.no_judge, s.ended_early, s.infra_failed, s.grading) == (1, 1, 1, 1)
+    assert s.runs == 8
+    assert s.scored == 4
+    assert s.timed_out == 1
+    # 0.9, 0.8, 0.7 and the timeout's 0.15: the timeout pulls the median down, as it should.
+    assert s.median == pytest.approx(0.75)
+    assert (s.no_judge, s.stopped, s.infra_failed, s.grading) == (1, 1, 1, 1)
     assert s.completed == 5
     assert s.best == pytest.approx(0.9)
+    assert s.mean_deterministic == pytest.approx(0.75)
+    assert s.mean_judge == pytest.approx(0.525)
+
+
+def test_a_timed_out_run_is_marked_so_the_views_can_show_it() -> None:
+    rows = score_rows([_run(1, "timeout"), _run(2)], {}, {"m1": "1.0.0"})
+    assert [r.timed_out for r in rows] == [True, False]
+
+
+def test_one_summary_over_every_run() -> None:
+    runs = [_run(1), _run(2, agent_id="a2", mission="m2")]
+    grades = {"r1": _grade("r1", 1, 0.8), "r2": _grade("r2", 1, 0.4)}
+    (s,) = _summary(runs, grades, by="all")
+    assert (s.agent_id, s.mission, s.runs, s.scored) == (None, None, 2, 2)
+    assert s.median == pytest.approx(0.8)
+
+
+def test_rows_carry_how_many_intel_each_run_was_given() -> None:
+    grades = {"r1": (_grade("r1", 1, 0.8), None), "r2": (_grade("r2", 1, 0.8), None)}
+    rows = score_rows([_run(1), _run(2), _run(3)], grades, {"m1": "1.0.0"}, {"r2": 3, "r3": 1})
+    assert [r.intel_disclosed for r in rows] == [0, 3, 1]
+    # r3 is still grading, so only r2 is an assisted run in the median.
+    (s,) = summarize(rows, "all")
+    assert (s.scored, s.assisted) == (2, 1)
 
 
 def test_a_partly_judged_run_counts_at_its_lower_bound() -> None:
@@ -225,7 +257,7 @@ def test_the_routes_serve_rows_and_summaries(migrated_home) -> None:
         ("s1", "scored"),
         ("s2", "no_judge"),
         ("s3", "infra_failed"),
-        ("p1", "ended_early"),
+        ("p1", "scored"),
     ]
     assert all(r["mission"] == "c1" and r["current_version"] for r in rows)
 
@@ -236,8 +268,9 @@ def test_the_routes_serve_rows_and_summaries(migrated_home) -> None:
     assert summary[a.id]["median"] == pytest.approx(0.9)
     assert (summary[a.id]["scored"], summary[a.id]["no_judge"]) == (1, 1)
     assert summary[a.id]["infra_failed"] == 1
-    assert summary[b.id]["median"] is None
-    assert summary[b.id]["ended_early"] == 1
+    # The timed-out run counts, at what it earned.
+    assert summary[b.id]["median"] == pytest.approx(0.3)
+    assert summary[b.id]["timed_out"] == 1
 
     (mission,) = c.get("/api/results/summary", params={"by": "mission"}).json()
     assert (mission["mission"], mission["runs"], mission["current_version"]) == ("c1", 4, True)
@@ -245,3 +278,22 @@ def test_the_routes_serve_rows_and_summaries(migrated_home) -> None:
 
 def test_the_summary_refuses_an_unknown_grouping(migrated_home) -> None:
     assert _client().get("/api/results/summary", params={"by": "nonsense"}).status_code == 422
+
+
+def test_the_routes_count_intel_and_summarise_everything(migrated_home) -> None:
+    from xorcise.core import agents
+    from xorcise.core.runcontrol.store import SqliteSubmissionStore
+
+    install_mission(migrated_home, "c1")
+    a = agents.register("scout", endpoint="http://s")
+    _graded("s1", a.id, "done", _grade("s1", 1, 0.8))
+    _graded("s2", a.id, "operator", _grade("s2", 0, 0))
+    store = SqliteSubmissionStore()
+    store.record("s1", "intel", "i1", "look here")
+    store.record("s1", "intel", "i2", "and here")
+    c = _client()
+    rows = {r["run_id"]: r for r in c.get("/api/results/runs").json()}
+    assert (rows["s1"]["intel_disclosed"], rows["s2"]["intel_disclosed"]) == (2, 0)
+    assert rows["s2"]["bucket"] == "stopped"
+    (everything,) = c.get("/api/results/summary", params={"by": "all"}).json()
+    assert (everything["runs"], everything["scored"], everything["stopped"]) == (2, 1, 1)

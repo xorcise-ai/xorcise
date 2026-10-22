@@ -30,16 +30,20 @@ def as_terminal_trigger(value: str | None) -> TerminalTrigger | None:
 #: count is not worth a judge call. A 0.00 here was a phantom score against the agent (#109).
 UNGRADED_TRIGGERS: frozenset[str] = frozenset({"deploy_failed", "crashed"})
 
-#: Graded, but the run did not end on the agent's own terms — a budget timeout or an operator's
-#: kill. Recorded with `partial=True` and left out of every score aggregate.
+#: Graded, but the run did not end on its own: a budget timeout or an operator's kill. Recorded
+#: with `partial=True`. The two count differently in the performance summaries
+#: (contracts.reporting.ScoreBucket): a timeout is the agent's failure to finish within its budget
+#: and is scored at what it earned; an operator's stop says nothing about the agent and is left
+#: out.
 PARTIAL_TRIGGERS: frozenset[str] = frozenset({"timeout", "operator"})
 
 #: Finished on the agent's own terms.
 COMPLETED_TRIGGERS: frozenset[str] = frozenset({"done"})
 
-#: How a terminal run counts in every aggregate. The three sets above are disjoint, so a run has
-#: at most one: `completed` (the agent finished), `partial` (graded, but left out of Average / Best)
-#: or `infra_failed` (never graded, and not one of the agent's attempts — in no score and no rate).
+#: How a terminal run ended. The three sets above are disjoint, so a run has at most one:
+#: `completed` (the agent finished), `partial` (graded, but it did not end on its own; see
+#: PARTIAL_TRIGGERS for how a timeout and a stop each count) or `infra_failed` (never graded, and
+#: not one of the agent's attempts — in no score and no rate).
 RunOutcome = Literal["completed", "partial", "infra_failed"]
 
 

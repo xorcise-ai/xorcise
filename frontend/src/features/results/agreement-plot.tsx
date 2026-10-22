@@ -8,7 +8,8 @@ import { hatch, runSentence } from "./run-glyph";
 /** The plot's marks, shared with the key's examples. */
 export const PLOT_MARK = {
   scored: "rounded-full bg-foreground",
-  ended_early: "rounded-full border-[1.5px] border-text-secondary",
+  timed_out: "rounded-full bg-foreground ring-[1.5px] ring-primary ring-offset-1 ring-offset-card",
+  stopped: "rounded-full border-[1.5px] border-text-secondary",
   no_judge: "rounded-full border-[1.5px] border-dashed border-data bg-card",
   judgeRange: "opacity-60",
 } as const;
@@ -26,7 +27,8 @@ const pctPos = (v: number | null | undefined) => `${(v ?? 0) * 100}%`;
  *
  * A run whose judge never ran has no place on the judge axis, so it sits on the strip under the
  * plot at its deterministic score. A judge that scored part of its rubric draws a hatched bar up
- * to its upper bound. A run that timed out or was stopped is a hollow ring. Environment failures
+ * to its upper bound. A run that timed out is ringed in amber, at the score it earned; one an
+ * operator stopped is a hollow ring, outside the median. Environment failures
  * and runs still grading have no scores to place and are only counted, by the caller.
  *
  * Pointing at a run reveals whose it is: a label beside it names the agent with its median and
@@ -60,7 +62,7 @@ export function AgreementPlot({
     setHovered(null);
     onHoverAgent?.(null);
   };
-  const placed = runs.filter((r) => r.bucket === "scored" || r.bucket === "ended_early");
+  const placed = runs.filter((r) => r.bucket === "scored" || r.bucket === "stopped");
   const rail = runs.filter((r) => r.bucket === "no_judge");
   const seen = new Map<string, number>();
   const nudge = (key: string) => {
@@ -122,7 +124,11 @@ export function AgreementPlot({
                     onMouseLeave={leave}
                     className={cn(
                       "absolute size-2.5 -translate-x-1/2 translate-y-1/2",
-                      r.bucket === "ended_early" ? PLOT_MARK.ended_early : PLOT_MARK.scored,
+                      r.bucket === "stopped"
+                        ? PLOT_MARK.stopped
+                        : r.timed_out
+                          ? PLOT_MARK.timed_out
+                          : PLOT_MARK.scored,
                     )}
                     style={{
                       left: `calc(${pctPos(r.deterministic)} + ${dx}px)`,

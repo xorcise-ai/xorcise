@@ -100,15 +100,20 @@ describe("RunLedger", () => {
         overall: null,
         judge_status: null,
       }),
-      scoreFixture({ run_id: "early", bucket: "ended_early", outcome: "partial", terminal_trigger: "timeout" }),
+      scoreFixture({ run_id: "stop", bucket: "stopped", outcome: "partial", terminal_trigger: "operator" }),
+      scoreFixture({ run_id: "late", timed_out: true, outcome: "partial", terminal_trigger: "timeout" }),
     ]);
-    const [full, nj, part, env, early] = screen.getAllByTestId("ledger-cell");
+    const [full, nj, part, env, stopped, timedOut] = screen.getAllByTestId("ledger-cell");
     expect(full.querySelector('[data-part="judge"]')).not.toBeNull();
     expect(nj.querySelector('[data-part="unmeasured"]')).not.toBeNull();
     expect(part.querySelector('[data-part="judge-range"]')).not.toBeNull();
     expect(env.textContent).toBe("×");
     expect(env).toHaveAccessibleName(/environment failure/);
-    expect(early.className).toContain("opacity-55");
+    // Stopped: out of the median, faded. Timed out: in it at what it earned, ringed, not faded.
+    expect(stopped.className).toContain("opacity-40");
+    expect(timedOut.className).toContain("outline-primary");
+    expect(timedOut.className).not.toContain("opacity-40");
+    expect(timedOut).toHaveAccessibleName(/timed out/);
   });
 
   it("is one tab stop, on the newest run, and the arrow keys move between runs", () => {

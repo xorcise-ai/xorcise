@@ -130,16 +130,19 @@ class RunStats(BaseModel):
 # ── run performance views (GET /results/runs, GET /results/summary) ──────────────────────────────
 
 #: How one finished run counts in a performance summary. Decided once, by the server, so the run
-#: strip, the agreement plot, the ledger and the CLI cannot count the same run differently.
-#: - `scored`: finished on the agent's own terms and graded with a judge — fully, or partly, in
-#:   which case `overall` is the lower bound. The only runs in the median.
-#: - `no_judge`: finished and graded, but the judge never ran (`unavailable` /
-#:   `model-not-configured`), so half the score is unmeasured. Out of the median, disclosed.
-#: - `ended_early`: timed out or stopped by an operator (`outcome` partial). Graded on what it
-#:   did, but not on its own terms. Out of the median, disclosed.
+#: strip, the agreement plot, the ledger, the dashboard and the CLI cannot count the same run
+#: differently.
+#: - `scored`: graded with a judge — fully, or partly, in which case `overall` is the lower bound.
+#:   A run that TIMED OUT is scored too, at the grade it earned before the budget ran out: the
+#:   budget is part of the task, so not finishing within it is the agent's failure and has to show
+#:   in its numbers (`RunScore.timed_out` marks it). The only runs in the median.
+#: - `no_judge`: graded, but the judge never ran (`unavailable` / `model-not-configured`), so half
+#:   the score is unmeasured. Out of the median, disclosed.
+#: - `stopped`: an operator ended it. Whatever it scored says nothing about the agent. Out of the
+#:   median, disclosed.
 #: - `infra_failed`: cut short by an environment failure. Never graded, not the agent's attempt.
 #: - `grading`: finished, grade not recorded yet.
-ScoreBucket = Literal["scored", "no_judge", "ended_early", "infra_failed", "grading"]
+ScoreBucket = Literal["scored", "no_judge", "stopped", "infra_failed", "grading"]
 
 
 class RunScore(BaseModel):
@@ -160,6 +163,9 @@ class RunScore(BaseModel):
     outcome: Literal["completed", "partial", "infra_failed"]
     terminal_trigger: str | None = None
     bucket: ScoreBucket
+    # Ran out of its time budget. Counted in the median at its graded score, and drawn so the
+    # reader can see which scores came from runs that did not finish.
+    timed_out: bool = False
     deterministic: float | None = None
     judge: float | None = None
     judge_upper: float | None = None  # set only when the judge scored part of its rubric
@@ -168,11 +174,14 @@ class RunScore(BaseModel):
     overall: float | None = None
     overall_upper: float | None = None
     judge_model: str | None = None
+    # How many intel the run was given (kind="intel" submissions): an assisted score is not an
+    # unassisted one, and the dashboard flags an average that blends the two.
+    intel_disclosed: int = 0
 
 
 class ScoreSummary(BaseModel):
-    """A group of finished runs (one agent, one mission version, or one agent on one mission
-    version), summarised by the rules in `ScoreBucket`."""
+    """A group of finished runs (every run, one agent, one mission version, or one agent on one
+    mission version), summarised by the rules in `ScoreBucket`."""
 
     agent_id: str | None = None
     mission: str | None = None
@@ -181,15 +190,21 @@ class ScoreSummary(BaseModel):
     runs: int = 0
     completed: int = 0  # finished on the agent's own terms
     scored: int = 0  # in the median
+    timed_out: int = 0  # of `scored`, ran out of budget (counted at the score they earned)
     partial_judge: int = 0  # of `scored`, judged on part of the rubric (counted at lower bound)
+    assisted: int = 0  # of `scored`, given any intel: a median that blends them says so
     no_judge: int = 0
-    ended_early: int = 0
+    stopped: int = 0
     infra_failed: int = 0
     grading: int = 0
     median: float | None = None
     q1: float | None = None  # the middle half of `scored`, for a spread
     q3: float | None = None
     best: float | None = None
+    # The two halves over the same `scored` runs: the checks over all of them, the judge over the
+    # ones it scored in full (a partial judge's score is only a lower bound).
+    mean_deterministic: float | None = None
+    mean_judge: float | None = None
     # Mean of (judge - deterministic) over `scored` runs whose judge scored the whole rubric:
     # negative when the judge rates the runs below what the checks gave them.
     judge_gap: float | None = None

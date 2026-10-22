@@ -1,17 +1,18 @@
 """`xorcise leaderboard` — per-agent results roll-up (cli, thin REST client).
 
-CLI half of the Results page's agent leaderboard: fold GET /runs (terminal runs) plus each run's
-GET /runs/{id}/result into one row per agent, entirely client-side — no new backend surface.
+The CLI half of the Results page's agent cards: one row per agent from GET /results/summary, the
+server's own summary (reporting.scores), so the CLI, the GUI and the dashboard cannot rank the
+same runs differently.
 
-Scoring mirrors the GUI aggregation (frontend summarize-runs.ts): a PARTIAL run (budget timeout
-or operator kill) did not end on the agent's own terms, so it never counts toward the score
-aggregates — but it still counts in the run totals and the partial rate. A run cut short by an
-environment failure (deploy_failed / crashed) has no score at all and is not one of the agent's
-attempts: it counts in the run totals and its own `infra_failed` count, and nowhere else.
+The headline is the MEDIAN over runs graded with a judge, a partly-judged run counting at its
+lower bound. A run that timed out is in it, at the score it earned: not finishing within the
+budget is the agent's failure. A run whose judge never ran, one an operator stopped, one cut short
+by an environment failure and one still grading are each counted in their own column, never in it.
 """
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import typer
@@ -23,170 +24,115 @@ from xorcise.core.cli._ux import (
     print_table,
     ux_table,
 )
-from xorcise.core.cli.commands.run import judge_degraded
 from xorcise.core.cli.rest_client import RestClient
 
 
 def _agent_names(client: RestClient) -> dict[str, str]:
-    """agent id → name, so the table reads in operator terms (runs carry only the id)."""
+    """agent id → name, so the table reads in operator terms (summaries carry only the id)."""
     return {a["id"]: a["name"] for a in client.get("/agents")}
 
 
-def _flatten(run: dict[str, Any], result: dict[str, Any] | None) -> dict[str, Any]:
-    """One terminal run flattened for the roll-up (the GUI's AgentRunRow).
-
-    How the run counts is the server's answer (`outcome` on the run), not re-derived here from its
-    trigger: a private copy of that rule listed a "budget" trigger nothing writes and missed
-    "operator", so an operator kill counted as genuine (#159)."""
-    outcome = run.get("outcome")
-    grade = (result or {}).get("grade") or {}
-    return {
-        "agent_id": run.get("agent_id"),
-        "overall": grade.get("overall"),
-        "partial": outcome == "partial",
-        # A judge that never ran still produces a real number (0.5 * deterministic) which averages
-        # in as though it were graded. The roll-up keeps that number — the math is intentional —
-        # but carries the condition so the ranking can disclose what it is made of.
-        "judge_degraded": judge_degraded(grade),
-        "completed": outcome == "completed",
-        # Cut short by an environment failure: never graded, and not an attempt by the agent.
-        "infra_failed": outcome == "infra_failed",
-        "when": run.get("completed_at") or run.get("created_at") or "",
-    }
-
-
-def summarize_by_agent(rows: list[dict[str, Any]], names: dict[str, str]) -> list[dict[str, Any]]:
-    """Group flattened runs into one summary per agent, ranked best-average-first.
-
-    Agents with no scored run sink to the bottom; ties break on run count, then name.
-    """
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for row in rows:
-        grouped.setdefault(str(row["agent_id"]), []).append(row)
-
-    summaries: list[dict[str, Any]] = []
-    for agent_id, agent_rows in grouped.items():
-        scored = [r["overall"] for r in agent_rows if not r["partial"] and r["overall"] is not None]
-        total = len(agent_rows)
-        # The rates are over the agent's ATTEMPTS. A run our infrastructure cut short is not one:
-        # counting it would lower the agent's completion rate for a failure that is ours (#109).
-        # It stays in `runs` and is disclosed as its own count instead.
-        infra_failed = sum(1 for r in agent_rows if r.get("infra_failed"))
-        attempts = total - infra_failed
-        summaries.append(
-            {
-                "agent_id": agent_id,
-                "agent_name": names.get(agent_id, agent_id[:8]),
-                "runs": total,
-                "scored": len(scored),
-                "avg_overall": sum(scored) / len(scored) if scored else None,
-                "best_overall": max(scored) if scored else None,
-                # How many of the runs IN the aggregates above scored without a judge. Counted
-                # over the same cohort as `scored` — not over every row — because the footer
-                # tells the reader these are included in Avg/Best, and a partial run is excluded
-                # from those. Counting all rows made a timed-out run show as "No judge 1" beside
-                # "Avg —", which is the opposite of what the column is for.
-                "judge_degraded": sum(
-                    1
-                    for r in agent_rows
-                    if r.get("judge_degraded") and not r["partial"] and r["overall"] is not None
-                ),
-                "infra_failed": infra_failed,
-                "completion_rate": (
-                    sum(1 for r in agent_rows if r["completed"]) / attempts if attempts else None
-                ),
-                "partial_rate": (
-                    sum(1 for r in agent_rows if r["partial"]) / attempts if attempts else None
-                ),
-                "last_run": max((r["when"] for r in agent_rows if r["when"]), default=None),
-            }
-        )
-    summaries.sort(
+def rank(summaries: list[dict[str, Any]], names: dict[str, str]) -> list[dict[str, Any]]:
+    """Name each agent's summary and rank them: best median first; an agent with no scored run
+    has no median and sinks; ties go to more scored runs, then the name. A deleted agent's runs
+    keep its short id, as the GUI shows them."""
+    named = [
+        {**s, "agent_name": names.get(str(s["agent_id"]), str(s["agent_id"])[:8])}
+        for s in summaries
+    ]
+    named.sort(
         key=lambda s: (
-            0 if s["avg_overall"] is not None else 1,
-            -(s["avg_overall"] or 0.0),
-            -s["runs"],
+            0 if s["median"] is not None else 1,
+            -(s["median"] or 0.0),
+            -s["scored"],
             s["agent_name"],
         )
     )
-    return summaries
+    return named
 
 
 def _score(value: float | None) -> str:
-    return f"{value:.2f}" if value is not None else "—"
+    """A score as the GUI prints it: a whole percentage, half up (JavaScript's Math.round). Two
+    decimals of the fraction disagreed with the page on the same number: 0.815 is stored just
+    under 0.815, so `.2f` printed 0.81 where the page showed 82%."""
+    return f"{math.floor(value * 100 + 0.5)}%" if value is not None else "—"
 
 
-def _rate(value: float | None) -> str:
-    return f"{round(value * 100)}%" if value is not None else "—"
+def _count(value: int, style: str = "") -> str:
+    if not value:
+        return DASH
+    return f"[{style}]{value}[/{style}]" if style else str(value)
 
 
 @app.command("leaderboard", rich_help_panel="Evaluate")
 def leaderboard(
     as_json: bool = typer.Option(
-        False, "--json", help="Emit the aggregated rows as JSON (for scripting)."
+        False, "--json", help="Emit the ranked summaries as JSON (for scripting)."
     ),
 ) -> None:
-    """Rank agents by their recorded results.
+    """Rank agents by the median score of their finished runs.
 
-    Aggregates every finished run and its recorded result: runs, scored runs, \
-average and best overall, completion + partial rate, and the last run. \
-Partial runs (budget timeout or operator stop) are excluded from the score \
-aggregates but still counted in the totals. Runs cut short by an environment \
-failure are never graded: they count in Runs and are shown as Infra failed, \
-but are left out of every score and rate.
+    Runs that timed out count, at the score they earned. Runs whose judge never ran (No judge), \
+runs an operator stopped (Stopped), runs cut short by an environment failure (Infra failed) and \
+runs still grading are counted in their own columns and never in the median.
     """
     client = RestClient()
-    runs: list[dict[str, Any]] = client.get("/runs")
-    terminal = [r for r in runs if r.get("state") == "terminal"]
-    if not terminal:
+    summaries: list[dict[str, Any]] = client.get("/results/summary?by=agent")
+    if not summaries:
         # --json is a machine contract: an empty ranking is [], never prose.
         if as_json is True:
             emit_json([])
             return
         console.print("no finished runs yet — nothing to rank")
         return
-    rows = [_flatten(r, client.get(f"/runs/{r['run_id']}/result")) for r in terminal]
-    summaries = summarize_by_agent(rows, _agent_names(client))
+    ranked = rank(summaries, _agent_names(client))
     if as_json is True:
-        emit_json(summaries)
+        emit_json(ranked)
         return
     table = ux_table(
         "Agent",
         "Runs",
         "Scored",
-        "Avg",
+        "Median",
         "Best",
-        "Completed",
-        "Partial",
+        "Timed out",
+        "Stopped",
         "Infra failed",
         "No judge",
         "Last run",
         title="Leaderboard",
     )
-    for s in summaries:
-        degraded = int(s.get("judge_degraded") or 0)
+    for s in ranked:
         table.add_row(
             s["agent_name"],
             str(s["runs"]),
             str(s["scored"]),
-            _score(s["avg_overall"]),
-            _score(s["best_overall"]),
-            _rate(s["completion_rate"]),
-            _rate(s["partial_rate"]),
-            str(s["infra_failed"]) if s.get("infra_failed") else DASH,
-            f"[warn]{degraded}[/warn]" if degraded else DASH,
+            _score(s["median"]),
+            _score(s["best"]),
+            _count(s["timed_out"]),
+            _count(s["stopped"]),
+            _count(s["infra_failed"]),
+            _count(s["no_judge"], "warn"),
             humanize_when(s["last_run"]),
         )
     print_table(table)
-    if any(s.get("infra_failed") for s in summaries):
-        console.print(
-            "[dim]'Infra failed' counts runs cut short by an environment failure — never graded, "
-            "and left out of Completed/Partial, which are over the agent's own attempts.[/dim]"
+    notes = []
+    if any(s["timed_out"] for s in ranked):
+        notes.append(
+            "'Timed out' runs ran out of their budget. They ARE in Median/Best, at the score "
+            "they earned: not finishing in time is the agent's failure."
         )
-    if any(s.get("judge_degraded") for s in summaries):
-        # The scores stay in the averages above, so without this line an agent ranked partly on
-        # unjudged runs is indistinguishable from one graded end to end.
-        console.print(
-            "[dim]'No judge' counts runs scored with the judge half unavailable — those runs "
-            "score at most 0.50 and ARE included in Avg/Best.[/dim]"
+    if any(s["no_judge"] for s in ranked):
+        notes.append(
+            "'No judge' counts runs graded with the judge half unavailable. Half of each score is "
+            "unmeasured, so they are left out of Median/Best."
         )
+    if any(s["stopped"] for s in ranked):
+        notes.append("'Stopped' counts runs an operator ended. Left out of Median/Best.")
+    if any(s["infra_failed"] for s in ranked):
+        notes.append(
+            "'Infra failed' counts runs cut short by an environment failure: never graded, and "
+            "not the agent's attempts."
+        )
+    for note in notes:
+        console.print(f"[dim]{note}[/dim]")

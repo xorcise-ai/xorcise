@@ -104,6 +104,18 @@ def disclosed_intel_count(run_id: str) -> int:
     return SqliteSubmissionStore().count(run_id, "intel")
 
 
+def disclosed_intel_counts() -> dict[str, int]:
+    """`disclosed_intel_count` for every run that was given any intel, in one query. A run that
+    was given none is absent."""
+    with session_scope() as s:
+        rows = s.execute(
+            select(RunSubmissionRow.run_id, func.count())
+            .where(RunSubmissionRow.kind == "intel")
+            .group_by(RunSubmissionRow.run_id)
+        )
+        return {run_id: int(n) for run_id, n in rows}
+
+
 def held_run_ids() -> set[str]:
     """Every run id that has a submission recorded."""
     with session_scope() as s:

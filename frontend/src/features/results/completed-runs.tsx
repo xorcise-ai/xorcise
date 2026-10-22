@@ -13,7 +13,7 @@ import type { RunScore, ScoreSummary } from "@/lib/api/types";
 import { useAgents } from "@/features/agents/queries";
 import { HarnessGlyph } from "@/features/agents/harnesses";
 import { useRunScores, useScoreSummary } from "./queries";
-import { asideLine } from "./run-glyph";
+import { asideLine, timedOutLine } from "./run-glyph";
 import { RunKey } from "./run-key";
 import { RunStrip } from "./run-strip";
 import { LoadingCards } from "./loading-cards";
@@ -98,7 +98,7 @@ export function CompletedRuns() {
 export function stripSummary(name: string, s: ScoreSummary): string {
   const median =
     s.median != null
-      ? `median ${pct(s.median)} over ${s.scored} scored ${s.scored === 1 ? "run" : "runs"}`
+      ? `median ${pct(s.median)} over ${s.scored} scored ${s.scored === 1 ? "run" : "runs"}${s.timed_out ? ` (${s.timed_out} timed out)` : ""}`
       : "no scored run yet";
   const aside = asideLine(s);
   return `${name}: ${s.runs} ${s.runs === 1 ? "run" : "runs"}, ${median}${aside ? `; ${aside}, not in the median` : ""}.`;
@@ -150,6 +150,9 @@ function AgentPerformanceCard({
       </dl>
       <div className="mt-2 space-y-1 text-caption">
         <p className="text-text-tertiary">Last run {shortTime(summary.last_run)}</p>
+        {summary.timed_out > 0 && (
+          <p className="text-text-tertiary">{timedOutLine(summary)}</p>
+        )}
         {aside && (
           <p className="text-text-tertiary">
             {aside}: not in the median.

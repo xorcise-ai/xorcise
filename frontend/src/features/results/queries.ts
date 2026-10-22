@@ -155,7 +155,7 @@ export function useRunScores(filter: ScoreFilter = {}, enabled = true) {
 /** GET /results/summary: finished runs summarised per agent, mission version, or agent on a
  *  mission version. The median is over `scored` runs only; everything else is counted apart. */
 export function useScoreSummary(
-  by: "agent" | "mission" | "mission_agent",
+  by: "all" | "agent" | "mission" | "mission_agent",
   filter: ScoreFilter = {},
   enabled = true,
 ) {
