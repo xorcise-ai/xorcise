@@ -3,15 +3,27 @@ and are cascade-deleted with it."""
 
 from __future__ import annotations
 
+import json
 from collections.abc import Collection
+from typing import cast, get_args
 from uuid import uuid4
 
 from sqlalchemy import delete, select
 
-from xorcise.core.contracts.grading import GradeResult
+from xorcise.core.contracts.grading import GradeResult, JudgeStatus
 from xorcise.core.contracts.reporting import AgentHistoryEntry, ResultConditions, RunStats
 from xorcise.core.db import session_scope
 from xorcise.core.reporting.models import ResultRow
+
+
+def _judge_status(row: ResultRow) -> JudgeStatus | None:
+    """The stored grade's judge_status. The row keeps the whole GradeResult in `detail_json`, so
+    this needs no column of its own; None when that grade cannot be read back."""
+    try:
+        status = json.loads(row.detail_json).get("judge_status")
+    except (ValueError, AttributeError):
+        return None
+    return cast("JudgeStatus", status) if status in get_args(JudgeStatus) else None
 
 
 def _to_entry(row: ResultRow) -> AgentHistoryEntry:
@@ -36,6 +48,7 @@ def _to_entry(row: ResultRow) -> AgentHistoryEntry:
         ),
         partial=row.partial,
         partial_trigger=row.partial_trigger,
+        judge_status=_judge_status(row),
     )
 
 

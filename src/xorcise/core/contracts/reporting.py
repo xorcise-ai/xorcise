@@ -9,6 +9,7 @@ result (GradeResult) should import it directly from xorcise.core.contracts.gradi
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -48,6 +49,11 @@ class AgentHistoryEntry(BaseModel):
     conditions: ResultConditions = ResultConditions()  # disclosed conditions
     partial: bool = False  # True when terminated by timeout
     partial_trigger: str | None = None  # the terminal trigger when partial
+    # The grade's judge_status, so the agent page can disclose a score the judge never contributed
+    # to, as the CLI leaderboard and the Results views do (#143). None only for a result whose
+    # stored grade cannot be read back. The values of contracts.grading.JudgeStatus, spelled out
+    # because a contracts module imports nothing internal (tests/unit/test_contracts_leaf.py).
+    judge_status: Literal["ok", "partial", "model-not-configured", "unavailable"] | None = None
 
 
 class TokenStats(BaseModel):

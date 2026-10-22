@@ -13,6 +13,7 @@ import { useAgents } from "@/features/agents/queries";
 import { HarnessGlyph } from "@/features/agents/harnesses";
 import { useRunResults } from "./queries";
 import {
+  judgeDegraded,
   summarizeByAgent,
   type AgentRunRow,
   type AgentPerformanceSummary,
@@ -62,6 +63,7 @@ export function CompletedRuns() {
       agentName: agentNameById.get(r.agent_id) ?? r.agent_id.slice(0, 8),
       overall: view?.grade?.overall ?? null,
       ...counting,
+      judgeDegraded: judgeDegraded(view?.grade?.judge_status),
       when: r.completed_at ?? r.created_at,
     };
   });

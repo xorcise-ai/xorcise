@@ -519,6 +519,23 @@
             "title": "Judge",
             "type": "number"
           },
+          "judge_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ok",
+                  "partial",
+                  "model-not-configured",
+                  "unavailable"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge Status"
+          },
           "overall": {
             "title": "Overall",
             "type": "number"

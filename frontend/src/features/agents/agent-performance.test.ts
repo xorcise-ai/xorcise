@@ -79,3 +79,25 @@ describe("summarize", () => {
     });
   });
 });
+
+describe("summarize with runs that had no judge (#143)", () => {
+  const history = [
+    h({ run_id: "a", overall: 0.5, judge: 0, deterministic: 1, judge_status: "unavailable" }),
+    h({ run_id: "b", overall: 0.8, judge: 0.6, deterministic: 1, judge_status: "ok" }),
+    // Timed out: in no average, so not counted as a no-judge run in one either.
+    h({ run_id: "c", overall: 0.2, judge: 0, partial: true, judge_status: "unavailable" }),
+  ];
+
+  it("counts the runs in the average that were scored with no judge", () => {
+    const s = summarize(history);
+    expect(s.scored).toBe(2);
+    expect(s.noJudge).toBe(1);
+    // Overall keeps the unjudged run, by design; it is disclosed rather than dropped.
+    expect(s.avgOverall).toBeCloseTo(0.65);
+  });
+
+  it("leaves a judge that never ran out of the judge average", () => {
+    // Its 0 is not a score the judge gave, so averaging it in would halve Avg judge.
+    expect(summarize(history).avgJudge).toBeCloseTo(0.6);
+  });
+});

@@ -6,6 +6,7 @@
 export interface RunRow {
   overall: number | null;
   partial: boolean;
+  judgeDegraded?: boolean; // scored with no judge (see judgeDegraded)
   when: string; // ISO timestamp for ordering the trend
 }
 
@@ -13,7 +14,29 @@ export interface RunSummary {
   n: number; // scored, non-partial runs
   avgOverall: number | null;
   bestOverall: number | null;
+  noJudge: number; // of the `n` runs above, how many were scored with no judge
   trend: number[];
+}
+
+/**
+ * Did the judge half never run? `unavailable` / `model-not-configured` mean the judge contributed
+ * 0.0 to `overall` without grading, so a full deterministic solve scores 50% (#143). `partial` is
+ * NOT this: the judge ran on part of the rubric and discloses its own coverage. No status at all
+ * is an ungraded run, not a degraded one. The CLI's `judge_degraded` (cli/commands/run.py), over
+ * the server's `judge_status`.
+ */
+export function judgeDegraded(status: string | null | undefined): boolean {
+  return !!status && status !== "ok" && status !== "partial";
+}
+
+/**
+ * How many runs IN an average were scored with no judge: counted over the same non-partial,
+ * scored cohort as Average and Best, never over every row. The disclosure says these runs are in
+ * the average, and a partial run is not; counting every row made a timed-out run read as "No
+ * judge 1" beside an average of "—" in the CLI (#133 review).
+ */
+export function countNoJudge(rows: { overall: number | null; partial: boolean; judgeDegraded?: boolean }[]) {
+  return rows.filter((r) => !r.partial && r.overall != null && r.judgeDegraded).length;
 }
 
 export function summarizeRuns(rows: RunRow[]): RunSummary {
@@ -30,6 +53,7 @@ export function summarizeRuns(rows: RunRow[]): RunSummary {
     n: overalls.length,
     avgOverall: mean,
     bestOverall: overalls.length ? Math.max(...overalls) : null,
+    noJudge: countNoJudge(rows),
     trend: byTime.map((r) => r.overall),
   };
 }
@@ -47,6 +71,7 @@ export interface AgentRunRow {
   partial: boolean; // did NOT finish on the agent's own terms (timeout / operator kill)
   completed: boolean; // finished on the agent's own terms (done / completed)
   infraFailed?: boolean; // cut short by an environment failure — not an attempt (classifyRun)
+  judgeDegraded?: boolean; // scored with no judge (see judgeDegraded)
   when: string; // ISO timestamp used for "last run"
 }
 
@@ -61,6 +86,7 @@ export interface AgentPerformanceSummary {
   completionRate: number | null; // completed / attempts (runs minus infraFailed)
   partialRate: number | null; // partial / attempts
   infraFailed?: number; // runs cut short by an environment failure — in `runs`, in no rate
+  noJudge?: number; // of the `scored` runs, how many had no judge — they ARE in Average / Best
   lastRun: string | null; // most recent run timestamp (ISO)
 }
 
@@ -108,6 +134,7 @@ export function summarizeByAgent(rows: AgentRunRow[]): AgentPerformanceSummary[]
       completionRate: attempts ? completed / attempts : null,
       partialRate: attempts ? partial / attempts : null,
       infraFailed,
+      noJudge: countNoJudge(agentRows),
       lastRun,
     };
   });

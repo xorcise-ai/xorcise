@@ -72,6 +72,11 @@ class CriterionScore(_Frozen):
     criterion_prompt: str | None = None
 
 
+# How the judge half fared. `unavailable` and `model-not-configured` mean it never graded and
+# contributed 0.0; `partial` means it scored part of the rubric and discloses its coverage.
+JudgeStatus = Literal["ok", "partial", "model-not-configured", "unavailable"]
+
+
 class GradeResult(_Frozen):
     """The 50/50 evidence-anchored verdict."""
 
@@ -84,7 +89,7 @@ class GradeResult(_Frozen):
     trace_ref: str | None = None
     hard_fails: tuple[str, ...] = ()
     # judge-half disclosure + per-criterion breakdown (additive; defaults preserve shape)
-    judge_status: Literal["ok", "partial", "model-not-configured", "unavailable"] = "ok"
+    judge_status: JudgeStatus = "ok"
     judge_detail: str | None = None
     judge_breakdown: tuple[CriterionScore, ...] = ()
     # `overall` and `breakdown.judge` are conservative lower bounds: unscored rubric weight earns

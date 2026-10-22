@@ -1525,6 +1525,8 @@ export interface components {
             deterministic: number;
             /** Judge */
             judge: number;
+            /** Judge Status */
+            judge_status?: ("ok" | "partial" | "model-not-configured" | "unavailable") | null;
             /** Overall */
             overall: number;
             /**

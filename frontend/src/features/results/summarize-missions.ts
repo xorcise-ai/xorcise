@@ -7,6 +7,8 @@
 // excluded from Average / Best (parity with the shared run accounting), but still count toward
 // Runs / rates. A run cut short by an environment failure counts toward Runs only (infraFailed).
 
+import { countNoJudge } from "./summarize-runs";
+
 /** One terminal run flattened for per-mission rollup. */
 export interface MissionRunRow {
   mission: string;
@@ -14,6 +16,7 @@ export interface MissionRunRow {
   partial: boolean; // did NOT finish on the agent's own terms
   completed: boolean; // finished on the agent's own terms (done / completed)
   infraFailed?: boolean; // cut short by an environment failure — not an attempt (classifyRun)
+  judgeDegraded?: boolean; // scored with no judge (summarize-runs.ts judgeDegraded)
   when: string; // ISO timestamp used for "last run"
 }
 
@@ -27,6 +30,7 @@ export interface MissionPerformanceSummary {
   completionRate: number | null; // completed / attempts (runs minus infraFailed)
   partialRate: number | null; // partial / attempts
   infraFailed?: number; // runs cut short by an environment failure — in `runs`, in no rate
+  noJudge?: number; // of the `scored` runs, how many had no judge — they ARE in Average / Best
   lastRun: string | null; // most recent run timestamp (ISO)
 }
 
@@ -72,6 +76,7 @@ export function summarizeByMission(
       completionRate: attempts ? completed / attempts : null,
       partialRate: attempts ? partial / attempts : null,
       infraFailed,
+      noJudge: countNoJudge(chalRows),
       lastRun,
     };
   });

@@ -10,6 +10,7 @@ import { cn } from "@/components/ui/cn";
 import { useRuns } from "@/features/runs/queries";
 import { classifyRun, isTerminal } from "@/features/runs/run-state";
 import { useRunResults } from "./queries";
+import { judgeDegraded } from "./summarize-runs";
 import {
   summarizeByMission,
   type MissionRunRow,
@@ -42,6 +43,7 @@ export function ResultsByMission() {
       mission: r.mission,
       overall: view?.grade?.overall ?? null,
       ...counting,
+      judgeDegraded: judgeDegraded(view?.grade?.judge_status),
       when: r.completed_at ?? r.created_at,
     };
   });
@@ -106,6 +108,7 @@ function MissionPerformanceCard({
           completionRate: summary.completionRate,
           partialRate: summary.partialRate,
           infraFailed: summary.infraFailed,
+          noJudge: summary.noJudge,
           lastRun: summary.lastRun,
         }}
         columns={3}
