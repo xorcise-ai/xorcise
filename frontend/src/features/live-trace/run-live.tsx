@@ -309,7 +309,9 @@ export function RunLive({ runId }: { runId: string | null }) {
                 {r.name}
               </h1>
               <Badge variant={toneBadge[view.tone]}>{view.label}</Badge>
-              <BackendStatusBulb phase={phase} compact />
+              {/* Live only: it tells Starting / Awaiting agent / Streaming / Stalled apart, which
+                  the badge cannot. Once the run is over it could only restate the badge (#38). */}
+              {!terminal && <BackendStatusBulb phase={phase} compact />}
               {/* Run ID — a debugging value, so its copy is icon-only: the labelled copy budget
                   in this row belongs to the launch command, not the id (§12, §17). */}
               <span className="flex min-w-0 items-center gap-1 rounded-md border border-border px-1.5 py-0.5">
@@ -370,7 +372,7 @@ export function RunLive({ runId }: { runId: string | null }) {
               operator scans. Harness carries no dot — it has no state to report. */}
           <ChipRow>
             <Chip label="Harness" value={r.source_agent} tone={null} />
-            {connectionChips(r, runEvents.events.length, environment.data).map((c) => (
+            {connectionChips(environment.data).map((c) => (
               <Chip
                 key={c.label}
                 label={c.label}

@@ -254,6 +254,26 @@ describe("RunLive", () => {
     expect(screen.queryByTestId("teardown-failed")).toBeNull();
   });
 
+  it("states a finished run's status once in the header, and once in its banner (#38)", async () => {
+    // The badge is the status; the banner is where its actions live. The live-phase bulb beside
+    // the badge could only repeat it once the run was over, and the Objective chip restated it as
+    // "Not Solved".
+    server.use(
+      http.get("*/api/runs", () =>
+        HttpResponse.json([
+          runFixture({ run_id: "rto", state: "terminal", terminal_trigger: "timeout" }),
+        ]),
+      ),
+      http.get("*/api/runs/rto/events", () => HttpResponse.json(eventsView("rto", []))),
+    );
+    renderWithProviders(<RunLive runId="rto" />);
+    const label = serverView("terminal", "timeout").status.label;
+    await screen.findByTestId("run-ending");
+    expect(screen.getAllByText(label)).toHaveLength(2);
+    expect(screen.queryByText("Objective")).toBeNull();
+    expect(screen.queryByText("Not Solved")).toBeNull();
+  });
+
   it("auto-updates to the terminal state without a manual refresh", async () => {
     let gets = 0;
     server.use(
@@ -385,8 +405,8 @@ describe("RunLive", () => {
     expect(screen.getByText("Harness")).toBeInTheDocument();
     expect(screen.getByText("Environment")).toBeInTheDocument();
     expect(await screen.findByText("Starting")).toBeInTheDocument();
-    // The agent link state lives in the status bulb, not a duplicate cell; and "Objective" is
-    // terminal-only, so a live run has no cell that can orphan onto a half-empty row.
+    // The agent link state lives in the status bulb, not a duplicate cell, and there is no
+    // "Objective" cell at all (#38).
     expect(screen.getByText("Streaming")).toBeInTheDocument();
     expect(screen.queryByText("Objective")).toBeNull();
   });
