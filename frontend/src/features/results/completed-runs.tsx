@@ -7,127 +7,124 @@ import { Card } from "@/components/ui/card";
 import { Reveal } from "@/components/ui/reveal";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/components/ui/cn";
-import { useRuns } from "@/features/runs/queries";
-import { classifyRun, isTerminal } from "@/features/runs/run-state";
+import { StatTile } from "@/components/ui/stat-tile";
+import { pct, shortTime } from "@/lib/api/format";
+import type { RunScore, ScoreSummary } from "@/lib/api/types";
 import { useAgents } from "@/features/agents/queries";
 import { HarnessGlyph } from "@/features/agents/harnesses";
-import { useRunResults } from "./queries";
-import {
-  judgeDegraded,
-  summarizeByAgent,
-  type AgentRunRow,
-  type AgentPerformanceSummary,
-} from "./summarize-runs";
-import { PerformanceSummary } from "./performance-summary";
+import { useRunScores, useScoreSummary } from "./queries";
+import { asideLine } from "./run-glyph";
+import { RunKey } from "./run-key";
+import { RunStrip } from "./run-strip";
 import { LoadingCards } from "./loading-cards";
 
 /**
- * Agents view of the Results page (report §14) — the default secondary view. Agent-centric: it
- * folds the terminal runs and their recorded results — data the Results feature already fetches —
- * into one performance card per agent, ranked best-first, entirely client-side (no new backend
- * field). Individual run scorecards stay reachable from Run History and each agent's profile. The
- * page header + view tabs live in the <ResultsTabs> shell that renders this.
+ * Agents view of the Results page (report §14) — the default secondary view. One card per agent
+ * with its run strip: every recent run drawn as what the checks and the judge each gave it, and
+ * the median of the runs that count. The server decides which runs count (GET /results/summary,
+ * reporting.scores); the card only draws them. The page header + view tabs live in the
+ * <ResultsTabs> shell that renders this.
  */
 export function CompletedRuns() {
-  const runs = useRuns();
+  const scores = useRunScores();
+  const summaries = useScoreSummary("agent");
   const agents = useAgents();
 
-  const completed = useMemo(
-    () => (runs.data ?? []).filter(isTerminal),
-    [runs.data],
-  );
-  const results = useRunResults(completed.map((r) => r.run_id));
-
   // Operators think in agent names, not opaque ids (mirrors RunCard / the run filters).
-  const agentNameById = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const a of agents.data ?? []) m.set(a.id, a.name);
-    return m;
-  }, [agents.data]);
-
-  // The agent's harness kind → its identity glyph on the card. A run from a deleted agent has no
-  // kind (falls back to the neutral mark).
-  const agentKindById = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const a of agents.data ?? []) if (a.kind) m.set(a.id, a.kind);
-    return m;
-  }, [agents.data]);
-
-  const rows: AgentRunRow[] = completed.map((r, i) => {
-    const view = results[i]?.data;
-    // The server's classification of the run (run-state.ts classifyRun) — the same answer
-    // whether or not the result has been graded yet.
-    const counting = classifyRun(r.outcome);
-    return {
-      agentId: r.agent_id,
-      agentName: agentNameById.get(r.agent_id) ?? r.agent_id.slice(0, 8),
-      overall: view?.grade?.overall ?? null,
-      ...counting,
-      judgeDegraded: judgeDegraded(view?.grade?.judge_status),
-      when: r.completed_at ?? r.created_at,
-    };
-  });
-
-  const summaries = useMemo(() => summarizeByAgent(rows), [rows]);
-  const loadingResults = results.some((q) => q.isLoading);
-  // A profile link resolves only for an agent still registered (matched by id); a run from a
-  // deleted agent shows its numbers but no dead link.
-  const registered = useMemo(
-    () => new Set((agents.data ?? []).map((a) => a.id)),
+  const agentById = useMemo(
+    () => new Map((agents.data ?? []).map((a) => [a.id, a])),
     [agents.data],
   );
 
+  const runsByAgent = useMemo(() => {
+    const m = new Map<string, RunScore[]>();
+    for (const r of scores.data ?? []) {
+      const list = m.get(r.agent_id);
+      if (list) list.push(r);
+      else m.set(r.agent_id, [r]);
+    }
+    return m;
+  }, [scores.data]);
+
+  // Best median first. An agent with no scored run has no median and sinks; ties go to the agent
+  // with more scored runs, then the name.
+  const ranked = useMemo(() => {
+    const name = (id: string) => agentById.get(id)?.name ?? id.slice(0, 8);
+    return [...(summaries.data ?? [])].sort(
+      (a, b) =>
+        (b.median ?? -1) - (a.median ?? -1) ||
+        b.scored - a.scored ||
+        name(a.agent_id ?? "").localeCompare(name(b.agent_id ?? "")),
+    );
+  }, [summaries.data, agentById]);
+
+  const loading = scores.isLoading || summaries.isLoading;
   return (
     <div className="space-y-4">
-      {runs.isError && (
+      {(scores.isError || summaries.isError) && (
         <p className="text-body text-err">Couldn’t load results.</p>
       )}
 
-      {runs.isLoading && <LoadingCards />}
+      {loading && <LoadingCards />}
 
-      {runs.data && completed.length === 0 && <EmptyResults />}
+      {summaries.data && ranked.length === 0 && <EmptyResults />}
 
-      {summaries.length > 0 && (
-        <>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {summaries.map((s, i) => (
-              <Reveal key={s.agentId} delay={i * 40}>
+      {ranked.length > 0 && <RunKey view="strip" />}
+
+      {ranked.length > 0 && (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {ranked.map((s, i) => {
+            const id = s.agent_id ?? "";
+            const agent = agentById.get(id);
+            return (
+              <Reveal key={id} delay={i * 40}>
                 <AgentPerformanceCard
                   summary={s}
-                  kind={agentKindById.get(s.agentId)}
-                  linked={registered.has(s.agentId)}
+                  runs={runsByAgent.get(id) ?? []}
+                  name={agent?.name ?? id.slice(0, 8)}
+                  kind={agent?.kind ?? undefined}
+                  linked={!!agent}
                 />
               </Reveal>
-            ))}
-          </div>
-          {loadingResults && (
-            <p className="text-caption text-text-tertiary">Updating scores…</p>
-          )}
-        </>
+            );
+          })}
+        </div>
       )}
     </div>
   );
 }
 
+/** The card's text alternative to its strip: what a sighted reader takes from it, in words. */
+export function stripSummary(name: string, s: ScoreSummary): string {
+  const median =
+    s.median != null
+      ? `median ${pct(s.median)} over ${s.scored} scored ${s.scored === 1 ? "run" : "runs"}`
+      : "no scored run yet";
+  const aside = asideLine(s);
+  return `${name}: ${s.runs} ${s.runs === 1 ? "run" : "runs"}, ${median}${aside ? `; ${aside}, not in the median` : ""}.`;
+}
+
 function AgentPerformanceCard({
   summary,
+  runs,
+  name,
   kind,
   linked,
 }: {
-  summary: AgentPerformanceSummary;
+  summary: ScoreSummary;
+  runs: RunScore[];
+  name: string;
   kind?: string;
   linked: boolean;
 }) {
+  const aside = asideLine(summary);
   const header = (
     <div className="flex items-center justify-between gap-2">
       <span className="flex min-w-0 items-center gap-2">
         <HarnessGlyph kind={kind} className="[&_svg]:!size-5" />
-        {/* Card head — 14px/700, the same value CardTitle carries (Figma sets a card
-            head in JetBrains Mono Bold at 14). `row` not `body` because this name is
-            one truncating line and body's 1.6 leading only pays for wrapped copy. */}
-        <span className="truncate text-row font-bold text-heading">
-          {summary.agentName}
-        </span>
+        {/* Card head — 14px/700, the same value CardTitle carries. `row` not `body` because this
+            name is one truncating line and body's 1.6 leading only pays for wrapped copy. */}
+        <span className="truncate text-row font-bold text-heading">{name}</span>
       </span>
       {linked && (
         <span className="flex shrink-0 items-center gap-1 text-dense text-text-secondary transition-colors group-hover:text-heading">
@@ -141,9 +138,29 @@ function AgentPerformanceCard({
   const body = (
     <>
       {header}
-      {/* Compact tiles + a two-line footer: the wide 6-up grid collided its COMPLETION/PARTIAL
-          labels and wrapped the timestamp across three lines inside this card width. */}
-      <PerformanceSummary summary={summary} columns={3} className="mt-4" />
+      <RunStrip
+        className="mt-4"
+        runs={runs}
+        median={summary.median}
+        summary={stripSummary(name, summary)}
+      />
+      <dl className="mt-3 grid grid-cols-2 gap-x-3">
+        <StatTile label="Median" value={pct(summary.median)} tone="primary" />
+        <StatTile label="Scored" value={`${summary.scored} of ${summary.runs}`} small />
+      </dl>
+      <div className="mt-2 space-y-1 text-caption">
+        <p className="text-text-tertiary">Last run {shortTime(summary.last_run)}</p>
+        {aside && (
+          <p className="text-text-tertiary">
+            {aside}: not in the median.
+          </p>
+        )}
+        {summary.partial_judge > 0 && (
+          <p className="text-text-tertiary">
+            {summary.partial_judge} judged on part of the rubric, counted at the lower bound.
+          </p>
+        )}
+      </div>
     </>
   );
 
@@ -153,7 +170,7 @@ function AgentPerformanceCard({
 
   return (
     <Link
-      href={`/agents/detail?name=${encodeURIComponent(summary.agentName)}`}
+      href={`/agents/detail?name=${encodeURIComponent(name)}`}
       className="block h-full"
     >
       <Card className="group h-full p-4 transition-colors hover:border-border-hover">
