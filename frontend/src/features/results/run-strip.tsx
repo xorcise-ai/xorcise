@@ -1,9 +1,11 @@
 "use client";
 
+import { useRef, useState, type KeyboardEvent } from "react";
+import Link from "next/link";
 import { cn } from "@/components/ui/cn";
-import { pct } from "@/lib/api/format";
 import type { RunScore } from "@/lib/api/types";
-import { hatch, runGlyph } from "./run-glyph";
+import { hatch, runGlyph, type RunKind } from "./run-glyph";
+import { RunInspector } from "./run-inspector";
 import { useFitCount } from "./use-fit-count";
 
 // Column sizing. 8px is the narrowest a column still reads as its own run with both halves
@@ -17,110 +19,192 @@ const FALLBACK_COLUMNS = 24;
 /**
  * An agent's latest runs, one column each, oldest to newest. A column's height is the run's
  * overall score: the lower part is what the deterministic checks earned, the upper part what the
- * judge earned. A judge that never ran leaves its half as a dashed outline (unmeasured, not
- * zero); a judge that scored part of its rubric is solid to its lower bound and hatched to its
- * upper. A run that timed out is drawn at the score it earned, marked ○ beneath, since it is in
- * the median; one an operator stopped is faded and marked ‖, since it is not. An environment
- * failure is an empty slot, never a score. The dashed line is the median of the scored runs, which the server computes over
- * ALL the agent's runs, not just the ones that fit.
+ * judge earned. Each kind of run is told apart by the column itself, not by a mark beside it:
  *
- * Decorative to assistive technology: `summary` is read instead, and every run is one click away
- * in the agent's run history.
+ * - timed out: a red cap. Red means only this, the agent did not finish. It is in the median;
+ * - partial judge: hatched from its lower bound to its upper;
+ * - no judge: the judge half a dashed outline, unmeasured rather than zero;
+ * - stopped by an operator: grey, since its score says nothing about the agent;
+ * - environment failure: an empty grey striped slot, never a score and never red: ours, not the
+ *   agent's;
+ * - grading: an empty dashed slot until the grade lands.
+ *
+ * The dashed line is the median of the scored runs, which the server computes over ALL the agent's
+ * runs, not just the ones that fit. Each column opens its run. Pointing at a column, or focusing
+ * it (the strip is one tab stop; the arrow keys move between runs), opens the run's inspector, and
+ * `onInspect` reports its kind so the page's key can light up the matching entry.
  */
 export function RunStrip({
   runs,
   median,
   summary,
+  onInspect,
   className,
 }: {
   runs: RunScore[];
   median: number | null | undefined;
+  /** The strip in words, for assistive technology. */
   summary: string;
+  onInspect?: (kind: RunKind | null) => void;
   className?: string;
 }) {
   const [ref, fit] = useFitCount<HTMLDivElement>(MIN_COLUMN, GAP, MAX_COLUMNS, FALLBACK_COLUMNS);
   const shown = runs.slice(-fit);
   const hidden = runs.length - shown.length;
+  const [inspected, setInspected] = useState<number | null>(null);
+  const [stop, setStop] = useState<number | null>(null);
+  const cells = useRef<(HTMLAnchorElement | null)[]>([]);
+
+  // The one tab stop: the run last focused, else the newest.
+  const tabStop = Math.min(stop ?? shown.length - 1, shown.length - 1);
+  const inspect = (i: number | null) => {
+    setInspected(i);
+    onInspect?.(i === null ? null : runGlyph(shown[i]).kind);
+  };
+  const focus = (i: number) => {
+    const target = Math.max(0, Math.min(shown.length - 1, i));
+    setStop(target);
+    cells.current[target]?.focus();
+  };
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const moves: Record<string, () => void> = {
+      ArrowRight: () => focus(tabStop + 1),
+      ArrowLeft: () => focus(tabStop - 1),
+      Home: () => focus(0),
+      End: () => focus(shown.length - 1),
+    };
+    const move = moves[e.key];
+    if (move) {
+      e.preventDefault();
+      move();
+    }
+  };
+
+  const run = inspected === null ? null : shown[inspected];
+  // Open the inspector on the side the column is on, so it never runs off the card.
+  const onRight = inspected !== null && inspected >= shown.length / 2;
+
   return (
-    <div className={cn("space-y-1", className)}>
-      <div role="img" aria-label={summary} ref={ref} className="w-full">
-        <div
-          className="relative flex h-24 items-end border-b border-border-hover"
-          style={{ gap: GAP }}
-          aria-hidden
-        >
-          {median != null && (
-            <div
-              data-testid="strip-median"
-              className="pointer-events-none absolute inset-x-0 border-t border-dashed border-primary"
-              style={{ bottom: `${median * 100}%` }}
-            />
-          )}
-          {shown.map((r) => (
-            <StripColumn key={r.run_id} run={r} />
-          ))}
-        </div>
-        <div className="flex h-3.5" style={{ gap: GAP }} aria-hidden>
-          {shown.map((r) => {
-            const g = runGlyph(r);
-            return (
-              <span
-                key={r.run_id}
-                className={cn(
-                  "min-w-0 max-w-4 flex-1 text-center text-label leading-3.5",
-                  g.mark === "×" && "font-bold text-err",
-                  g.mark === "○" && "text-primary",
-                  (g.mark === "?" || g.mark === "…" || g.mark === "‖") && "text-text-tertiary",
-                )}
-              >
-                {g.mark}
-              </span>
-            );
-          })}
-        </div>
+    <div className={cn("relative", className)}>
+      <div
+        role="group"
+        aria-label={summary}
+        ref={ref}
+        onKeyDown={onKeyDown}
+        className="relative flex h-24 w-full items-end border-b border-border-hover"
+        style={{ gap: GAP }}
+      >
+        {median != null && (
+          <div
+            data-testid="strip-median"
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 z-10 border-t border-dashed border-primary"
+            style={{ bottom: `${median * 100}%` }}
+          />
+        )}
+        {shown.map((r, i) => {
+          const g = runGlyph(r);
+          return (
+            <Link
+              key={r.run_id}
+              ref={(el) => {
+                cells.current[i] = el;
+              }}
+              href={`/runs/result?id=${encodeURIComponent(r.run_id)}`}
+              tabIndex={i === tabStop ? 0 : -1}
+              aria-label={g.label}
+              data-testid="strip-column"
+              data-kind={g.kind}
+              onMouseEnter={() => inspect(i)}
+              onMouseLeave={() => inspect(null)}
+              onFocus={() => {
+                setStop(i);
+                inspect(i);
+              }}
+              onBlur={() => inspect(null)}
+              className={cn(
+                "flex h-full min-w-0 max-w-4 flex-1 rounded-t-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                inspected === i && "ring-1 ring-heading/70",
+              )}
+            >
+              <StripColumn run={r} />
+            </Link>
+          );
+        })}
       </div>
-      <p className="flex justify-between text-caption text-text-tertiary" aria-hidden>
-        <span>{hidden > 0 ? `latest ${shown.length} of ${runs.length}` : "oldest → newest"}</span>
-        {median != null && <span className="text-primary">median {pct(median)}</span>}
+      <p className="mt-1 text-caption text-text-tertiary" aria-hidden>
+        {hidden > 0 ? `latest ${shown.length} of ${runs.length}` : "oldest → newest"}
       </p>
+      {run && (
+        <RunInspector
+          run={run}
+          className={cn("absolute top-24 mt-2", onRight ? "right-0" : "left-0")}
+        />
+      )}
     </div>
   );
 }
 
-/** One run's column. Exported so the key draws its examples with this very component. */
-export function StripColumn({ run, sample = false }: { run: RunScore; sample?: boolean }) {
+/** One run's column, filling the slot it is given. Exported so the key draws its examples with
+ *  this very component; `small` is the key's size (a smaller corner, to keep the same shape). */
+export function StripColumn({ run, small = false }: { run: RunScore; small?: boolean }) {
   const g = runGlyph(run);
+  const corner = small ? "rounded-t-xs" : "rounded-t-sm";
+  if (g.empty) {
+    return (
+      <span
+        aria-hidden
+        data-part={g.kind === "infra_failed" ? "infra" : "grading"}
+        className={cn(
+          "block h-full w-full border border-b-0 border-dashed",
+          corner,
+          g.kind === "grading"
+            ? "border-border-hover motion-safe:animate-pulse"
+            : "border-text-tertiary",
+        )}
+        style={
+          g.kind === "infra_failed"
+            ? { background: hatch("color-mix(in srgb, var(--color-heading) 10%, transparent)") }
+            : undefined
+        }
+      />
+    );
+  }
+  const total = g.det + g.judge + g.judgeRange + g.unmeasured;
+  const share = (part: number) => `${total ? (part / total) * 100 : 0}%`;
   return (
-    <div
-      data-testid={sample ? undefined : "strip-column"}
-      data-bucket={g.bucket}
-      title={sample ? undefined : g.label}
-      className={cn(
-        "flex h-full min-w-0 max-w-4 flex-1 flex-col-reverse",
-        g.faded && "opacity-40",
-        g.bucket === "infra_failed" && "rounded-sm border border-dashed border-err/60",
-        g.bucket === "grading" &&
-          "rounded-sm border border-dashed border-border-hover motion-safe:animate-pulse",
-      )}
-    >
-      {g.det > 0 && <div className="shrink-0 bg-data" style={{ height: `${g.det * 100}%` }} />}
-      {g.judge > 0 && (
-        <div className="shrink-0 bg-chart-4" style={{ height: `${g.judge * 100}%` }} />
-      )}
-      {g.judgeRange > 0 && (
-        <div
-          data-part="judge-range"
-          className="shrink-0"
-          style={{ height: `${g.judgeRange * 100}%`, background: hatch("var(--color-chart-4)") }}
-        />
-      )}
-      {g.unmeasured > 0 && (
-        <div
-          data-part="unmeasured"
-          className="shrink-0 border border-b-0 border-dashed border-text-tertiary"
-          style={{ height: `${g.unmeasured * 100}%` }}
-        />
-      )}
-    </div>
+    <span aria-hidden className="flex h-full w-full flex-col justify-end">
+      {/* One clipped bar, so the corner follows whatever is on top: the cap, the judge's share
+          or the dashed no-judge outline. */}
+      <span
+        data-part="bar"
+        className={cn(
+          "relative flex w-full flex-col-reverse overflow-hidden",
+          corner,
+          g.grey && "opacity-60 grayscale",
+        )}
+        style={{ height: `${total * 100}%` }}
+      >
+        {g.det > 0 && <span className="shrink-0 bg-data" style={{ height: share(g.det) }} />}
+        {g.judge > 0 && (
+          <span className="shrink-0 bg-chart-4" style={{ height: share(g.judge) }} />
+        )}
+        {g.judgeRange > 0 && (
+          <span
+            data-part="judge-range"
+            className="shrink-0"
+            style={{ height: share(g.judgeRange), background: hatch("var(--color-chart-4)") }}
+          />
+        )}
+        {g.unmeasured > 0 && (
+          <span
+            data-part="unmeasured"
+            className={cn("shrink-0 border border-b-0 border-dashed border-text-tertiary", corner)}
+            style={{ height: share(g.unmeasured) }}
+          />
+        )}
+        {g.cap && <span data-part="cap" className="absolute inset-x-0 top-0 h-1 bg-err" />}
+      </span>
+    </span>
   );
 }

@@ -1,19 +1,18 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Trophy } from "lucide-react";
+import { Trophy } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Reveal } from "@/components/ui/reveal";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/components/ui/cn";
-import { StatTile } from "@/components/ui/stat-tile";
 import { pct, shortTime } from "@/lib/api/format";
 import type { RunScore, ScoreSummary } from "@/lib/api/types";
 import { useAgents } from "@/features/agents/queries";
 import { HarnessGlyph } from "@/features/agents/harnesses";
 import { useRunScores, useScoreSummary } from "./queries";
-import { asideLine, timedOutLine } from "./run-glyph";
+import { asideLine, type RunKind } from "./run-glyph";
 import { RunKey } from "./run-key";
 import { RunStrip } from "./run-strip";
 import { LoadingCards } from "./loading-cards";
@@ -26,6 +25,8 @@ import { LoadingCards } from "./loading-cards";
  * <ResultsTabs> shell that renders this.
  */
 export function CompletedRuns() {
+  // The kind of the run under the pointer or focus in any card, so the key can light it up.
+  const [activeKind, setActiveKind] = useState<RunKind | null>(null);
   const scores = useRunScores();
   const summaries = useScoreSummary("agent");
   const agents = useAgents();
@@ -69,7 +70,7 @@ export function CompletedRuns() {
 
       {summaries.data && ranked.length === 0 && <EmptyResults />}
 
-      {ranked.length > 0 && <RunKey view="strip" />}
+      {ranked.length > 0 && <RunKey view="strip" active={activeKind} />}
 
       {ranked.length > 0 && (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
@@ -82,8 +83,9 @@ export function CompletedRuns() {
                   summary={s}
                   runs={runsByAgent.get(id) ?? []}
                   name={agent?.name ?? id.slice(0, 8)}
-                  kind={agent?.kind ?? undefined}
+                  harness={agent?.kind ?? undefined}
                   linked={!!agent}
+                  onInspect={setActiveKind}
                 />
               </Reveal>
             );
@@ -104,82 +106,68 @@ export function stripSummary(name: string, s: ScoreSummary): string {
   return `${name}: ${s.runs} ${s.runs === 1 ? "run" : "runs"}, ${median}${aside ? `; ${aside}, not in the median` : ""}.`;
 }
 
+/**
+ * One agent: its median, its run strip, and one line on what the median covers. Everything else a
+ * run carries (its kind, its scores, whether it counts) is in the strip: drawn by each column and
+ * spelled out by the inspector, so the card does not repeat it. The agent's name opens its
+ * profile; each column opens its run.
+ */
 function AgentPerformanceCard({
   summary,
   runs,
   name,
-  kind,
+  harness,
   linked,
+  onInspect,
 }: {
   summary: ScoreSummary;
   runs: RunScore[];
   name: string;
-  kind?: string;
+  harness?: string;
   linked: boolean;
+  onInspect: (kind: RunKind | null) => void;
 }) {
-  const aside = asideLine(summary);
-  const header = (
-    <div className="flex items-center justify-between gap-2">
-      <span className="flex min-w-0 items-center gap-2">
-        <HarnessGlyph kind={kind} className="[&_svg]:!size-5" />
-        {/* Card head — 14px/700, the same value CardTitle carries. `row` not `body` because this
-            name is one truncating line and body's 1.6 leading only pays for wrapped copy. */}
-        <span className="truncate text-row font-bold text-heading">{name}</span>
-      </span>
-      {linked && (
-        <span className="flex shrink-0 items-center gap-1 text-dense text-text-secondary transition-colors group-hover:text-heading">
-          View profile
-          <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" />
+  const left = summary.runs - summary.scored;
+  return (
+    <Card className="flex h-full flex-col gap-3 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <span className="flex min-w-0 items-center gap-2">
+          <HarnessGlyph kind={harness} className="[&_svg]:!size-5" />
+          {/* Card head — 14px/700, the same value CardTitle carries. */}
+          {linked ? (
+            <Link
+              href={`/agents/detail?name=${encodeURIComponent(name)}`}
+              className="truncate rounded-sm text-row font-bold text-heading hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {name}
+              <span className="sr-only">: view profile</span>
+            </Link>
+          ) : (
+            <span className="truncate text-row font-bold text-heading">{name}</span>
+          )}
         </span>
-      )}
-    </div>
-  );
-
-  const body = (
-    <>
-      {header}
+        <span className="flex shrink-0 flex-col items-end">
+          <span className="text-stat font-bold leading-none text-primary">
+            {pct(summary.median)}
+          </span>
+          <span className="mt-1 text-label uppercase text-text-tertiary">median</span>
+        </span>
+      </div>
       <RunStrip
-        className="mt-4"
         runs={runs}
         median={summary.median}
         summary={stripSummary(name, summary)}
+        onInspect={onInspect}
       />
-      <dl className="mt-3 grid grid-cols-2 gap-x-3">
-        <StatTile label="Median" value={pct(summary.median)} tone="primary" />
-        <StatTile label="Scored" value={`${summary.scored} of ${summary.runs}`} small />
-      </dl>
-      <div className="mt-2 space-y-1 text-caption">
-        <p className="text-text-tertiary">Last run {shortTime(summary.last_run)}</p>
-        {summary.timed_out > 0 && (
-          <p className="text-text-tertiary">{timedOutLine(summary)}</p>
-        )}
-        {aside && (
-          <p className="text-text-tertiary">
-            {aside}: not in the median.
-          </p>
-        )}
-        {summary.partial_judge > 0 && (
-          <p className="text-text-tertiary">
-            {summary.partial_judge} judged on part of the rubric, counted at the lower bound.
-          </p>
-        )}
+      {/* Wraps rather than squeezes: in a narrow card the date drops to its own line. */}
+      <div className="mt-auto flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-caption text-text-tertiary">
+        <span>
+          {summary.scored} of {summary.runs} runs in the median
+          {left > 0 && <span className="whitespace-nowrap">{` · ${left} left out`}</span>}
+        </span>
+        <span className="shrink-0">last run {shortTime(summary.last_run)}</span>
       </div>
-    </>
-  );
-
-  if (!linked) {
-    return <Card className="h-full p-4">{body}</Card>;
-  }
-
-  return (
-    <Link
-      href={`/agents/detail?name=${encodeURIComponent(name)}`}
-      className="block h-full"
-    >
-      <Card className="group h-full p-4 transition-colors hover:border-border-hover">
-        {body}
-      </Card>
-    </Link>
+    </Card>
   );
 }
 

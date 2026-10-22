@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 vi.mock("next/link", () => ({
   default: ({ href, children, ...props }: { href: string; children: React.ReactNode }) => (
@@ -11,106 +11,83 @@ vi.mock("next/link", () => ({
 
 import { RunKey } from "./run-key";
 
-const items = () =>
-  within(screen.getByRole("list", { name: "Key" }))
+const group = (name: string) =>
+  within(screen.getByRole("list", { name }))
     .getAllByRole("listitem")
-    // Swatches draw their marks (× ○ ‖ ? …); they are aria-hidden, so read past them.
-    .map((li) => li.textContent?.replace(/[×○‖?…]/g, ""));
+    .map((li) => li.textContent);
 
-describe("RunKey: one key per view, drawn with the view's own shapes", () => {
-  it("lists every kind of run the run strip draws, and its median line", () => {
+describe("RunKey: what counts in the median, then what is left out", () => {
+  it("groups the run strip's kinds on either side of the divider", () => {
     render(<RunKey view="strip" />);
-    expect(items()).toEqual([
-      "judge · checks, height = overall",
-      "scored",
-      "timed out",
-      "partial judge",
+    expect(group("In the median")).toEqual(["scored", "timed out", "partial judge"]);
+    expect(group("Left out of the median")).toEqual([
       "no judge",
       "stopped",
       "environment failure",
       "grading",
-      "median",
     ]);
   });
 
   it("lists only what the agreement plot places: no environment failures or grading", () => {
     render(<RunKey view="plot" />);
-    expect(items()).toEqual([
-      "checks →judge ↑",
-      "scored",
-      "timed out",
-      "partial judge",
-      "no judge",
-      "stopped",
-    ]);
+    expect(group("In the median")).toEqual(["scored", "timed out", "partial judge"]);
+    expect(group("Left out of the median")).toEqual(["no judge", "stopped"]);
   });
 
-  it("explains the ledger's two shades", () => {
-    render(<RunKey view="ledger" />);
-    expect(items()[0]).toBe("judge · checks, brighter = higher");
-    expect(items()).toContain("environment failure");
-  });
-
-  it("keeps the swatches out of the accessibility tree: the words carry the meaning", () => {
-    const { container } = render(<RunKey view="strip" />);
-    for (const li of container.querySelectorAll("li")) {
-      for (const swatch of li.querySelectorAll("span:first-child")) {
-        if (swatch.childElementCount > 0) expect(swatch.closest("[aria-hidden]")).not.toBeNull();
-      }
+  it("draws each item with the view's own renderer, hidden from assistive technology", () => {
+    const { container } = render(<RunKey view="ledger" />);
+    for (const li of container.querySelectorAll("li[data-kind]")) {
+      expect(li.firstElementChild!.getAttribute("aria-hidden")).toBe("true");
     }
+    expect(group("Left out of the median")).toContain("environment failure");
+  });
+
+  it("outlines the kind of the run being inspected", () => {
+    render(<RunKey view="strip" active="timed_out" />);
+    const active = screen
+      .getAllByRole("listitem")
+      .filter((li) => li.hasAttribute("data-active"))
+      .map((li) => li.dataset.kind);
+    expect(active).toEqual(["timed_out"]);
   });
 });
 
 describe("How to read this", () => {
-  it("opens the view's anatomy, and Escape closes it and returns focus to the trigger", () => {
+  it("opens the app's dialog on the view's anatomy, and Escape closes it, back to the trigger", async () => {
     render(<RunKey view="plot" />);
     const trigger = screen.getByRole("button", { name: "How to read this" });
-    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    trigger.focus();
     fireEvent.click(trigger);
-    expect(trigger).toHaveAttribute("aria-expanded", "true");
-    const panel = screen.getByRole("dialog", { name: "How to read this" });
-    expect(panel).toHaveTextContent("The diagonals join runs with the same overall score");
-    expect(within(panel).getByText("No judge")).toBeInTheDocument();
-    expect(within(panel).queryByText("Environment failure")).toBeNull();
+    const dialog = screen.getByRole("dialog", { name: "How to read the agreement plot" });
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    expect(dialog).toHaveTextContent("The diagonals join runs with the same overall score");
+    expect(within(dialog).getByText("No judge")).toBeInTheDocument();
+    expect(within(dialog).queryByText("Environment failure")).toBeNull();
     fireEvent.keyDown(document, { key: "Escape" });
-    expect(screen.queryByRole("dialog")).toBeNull();
+    // The dialog plays its exit transition (150ms) before it unmounts.
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(document.activeElement).toBe(trigger);
   });
 
-  it("closes on a press outside it, and from its close button", () => {
-    render(
-      <>
-        <RunKey view="strip" />
-        <p>elsewhere</p>
-      </>,
-    );
-    fireEvent.click(screen.getByRole("button", { name: "How to read this" }));
-    expect(screen.getByRole("dialog")).toHaveTextContent("median");
-    fireEvent.mouseDown(screen.getByText("elsewhere"));
-    expect(screen.queryByRole("dialog")).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "How to read this" }));
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
-    expect(screen.queryByRole("dialog")).toBeNull();
-  });
-
-  it("explains each kind of run in the ledger, environment failures included", () => {
-    render(<RunKey view="ledger" />);
-    fireEvent.click(screen.getByRole("button", { name: "How to read this" }));
-    const panel = screen.getByRole("dialog");
-    expect(within(panel).getByText("Environment failure")).toBeInTheDocument();
-    expect(panel).toHaveTextContent("arrow keys");
-  });
-});
-
-describe("timed out and stopped", () => {
-  it("explains that a timeout is in the median and a stop is not", () => {
+  it("groups the kinds as the key does, and closes from Done", async () => {
     render(<RunKey view="strip" />);
     fireEvent.click(screen.getByRole("button", { name: "How to read this" }));
-    const panel = screen.getByRole("dialog");
-    expect(panel).toHaveTextContent(
-      "Not finishing in time is the agent’s failure, so it is in the median, at the score it earned.",
+    const dialog = screen.getByRole("dialog", { name: "How to read the run strip" });
+    expect(within(dialog).getByRole("heading", { name: "In the median" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("heading", { name: "Left out" })).toBeInTheDocument();
+    expect(dialog).toHaveTextContent(
+      "Not finishing counts against the agent, so it is in the median at the score it earned.",
     );
-    expect(panel).toHaveTextContent("An operator ended it, so its score says nothing about the agent.");
+    expect(dialog).toHaveTextContent("An operator ended it, so its score says nothing about the agent.");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("explains the ledger, environment failures included", () => {
+    render(<RunKey view="ledger" />);
+    fireEvent.click(screen.getByRole("button", { name: "How to read this" }));
+    const dialog = screen.getByRole("dialog", { name: "How to read the run ledger" });
+    expect(within(dialog).getByText("Environment failure")).toBeInTheDocument();
+    expect(dialog).toHaveTextContent("arrow keys");
   });
 });

@@ -1,12 +1,14 @@
 "use client";
 
+import { useState } from "react";
+
 import type { ScoreSummary } from "@/lib/api/types";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { pct, shortTime } from "@/lib/api/format";
 import { PerformanceSummary } from "@/features/results/performance-summary";
 import { StatTile } from "@/components/ui/stat-tile";
-import { asideLine, timedOutLine } from "@/features/results/run-glyph";
+import { asideLine, timedOutLine, type RunKind } from "@/features/results/run-glyph";
 import { RunKey } from "@/features/results/run-key";
 import { RunLedger, type LedgerRow } from "@/features/results/run-ledger";
 import type { AgentRunRow } from "./agent-run-history";
@@ -26,6 +28,8 @@ export function AgentPerformance({
   summary: ScoreSummary | null | undefined;
   ledger: LedgerRow[];
 }) {
+  // The kind of the run under the pointer or focus in the ledger, so the key can light it up.
+  const [activeKind, setActiveKind] = useState<RunKind | null>(null);
   const showSplit = summary?.mean_deterministic != null || summary?.mean_judge != null;
   const aside = summary ? asideLine(summary) : "";
 
@@ -82,8 +86,13 @@ export function AgentPerformance({
           <p className="text-label uppercase text-text-tertiary">Runs by mission</p>
           {ledger.length > 0 ? (
             <>
-              <RunKey view="ledger" bare className="border-b border-border pb-3" />
-              <RunLedger rows={ledger} />
+              <RunKey
+                view="ledger"
+                active={activeKind}
+                bare
+                className="border-b border-border pb-3"
+              />
+              <RunLedger rows={ledger} onInspect={setActiveKind} />
             </>
           ) : (
             <p className="text-body text-text-secondary">No finished runs yet.</p>

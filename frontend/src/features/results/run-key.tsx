@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { CircleHelp, X } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { CircleHelp } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Dialog } from "@/components/ui/dialog";
 import { cn } from "@/components/ui/cn";
 import type { RunScore } from "@/lib/api/types";
 import { PLOT_MARK } from "./agreement-plot";
-import { hatch, runGlyph } from "./run-glyph";
+import { hatch, KIND_META, type RunKind } from "./run-glyph";
 import { CellFace, cellLook } from "./run-ledger";
 import { StripColumn } from "./run-strip";
 
@@ -38,79 +40,37 @@ function sample(over: Partial<RunScore>): RunScore {
   };
 }
 
-const SAMPLES = {
+const SAMPLES: Record<RunKind, RunScore> = {
   scored: sample({}),
-  partial: sample({ judge: 0.35, judge_upper: 0.85, judge_status: "partial", overall: 0.63 }),
+  timed_out: sample({ deterministic: 0.6, judge: 0.5, overall: 0.55, timed_out: true, outcome: "partial", terminal_trigger: "timeout" }),
+  partial_judge: sample({ judge: 0.35, judge_upper: 0.85, judge_status: "partial", overall: 0.63 }),
   no_judge: sample({ deterministic: 1, judge: 0, judge_status: "unavailable", bucket: "no_judge", overall: 0.5 }),
-  timed_out: sample({ deterministic: 0.6, judge: 0.4, overall: 0.5, timed_out: true, outcome: "partial", terminal_trigger: "timeout" }),
-  stopped: sample({ deterministic: 0.6, judge: 0.4, bucket: "stopped", outcome: "partial", terminal_trigger: "operator" }),
+  stopped: sample({ deterministic: 0.6, judge: 0.5, bucket: "stopped", outcome: "partial", terminal_trigger: "operator" }),
   infra_failed: sample({ deterministic: null, judge: null, judge_status: null, overall: null, bucket: "infra_failed", outcome: "infra_failed" }),
   grading: sample({ deterministic: null, judge: null, judge_status: null, overall: null, bucket: "grading" }),
 };
 
-type Kind = keyof typeof SAMPLES;
-
-/** What each kind of run is called and why it looks the way it does: one sentence each, shared
- *  by every view's popover. */
-const MEANING: Record<Kind, { title: string; body: string }> = {
-  scored: {
-    title: "Scored",
-    body: "Graded by the checks and the judge. Only scored runs, timed-out ones included, are in the median.",
+/** The kinds each view draws, in the key's two groups: in the median, then left out. Grading is
+ *  neither yet, and closes the second group. The plot places no run it has no scores for. */
+const GROUPS: Record<KeyView, { in: RunKind[]; out: RunKind[] }> = {
+  strip: {
+    in: ["scored", "timed_out", "partial_judge"],
+    out: ["no_judge", "stopped", "infra_failed", "grading"],
   },
-  partial: {
-    title: "Partial judge",
-    body: "The judge scored part of its rubric. Solid up to the lower bound, hatched to the upper; it counts at the lower bound.",
-  },
-  no_judge: {
-    title: "No judge",
-    body: "The judge never ran, so half the score is unmeasured, not zero. Left out of the median.",
-  },
-  timed_out: {
-    title: "Timed out",
-    body: "Ran out of its time budget. Not finishing in time is the agent’s failure, so it is in the median, at the score it earned.",
-  },
-  stopped: {
-    title: "Stopped",
-    body: "An operator ended it, so its score says nothing about the agent. Left out of the median.",
-  },
-  infra_failed: {
-    title: "Environment failure",
-    body: "Cut short by our environment, not the agent. Never graded, never a score.",
-  },
-  grading: {
-    title: "Grading",
-    body: "Finished; the grade is not recorded yet. It fills in by itself.",
+  plot: { in: ["scored", "timed_out", "partial_judge"], out: ["no_judge", "stopped"] },
+  ledger: {
+    in: ["scored", "timed_out", "partial_judge"],
+    out: ["no_judge", "stopped", "infra_failed", "grading"],
   },
 };
 
-const KINDS: Record<KeyView, Kind[]> = {
-  strip: ["scored", "timed_out", "partial", "no_judge", "stopped", "infra_failed", "grading"],
-  plot: ["scored", "timed_out", "partial", "no_judge", "stopped"],
-  ledger: ["scored", "timed_out", "partial", "no_judge", "stopped", "infra_failed", "grading"],
-};
-
-/** One kind of run, drawn by the view's own renderer at key size (`big` for the popover). */
-function Swatch({ view, kind, big = false }: { view: KeyView; kind: Kind; big?: boolean }) {
+/** One kind of run, drawn by the view's own renderer at key size (`big` for the help dialog). */
+function Swatch({ view, kind, big = false }: { view: KeyView; kind: RunKind; big?: boolean }) {
   const run = SAMPLES[kind];
   if (view === "strip") {
-    // The strip marks some runs beneath their column (○ timed out, ‖ stopped, ? no judge, …), so
-    // the key shows the mark too: a timed-out column alone looks like any scored one.
-    const mark = runGlyph(run).mark;
     return (
-      <span aria-hidden className="flex flex-col items-center">
-        <span className={cn("flex", big ? "h-24 w-5" : "h-5 w-2.5")}>
-          <StripColumn run={run} sample />
-        </span>
-        {mark && (
-          <span
-            className={cn(
-              "text-label leading-3",
-              mark === "×" ? "font-bold text-err" : mark === "○" ? "text-primary" : "text-text-tertiary",
-            )}
-          >
-            {mark}
-          </span>
-        )}
+      <span aria-hidden className={cn("flex", big ? "h-24 w-5" : "h-6 w-2.5")}>
+        <StripColumn run={run} small={!big} />
       </span>
     );
   }
@@ -124,7 +84,7 @@ function Swatch({ view, kind, big = false }: { view: KeyView; kind: Kind; big?: 
     );
   }
   const size = big ? "size-4" : "size-2.5";
-  if (kind === "partial") {
+  if (kind === "partial_judge") {
     return (
       <span aria-hidden className={cn("flex flex-col items-center", big ? "h-12" : "h-5")}>
         <span
@@ -146,76 +106,69 @@ function Swatch({ view, kind, big = false }: { view: KeyView; kind: Kind; big?: 
   return <span aria-hidden className={cn("shrink-0", size, look)} />;
 }
 
-const SHORT: Record<Kind, string> = {
-  scored: "scored",
-  partial: "partial judge",
-  no_judge: "no judge",
-  timed_out: "timed out",
-  stopped: "stopped",
-  infra_failed: "environment failure",
-  grading: "grading",
-};
-
-/** The view's own encoding, one line above its charts, and the "How to read this" popover. One
- *  per view, not per card: every card on a page draws the same way. */
+/**
+ * The view's key, one line above its charts: what counts in the median, a divider, then what is
+ * left out, each kind drawn by the view's own renderer. `active` outlines the kind of the run under
+ * the pointer or focus, so the key teaches itself. One per view, not per card: every card on a
+ * page draws the same way. "How to read this" opens the full explanation.
+ */
 export function RunKey({
   view,
+  active,
   bare = false,
   className,
 }: {
   view: KeyView;
+  /** The kind of the run being inspected, outlined in the key. */
+  active?: RunKind | null;
   /** Inside a card already: drop the strip's own frame. */
   bare?: boolean;
   className?: string;
 }) {
-  // `relative` here, not on the trigger: the popover anchors to the whole strip, so it is as wide
-  // as the strip (up to 40rem) and never runs past the edge of a narrow screen.
+  const groups = GROUPS[view];
+  const item = (kind: RunKind) => (
+    <li
+      key={kind}
+      data-kind={kind}
+      data-active={active === kind || undefined}
+      className={cn(
+        "flex items-end gap-1.5 rounded-md border px-1.5 py-1 leading-4",
+        active === kind ? "border-heading/70 bg-heading/5" : "border-transparent",
+      )}
+    >
+      <Swatch view={view} kind={kind} />
+      <span className="text-caption text-foreground">{KIND_META[kind].label}</span>
+    </li>
+  );
   return (
     <div
       className={cn(
-        "relative flex flex-wrap items-center gap-x-4 gap-y-2",
+        "flex flex-wrap items-end gap-x-5 gap-y-2",
         !bare && "rounded-md border border-border bg-card px-3 py-2",
         className,
       )}
     >
-      <ul aria-label="Key" className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-caption text-text-secondary">
-        <EncodingItem view={view} />
-        {KINDS[view].map((kind) => (
-          <li key={kind} className="flex items-center gap-1.5">
-            <Swatch view={view} kind={kind} />
-            {SHORT[kind]}
-          </li>
-        ))}
-        {view === "strip" && (
-          <li className="flex items-center gap-1.5">
-            <span aria-hidden className="w-4 border-t border-dashed border-primary" />
-            median
-          </li>
-        )}
-      </ul>
-      <HowToRead view={view} className="ml-auto" />
+      {/* Headings and labels share one line and sit on the items' bottom edge, so "In the median"
+          reads on the same line as "scored". */}
+      <div className="flex flex-wrap items-end gap-1">
+        <span className="pb-[5px] pr-1 text-label uppercase leading-4 text-primary">
+          In the median
+        </span>
+        <ul aria-label="In the median" className="flex flex-wrap items-end gap-1">
+          {groups.in.map(item)}
+        </ul>
+      </div>
+      {/* The divider runs between the groups: across, once they stack on a narrow screen. */}
+      <div className="flex w-full flex-wrap items-end gap-1 border-t border-border-hover pt-2 sm:w-auto sm:self-stretch sm:border-l sm:border-t-0 sm:pl-5 sm:pt-0">
+        <span className="pb-[5px] pr-1 text-label uppercase leading-4 text-text-tertiary">
+          Left out
+        </span>
+        <ul aria-label="Left out of the median" className="flex flex-wrap items-end gap-1">
+          {groups.out.map(item)}
+        </ul>
+      </div>
+      <HowToRead view={view} className="ml-auto self-center" />
     </div>
-  );
-}
-
-/** What position and colour mean in this view, the first item of its key. */
-function EncodingItem({ view }: { view: KeyView }) {
-  if (view === "plot") {
-    return (
-      <li className="flex items-center gap-1.5">
-        <span className="text-data">checks →</span>
-        <span className="text-chart-4">judge ↑</span>
-      </li>
-    );
-  }
-  return (
-    <li className="flex items-center gap-1.5">
-      <span aria-hidden className="flex size-3 flex-col">
-        <span className="flex-1 bg-chart-4" />
-        <span className="flex-1 bg-data" />
-      </span>
-      {view === "strip" ? "judge · checks, height = overall" : "judge · checks, brighter = higher"}
-    </li>
   );
 }
 
@@ -224,9 +177,9 @@ const READING: Record<KeyView, { lead: string; extra: ReactNode }> = {
     lead: "One column per run, oldest to newest; the card shows as many recent runs as fit. A column’s height is the run’s overall score: the lower part is what the deterministic checks earned, the upper part what the judge earned. Each carries half of the score.",
     extra: (
       <p>
-        The dashed line is the <strong className="text-heading">median</strong> of the scored
-        runs, over all of the agent’s runs, not only the ones that fit. Every other run is
-        counted and named under the card.
+        The dashed line is the <strong className="text-heading">median</strong> of the runs that
+        count, over all of the agent’s runs, not only the ones that fit. Point at a column, or Tab
+        to the strip and use the arrow keys, to see a run in words; Enter opens it.
       </p>
     ),
   },
@@ -259,92 +212,75 @@ const READING: Record<KeyView, { lead: string; extra: ReactNode }> = {
   },
 };
 
-/** The "How to read this" popover: the view's anatomy, each kind of run drawn large with what it
- *  means. Closes on Escape (focus returns to the trigger), an outside press, or its close button. */
+const TITLE: Record<KeyView, string> = {
+  strip: "How to read the run strip",
+  plot: "How to read the agreement plot",
+  ledger: "How to read the run ledger",
+};
+
+/** The "How to read this" help: the app's Dialog (focus held inside, Escape or the scrim closes
+ *  it, focus returns to the trigger), holding the view's anatomy: each kind of run drawn large
+ *  with what it means, grouped as the key groups them, then how to read the view as a whole. */
 function HowToRead({ view, className }: { view: KeyView; className?: string }) {
   const [open, setOpen] = useState(false);
-  const wrap = useRef<HTMLDivElement>(null);
-  const trigger = useRef<HTMLButtonElement>(null);
-  const panelId = useId();
-  const titleId = useId();
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (!wrap.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setOpen(false);
-        trigger.current?.focus();
-      }
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
   const reading = READING[view];
+  const group = (title: string, tone: string, kinds: RunKind[]) => (
+    <section className="space-y-3">
+      <h3 className={cn("text-label uppercase", tone)}>{title}</h3>
+      <ul className="grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2">
+        {kinds.map((kind) => (
+          // Each drawing centred on its own text: a small plot mark or ledger cell sat at the
+          // foot of a column-height slot, level with the explanation's last line.
+          <li key={kind} className="flex items-center gap-3">
+            <span
+              className={cn(
+                "flex w-10 shrink-0 items-center justify-center",
+                view === "strip" && "h-24",
+              )}
+            >
+              <Swatch view={view} kind={kind} big />
+            </span>
+            <span className="space-y-1">
+              <span className="block text-caption font-bold text-heading">
+                {KIND_META[kind].title}
+              </span>
+              <span className="block text-caption text-text-secondary">
+                {KIND_META[kind].body}
+              </span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
   return (
-    <div ref={wrap} className={className}>
+    <div className={className}>
       <button
-        ref={trigger}
         type="button"
-        aria-expanded={open}
-        aria-controls={panelId}
-        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="dialog"
+        onClick={() => setOpen(true)}
         className="flex items-center gap-1 rounded-sm text-caption text-text-secondary transition-colors hover:text-heading focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         <CircleHelp className="size-3.5" aria-hidden />
         How to read this
       </button>
-      {open && (
-        <div
-          id={panelId}
-          role="dialog"
-          aria-labelledby={titleId}
-          className="absolute right-0 top-full z-30 mt-2 max-h-[70vh] w-full max-w-[40rem] space-y-4 overflow-y-auto rounded-md border border-border-hover bg-raised p-4 shadow-lg"
-        >
-          <div className="flex items-start justify-between gap-3">
-            <p id={titleId} className="text-row font-bold text-heading">
-              How to read this
-            </p>
-            <button
-              type="button"
-              aria-label="Close"
-              onClick={() => {
-                setOpen(false);
-                trigger.current?.focus();
-              }}
-              className="rounded-sm text-text-tertiary hover:text-heading focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <X className="size-4" aria-hidden />
-            </button>
+      <Dialog open={open} onClose={() => setOpen(false)} title={TITLE[view]} size="lg">
+        {/* Scrolls inside the dialog on a short screen, so the close button stays in reach. */}
+        <div className="max-h-[65vh] space-y-5 overflow-y-auto pr-1">
+          <p className="text-body text-text-secondary">{reading.lead}</p>
+          {group("In the median", "text-primary", GROUPS[view].in)}
+          <div className="border-t border-border" />
+          {group("Left out", "text-text-tertiary", GROUPS[view].out)}
+          <div className="space-y-2 border-t border-border pt-4 text-body text-text-secondary">
+            {reading.extra}
           </div>
-          <p className="text-dense text-text-secondary">{reading.lead}</p>
-          <ul className="grid grid-cols-2 gap-x-4 gap-y-4 sm:grid-cols-3">
-            {KINDS[view].map((kind) => (
-              <li key={kind} className="flex items-end gap-3">
-                <span className="flex h-24 shrink-0 items-end">
-                  <Swatch view={view} kind={kind} big />
-                </span>
-                <span className="space-y-1">
-                  <span className="block text-caption font-bold text-heading">
-                    {MEANING[kind].title}
-                  </span>
-                  <span className="block text-caption text-text-secondary">
-                    {MEANING[kind].body}
-                  </span>
-                </span>
-              </li>
-            ))}
-          </ul>
-          <div className="space-y-2 text-dense text-text-secondary">{reading.extra}</div>
         </div>
-      )}
+        <div className="mt-4 flex justify-end">
+          <Button variant="ghost" onClick={() => setOpen(false)}>
+            Done
+          </Button>
+        </div>
+      </Dialog>
     </div>
   );
 }
