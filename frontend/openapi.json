@@ -4151,6 +4151,11 @@
       "RunResultView": {
         "description": "Recorded result + disclosed conditions + partial state.",
         "properties": {
+          "agent_model": {
+            "default": "not disclosed",
+            "title": "Agent Model",
+            "type": "string"
+          },
           "conditions": {
             "$ref": "#/components/schemas/ResultConditions"
           },
@@ -4221,6 +4226,17 @@
               }
             ],
             "title": "Partial Trigger"
+          },
+          "telemetry_window": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telemetry Window"
           }
         },
         "required": [

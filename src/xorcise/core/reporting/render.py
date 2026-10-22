@@ -298,6 +298,20 @@ def _verdict_class(passed: bool) -> str:
     return "pass" if passed else "fail"
 
 
+def telemetry_window_cell(ctx: RunReportContext) -> str | None:
+    """The report's Telemetry-window cell — the span, or the disclosure that stands in for it —
+    or None when the report omits the row. Served on `/result` so the results page shows the
+    report's own words rather than a TypeScript copy of the checks above (#146)."""
+    row = _telemetry_window_row(ctx)
+    return row[0][1] if row else None
+
+
+def agent_model_cell(ctx: RunReportContext) -> str:
+    """The report's Agent-model cell (see `agent_model_line`), served on `/result` for the same
+    reason as `telemetry_window_cell`."""
+    return _agent_model(ctx)
+
+
 def _status_line(ctx: RunReportContext) -> str:
     # The run's status label (contracts.run.run_status) — the word the CLI and the GUI show (#165).
     return ctx.run.status.label
@@ -308,11 +322,9 @@ def _metadata_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
     and Agent carry their pinned version in the name, then the Harness, when it Started, and the
     wall clock the run occupied (Duration — what it COST, not how long the agent worked).
 
-    It used to claim the results page and the live run header matched it field-for-field. They do
-    not: neither renders Telemetry window, and nothing in `frontend/src` reads
-    `last_event_end_ts` (#134 review). The GUI tile is tracked separately rather than smuggled
-    into a report-rendering change; until it lands, this table is the only place the pair appears
-    together."""
+    The results page shows the same pair: `/result` serves this table's Telemetry-window cell
+    (`telemetry_window_cell`) and the page puts it beside its own Duration (#146). The live run
+    header does not, because an unfinished run has no stats snapshot to bound a window with."""
     agent = ctx.agent_name or ctx.run.agent_id
     return [
         ("Name", ctx.run.name or ctx.run.mission),

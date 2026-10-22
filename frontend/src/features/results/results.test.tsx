@@ -132,6 +132,42 @@ describe("ResultsView", () => {
     expect(screen.getByText("linux/arm64")).toBeInTheDocument();
   });
 
+  it("puts the report's Telemetry window beside Duration, in the server's words (#146)", async () => {
+    server.use(
+      http.get("*/api/runs", () =>
+        HttpResponse.json([runFixture({ run_id: "r1", mission: "sqli-login", name: "recon-run" })]),
+      ),
+      http.get("*/api/runs/r1/result", () =>
+        HttpResponse.json(
+          resultView({
+            telemetry_window: "withheld — the harness dated the first event before the run started",
+          }),
+        ),
+      ),
+    );
+    renderWithProviders(<ResultsView runId="r1" />);
+    await screen.findByRole("heading", { name: "recon-run" });
+    expect(screen.getByText("Duration")).toBeInTheDocument();
+    expect(screen.getByText("Telemetry window")).toBeInTheDocument();
+    expect(
+      screen.getByText("withheld — the harness dated the first event before the run started"),
+    ).toBeInTheDocument();
+  });
+
+  it("has no Telemetry window cell when the report has no such row", async () => {
+    server.use(
+      http.get("*/api/runs", () =>
+        HttpResponse.json([runFixture({ run_id: "r1", mission: "sqli-login", name: "recon-run" })]),
+      ),
+      http.get("*/api/runs/r1/result", () =>
+        HttpResponse.json(resultView({ telemetry_window: null })),
+      ),
+    );
+    renderWithProviders(<ResultsView runId="r1" />);
+    await screen.findByRole("heading", { name: "recon-run" });
+    expect(screen.queryByText("Telemetry window")).toBeNull();
+  });
+
   it("omits the platform cell for a run that recorded none (pre-contract)", async () => {
     server.use(
       http.get("*/api/runs", () =>
