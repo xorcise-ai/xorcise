@@ -69,8 +69,8 @@ export function ledgerRows(
  * An agent's runs, one row per mission VERSION, one cell per run, oldest to newest. The lower half
  * of a cell is the deterministic score and the upper half the judge's, brighter for higher. A
  * judge that never ran leaves its half as a dashed outline; one that scored part of its rubric is
- * hatched. A run that timed out or was stopped is ringed and faded. An environment failure is a
- * red ×, never a score. A run on a version that is no longer installed sits in its own row,
+ * hatched. A run that timed out is ringed in amber, at the score it earned; one an operator
+ * stopped is faded. An environment failure is a red ×, never a score. A run on a version that is no longer installed sits in its own row,
  * marked as older: its checks and rubric may not be the current version's.
  *
  * Each cell opens that run's result. The whole ledger is one stop in the tab order; the arrow keys
@@ -237,13 +237,15 @@ function LedgerCell({
   );
 }
 
-/** A cell's frame for its run: faded and ringed when it ended early, a red box for an
- *  environment failure, dashed while grading. Shared with the key's examples. */
+/** A cell's frame for its run: ringed in amber when it timed out (in the median at what it
+ *  earned), faded when an operator stopped it (out of the median), a red box for an environment
+ *  failure, dashed while grading. Shared with the key's examples. */
 export function cellLook(run: RunScore): string {
   const g = runGlyph(run);
   return cn(
     "relative flex flex-col rounded-[2px]",
-    g.faded && "opacity-55 outline outline-[1.5px] -outline-offset-[1.5px] outline-primary",
+    g.faded && "opacity-40",
+    g.timedOut && "outline outline-[1.5px] -outline-offset-[1.5px] outline-primary",
     g.bucket === "infra_failed" &&
       "items-center justify-center border border-err text-caption leading-none text-err",
     g.bucket === "grading" && "border border-dashed border-border-hover motion-safe:animate-pulse",

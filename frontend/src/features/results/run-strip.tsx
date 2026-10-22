@@ -19,8 +19,9 @@ const FALLBACK_COLUMNS = 24;
  * overall score: the lower part is what the deterministic checks earned, the upper part what the
  * judge earned. A judge that never ran leaves its half as a dashed outline (unmeasured, not
  * zero); a judge that scored part of its rubric is solid to its lower bound and hatched to its
- * upper. A run that timed out or was stopped is faded. An environment failure is an empty slot,
- * never a score. The dashed line is the median of the scored runs, which the server computes over
+ * upper. A run that timed out is drawn at the score it earned, marked ○ beneath, since it is in
+ * the median; one an operator stopped is faded and marked ‖, since it is not. An environment
+ * failure is an empty slot, never a score. The dashed line is the median of the scored runs, which the server computes over
  * ALL the agent's runs, not just the ones that fit.
  *
  * Decorative to assistive technology: `summary` is read instead, and every run is one click away
@@ -69,7 +70,7 @@ export function RunStrip({
                   "min-w-0 max-w-4 flex-1 text-center text-label leading-3.5",
                   g.mark === "×" && "font-bold text-err",
                   g.mark === "○" && "text-primary",
-                  (g.mark === "?" || g.mark === "…") && "text-text-tertiary",
+                  (g.mark === "?" || g.mark === "…" || g.mark === "‖") && "text-text-tertiary",
                 )}
               >
                 {g.mark}

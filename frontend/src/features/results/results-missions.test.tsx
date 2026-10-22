@@ -62,7 +62,7 @@ describe("ResultsByMission: grader agreement per mission version", () => {
       [
         scoreFixture({ run_id: "a", deterministic: 1, judge: 0.3, overall: 0.65 }),
         scoreFixture({ run_id: "b", bucket: "no_judge", judge_status: "unavailable", judge: 0 }),
-        scoreFixture({ run_id: "c", bucket: "ended_early", outcome: "partial", terminal_trigger: "operator" }),
+        scoreFixture({ run_id: "c", bucket: "stopped", outcome: "partial", terminal_trigger: "operator" }),
         scoreFixture({
           run_id: "d",
           bucket: "infra_failed",
@@ -73,14 +73,14 @@ describe("ResultsByMission: grader agreement per mission version", () => {
           judge_status: null,
         }),
       ],
-      [version("1.0.0", true, { runs: 4, scored: 1, no_judge: 1, ended_early: 1, infra_failed: 1 })],
+      [version("1.0.0", true, { runs: 4, scored: 1, no_judge: 1, stopped: 1, infra_failed: 1 })],
     );
     renderWithProviders(<ResultsByMission />);
     await waitFor(() => expect(screen.getAllByTestId("agreement-point")).toHaveLength(2));
     const [scored, early] = screen.getAllByTestId("agreement-point");
     expect(scored.style.left).toContain("100%");
     expect(scored.style.bottom).toBe("30%");
-    expect(early.dataset.bucket).toBe("ended_early");
+    expect(early.dataset.bucket).toBe("stopped");
     fireEvent.mouseEnter(early);
     expect(screen.getByTestId("agreement-hover")).toHaveTextContent("stopped by an operator");
     fireEvent.mouseLeave(early);
@@ -88,7 +88,7 @@ describe("ResultsByMission: grader agreement per mission version", () => {
     expect(screen.getAllByTestId("agreement-rail")).toHaveLength(1);
     // The environment failure is counted, never placed.
     expect(
-      screen.getByText("1 no judge · 1 timed out or stopped · 1 environment failure: not in the median."),
+      screen.getByText("1 no judge · 1 stopped · 1 environment failure: not in the median."),
     ).toBeInTheDocument();
   });
 

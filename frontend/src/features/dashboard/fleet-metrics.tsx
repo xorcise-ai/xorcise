@@ -5,11 +5,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { StatusDot, type DotTone } from "@/components/ui/dot";
 import { StatTile } from "@/components/ui/stat-tile";
 import { pct } from "@/lib/api/format";
+import { asideLine, timedOutLine } from "@/features/results/run-glyph";
 import { useFleetPerformance, type ToneMix } from "./use-fleet-performance";
 
 /**
  * Fleet-wide headline metrics for the Dashboard: how the whole fleet is scoring at a glance
- * (Evaluated / Scored / Average / Best / Pass rate) plus an outcome-mix bar (completed vs partial vs
+ * (Evaluated / Scored / Median / Best / Pass rate) plus an outcome-mix bar (completed vs partial vs
  * cut short by an environment failure). Pure reuse of {@link useFleetPerformance} and the shared StatTile — no new data.
  */
 export function FleetMetrics() {
@@ -27,6 +28,9 @@ export function FleetMetrics() {
 
   // Over the agents' attempts: a run an environment failure cut short is not one (#109).
   const passRate = f.attempts ? f.mix.green / f.attempts : null;
+  const fleet = f.fleet;
+  const timed = fleet ? timedOutLine(fleet) : "";
+  const aside = fleet ? asideLine(fleet) : "";
 
   return (
     <Card className="shrink-0">
@@ -39,18 +43,18 @@ export function FleetMetrics() {
           <>
             <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3 lg:grid-cols-5">
               <StatTile label="Evaluated" value={String(f.evaluated)} />
-              <StatTile label="Scored" value={String(f.fleet.n)} />
-              <StatTile label="Average" value={pct(f.fleet.avgOverall)} tone="primary" />
-              <StatTile label="Best" value={pct(f.fleet.bestOverall)} />
+              <StatTile label="Scored" value={String(fleet?.scored ?? 0)} />
+              <StatTile label="Median" value={pct(fleet?.median)} tone="primary" />
+              <StatTile label="Best" value={pct(fleet?.best)} />
               <StatTile label="Pass rate" value={pct(passRate)} />
             </dl>
-            {/* Runs scored with no judge sit in Average and Best at 50% at most (#143). */}
-            {f.fleet.noJudge > 0 && (
-              <p className="text-caption text-warning">
-                No judge on {f.fleet.noJudge} of {f.fleet.n} scored{" "}
-                {f.fleet.n === 1 ? "run" : "runs"}: scored at 50% at most, and included in
-                Average and Best.
-              </p>
+            {/* The server's summary of every finished run: what is in the median, and what is
+                counted apart from it, the same rule as every other view. */}
+            {fleet && (timed || aside) && (
+              <div className="space-y-1 text-caption text-text-tertiary">
+                {timed && <p>{timed}</p>}
+                {aside && <p>{aside}: not in the median.</p>}
+              </div>
             )}
             <StatusMix mix={f.mix} total={f.evaluated} />
           </>

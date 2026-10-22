@@ -14,7 +14,7 @@ import type { RunScore, ScoreSummary } from "@/lib/api/types";
 import { useAgents } from "@/features/agents/queries";
 import { useMissions } from "@/features/missions/queries";
 import { useRunScores, useScoreSummary } from "./queries";
-import { asideLine } from "./run-glyph";
+import { asideLine, timedOutLine } from "./run-glyph";
 import { AgreementPlot } from "./agreement-plot";
 import { RunKey } from "./run-key";
 import { LoadingCards } from "./loading-cards";
@@ -141,7 +141,8 @@ function plotSummary(name: string, version: string, s: ScoreSummary): string {
   const gap =
     s.judge_gap != null ? `; ${gapWords(s.judge_gap)} on average` : "";
   const aside = asideLine(s);
-  return `${head}${gap}${aside ? `; ${aside}, not plotted on the judge axis` : ""}.`;
+  const timed = s.timed_out ? ` (${s.timed_out} timed out)` : "";
+  return `${head}${timed}${gap}${aside ? `; ${aside}, not in the median` : ""}.`;
 }
 
 function MissionVersionRow({
@@ -218,6 +219,7 @@ function MissionVersionRow({
         />
       </dl>
       <div className="space-y-1 text-caption text-text-tertiary">
+        {summary.timed_out > 0 && <p>{timedOutLine(summary)}</p>}
         {aside && <p>{aside}: not in the median.</p>}
         {models.length > 1 && (
           <p className="text-warning">

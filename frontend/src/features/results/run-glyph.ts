@@ -17,12 +17,14 @@ export interface RunGlyph {
   judgeRange: number;
   /** The judge half that was never measured, because the judge never ran: always ½. */
   unmeasured: number;
-  /** Timed out or stopped: graded, but not on the agent's own terms. */
+  /** An operator stopped it: drawn, but faded, because its score says nothing about the agent. */
   faded: boolean;
+  /** Ran out of its budget. In the median at what it earned, and ringed so it reads as unfinished. */
+  timedOut: boolean;
   /** No score to draw: an environment failure, or a grade not recorded yet. */
   empty: boolean;
-  /** One mark under the column for a run that is not in the median. */
-  mark: "" | "×" | "○" | "?" | "…";
+  /** One mark under the column: why the run reads differently from a plain scored one. */
+  mark: "" | "×" | "○" | "?" | "…" | "‖";
   /** The whole run in words, for a tooltip. */
   label: string;
 }
@@ -33,13 +35,19 @@ const half = (v: number | null | undefined) => (v ?? 0) / 2;
 export const BUCKET_LABEL: Record<ScoreBucket, string> = {
   scored: "scored",
   no_judge: "no judge",
-  ended_early: "timed out or stopped",
+  stopped: "stopped",
   infra_failed: "environment failure",
   grading: "grading",
 };
 
-function endedEarlyWord(r: RunScore): string {
-  return r.terminal_trigger === "operator" ? "stopped by an operator" : "timed out";
+/**
+ * Did the judge half never run? `unavailable` / `model-not-configured` mean the judge contributed
+ * 0.0 to `overall` without grading (#143). `partial` is NOT this: the judge ran on part of the
+ * rubric and discloses its own coverage. No status at all is an ungraded run. The CLI's
+ * `judge_degraded` (cli/commands/run.py), over the server's `judge_status`, for the per-run tables.
+ */
+export function judgeDegraded(status: string | null | undefined): boolean {
+  return !!status && status !== "ok" && status !== "partial";
 }
 
 function judgeWords(r: RunScore): string {
@@ -59,22 +67,23 @@ function overallWords(r: RunScore): string {
 /** One sentence for a run, as a tooltip or a screen-reader list item would read it. */
 export function runSentence(r: RunScore): string {
   const when = shortTime(r.completed_at ?? r.created_at);
+  const timedOut = r.timed_out ? " · timed out" : "";
   switch (r.bucket) {
     case "infra_failed":
       return `${when} · environment failure: not graded, and not an attempt by the agent`;
     case "grading":
       return `${when} · finished, grade not recorded yet`;
-    case "ended_early":
-      return `${when} · ${endedEarlyWord(r)} · deterministic ${pct(r.deterministic)} · ${judgeWords(r)} · ${overallWords(r)} · not in the median`;
+    case "stopped":
+      return `${when} · stopped by an operator · deterministic ${pct(r.deterministic)} · ${judgeWords(r)} · ${overallWords(r)} · not in the median`;
     case "no_judge":
-      return `${when} · deterministic ${pct(r.deterministic)} · no judge · ${overallWords(r)} · not in the median`;
+      return `${when}${timedOut} · deterministic ${pct(r.deterministic)} · no judge · ${overallWords(r)} · not in the median`;
     default:
-      return `${when} · deterministic ${pct(r.deterministic)} · ${judgeWords(r)} · ${overallWords(r)}`;
+      return `${when}${timedOut} · deterministic ${pct(r.deterministic)} · ${judgeWords(r)} · ${overallWords(r)}`;
   }
 }
 
 export function runGlyph(r: RunScore): RunGlyph {
-  const base = { bucket: r.bucket, label: runSentence(r) };
+  const base = { bucket: r.bucket, label: runSentence(r), timedOut: !!r.timed_out };
   if (r.bucket === "infra_failed" || r.bucket === "grading") {
     return {
       ...base,
@@ -95,27 +104,34 @@ export function runGlyph(r: RunScore): RunGlyph {
     judge: noJudge ? 0 : half(r.judge),
     judgeRange: partial ? Math.max(0, half(r.judge_upper) - half(r.judge)) : 0,
     unmeasured: noJudge ? 0.5 : 0,
-    faded: r.bucket === "ended_early",
+    faded: r.bucket === "stopped",
     empty: false,
-    mark: r.bucket === "ended_early" ? "○" : noJudge ? "?" : "",
+    mark: r.bucket === "stopped" ? "‖" : noJudge ? "?" : r.timed_out ? "○" : "",
   };
 }
 
-/** "2 no judge · 1 timed out or stopped · 1 environment failure": the runs a summary counts
- *  apart from its median, in one line. Empty when there are none. */
+/** "2 no judge · 1 stopped · 1 environment failure": the runs a summary counts apart from its
+ *  median, in one line. Empty when there are none. */
 export function asideLine(s: {
   no_judge: number;
-  ended_early: number;
+  stopped: number;
   infra_failed: number;
   grading: number;
 }): string {
   const parts: string[] = [];
   if (s.no_judge) parts.push(`${s.no_judge} ${BUCKET_LABEL.no_judge}`);
-  if (s.ended_early) parts.push(`${s.ended_early} ${BUCKET_LABEL.ended_early}`);
+  if (s.stopped) parts.push(`${s.stopped} ${BUCKET_LABEL.stopped}`);
   if (s.infra_failed)
     parts.push(`${s.infra_failed} environment ${s.infra_failed === 1 ? "failure" : "failures"}`);
   if (s.grading) parts.push(`${s.grading} ${BUCKET_LABEL.grading}`);
   return parts.join(" · ");
+}
+
+/** "2 timed out: counted at the score they earned." Empty when none did. Timed-out runs are in
+ *  the median, so this sits apart from {@link asideLine}, which lists the runs that are not. */
+export function timedOutLine(s: { timed_out: number }): string {
+  if (!s.timed_out) return "";
+  return `${s.timed_out} timed out: in the median at the score ${s.timed_out === 1 ? "it" : "they"} earned.`;
 }
 
 /** The hatching that marks a range rather than a measured value, in a given colour. */

@@ -1,57 +1,44 @@
 import { describe, it, expect } from "vitest";
-import { summarizeRuns } from "./summarize-runs";
+import { screen } from "@testing-library/react";
+import { http, HttpResponse } from "msw";
+import { server } from "@/test/msw/server";
+import { renderWithProviders } from "@/test/render";
+import { runFixture, scoreFixture, summaryFixture } from "@/test/fixtures";
+import { CrossRunContext } from "./cross-run-context";
 
-describe("summarizeRuns", () => {
-  it("averages and picks best over non-partial scored runs", () => {
-    const s = summarizeRuns([
-      { overall: 0.6, partial: false, when: "2026-01-01" },
-      { overall: 0.8, partial: false, when: "2026-01-02" },
+const run = runFixture({ run_id: "r9", agent_id: "agent-1", mission: "sqli-login", mission_version: "2.0.0" });
+
+function serve(summaries: ReturnType<typeof summaryFixture>[], scores = [scoreFixture()]) {
+  server.use(
+    http.get("*/api/results/summary", () => HttpResponse.json(summaries)),
+    http.get("*/api/results/runs", () => HttpResponse.json(scores)),
+  );
+}
+
+// This run against the same agent's runs on the same mission VERSION, by the server's summary.
+describe("CrossRunContext", () => {
+  it("compares the run with the median of the agent's scored runs on this version", async () => {
+    serve([
+      summaryFixture({ agent_id: "agent-1", mission: "sqli-login", mission_version: "1.0.0", median: 0.2, scored: 5 }),
+      summaryFixture({ agent_id: "agent-1", mission: "sqli-login", mission_version: "2.0.0", median: 0.6, scored: 3, best: 0.9 }),
     ]);
-    expect(s.n).toBe(2);
-    expect(s.avgOverall).toBeCloseTo(0.7);
-    expect(s.bestOverall).toBe(0.8);
-    expect(s.trend).toEqual([0.6, 0.8]);
+    renderWithProviders(<CrossRunContext run={run} thisOverall={0.8} />);
+    expect(await screen.findByText("+20 pts vs median")).toBeInTheDocument();
+    expect(screen.getByText("Median (n=3)")).toBeInTheDocument();
+    expect(screen.getByText("90%")).toBeInTheDocument();
   });
 
-  it("excludes partial runs from the baseline", () => {
-    const s = summarizeRuns([
-      { overall: 0.9, partial: false, when: "2026-01-01" },
-      { overall: 0.1, partial: true, when: "2026-01-02" }, // timed out — must not drag avg
+  it("names the runs left out of the median", async () => {
+    serve([
+      summaryFixture({ agent_id: "agent-1", mission: "sqli-login", mission_version: "2.0.0", scored: 2, no_judge: 1, stopped: 1 }),
     ]);
-    expect(s.n).toBe(1);
-    expect(s.avgOverall).toBe(0.9);
-    expect(s.bestOverall).toBe(0.9);
+    renderWithProviders(<CrossRunContext run={run} thisOverall={0.8} />);
+    expect(await screen.findByText("1 no judge · 1 stopped: not in the median.")).toBeInTheDocument();
   });
 
-  it("orders the trend oldest → newest regardless of input order", () => {
-    const s = summarizeRuns([
-      { overall: 0.5, partial: false, when: "2026-03-03" },
-      { overall: 0.2, partial: false, when: "2026-01-01" },
-      { overall: 0.9, partial: false, when: "2026-02-02" },
-    ]);
-    expect(s.trend).toEqual([0.2, 0.9, 0.5]);
-  });
-
-  it("is empty when there are no scored non-partial runs", () => {
-    const s = summarizeRuns([{ overall: null, partial: false, when: "2026-01-01" }]);
-    expect(s.n).toBe(0);
-    expect(s.avgOverall).toBeNull();
-    expect(s.bestOverall).toBeNull();
-    expect(s.trend).toEqual([]);
-  });
-});
-
-describe("summarizeRuns no-judge count (#143)", () => {
-  it("counts runs scored with no judge, over the runs in the average only", () => {
-    const s = summarizeRuns([
-      { overall: 0.5, partial: false, judgeDegraded: true, when: "2026-01-01" },
-      { overall: 0.9, partial: false, when: "2026-01-02" },
-      // Timed out: not in the average, so not counted either.
-      { overall: 0.2, partial: true, judgeDegraded: true, when: "2026-01-03" },
-      // Not graded yet: not in the average.
-      { overall: null, partial: false, judgeDegraded: true, when: "2026-01-04" },
-    ]);
-    expect(s.n).toBe(2);
-    expect(s.noJudge).toBe(1);
+  it("says when there is nothing to compare against yet", async () => {
+    serve([summaryFixture({ agent_id: "agent-1", mission: "sqli-login", mission_version: "2.0.0", scored: 1 })]);
+    renderWithProviders(<CrossRunContext run={run} thisOverall={0.8} />);
+    expect(await screen.findByText(/First run for this agent on this mission/)).toBeInTheDocument();
   });
 });

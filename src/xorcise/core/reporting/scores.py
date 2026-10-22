@@ -2,9 +2,10 @@
 agreement plot and run ledger draw from (domain module, pure).
 
 The rules live here and nowhere else (contracts.reporting.ScoreBucket): the median is over runs
-that finished on the agent's own terms and were graded with a judge, a partly-judged run counting
-at its lower bound. A run whose judge never ran, one that timed out or was stopped, one cut short
-by an environment failure and one still grading are each counted and disclosed, never averaged in.
+graded with a judge, a partly-judged run counting at its lower bound. A run that timed out is in
+it, at the score it earned: not finishing within the budget is the agent's failure. A run whose
+judge never ran, one an operator stopped, one cut short by an environment failure and one still
+grading are each counted and disclosed, never averaged in.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from xorcise.core.contracts.grading import GradeResult
 from xorcise.core.contracts.reporting import RunScore, ScoreBucket, ScoreSummary
 from xorcise.core.contracts.run import RunEntry
 
-GroupBy = Literal["agent", "mission", "mission_agent"]
+GroupBy = Literal["all", "agent", "mission", "mission_agent"]
 
 # The judge never graded: it contributed 0.0 to `overall` without scoring anything.
 _NO_JUDGE = frozenset({"unavailable", "model-not-configured"})
@@ -35,8 +36,8 @@ def bucket(run: RunEntry, grade: GradeResult | None) -> ScoreBucket:
         return "infra_failed"
     if grade is None:
         return "grading"
-    if run.outcome == "partial":
-        return "ended_early"
+    if run.terminal_trigger == "operator":
+        return "stopped"
     if grade.judge_status in _NO_JUDGE:
         return "no_judge"
     return "scored"
@@ -46,12 +47,14 @@ def score_rows(
     runs: Iterable[RunEntry],
     grades: Mapping[str, tuple[GradeResult, str | None]],
     installed_versions: Mapping[str, str],
+    intel: Mapping[str, int] | None = None,
 ) -> list[RunScore]:
     """One RunScore per finished run, oldest first.
 
     `grades` maps a run id to its recorded grade and judge model. `installed_versions` maps an
     installed mission to its version label; a run on any other label is on an older version. For
-    a mission no longer installed, the version of its most recent run stands in as current."""
+    a mission no longer installed, the version of its most recent run stands in as current.
+    `intel` maps a run id to how many intel it was given; absent means none."""
     finished = sorted(
         (r for r in runs if r.outcome is not None), key=lambda r: (r.created_at, r.run_id)
     )
@@ -77,6 +80,7 @@ def score_rows(
                 outcome=run.outcome,
                 terminal_trigger=run.terminal_trigger,
                 bucket=bucket(run, grade),
+                timed_out=run.terminal_trigger == "timeout",
                 deterministic=grade.breakdown.deterministic if grade else None,
                 judge=grade.breakdown.judge if grade else None,
                 judge_upper=grade.judge_upper if grade else None,
@@ -84,6 +88,7 @@ def score_rows(
                 overall=grade.overall if grade else None,
                 overall_upper=grade.overall_upper if grade else None,
                 judge_model=judge_model if grade else None,
+                intel_disclosed=(intel or {}).get(run.run_id, 0),
             )
         )
     return rows
@@ -105,13 +110,16 @@ def _quartiles(values: list[float]) -> tuple[float | None, float | None]:
 
 
 def summarize(rows: Iterable[RunScore], by: GroupBy) -> list[ScoreSummary]:
-    """Summarise rows per agent, per mission version, or per agent on each mission version.
+    """Summarise rows as one group (`all`), per agent, per mission version, or per agent on each
+    mission version.
 
     Groups come back in first-seen order of the rows (oldest run first); callers rank them."""
     groups: dict[tuple[str | None, ...], list[RunScore]] = {}
     for row in rows:
         key: tuple[str | None, ...]
-        if by == "agent":
+        if by == "all":
+            key = (None, None, None)
+        elif by == "agent":
             key = (row.agent_id, None, None)
         elif by == "mission":
             key = (None, row.mission, row.mission_version)
@@ -130,6 +138,8 @@ def summarize(rows: Iterable[RunScore], by: GroupBy) -> list[ScoreSummary]:
             for r in fully
             if r.judge is not None and r.deterministic is not None
         ]
+        dets = [r.deterministic for r in scored if r.deterministic is not None]
+        judges = [r.judge for r in fully if r.judge is not None]
         models = sorted({r.judge_model for r in group if r.judge_model})
         summaries.append(
             ScoreSummary(
@@ -140,15 +150,19 @@ def summarize(rows: Iterable[RunScore], by: GroupBy) -> list[ScoreSummary]:
                 runs=len(group),
                 completed=sum(1 for r in group if r.outcome == "completed"),
                 scored=len(scored),
+                timed_out=sum(1 for r in scored if r.timed_out),
                 partial_judge=sum(1 for r in scored if r.judge_status == "partial"),
+                assisted=sum(1 for r in scored if r.intel_disclosed > 0),
                 no_judge=sum(1 for r in group if r.bucket == "no_judge"),
-                ended_early=sum(1 for r in group if r.bucket == "ended_early"),
+                stopped=sum(1 for r in group if r.bucket == "stopped"),
                 infra_failed=sum(1 for r in group if r.bucket == "infra_failed"),
                 grading=sum(1 for r in group if r.bucket == "grading"),
                 median=median(overalls) if overalls else None,
                 q1=q1,
                 q3=q3,
                 best=max(overalls) if overalls else None,
+                mean_deterministic=sum(dets) / len(dets) if dets else None,
+                mean_judge=sum(judges) / len(judges) if judges else None,
                 judge_gap=sum(gaps) / len(gaps) if gaps else None,
                 judge_models=tuple(models),
                 last_run=max(r.completed_at or r.created_at for r in group),

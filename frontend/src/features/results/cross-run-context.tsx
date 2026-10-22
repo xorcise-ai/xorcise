@@ -3,14 +3,13 @@ import { StatTile, StatTileRow } from "@/components/ui/stat-tile";
 import { pct } from "@/lib/api/format";
 import { cn } from "@/components/ui/cn";
 import type { RunEntry } from "@/lib/api/types";
-import { useRuns } from "@/features/runs/queries";
-import { isTerminal } from "@/features/runs/run-state";
-import { useRunResults } from "./queries";
-import { judgeDegraded, summarizeRuns, type RunRow } from "./summarize-runs";
+import { useRunScores, useScoreSummary } from "./queries";
+import { asideLine } from "./run-glyph";
 
-// This run in the context of the same agent's other terminal runs ON THIS MISSION. Answers
-// "is this score good for this agent here?" — unanswerable from a single number. Score comparison
-// only for the first cut (efficiency deltas are a cheap follow-on now that stats are persisted).
+// This run in the context of the same agent's other runs on THIS MISSION VERSION. Answers "is this
+// score good for this agent here?", unanswerable from a single number. The median and the trend
+// are the server's (GET /results/summary and /results/runs): the same rule as every other view,
+// and only runs on this version, whose checks and rubric are the ones this run faced.
 export function CrossRunContext({
   run,
   thisOverall,
@@ -18,25 +17,17 @@ export function CrossRunContext({
   run: RunEntry;
   thisOverall: number;
 }) {
-  const runs = useRuns();
-  const peers = (runs.data ?? []).filter(
-    (r) => r.agent_id === run.agent_id && r.mission === run.mission && isTerminal(r),
-  );
-  const results = useRunResults(peers.map((p) => p.run_id));
+  const filter = { agent: run.agent_id, mission: run.mission };
+  const version = run.mission_version ?? String(run.install_revision);
+  const summaries = useScoreSummary("mission_agent", filter);
+  const scores = useRunScores(filter);
+  const summary = summaries.data?.find((s) => s.mission_version === version);
+  const trend = (scores.data ?? [])
+    .filter((r) => r.mission_version === version && r.bucket === "scored" && r.overall != null)
+    .map((r) => r.overall as number);
 
-  const rows: RunRow[] = peers.map((p, i) => {
-    const view = results[i]?.data;
-    return {
-      overall: view?.grade?.overall ?? null,
-      partial: view?.partial ?? false,
-      judgeDegraded: judgeDegraded(view?.grade?.judge_status),
-      when: p.completed_at ?? p.created_at,
-    };
-  });
-  const summary = summarizeRuns(rows);
-
-  // Nothing to compare against yet: this is the agent's first (scored) run on this mission.
-  if (summary.n <= 1) {
+  // Nothing to compare against yet: this is the agent's first scored run on this version.
+  if (!summary || summary.scored <= 1 || summary.median == null) {
     return (
       <Card className="bg-card">
         <CardContent className="p-4">
@@ -51,11 +42,11 @@ export function CrossRunContext({
     );
   }
 
-  const avg = summary.avgOverall ?? 0;
-  const delta = thisOverall - avg;
+  const delta = thisOverall - summary.median;
   const deltaCls =
     delta > 0.001 ? "text-ok" : delta < -0.001 ? "text-err" : "text-text-tertiary";
-  const deltaLabel = `${delta >= 0 ? "+" : ""}${Math.round(delta * 100)} pts vs avg`;
+  const deltaLabel = `${delta >= 0 ? "+" : ""}${Math.round(delta * 100)} pts vs median`;
+  const aside = asideLine(summary);
 
   return (
     <Card className="bg-card">
@@ -72,17 +63,13 @@ export function CrossRunContext({
             figure this card is about — the run being read — instead of a local size bump. */}
         <StatTileRow>
           <StatTile label="This run" value={pct(thisOverall)} tone="primary" />
-          <StatTile label={`Avg (n=${summary.n})`} value={pct(summary.avgOverall)} />
-          <StatTile label="Best" value={pct(summary.bestOverall)} />
+          <StatTile label={`Median (n=${summary.scored})`} value={pct(summary.median)} />
+          <StatTile label="Best" value={pct(summary.best)} />
         </StatTileRow>
-        {/* Peers scored with no judge sit in the average at 50% at most (#143). */}
-        {summary.noJudge > 0 && (
-          <p className="text-caption text-warning">
-            No judge on {summary.noJudge} of the {summary.n} runs in this average: scored
-            at 50% at most.
-          </p>
+        {aside && (
+          <p className="text-caption text-text-tertiary">{aside}: not in the median.</p>
         )}
-        <Trend values={summary.trend} />
+        <Trend values={trend} />
       </CardContent>
     </Card>
   );

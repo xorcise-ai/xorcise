@@ -1,33 +1,11 @@
 import { useMemo } from "react";
-import type { RunEntry } from "@/lib/api/types";
+import type { RunEntry, ScoreSummary } from "@/lib/api/types";
 import { useRuns } from "@/features/runs/queries";
 import { useAgents } from "@/features/agents/queries";
-import { useRunResults } from "@/features/results/queries";
-import {
-  classifyRun,
-  isTerminal,
-  type RunTone,
-} from "@/features/runs/run-state";
-import {
-  summarizeByAgent,
-  summarizeRuns,
-  judgeDegraded,
-  type AgentPerformanceSummary,
-  type AgentRunRow,
-  type RunRow,
-  type RunSummary,
-} from "@/features/results/summarize-runs";
-import {
-  summarizeByMission,
-  type MissionPerformanceSummary,
-  type MissionRunRow,
-} from "@/features/results/summarize-missions";
-import {
-  assistMixByMission,
-  type AssistMix,
-} from "@/features/results/summarize-assist";
+import { useRunScores, useScoreSummary } from "@/features/results/queries";
+import { isTerminal, type RunTone } from "@/features/runs/run-state";
 
-/** Terminal runs bucketed by how they count (the server's outcome), in the §10 palette:
+/** Terminal runs bucketed by how they ended (the server's outcome), in the §10 palette:
  *  green = completed, amber = partial, red = cut short by an environment failure, muted = other. */
 export type ToneMix = Record<RunTone, number>;
 
@@ -40,6 +18,7 @@ const OUTCOME_TONE: Record<NonNullable<RunEntry["outcome"]>, RunTone> = {
 export interface FleetPerformance {
   isLoading: boolean;
   isError: boolean;
+  /** The score summaries are still loading (the run counts above them may already be in). */
   resultsLoading: boolean;
   /** Total terminal (evaluated) runs across the fleet. */
   evaluated: number;
@@ -50,115 +29,83 @@ export interface FleetPerformance {
   attempts: number;
   /** Agent ids that are still registered (a leaderboard row links to a profile only for these). */
   registeredAgentIds: Set<string>;
-  agentSummaries: AgentPerformanceSummary[];
-  missionSummaries: MissionPerformanceSummary[];
-  fleet: RunSummary;
-  /** Per-agent scored-run trend (oldest→newest) for row sparklines. */
+  /** An agent's name, or its short id once it is deleted. */
+  agentName: (id: string) => string;
+  /** Per agent, best median first; agents with no scored run sink. */
+  agentSummaries: ScoreSummary[];
+  /** Per mission version. */
+  missionSummaries: ScoreSummary[];
+  /** Every finished run in one summary. */
+  fleet: ScoreSummary | undefined;
+  /** Per-agent scored-run trend (oldest→newest) for row sparklines: the median's own runs. */
   trendByAgent: Map<string, number[]>;
-  /** Per-mission scored-run assist mix, so the single-average leaderboard can flag the blend. */
-  assistMixByMission: Map<string, AssistMix>;
 }
 
 /**
- * Fleet-wide performance for the Dashboard, aggregated ENTIRELY client-side from data the app
- * already fetches — no new endpoint. Reuses the same terminal-runs + per-run-result join the
- * Results page uses (shared ["runs", id, "result"] cache key, so nothing is fetched twice) and the
- * locked aggregators {@link summarizeByAgent}/{@link summarizeByMission}/{@link summarizeRuns}.
- * Centralising the row-mapping here (identical to completed-runs.tsx / results-missions.tsx) means
- * the dashboard widgets don't each re-derive it and can't drift out of the shared partial-run accounting.
+ * Fleet-wide performance for the Dashboard. Every score here is the server's
+ * (GET /results/summary, reporting.scores), the same summaries the Results page, the agent pages
+ * and `xorcise leaderboard` read, so no widget counts a run its own way. Only the outcome mix and
+ * the pass rate come from the runs list, by the server's `outcome` on each run.
  */
 export function useFleetPerformance(): FleetPerformance {
   const runs = useRuns();
   const agents = useAgents();
-  const terminal = useMemo(() => (runs.data ?? []).filter(isTerminal), [runs.data]);
-  const results = useRunResults(terminal.map((r) => r.run_id));
-  const resultsLoading = results.some((q) => q.isLoading);
+  const fleet = useScoreSummary("all");
+  const byAgent = useScoreSummary("agent");
+  const byMission = useScoreSummary("mission");
+  const scores = useRunScores();
   const agentData = agents.data;
-
-  // Stable signature so the aggregation only recomputes when the underlying scores change, not on
-  // every render (useQueries returns a fresh array each time).
-  const sig = terminal
-    .map(
-      (r, i) =>
-        `${r.run_id}:${results[i]?.data?.grade?.overall ?? ""}:${results[i]?.data?.grade?.judge_status ?? ""}:${results[i]?.data?.partial ?? ""}:${results[i]?.data?.conditions?.intel_disclosed ?? ""}`,
-    )
-    .join("|");
 
   return useMemo(() => {
     const nameById = new Map((agentData ?? []).map((a) => [a.id, a.name]));
-    const registeredAgentIds = new Set((agentData ?? []).map((a) => a.id));
-    const agentRows: AgentRunRow[] = [];
-    const chalRows: MissionRunRow[] = [];
-    const flat: RunRow[] = [];
-    const chalAssistRows: {
-      mission: string;
-      intel: number;
-      overall: number | null;
-      partial: boolean;
-    }[] = [];
+    const agentName = (id: string) => nameById.get(id) ?? id.slice(0, 8);
+    const terminal = (runs.data ?? []).filter(isTerminal);
     const mix: ToneMix = { amber: 0, green: 0, red: 0, muted: 0 };
+    // By outcome, not by the status tone: a timeout's tone is red, but it is a partial run.
+    for (const r of terminal) mix[r.outcome ? OUTCOME_TONE[r.outcome] : "muted"] += 1;
 
-    terminal.forEach((r, i) => {
-      const view = results[i]?.data;
-      // The server's classification (run-state.ts classifyRun), as every other aggregate uses.
-      const { partial, completed, infraFailed } = classifyRun(r.outcome);
-      const overall = view?.grade?.overall ?? null;
-      const noJudge = judgeDegraded(view?.grade?.judge_status);
-      // Assistance level: the run result's recorded intel count (0 = unassisted), fed to
-      // assistMixByMission so the mission leaderboard can flag an assisted/unassisted blend.
-      const intel = view?.conditions?.intel_disclosed ?? 0;
-      const when = r.completed_at ?? r.created_at;
-      agentRows.push({
-        agentId: r.agent_id,
-        agentName: nameById.get(r.agent_id) ?? r.agent_id.slice(0, 8),
-        overall,
-        partial,
-        completed,
-        infraFailed,
-        judgeDegraded: noJudge,
-        when,
-      });
-      chalRows.push({
-        mission: r.mission,
-        overall,
-        partial,
-        completed,
-        infraFailed,
-        judgeDegraded: noJudge,
-        when,
-      });
-      flat.push({ overall, partial, judgeDegraded: noJudge, when });
-      chalAssistRows.push({ mission: r.mission, intel, overall, partial });
-      // By outcome, not by the status tone: a timeout's tone is red, but it is a partial run,
-      // and the bar's Partial segment was always empty when it keyed on tone.
-      mix[r.outcome ? OUTCOME_TONE[r.outcome] : "muted"] += 1;
-    });
-
-    // Per-agent score trend (reuses the locked summarizeRuns fold: non-partial scored, by time).
-    const rowsByAgent = new Map<string, AgentRunRow[]>();
-    agentRows.forEach((r) => {
-      const list = rowsByAgent.get(r.agentId);
-      if (list) list.push(r);
-      else rowsByAgent.set(r.agentId, [r]);
-    });
     const trendByAgent = new Map<string, number[]>();
-    rowsByAgent.forEach((rows, id) => trendByAgent.set(id, summarizeRuns(rows).trend));
+    for (const r of scores.data ?? []) {
+      if (r.bucket !== "scored" || r.overall == null) continue;
+      const list = trendByAgent.get(r.agent_id);
+      if (list) list.push(r.overall);
+      else trendByAgent.set(r.agent_id, [r.overall]);
+    }
+
+    const agentSummaries = [...(byAgent.data ?? [])].sort(
+      (a, b) =>
+        (b.median ?? -1) - (a.median ?? -1) ||
+        b.scored - a.scored ||
+        agentName(a.agent_id ?? "").localeCompare(agentName(b.agent_id ?? "")),
+    );
 
     return {
       isLoading: runs.isLoading || agents.isLoading,
-      isError: runs.isError,
-      resultsLoading,
+      isError: runs.isError || fleet.isError,
+      resultsLoading: fleet.isLoading || byAgent.isLoading || byMission.isLoading,
       evaluated: terminal.length,
       mix,
       attempts: terminal.length - mix.red,
-      registeredAgentIds,
-      agentSummaries: summarizeByAgent(agentRows),
-      missionSummaries: summarizeByMission(chalRows),
-      fleet: summarizeRuns(flat),
+      registeredAgentIds: new Set((agentData ?? []).map((a) => a.id)),
+      agentName,
+      agentSummaries,
+      missionSummaries: byMission.data ?? [],
+      fleet: fleet.data?.[0],
       trendByAgent,
-      assistMixByMission: assistMixByMission(chalAssistRows),
     };
-    // `results`/`terminal` are captured via the stable `sig`; agentData identity is a real dep.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sig, agentData, runs.isLoading, runs.isError, agents.isLoading, resultsLoading]);
+  }, [
+    runs.data,
+    runs.isLoading,
+    runs.isError,
+    agents.isLoading,
+    agentData,
+    fleet.data,
+    fleet.isLoading,
+    fleet.isError,
+    byAgent.data,
+    byAgent.isLoading,
+    byMission.data,
+    byMission.isLoading,
+    scores.data,
+  ]);
 }

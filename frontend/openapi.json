@@ -4274,7 +4274,7 @@
             "enum": [
               "scored",
               "no_judge",
-              "ended_early",
+              "stopped",
               "infra_failed",
               "grading"
             ],
@@ -4312,6 +4312,11 @@
               }
             ],
             "title": "Deterministic"
+          },
+          "intel_disclosed": {
+            "default": 0,
+            "title": "Intel Disclosed",
+            "type": "integer"
           },
           "judge": {
             "anyOf": [
@@ -4416,6 +4421,11 @@
               }
             ],
             "title": "Terminal Trigger"
+          },
+          "timed_out": {
+            "default": false,
+            "title": "Timed Out",
+            "type": "boolean"
           }
         },
         "required": [
@@ -4603,7 +4613,7 @@
         "type": "object"
       },
       "ScoreSummary": {
-        "description": "A group of finished runs (one agent, one mission version, or one agent on one mission\nversion), summarised by the rules in `ScoreBucket`.",
+        "description": "A group of finished runs (every run, one agent, one mission version, or one agent on one\nmission version), summarised by the rules in `ScoreBucket`.",
         "properties": {
           "agent_id": {
             "anyOf": [
@@ -4615,6 +4625,11 @@
               }
             ],
             "title": "Agent Id"
+          },
+          "assisted": {
+            "default": 0,
+            "title": "Assisted",
+            "type": "integer"
           },
           "best": {
             "anyOf": [
@@ -4642,11 +4657,6 @@
               }
             ],
             "title": "Current Version"
-          },
-          "ended_early": {
-            "default": 0,
-            "title": "Ended Early",
-            "type": "integer"
           },
           "grading": {
             "default": 0,
@@ -4688,6 +4698,28 @@
               }
             ],
             "title": "Last Run"
+          },
+          "mean_deterministic": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Deterministic"
+          },
+          "mean_judge": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Judge"
           },
           "median": {
             "anyOf": [
@@ -4762,6 +4794,16 @@
           "scored": {
             "default": 0,
             "title": "Scored",
+            "type": "integer"
+          },
+          "stopped": {
+            "default": 0,
+            "title": "Stopped",
+            "type": "integer"
+          },
+          "timed_out": {
+            "default": 0,
+            "title": "Timed Out",
             "type": "integer"
           }
         },
@@ -6832,7 +6874,7 @@
     },
     "/api/results/summary": {
       "get": {
-        "description": "Finished runs summarised per agent, per mission version (`mission`), or per agent on each\nmission version (`mission_agent`).\n\nThe median is over runs that finished on the agent's own terms and were graded with a judge,\na partly-judged run counting at its lower bound. Runs with no judge, runs that ended early,\nenvironment failures and runs still grading are counted separately and never in it.",
+        "description": "Finished runs summarised as one group (`all`), per agent, per mission version (`mission`),\nor per agent on each mission version (`mission_agent`).\n\nThe median is over runs graded with a judge, a partly-judged run counting at its lower bound.\nA run that timed out is in it, at the score it earned. Runs with no judge, runs an operator\nstopped, environment failures and runs still grading are counted separately and never in it.",
         "operationId": "score_summary_api_results_summary_get",
         "parameters": [
           {
@@ -6842,6 +6884,7 @@
             "schema": {
               "default": "agent",
               "enum": [
+                "all",
                 "agent",
                 "mission",
                 "mission_agent"

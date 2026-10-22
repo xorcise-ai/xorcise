@@ -5,7 +5,7 @@ import { CircleHelp, X } from "lucide-react";
 import { cn } from "@/components/ui/cn";
 import type { RunScore } from "@/lib/api/types";
 import { PLOT_MARK } from "./agreement-plot";
-import { hatch } from "./run-glyph";
+import { hatch, runGlyph } from "./run-glyph";
 import { CellFace, cellLook } from "./run-ledger";
 import { StripColumn } from "./run-strip";
 
@@ -32,6 +32,8 @@ function sample(over: Partial<RunScore>): RunScore {
     overall: 0.8,
     overall_upper: null,
     judge_model: null,
+    timed_out: false,
+    intel_disclosed: 0,
     ...over,
   };
 }
@@ -40,7 +42,8 @@ const SAMPLES = {
   scored: sample({}),
   partial: sample({ judge: 0.35, judge_upper: 0.85, judge_status: "partial", overall: 0.63 }),
   no_judge: sample({ deterministic: 1, judge: 0, judge_status: "unavailable", bucket: "no_judge", overall: 0.5 }),
-  ended_early: sample({ deterministic: 0.6, judge: 0.4, bucket: "ended_early", outcome: "partial", terminal_trigger: "timeout" }),
+  timed_out: sample({ deterministic: 0.6, judge: 0.4, overall: 0.5, timed_out: true, outcome: "partial", terminal_trigger: "timeout" }),
+  stopped: sample({ deterministic: 0.6, judge: 0.4, bucket: "stopped", outcome: "partial", terminal_trigger: "operator" }),
   infra_failed: sample({ deterministic: null, judge: null, judge_status: null, overall: null, bucket: "infra_failed", outcome: "infra_failed" }),
   grading: sample({ deterministic: null, judge: null, judge_status: null, overall: null, bucket: "grading" }),
 };
@@ -52,7 +55,7 @@ type Kind = keyof typeof SAMPLES;
 const MEANING: Record<Kind, { title: string; body: string }> = {
   scored: {
     title: "Scored",
-    body: "Finished on the agent’s own terms and graded by the checks and the judge. Only these runs are in the median.",
+    body: "Graded by the checks and the judge. Only scored runs, timed-out ones included, are in the median.",
   },
   partial: {
     title: "Partial judge",
@@ -62,9 +65,13 @@ const MEANING: Record<Kind, { title: string; body: string }> = {
     title: "No judge",
     body: "The judge never ran, so half the score is unmeasured, not zero. Left out of the median.",
   },
-  ended_early: {
-    title: "Timed out or stopped",
-    body: "Graded on what it did, but it did not finish on its own terms. Left out of the median.",
+  timed_out: {
+    title: "Timed out",
+    body: "Ran out of its time budget. Not finishing in time is the agent’s failure, so it is in the median, at the score it earned.",
+  },
+  stopped: {
+    title: "Stopped",
+    body: "An operator ended it, so its score says nothing about the agent. Left out of the median.",
   },
   infra_failed: {
     title: "Environment failure",
@@ -77,18 +84,33 @@ const MEANING: Record<Kind, { title: string; body: string }> = {
 };
 
 const KINDS: Record<KeyView, Kind[]> = {
-  strip: ["scored", "partial", "no_judge", "ended_early", "infra_failed", "grading"],
-  plot: ["scored", "partial", "no_judge", "ended_early"],
-  ledger: ["scored", "partial", "no_judge", "ended_early", "infra_failed", "grading"],
+  strip: ["scored", "timed_out", "partial", "no_judge", "stopped", "infra_failed", "grading"],
+  plot: ["scored", "timed_out", "partial", "no_judge", "stopped"],
+  ledger: ["scored", "timed_out", "partial", "no_judge", "stopped", "infra_failed", "grading"],
 };
 
 /** One kind of run, drawn by the view's own renderer at key size (`big` for the popover). */
 function Swatch({ view, kind, big = false }: { view: KeyView; kind: Kind; big?: boolean }) {
   const run = SAMPLES[kind];
   if (view === "strip") {
+    // The strip marks some runs beneath their column (○ timed out, ‖ stopped, ? no judge, …), so
+    // the key shows the mark too: a timed-out column alone looks like any scored one.
+    const mark = runGlyph(run).mark;
     return (
-      <span aria-hidden className={cn("flex", big ? "h-24 w-5" : "h-5 w-2.5")}>
-        <StripColumn run={run} sample />
+      <span aria-hidden className="flex flex-col items-center">
+        <span className={cn("flex", big ? "h-24 w-5" : "h-5 w-2.5")}>
+          <StripColumn run={run} sample />
+        </span>
+        {mark && (
+          <span
+            className={cn(
+              "text-label leading-3",
+              mark === "×" ? "font-bold text-err" : mark === "○" ? "text-primary" : "text-text-tertiary",
+            )}
+          >
+            {mark}
+          </span>
+        )}
       </span>
     );
   }
@@ -114,7 +136,13 @@ function Swatch({ view, kind, big = false }: { view: KeyView; kind: Kind; big?: 
     );
   }
   const look =
-    kind === "ended_early" ? PLOT_MARK.ended_early : kind === "no_judge" ? PLOT_MARK.no_judge : PLOT_MARK.scored;
+    kind === "stopped"
+      ? PLOT_MARK.stopped
+      : kind === "timed_out"
+        ? PLOT_MARK.timed_out
+        : kind === "no_judge"
+          ? PLOT_MARK.no_judge
+          : PLOT_MARK.scored;
   return <span aria-hidden className={cn("shrink-0", size, look)} />;
 }
 
@@ -122,7 +150,8 @@ const SHORT: Record<Kind, string> = {
   scored: "scored",
   partial: "partial judge",
   no_judge: "no judge",
-  ended_early: "timed out or stopped",
+  timed_out: "timed out",
+  stopped: "stopped",
   infra_failed: "environment failure",
   grading: "grading",
 };

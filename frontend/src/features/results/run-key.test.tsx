@@ -14,8 +14,8 @@ import { RunKey } from "./run-key";
 const items = () =>
   within(screen.getByRole("list", { name: "Key" }))
     .getAllByRole("listitem")
-    // The ledger's environment-failure swatch draws a ×; it is aria-hidden, so read past it.
-    .map((li) => li.textContent?.replace("×", ""));
+    // Swatches draw their marks (× ○ ‖ ? …); they are aria-hidden, so read past them.
+    .map((li) => li.textContent?.replace(/[×○‖?…]/g, ""));
 
 describe("RunKey: one key per view, drawn with the view's own shapes", () => {
   it("lists every kind of run the run strip draws, and its median line", () => {
@@ -23,9 +23,10 @@ describe("RunKey: one key per view, drawn with the view's own shapes", () => {
     expect(items()).toEqual([
       "judge · checks, height = overall",
       "scored",
+      "timed out",
       "partial judge",
       "no judge",
-      "timed out or stopped",
+      "stopped",
       "environment failure",
       "grading",
       "median",
@@ -37,9 +38,10 @@ describe("RunKey: one key per view, drawn with the view's own shapes", () => {
     expect(items()).toEqual([
       "checks →judge ↑",
       "scored",
+      "timed out",
       "partial judge",
       "no judge",
-      "timed out or stopped",
+      "stopped",
     ]);
   });
 
@@ -98,5 +100,17 @@ describe("How to read this", () => {
     const panel = screen.getByRole("dialog");
     expect(within(panel).getByText("Environment failure")).toBeInTheDocument();
     expect(panel).toHaveTextContent("arrow keys");
+  });
+});
+
+describe("timed out and stopped", () => {
+  it("explains that a timeout is in the median and a stop is not", () => {
+    render(<RunKey view="strip" />);
+    fireEvent.click(screen.getByRole("button", { name: "How to read this" }));
+    const panel = screen.getByRole("dialog");
+    expect(panel).toHaveTextContent(
+      "Not finishing in time is the agent’s failure, so it is in the median, at the score it earned.",
+    );
+    expect(panel).toHaveTextContent("An operator ended it, so its score says nothing about the agent.");
   });
 });

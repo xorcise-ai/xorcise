@@ -11,7 +11,7 @@ import { Badge, type BadgeProps } from "@/components/ui/badge";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { pct, shortTime } from "@/lib/api/format";
 import { NoJudge } from "@/features/results/no-judge";
-import { judgeDegraded } from "@/features/results/summarize-runs";
+import { judgeDegraded } from "@/features/results/run-glyph";
 import {
   runPresentation,
   type RunPresentation,

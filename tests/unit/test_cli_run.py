@@ -1017,18 +1017,30 @@ def test_genuine_only_drops_every_way_the_platform_ends_a_run():
 def test_genuine_only_agrees_with_the_leaderboard_on_every_trigger():
     """Two definitions of "a run the agent finished" is how two surfaces start disagreeing about
     the same run — `run export` shipped a copy of the leaderboard's set under a "Mirrors" comment
-    where an import belonged. Compared through behaviour, trigger by trigger, so the test holds
-    however the shared set is spelled."""
-    from xorcise.core.cli.commands.results import _flatten
-    from xorcise.core.cli.commands.run import select_runs_for_export
+    where an import belonged. The leaderboard's `completed` is now the server's summary
+    (reporting.scores), so the export is compared with that, trigger by trigger."""
+    from datetime import UTC, datetime
 
-    # Every trigger the server writes, plus an absent one.
-    for trigger in ("done", "operator", "timeout", "deploy_failed", "crashed", ""):
+    from xorcise.core.cli.commands.run import select_runs_for_export
+    from xorcise.core.contracts.run import RunEntry
+    from xorcise.core.reporting.scores import score_rows, summarize
+
+    # Every trigger the server writes. (An absent one is a run still going: in neither.)
+    for trigger in ("done", "operator", "timeout", "deploy_failed", "crashed"):
         row = _run_row("r", trigger=trigger)
+        entry = RunEntry(
+            run_id="r",
+            agent_id="a1",
+            mission="m1",
+            state="terminal",
+            created_at=datetime(2026, 7, 1, tzinfo=UTC),
+            terminal_trigger=trigger,
+        )
+        (summary,) = summarize(score_rows([entry], {}, {}), "all")
 
         exported = bool(select_runs_for_export([row], genuine_only=True))
 
-        assert exported == _flatten(row, None)["completed"], trigger
+        assert exported == (summary.completed == 1), trigger
 
 
 def test_genuine_only_help_names_what_it_actually_drops():
