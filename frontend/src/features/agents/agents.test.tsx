@@ -3,7 +3,7 @@ import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { server } from "@/test/msw/server";
 import { renderWithProviders } from "@/test/render";
-import { agentFixture, runFixture, missionFixture } from "@/test/fixtures";
+import { agentFixture, runFixture, missionFixture, serverView } from "@/test/fixtures";
 
 const { push } = vi.hoisted(() => ({ push: vi.fn() }));
 vi.mock("next/navigation", () => ({
@@ -326,8 +326,10 @@ describe("AgentDetail", () => {
       name: /SQLi Login Bypass/i,
     });
     expect(links[0]).toHaveAttribute("href", "/runs/result?id=run-9");
-    // Status badge from the shared §10 vocabulary (budget trigger → "Partial").
-    expect(screen.getAllByText("Partial").length).toBeGreaterThan(0);
+    // Status badge from the shared §10 vocabulary: the server's label for a timed-out run.
+    expect(
+      screen.getAllByText(serverView("terminal", "timeout").status.label).length,
+    ).toBeGreaterThan(0);
     // Scores are shown; the raw run id is no longer rendered as a label.
     expect(screen.getAllByText("80%").length).toBeGreaterThan(0);
     expect(screen.queryByText("run-9")).toBeNull();

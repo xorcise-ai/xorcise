@@ -3,7 +3,7 @@ import { screen, waitFor, within, fireEvent } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { server } from "@/test/msw/server";
 import { renderWithProviders } from "@/test/render";
-import { runFixture, agentFixture } from "@/test/fixtures";
+import { runFixture, agentFixture, scoreFixture, summaryFixture } from "@/test/fixtures";
 
 vi.mock("next/link", () => ({
   default: ({
@@ -25,6 +25,17 @@ import { ResultsTabs } from "./results-tabs";
 /** One registered agent with a scored terminal run + a second, still-active run. */
 function seedRuns() {
   server.use(
+    http.get("*/api/results/runs", () =>
+      HttpResponse.json([scoreFixture({ run_id: "done-1", agent_id: "agent-1" })]),
+    ),
+    http.get("*/api/results/summary", ({ request }) => {
+      const by = new URL(request.url).searchParams.get("by");
+      return HttpResponse.json(
+        by === "agent"
+          ? [summaryFixture({ agent_id: "agent-1" })]
+          : [summaryFixture({ mission: "sqli-login", mission_version: "1.0.0", current_version: true })],
+      );
+    }),
     http.get("*/api/agents", () =>
       HttpResponse.json([agentFixture({ id: "agent-1", name: "scout" })]),
     ),
@@ -93,20 +104,16 @@ describe("ResultsTabs (secondary views §14)", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "Missions" }));
 
-    // The completed mission appears with its performance tiles; the active-only
-    // mission (xss-stored) has no terminal run so it is not summarised.
+    // The completed mission appears as a mission-version row; the active-only mission
+    // (xss-stored) has no finished run, so the server summarises none for it.
     await waitFor(() =>
       expect(screen.getByText("sqli-login")).toBeInTheDocument(),
     );
     const panel = screen.getByRole("tabpanel");
-    expect(within(panel).getByText("Runs")).toBeInTheDocument();
+    expect(within(panel).getAllByText("Median").length).toBeGreaterThan(0);
     expect(within(panel).queryByText("xss-stored")).not.toBeInTheDocument();
-    // The scored run's 90% is surfaced (Average + Best).
-    await waitFor(() =>
-      expect(within(panel).getAllByText("90%").length).toBeGreaterThanOrEqual(
-        2,
-      ),
-    );
+    // The version's median is the headline.
+    await waitFor(() => expect(within(panel).getAllByText("90%").length).toBeGreaterThan(0));
   });
 
   it("All Runs view lists every run, active and terminal", async () => {

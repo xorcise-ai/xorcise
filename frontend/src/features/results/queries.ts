@@ -10,6 +10,8 @@ import {
   type RunResultView,
   type RunArtifact,
   type RunStats,
+  type RunScore,
+  type ScoreSummary,
 } from "@/lib/api/types";
 
 /** How often the results view re-polls a terminal-but-ungraded run (202 {status:"grading"}). */
@@ -61,6 +63,7 @@ export function useRegradeRun(runId: string) {
       qc.invalidateQueries({ queryKey: ["runs", runId, "result"] });
       qc.invalidateQueries({ queryKey: ["runs", runId, "stats"] });
       qc.invalidateQueries({ queryKey: ["runs"] });
+      qc.invalidateQueries({ queryKey: ["results"] });
     },
   });
 }
@@ -114,5 +117,52 @@ export function useRunResults(runIds: string[]) {
         api.get<RunResultView>(`/runs/${encodeURIComponent(id)}/result`),
       retry: false,
     })),
+  });
+}
+
+/** Narrows the performance routes: an agent id and/or a mission slug. */
+export interface ScoreFilter {
+  agent?: string;
+  mission?: string;
+}
+
+function scoreQuery(filter: ScoreFilter, extra: Record<string, string> = {}): string {
+  const params = new URLSearchParams(extra);
+  if (filter.agent) params.set("agent", filter.agent);
+  if (filter.mission) params.set("mission", filter.mission);
+  const q = params.toString();
+  return q ? `?${q}` : "";
+}
+
+/** Re-poll while any run is still being graded, so its column fills in by itself. */
+const SCORES_POLL_MS = 5000;
+
+/**
+ * GET /results/runs: every finished run with its scores and how it counts (`bucket`), oldest
+ * first. One request for the whole page, instead of one `/result` per run, and the server decides
+ * how each run counts (reporting.scores), so no view counts a run on its own.
+ */
+export function useRunScores(filter: ScoreFilter = {}, enabled = true) {
+  return useQuery({
+    queryKey: ["results", "runs", filter.agent ?? "", filter.mission ?? ""],
+    queryFn: () => api.get<RunScore[]>(`/results/runs${scoreQuery(filter)}`),
+    enabled,
+    refetchInterval: (q) =>
+      q.state.data?.some((r) => r.bucket === "grading") ? SCORES_POLL_MS : false,
+  });
+}
+
+/** GET /results/summary: finished runs summarised per agent, mission version, or agent on a
+ *  mission version. The median is over `scored` runs only; everything else is counted apart. */
+export function useScoreSummary(
+  by: "agent" | "mission" | "mission_agent",
+  filter: ScoreFilter = {},
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: ["results", "summary", by, filter.agent ?? "", filter.mission ?? ""],
+    queryFn: () => api.get<ScoreSummary[]>(`/results/summary${scoreQuery(filter, { by })}`),
+    enabled,
+    refetchInterval: (q) => (q.state.data?.some((s) => s.grading > 0) ? SCORES_POLL_MS : false),
   });
 }

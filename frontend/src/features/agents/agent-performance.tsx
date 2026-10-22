@@ -1,15 +1,15 @@
 "use client";
 
-import type { AgentHistoryEntry } from "@/lib/api/types";
+import type { AgentHistoryEntry, ScoreSummary } from "@/lib/api/types";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { pct } from "@/lib/api/format";
+import { pct, shortTime } from "@/lib/api/format";
 import { PerformanceSummary } from "@/features/results/performance-summary";
 import { StatTile } from "@/components/ui/stat-tile";
-import {
-  judgeDegraded,
-  type AgentPerformanceSummary,
-} from "@/features/results/summarize-runs";
+import { judgeDegraded } from "@/features/results/summarize-runs";
+import { asideLine } from "@/features/results/run-glyph";
+import { RunKey } from "@/features/results/run-key";
+import { RunLedger, type LedgerRow } from "@/features/results/run-ledger";
 import type { AgentRunRow } from "./agent-run-history";
 
 type Stats = {
@@ -67,46 +67,52 @@ export function summarize(history: AgentHistoryEntry[]): Stats {
 }
 
 /**
- * Performance summary + performance-over-time for one agent (report §9). The headline tiles
- * reuse the shared <PerformanceSummary> (Runs · Average · Best · Completion · Partial · Last
- * run); §9's extra deterministic/judge averages are appended as {@link StatTile}s and shown
- * only when meaningful. The over-time card renders a real trend chart when ≥2 scored runs
- * exist, else a proper empty state (no decorative flat line).
+ * Performance summary + runs by mission for one agent (report §9). The headline is the server's
+ * summary (GET /results/summary): the median of the runs that finished on the agent's own terms
+ * and were graded with a judge, with every run left out of it counted and named, the same number
+ * the agent's card on Results › Agents shows. §9's deterministic/judge averages follow as
+ * {@link StatTile}s when meaningful. Below, the run ledger: every run, one row per mission
+ * version.
  */
 export function AgentPerformance({
   history,
+  summary,
+  ledger,
 }: {
   history: AgentHistoryEntry[];
+  summary: ScoreSummary | null | undefined;
+  ledger: LedgerRow[];
 }) {
   const s = summarize(history);
-  const partialCount = history.filter((h) => h.partial).length;
-  const lastRun = history.length
-    ? [...history]
-        .map((h) => h.created_at)
-        .filter(Boolean)
-        .sort((a, b) => b.localeCompare(a))[0]
-    : null;
-
-  const summary: AgentPerformanceSummary = {
-    agentId: "",
-    agentName: "",
-    runs: s.runs,
-    scored: s.scored,
-    avgOverall: s.avgOverall,
-    bestOverall: s.bestOverall,
-    completionRate: s.runs ? (s.runs - partialCount) / s.runs : null,
-    partialRate: s.partialRate,
-    noJudge: s.noJudge,
-    lastRun: lastRun ?? null,
-  };
-
   const showSplit = s.avgDeterministic !== null || s.avgJudge !== null;
+  const aside = summary ? asideLine(summary) : "";
 
   return (
     <div className="space-y-4">
       <Card>
         <CardContent className="space-y-4">
-          <PerformanceSummary summary={summary} />
+          {summary ? (
+            <div className="space-y-2">
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3 lg:grid-cols-5">
+                <StatTile label="Runs" value={String(summary.runs)} />
+                <StatTile label="Median" value={pct(summary.median)} tone="primary" />
+                <StatTile label="Best" value={pct(summary.best)} />
+                <StatTile label="Scored" value={`${summary.scored} of ${summary.runs}`} />
+                <StatTile label="Last run" value={shortTime(summary.last_run)} small />
+              </dl>
+              {aside && (
+                <p className="text-caption text-text-tertiary">{aside}: not in the median.</p>
+              )}
+              {summary.partial_judge > 0 && (
+                <p className="text-caption text-text-tertiary">
+                  {summary.partial_judge} judged on part of the rubric, counted at the lower
+                  bound.
+                </p>
+              )}
+            </div>
+          ) : (
+            <PerformanceSummary loading />
+          )}
           {showSplit && (
             <dl className="grid grid-cols-2 gap-x-4 gap-y-3 border-t border-border pt-4 sm:grid-cols-3 lg:grid-cols-6">
               {s.avgDeterministic !== null && (
@@ -130,10 +136,15 @@ export function AgentPerformance({
 
       <Card>
         <CardContent className="space-y-3">
-          <p className="text-label uppercase text-text-tertiary">
-            Score over time
-          </p>
-          <TrendChart values={s.trend} />
+          <p className="text-label uppercase text-text-tertiary">Runs by mission</p>
+          {ledger.length > 0 ? (
+            <>
+              <RunKey view="ledger" bare className="border-b border-border pb-3" />
+              <RunLedger rows={ledger} />
+            </>
+          ) : (
+            <p className="text-body text-text-secondary">No finished runs yet.</p>
+          )}
         </CardContent>
       </Card>
     </div>
@@ -202,72 +213,6 @@ function ChipRow({ label, items }: { label: string; items: string[] }) {
           </Badge>
         ))}
       </div>
-    </div>
-  );
-}
-
-/**
- * Trend chart of overall scores over time (report §9). A real line chart (area + points) once
- * two scored runs exist; otherwise a §17 empty state that says what's missing, why, and what to
- * do next — never a flat decorative line.
- */
-function TrendChart({ values }: { values: number[] }) {
-  if (values.length < 2) {
-    return (
-      <div className="rounded-md border border-dashed border-border p-4 text-center">
-        <p className="text-body font-medium text-heading">
-          Not enough data for a trend yet
-        </p>
-        <p className="mt-2 text-body text-text-secondary">
-          Complete at least two evaluations to display a performance trend.
-        </p>
-      </div>
-    );
-  }
-
-  const W = 320;
-  const H = 48;
-  const step = W / (values.length - 1);
-  const y = (v: number) => H - v * H; // scores are 0..1
-  const pts = values.map((v, i) => [i * step, y(v)] as const);
-  const line = pts.map(([px, py]) => `${px.toFixed(1)},${py.toFixed(1)}`).join(" ");
-  const area = `0,${H} ${line} ${W},${H}`;
-  const last = values[values.length - 1];
-  const best = Math.max(...values);
-
-  return (
-    <div className="space-y-2">
-      <svg
-        viewBox={`0 0 ${W} ${H}`}
-        className="h-12 w-full"
-        preserveAspectRatio="none"
-        role="img"
-        aria-label={`Overall score over ${values.length} scored runs, oldest to newest`}
-      >
-        <polygon points={area} fill="var(--color-primary)" fillOpacity="0.12" />
-        <polyline
-          points={line}
-          fill="none"
-          stroke="var(--color-primary)"
-          strokeWidth="1.5"
-          strokeLinejoin="round"
-          strokeLinecap="round"
-          vectorEffect="non-scaling-stroke"
-        />
-        {pts.map(([px, py], i) => (
-          <circle
-            key={i}
-            cx={px}
-            cy={py}
-            r={2}
-            fill="var(--color-primary)"
-            vectorEffect="non-scaling-stroke"
-          />
-        ))}
-      </svg>
-      <p className="text-caption tabular-nums text-text-tertiary">
-        {values.length} scored runs · latest {pct(last)} · best {pct(best)}
-      </p>
     </div>
   );
 }
