@@ -368,10 +368,16 @@ textarea,
 
 /* Global focus-visible fallback (guide §12) — every interactive gets a visible
    amber ring even when it doesn't set its own. Components that define a richer
-   focus treatment (button/input/tabs) still win via their own :focus-visible. */
-:focus-visible {
-  outline: 2px solid var(--color-ring);
-  outline-offset: 2px;
+   focus treatment (button/input/tabs) still win via their own :focus-visible.
+   It must sit in the base layer for that to hold: Tailwind emits its utilities in
+   `@layer utilities`, and unlayered CSS beats every layer whatever the specificity,
+   so unlayered this rule overrode every `focus-visible:outline-none` and focused
+   controls drew two indicators, their own ring plus this outline (#182). */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
 }
 
 html {
