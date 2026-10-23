@@ -893,8 +893,7 @@ def run_result(
         cells = reporting.RunReportContext(
             run=run_entry, agent_name="", grade=grade, conditions=conditions, stats=stats
         )
-        if conditions.model or (stats is not None and stats.models):
-            agent_model = reporting.agent_model_cell(cells)
+        agent_model = reporting.agent_model_cell(cells)
         window = reporting.telemetry_window_cell(cells)
     return RunResultView(
         grade=grade,
