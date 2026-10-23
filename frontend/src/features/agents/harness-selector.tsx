@@ -83,17 +83,18 @@ export function HarnessSelector({
   const unrecognised = ownLabel && knownKinds.length > 0 && !knownKinds.includes(typedKind);
   const suggestion = unrecognised ? closestKind(typedKind, knownKinds) : null;
   const suggestionName = HARNESSES.find((h) => h.kind === suggestion)?.name ?? suggestion;
+  // `generic` itself, or a blank ID (which saves as generic): no verified adapter either. Its
+  // runs replay with the generic adapter, a best effort, so it gets the same warning box as a
+  // label of your own rather than a quiet line of help.
+  const genericUnverified = genericMode && !ownLabel;
+  const warn = unrecognised || genericUnverified;
 
   const help =
     value === null
       ? "Choose a harness. Pick Generic for any other CLI agent."
       : isBuiltIn
         ? "The selected harness uses its verified replay adapter."
-        : ownLabel
-          ? "Your own label. Its runs may replay with the generic adapter, which is not verified against any harness."
-          : typedKind === ""
-            ? "A blank ID saves as generic: runs replay with the generic adapter, which is not verified against any harness."
-            : "Runs replay with the generic adapter, which is not verified against any harness. Replace the ID with your own label if you like, e.g. my-agent-cli.";
+        : "Your own label. Its runs may replay with the generic adapter, which is not verified against any harness.";
 
   const card = (selected: boolean) =>
     cn(
@@ -192,11 +193,11 @@ export function HarnessSelector({
           part of the announcement. The box is styled only while it has something to say. */}
       <div
         className={cn(
-          unrecognised &&
+          warn &&
             "flex items-start gap-2 rounded-md border border-warning/30 bg-warning/[0.06] p-2.5 text-dense text-text-secondary",
         )}
       >
-        {unrecognised && (
+        {warn && (
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden />
         )}
         <div className="min-w-0 space-y-1.5">
@@ -215,6 +216,21 @@ export function HarnessSelector({
                 </p>
               </>
             )}
+            {genericUnverified && (
+              <>
+                <p>
+                  <span className="font-medium text-heading">
+                    The generic adapter isn’t verified against any harness.
+                  </span>
+                </p>
+                <p>
+                  {typedKind === "" ? "A blank ID saves as generic. " : ""}
+                  Runs replay with it as a best effort, so which spans your agent exports is
+                  unknown until you look at a run. Replace the ID with your own label if you
+                  like, e.g. my-agent-cli.
+                </p>
+              </>
+            )}
           </div>
           {suggestion && (
             <Button type="button" variant="outline" size="sm" onClick={() => onChange(suggestion)}>
@@ -223,7 +239,7 @@ export function HarnessSelector({
           )}
         </div>
       </div>
-      {!unrecognised && (
+      {!warn && (
         <p className={cn("text-dense text-text-tertiary", compact && "xl:text-caption")}>
           {help}
         </p>
