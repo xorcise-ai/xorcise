@@ -28,13 +28,21 @@ from xorcise.core.reporting.repository import (
     result_conditions,
     result_partial,
 )
-from xorcise.core.reporting.scores import score_rows, summarize
+from xorcise.core.reporting.scores import (
+    GradeFacts,
+    current_versions,
+    score_rows,
+    summarize,
+    version_label,
+)
 
 __all__ = [
+    "GradeFacts",
     "ReportArtifact",
     "RunReportContext",
     "agent_history",
     "agent_model_cell",
+    "current_versions",
     "delete_for_runs",
     "delete_result",
     "get_result",
@@ -51,4 +59,5 @@ __all__ = [
     "score_rows",
     "summarize",
     "telemetry_window_cell",
+    "version_label",
 ]

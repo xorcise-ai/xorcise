@@ -9,7 +9,9 @@ import { asideLine } from "./run-glyph";
 // This run in the context of the same agent's other runs on THIS MISSION VERSION. Answers "is this
 // score good for this agent here?", unanswerable from a single number. The median and the trend
 // are the server's (GET /results/summary and /results/runs): the same rule as every other view,
-// and only runs on this version, whose checks and rubric are the ones this run faced.
+// and only runs on this version, whose checks and rubric are the ones this run faced. Which version
+// that is, is the server's label on this run's own row, never rebuilt here. Until both answer the
+// card shows nothing, rather than "first run" for an agent that has many.
 export function CrossRunContext({
   run,
   thisOverall,
@@ -18,11 +20,13 @@ export function CrossRunContext({
   thisOverall: number;
 }) {
   const filter = { agent: run.agent_id, mission: run.mission };
-  const version = run.mission_version ?? String(run.install_revision);
   const summaries = useScoreSummary("mission_agent", filter);
   const scores = useRunScores(filter);
-  const summary = summaries.data?.find((s) => s.mission_version === version);
-  const trend = (scores.data ?? [])
+  const own = scores.data?.find((r) => r.run_id === run.run_id);
+  if (!summaries.data || !scores.data || !own) return null;
+  const version = own.mission_version;
+  const summary = summaries.data.find((s) => s.mission_version === version);
+  const trend = scores.data
     .filter((r) => r.mission_version === version && r.bucket === "scored" && r.overall != null)
     .map((r) => r.overall as number);
 

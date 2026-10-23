@@ -76,6 +76,12 @@ describe("ConditionsCard agent model (#146)", () => {
     expect(screen.queryByText("m")).toBeNull();
   });
 
+  it("leaves the row out when the server has no model to name", () => {
+    renderWithProviders(<ConditionsCard conditions={{ ...base, judge_model: "j" }} agentModel={null} />);
+    expect(screen.queryByText("Agent model")).toBeNull();
+    expect(screen.queryByText("not disclosed")).toBeNull();
+  });
+
   it("falls back to the declared model when the server does not send the cell", () => {
     renderWithProviders(<ConditionsCard conditions={{ ...base, model: "gpt-x" }} />);
     expect(screen.getByText("gpt-x")).toBeInTheDocument();

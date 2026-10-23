@@ -31,7 +31,7 @@ export interface FleetPerformance {
   registeredAgentIds: Set<string>;
   /** An agent's name, or its short id once it is deleted. */
   agentName: (id: string) => string;
-  /** Per agent, best median first; agents with no scored run sink. */
+  /** Per agent as the server ranks them: best median first; agents with no scored run sink. */
   agentSummaries: ScoreSummary[];
   /** Per mission version. */
   missionSummaries: ScoreSummary[];
@@ -72,12 +72,8 @@ export function useFleetPerformance(): FleetPerformance {
       else trendByAgent.set(r.agent_id, [r.overall]);
     }
 
-    const agentSummaries = [...(byAgent.data ?? [])].sort(
-      (a, b) =>
-        (b.median ?? -1) - (a.median ?? -1) ||
-        b.scored - a.scored ||
-        agentName(a.agent_id ?? "").localeCompare(agentName(b.agent_id ?? "")),
-    );
+    // Ranked by the server, the order every view shows.
+    const agentSummaries = byAgent.data ?? [];
 
     return {
       isLoading: runs.isLoading || agents.isLoading,

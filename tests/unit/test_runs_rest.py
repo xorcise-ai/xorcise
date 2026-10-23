@@ -1037,4 +1037,5 @@ def test_run_result_without_telemetry_has_no_window_and_no_model(migrated_home):
     run = _run_with_result("run-cells-3")
     body = _client().get(f"/api/runs/{run.run_id}/result").json()
     assert body["telemetry_window"] is None
-    assert body["agent_model"] == "not disclosed"
+    # The report says "not disclosed"; the page leaves the empty row out.
+    assert body["agent_model"] is None

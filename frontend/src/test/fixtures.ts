@@ -110,6 +110,7 @@ export const scoreFixture = (over: Partial<RunScore> = {}): RunScore => ({
 /** A GET /results/summary group. Defaults to one scored run at 0.9. */
 export const summaryFixture = (over: Partial<ScoreSummary> = {}): ScoreSummary => ({
   agent_id: null,
+  agent_name: null,
   mission: null,
   mission_version: null,
   current_version: null,
@@ -121,9 +122,11 @@ export const summaryFixture = (over: Partial<ScoreSummary> = {}): ScoreSummary =
   assisted: 0,
   no_judge: 0,
   stopped: 0,
+  grading_failed: 0,
   infra_failed: 0,
   grading: 0,
   median: 0.9,
+  mean: 0.9,
   q1: 0.9,
   q3: 0.9,
   best: 0.9,

@@ -11,13 +11,14 @@ import type { ResultConditions } from "@/lib/api/types";
 // declaration (`conditions.model`) is almost never set, so reading only that said nothing on a
 // run whose telemetry named its model. The server weighs the declaration against the names the
 // harness reported and words the outcome, "(reported by the harness)" included, so this card and
-// the report cannot disagree. A server too old to send it falls back to the declaration alone.
+// the report cannot disagree. Null when there is nothing to name, and the row is left out; a
+// server too old to send it falls back to the declaration alone.
 export function ConditionsCard({
   conditions,
   agentModel,
 }: {
   conditions: ResultConditions;
-  agentModel?: string;
+  agentModel?: string | null;
 }) {
   const rows: { label: string; value: string }[] = [];
   const model = agentModel ?? conditions.model;

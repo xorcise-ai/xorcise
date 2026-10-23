@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { server } from "@/test/msw/server";
 import { renderWithProviders } from "@/test/render";
@@ -8,7 +8,10 @@ import { CrossRunContext } from "./cross-run-context";
 
 const run = runFixture({ run_id: "r9", agent_id: "agent-1", mission: "sqli-login", mission_version: "2.0.0" });
 
-function serve(summaries: ReturnType<typeof summaryFixture>[], scores = [scoreFixture()]) {
+// The run's own row, as the server labels its version: the card reads the version from here.
+const OWN = scoreFixture({ run_id: "r9", mission_version: "2.0.0" });
+
+function serve(summaries: ReturnType<typeof summaryFixture>[], scores = [OWN]) {
   server.use(
     http.get("*/api/results/summary", () => HttpResponse.json(summaries)),
     http.get("*/api/results/runs", () => HttpResponse.json(scores)),
@@ -40,5 +43,37 @@ describe("CrossRunContext", () => {
     serve([summaryFixture({ agent_id: "agent-1", mission: "sqli-login", mission_version: "2.0.0", scored: 1 })]);
     renderWithProviders(<CrossRunContext run={run} thisOverall={0.8} />);
     expect(await screen.findByText(/First run for this agent on this mission/)).toBeInTheDocument();
+  });
+
+  it("takes the version from the server's row for this run, not from the run itself", async () => {
+    // A pre-contract run carries no SemVer; the server labels it by its install revision.
+    serve(
+      [summaryFixture({ agent_id: "agent-1", mission: "sqli-login", mission_version: "7", median: 0.5, scored: 4 })],
+      [scoreFixture({ run_id: "r9", mission_version: "7" })],
+    );
+    renderWithProviders(
+      <CrossRunContext run={{ ...run, mission_version: null, install_revision: 7 }} thisOverall={0.8} />,
+    );
+    expect(await screen.findByText("+30 pts vs median")).toBeInTheDocument();
+  });
+
+  it("shows nothing until the server answers, never a premature first run", async () => {
+    let answer: () => void = () => {};
+    const held = new Promise<void>((resolve) => (answer = resolve));
+    server.use(
+      http.get("*/api/results/summary", async () => {
+        await held;
+        return HttpResponse.json([
+          summaryFixture({ agent_id: "agent-1", mission: "sqli-login", mission_version: "2.0.0", median: 0.6, scored: 3 }),
+        ]);
+      }),
+      http.get("*/api/results/runs", () => HttpResponse.json([OWN])),
+    );
+    const { container } = renderWithProviders(<CrossRunContext run={run} thisOverall={0.8} />);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByText(/First run/)).toBeNull();
+    answer();
+    await waitFor(() => expect(screen.getByText("+20 pts vs median")).toBeInTheDocument());
   });
 });

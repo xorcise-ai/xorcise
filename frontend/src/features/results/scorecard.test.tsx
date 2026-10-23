@@ -13,6 +13,7 @@ function grade(over: Partial<GradeResult> = {}): GradeResult {
     major_deductions: [],
     hard_fails: [],
     judge_status: "partial",
+    grading_failed: false,
     judge_detail: null,
     judge_prompt: null,
     judge_breakdown: [],

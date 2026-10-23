@@ -15,6 +15,17 @@ import { AgentPerformance } from "./agent-performance";
 // The agent page's headline is the server's summary (GET /results/summary?by=agent): the same
 // numbers the agent's card on Results › Agents, the dashboard and `xorcise leaderboard` show.
 describe("AgentPerformance", () => {
+  it("says the agent has no finished run when the server has no summary, not loading forever", () => {
+    render(<AgentPerformance summary={undefined} summaryState="ready" ledger={[]} />);
+    expect(screen.getAllByText("No finished runs yet.")).toHaveLength(2);
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("says so when the summary failed to load", () => {
+    render(<AgentPerformance summary={undefined} summaryState="error" ledger={[]} />);
+    expect(screen.getByText("Couldn’t load this agent’s performance.")).toBeInTheDocument();
+  });
+
   it("headlines the median and the averages of the same scored runs, from the server", () => {
     render(
       <AgentPerformance

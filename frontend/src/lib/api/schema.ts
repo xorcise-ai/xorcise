@@ -680,7 +680,11 @@ export interface paths {
          *
          *     The median is over runs graded with a judge, a partly-judged run counting at its lower bound.
          *     A run that timed out is in it, at the score it earned. Runs with no judge, runs an operator
-         *     stopped, environment failures and runs still grading are counted separately and never in it.
+         *     stopped, runs whose grading crashed, environment failures and runs still grading are counted
+         *     separately and never in it. `mean` is over the same runs as the median.
+         *
+         *     Groups with an agent come back ranked (best median first) and named (`agent_name`), so every
+         *     client shows one order under one set of names.
          */
         get: operations["score_summary_api_results_summary_get"];
         put?: never;
@@ -713,7 +717,10 @@ export interface paths {
          *
          *     Every failure maps to a clean JSON error (never a raw text/plain 500 that the CLI can't
          *     decode): the deps build + spine run share one try so the fail-loud
-         *     RuntimeError (Docker/Headscale unreachable) surfaces as a 503 with its remediation.
+         *     RuntimeError (Docker/Headscale unreachable) surfaces as a 503 with its remediation. So does
+         *     a server with no runner (RunnerUnavailableError, #168): the deps build refuses before a
+         *     mission is pulled or a run row written, where a stub used to answer 201 for a run that then
+         *     sat at `created` forever.
          *
          *     The 201 response is RunCreatedEntry — a RunEntry superset that adds run_control_key so the
          *     agent can authenticate run-control calls. The key is NEVER returned by
@@ -2193,6 +2200,11 @@ export interface components {
              */
             check_breakdown: components["schemas"]["CheckVerdict"][];
             /**
+             * Grading Failed
+             * @default false
+             */
+            grading_failed: boolean;
+            /**
              * Hard Fails
              * @default []
              */
@@ -3186,11 +3198,8 @@ export interface components {
          * @description Recorded result + disclosed conditions + partial state.
          */
         RunResultView: {
-            /**
-             * Agent Model
-             * @default not disclosed
-             */
-            agent_model: string;
+            /** Agent Model */
+            agent_model?: string | null;
             conditions: components["schemas"]["ResultConditions"];
             /** Evidence Digest */
             evidence_digest?: string | null;
@@ -3234,7 +3243,7 @@ export interface components {
              * Bucket
              * @enum {string}
              */
-            bucket: "scored" | "no_judge" | "stopped" | "infra_failed" | "grading";
+            bucket: "scored" | "no_judge" | "stopped" | "grading_failed" | "infra_failed" | "grading";
             /** Completed At */
             completed_at?: string | null;
             /**
@@ -3394,6 +3403,8 @@ export interface components {
         ScoreSummary: {
             /** Agent Id */
             agent_id?: string | null;
+            /** Agent Name */
+            agent_name?: string | null;
             /**
              * Assisted
              * @default 0
@@ -3414,6 +3425,11 @@ export interface components {
              */
             grading: number;
             /**
+             * Grading Failed
+             * @default 0
+             */
+            grading_failed: number;
+            /**
              * Infra Failed
              * @default 0
              */
@@ -3427,6 +3443,8 @@ export interface components {
             judge_models: string[];
             /** Last Run */
             last_run?: string | null;
+            /** Mean */
+            mean?: number | null;
             /** Mean Deterministic */
             mean_deterministic?: number | null;
             /** Mean Judge */

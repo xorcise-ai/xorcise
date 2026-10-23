@@ -491,22 +491,26 @@ def test_mission_show_json_emits_the_raw_manifest(monkeypatch):
 
 # ── xorcise leaderboard ───────────────────────────────────────────────────────
 #
-# The leaderboard is the server's summary (GET /results/summary?by=agent, reporting.scores), named
-# and ranked. How each run counts is decided once, server-side, and tested there
+# The leaderboard is the server's summary (GET /results/summary?by=agent, reporting.scores), ranked
+# and named there. How each run counts is decided once, server-side, and tested there
 # (tests/unit/test_results_scores.py); these pin what the CLI does with it.
 
 
 def _summary(agent_id: str, **over: Any) -> dict[str, Any]:
     row: dict[str, Any] = {
         "agent_id": agent_id,
+        "agent_name": agent_id[:8],
         "runs": 1,
+        "completed": 1,
         "scored": 1,
         "timed_out": 0,
         "no_judge": 0,
         "stopped": 0,
+        "grading_failed": 0,
         "infra_failed": 0,
         "grading": 0,
         "median": 0.5,
+        "mean": 0.5,
         "best": 0.5,
         "last_run": "2026-07-01T10:00:00",
     }
@@ -514,15 +518,13 @@ def _summary(agent_id: str, **over: Any) -> dict[str, Any]:
     return row
 
 
-def _wire(monkeypatch, summaries: list[dict[str, Any]], agents: list[dict[str, Any]]) -> list[str]:
+def _wire(monkeypatch, summaries: list[dict[str, Any]]) -> list[str]:
     calls: list[str] = []
 
     def fake_get(self, path):  # noqa: ANN001, ANN202 — test stub
         calls.append(path)
         if path == "/results/summary?by=agent":
             return summaries
-        if path == "/agents":
-            return agents
         raise AssertionError(f"unexpected request {path}")
 
     monkeypatch.setattr(RestClient, "get", fake_get)
@@ -530,80 +532,83 @@ def _wire(monkeypatch, summaries: list[dict[str, Any]], agents: list[dict[str, A
 
 
 def test_leaderboard_reads_the_servers_summary_not_every_runs_result(monkeypatch):
-    calls = _wire(monkeypatch, [_summary("a1")], [{"id": "a1", "name": "alpha"}])
+    calls = _wire(monkeypatch, [_summary("a1", agent_name="alpha")])
     result = runner.invoke(app, ["leaderboard"])
     assert result.exit_code == 0
-    assert calls == ["/results/summary?by=agent", "/agents"]
+    # Ranked and named by the server: one request, nothing re-sorted here.
+    assert calls == ["/results/summary?by=agent"]
 
 
-def test_leaderboard_ranks_agents_by_median(monkeypatch):
+def test_leaderboard_keeps_the_servers_order_and_shows_the_mean(monkeypatch):
     _wire(
         monkeypatch,
-        [_summary("a1", median=0.5), _summary("a2", median=0.9), _summary("a3", median=None)],
         [
-            {"id": "a1", "name": "alpha"},
-            {"id": "a2", "name": "beta"},
-            {"id": "a3", "name": "gamma"},
+            _summary("a2", agent_name="beta", median=0.9, mean=0.7),
+            _summary("a1", agent_name="alpha", median=0.5),
+            _summary("a3", agent_name="gamma", median=None, mean=None),
         ],
     )
     result = runner.invoke(app, ["leaderboard"])
     assert result.exit_code == 0
     out = result.stdout
-    # beta (0.90) outranks alpha (0.50); gamma, with no scored run, sinks.
     assert out.index("beta") < out.index("alpha") < out.index("gamma")
     assert "Median" in out and "90%" in out
+    assert "Mean" in out and "70%" in out
 
 
-def test_leaderboard_json_is_the_summary_named_and_ranked(monkeypatch):
+def test_leaderboard_json_is_the_servers_summary_with_the_keys_it_had_before(monkeypatch):
+    """Scripts written against v0.2.0's `--json` read avg_overall, best_overall, the two rates and
+    judge_degraded: they are still there, computed by the median's rule."""
     import json
 
     _wire(
         monkeypatch,
-        [_summary("a2deadbeefcafe", median=0.3), _summary("a1", median=0.8, timed_out=1)],
-        [{"id": "a1", "name": "alpha"}],
+        [
+            _summary(
+                "a1",
+                agent_name="alpha",
+                runs=6,
+                completed=3,
+                infra_failed=2,
+                no_judge=1,
+                median=0.8,
+                mean=0.75,
+                best=0.9,
+                timed_out=1,
+            ),
+            _summary("a2deadbeefcafe", median=0.3),
+        ],
     )
     result = runner.invoke(app, ["leaderboard", "--json"])
     assert result.exit_code == 0
     first, second = json.loads(result.stdout)
     assert (first["agent_name"], first["median"], first["timed_out"]) == ("alpha", 0.8, 1)
-    # No registered name: the short id, as the GUI shows it.
+    assert (first["avg_overall"], first["best_overall"], first["judge_degraded"]) == (0.75, 0.9, 1)
+    # Over the 4 attempts: the 2 environment failures are not the agent's.
+    assert (first["completion_rate"], first["partial_rate"]) == (0.75, 0.25)
     assert second["agent_name"] == "a2deadbe"
 
 
 def test_leaderboard_says_which_runs_are_in_the_median_and_which_are_not(monkeypatch):
     _wire(
         monkeypatch,
-        [_summary("a1", timed_out=1, no_judge=2, stopped=1, infra_failed=1)],
-        [{"id": "a1", "name": "alpha"}],
+        [_summary("a1", timed_out=1, no_judge=2, stopped=1, grading_failed=1, infra_failed=1)],
     )
     out = " ".join(runner.invoke(app, ["leaderboard"]).stdout.split())
-    assert "'Timed out' runs ran out of their budget. They ARE in Median/Best" in out
+    assert "'Timed out' runs ran out of their budget. They ARE in Median/Mean/Best" in out
     assert "'No judge' counts runs graded with the judge half unavailable" in out
-    assert "left out of Median/Best" in out
+    assert "left out of Median/Mean/Best" in out
+    assert "'Grading failed' counts runs whose grading crashed" in out
     assert "'Stopped' counts runs an operator ended" in out
     assert "'Infra failed' counts runs cut short by an environment failure" in out
 
 
 def test_leaderboard_with_no_finished_runs(monkeypatch):
-    _wire(monkeypatch, [], [])
+    _wire(monkeypatch, [])
     result = runner.invoke(app, ["leaderboard"])
     assert result.exit_code == 0
     assert "no finished runs yet" in result.stdout
     assert runner.invoke(app, ["leaderboard", "--json"]).stdout.strip() == "[]"
-
-
-def test_rank_sinks_unscored_agents_and_breaks_ties_on_scored_runs():
-    from xorcise.core.cli.commands.results import rank
-
-    ranked = rank(
-        [
-            _summary("a1", median=None, scored=0),
-            _summary("a2", median=0.7, scored=1),
-            _summary("a3", median=0.7, scored=4),
-        ],
-        {"a1": "alpha", "a2": "beta", "a3": "gamma"},
-    )
-    assert [r["agent_name"] for r in ranked] == ["gamma", "beta", "alpha"]
 
 
 def test_leaderboard_prints_a_score_as_the_gui_does():

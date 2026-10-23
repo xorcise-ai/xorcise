@@ -140,9 +140,11 @@ class RunStats(BaseModel):
 #:   the score is unmeasured. Out of the median, disclosed.
 #: - `stopped`: an operator ended it. Whatever it scored says nothing about the agent. Out of the
 #:   median, disclosed.
+#: - `grading_failed`: grading itself crashed, so neither the checks nor the judge graded it; its
+#:   zero is a stand-in. Out of the median, disclosed; re-evaluating it can recover a score.
 #: - `infra_failed`: cut short by an environment failure. Never graded, not the agent's attempt.
 #: - `grading`: finished, grade not recorded yet.
-ScoreBucket = Literal["scored", "no_judge", "stopped", "infra_failed", "grading"]
+ScoreBucket = Literal["scored", "no_judge", "stopped", "grading_failed", "infra_failed", "grading"]
 
 
 class RunScore(BaseModel):
@@ -184,6 +186,9 @@ class ScoreSummary(BaseModel):
     mission version), summarised by the rules in `ScoreBucket`."""
 
     agent_id: str | None = None
+    # The agent's name, so every client shows the server's ranking under one set of names; a
+    # deleted agent's short id.
+    agent_name: str | None = None
     mission: str | None = None
     mission_version: str | None = None
     current_version: bool | None = None
@@ -195,12 +200,16 @@ class ScoreSummary(BaseModel):
     assisted: int = 0  # of `scored`, given any intel: a median that blends them says so
     no_judge: int = 0
     stopped: int = 0
+    grading_failed: int = 0
     infra_failed: int = 0
     grading: int = 0
     median: float | None = None
     q1: float | None = None  # the middle half of `scored`, for a spread
     q3: float | None = None
     best: float | None = None
+    # The mean of the same runs the median is over. The median is the headline (a few very good
+    # or very bad runs move it less); the mean is kept beside it, and for `xorcise leaderboard`.
+    mean: float | None = None
     # The two halves over the same `scored` runs: the checks over all of them, the judge over the
     # ones it scored in full (a partial judge's score is only a lower bound).
     mean_deterministic: float | None = None

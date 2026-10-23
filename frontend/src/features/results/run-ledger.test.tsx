@@ -136,6 +136,56 @@ describe("RunLedger", () => {
     expect(document.activeElement).toBe(cells[1]);
   });
 
+  it("draws a run whose grading failed as an empty slot, and a stopped one never judged as unmeasured", () => {
+    ledger([
+      scoreFixture({
+        run_id: "gf",
+        bucket: "grading_failed",
+        judge_status: "unavailable",
+        deterministic: 0,
+        judge: 0,
+        overall: 0,
+      }),
+      scoreFixture({
+        run_id: "sn",
+        bucket: "stopped",
+        terminal_trigger: "operator",
+        judge_status: "unavailable",
+        judge: 0,
+      }),
+    ]);
+    const [failed, stopped] = screen.getAllByTestId("ledger-cell");
+    expect(failed.dataset.kind).toBe("grading_failed");
+    expect(failed.className).toContain("border-dashed");
+    expect(failed.className).not.toContain("err");
+    expect(failed.querySelector('[data-part="judge"]')).toBeNull();
+    expect(failed).toHaveAccessibleName(/grading failed/);
+    // Its judge never ran: the judge half is unmeasured, not a zero.
+    expect(stopped.querySelector('[data-part="unmeasured"]')).not.toBeNull();
+    expect(stopped).toHaveAccessibleName(/no judge · overall 90% with the judge half unmeasured/);
+  });
+
+  it("keeps the tab stop on the same run when a refetch adds a row above it", () => {
+    const row = (version: string, runs: RunScore[]) => ({
+      summary: v("sqli-login", version, version === "3.0.0", "2026-06-20T00:00:00Z"),
+      name: "SQLi Login",
+      runs,
+    });
+    const b = row("1.0.0", [scoreFixture({ run_id: "b1" }), scoreFixture({ run_id: "b2" })]);
+    const { rerender } = render(
+      <RunLedger rows={[row("2.0.0", [scoreFixture({ run_id: "a1" })]), b]} />,
+    );
+    const b1 = screen.getAllByTestId("ledger-cell").find((c) => c.getAttribute("href")?.endsWith("b1"))!;
+    b1.focus();
+    rerender(
+      <RunLedger
+        rows={[row("3.0.0", [scoreFixture({ run_id: "n1" })]), row("2.0.0", [scoreFixture({ run_id: "a1" })]), b]}
+      />,
+    );
+    const stops = screen.getAllByTestId("ledger-cell").filter((c) => c.tabIndex === 0);
+    expect(stops.map((c) => c.getAttribute("href"))).toEqual(["/runs/result?id=b1"]);
+  });
+
   it("shows the latest runs that fit and says how many earlier ones there are", () => {
     const runs = Array.from({ length: 40 }, (_, i) => scoreFixture({ run_id: `r${i}` }));
     ledger(runs);

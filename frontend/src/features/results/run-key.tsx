@@ -46,21 +46,23 @@ const SAMPLES: Record<RunKind, RunScore> = {
   partial_judge: sample({ judge: 0.35, judge_upper: 0.85, judge_status: "partial", overall: 0.63 }),
   no_judge: sample({ deterministic: 1, judge: 0, judge_status: "unavailable", bucket: "no_judge", overall: 0.5 }),
   stopped: sample({ deterministic: 0.6, judge: 0.5, bucket: "stopped", outcome: "partial", terminal_trigger: "operator" }),
+  grading_failed: sample({ deterministic: 0, judge: 0, judge_status: "unavailable", overall: 0, bucket: "grading_failed" }),
   infra_failed: sample({ deterministic: null, judge: null, judge_status: null, overall: null, bucket: "infra_failed", outcome: "infra_failed" }),
   grading: sample({ deterministic: null, judge: null, judge_status: null, overall: null, bucket: "grading" }),
 };
 
 /** The kinds each view draws, in the key's two groups: in the median, then left out. Grading is
- *  neither yet, and closes the second group. The plot places no run it has no scores for. */
+ *  neither yet, and closes the second group. The plot places no run it has no scores for: not an
+ *  environment failure, not one whose grading failed, not one still grading. */
 const GROUPS: Record<KeyView, { in: RunKind[]; out: RunKind[] }> = {
   strip: {
     in: ["scored", "timed_out", "partial_judge"],
-    out: ["no_judge", "stopped", "infra_failed", "grading"],
+    out: ["no_judge", "stopped", "grading_failed", "infra_failed", "grading"],
   },
   plot: { in: ["scored", "timed_out", "partial_judge"], out: ["no_judge", "stopped"] },
   ledger: {
     in: ["scored", "timed_out", "partial_judge"],
-    out: ["no_judge", "stopped", "infra_failed", "grading"],
+    out: ["no_judge", "stopped", "grading_failed", "infra_failed", "grading"],
   },
 };
 
@@ -194,8 +196,9 @@ const READING: Record<KeyView, { lead: string; extra: ReactNode }> = {
         </p>
         <p>
           A run with no judge has no place on the judge axis, so it sits on the strip under the
-          plot at its checks score. Environment failures and runs still grading have no scores to
-          place; they are counted under the plot. Point at a run, or pick an agent’s chip, to see
+          plot at its checks score; so does a stopped run whose judge never ran. Environment
+          failures, runs whose grading failed and runs still grading have no scores to place; they
+          are counted under the plot. Point at a run, or pick an agent’s chip, to see
           whose it is.
         </p>
       </>

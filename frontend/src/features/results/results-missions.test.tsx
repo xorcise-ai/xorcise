@@ -92,6 +92,39 @@ describe("ResultsByMission: grader agreement per mission version", () => {
     ).toBeInTheDocument();
   });
 
+  it("puts a stopped run whose judge never ran on the rail, not at a judge score of 0", async () => {
+    serve(
+      [
+        scoreFixture({ run_id: "a" }),
+        scoreFixture({
+          run_id: "s",
+          bucket: "stopped",
+          outcome: "partial",
+          terminal_trigger: "operator",
+          judge_status: "unavailable",
+          judge: 0,
+        }),
+        scoreFixture({
+          run_id: "g",
+          bucket: "grading_failed",
+          judge_status: "unavailable",
+          deterministic: 0,
+          judge: 0,
+          overall: 0,
+        }),
+      ],
+      [version("1.0.0", true, { runs: 3, scored: 1, stopped: 1, grading_failed: 1 })],
+    );
+    renderWithProviders(<ResultsByMission />);
+    await waitFor(() => expect(screen.getAllByTestId("agreement-point")).toHaveLength(1));
+    const [rail] = screen.getAllByTestId("agreement-rail");
+    expect(rail.dataset.bucket).toBe("stopped");
+    // A run whose grading failed has no score to place: counted, not drawn.
+    expect(
+      screen.getByText("1 stopped · 1 grading failed: not in the median."),
+    ).toBeInTheDocument();
+  });
+
   it("names each agent in a chip, with its median and judge gap, and no table", async () => {
     serve(
       [

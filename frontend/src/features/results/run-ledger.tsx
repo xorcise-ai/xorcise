@@ -86,29 +86,35 @@ export function RunLedger({
   rows: LedgerRow[];
   onInspect?: (kind: RunKind | null) => void;
 }) {
-  const [active, setActive] = useState<{ row: number; col: number }>({ row: 0, col: -1 });
+  // The tab stop, by version and run rather than by position, so a refetch that adds a run or a
+  // row keeps it on the same run. Null until a cell is focused: then the first row's newest run.
+  const [active, setActive] = useState<{ row: string; run: string } | null>(null);
   const cells = useRef(new Map<string, HTMLAnchorElement>());
-  const shownCounts = useRef<number[]>([]);
+  const shownRuns = useRef(new Map<string, RunScore[]>());
+  const activeRow = active ? rows.findIndex((r) => rowKey(r) === active.row) : -1;
+  const activeHeld =
+    activeRow >= 0 && rows[activeRow].runs.some((r) => r.run_id === active?.run);
 
   const focus = (row: number, col: number) => {
-    const count = shownCounts.current[row] ?? 0;
-    if (count === 0) return;
-    const c = Math.max(0, Math.min(count - 1, col));
-    setActive({ row, col: c });
-    cells.current.get(`${row}:${c}`)?.focus();
+    const shown = shownRuns.current.get(rowKey(rows[row])) ?? [];
+    if (shown.length === 0) return;
+    const run = shown[Math.max(0, Math.min(shown.length - 1, col))];
+    setActive({ row: rowKey(rows[row]), run: run.run_id });
+    cells.current.get(run.run_id)?.focus();
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    const { row } = active;
-    const count = shownCounts.current[row] ?? 0;
-    const col = active.col < 0 ? count - 1 : active.col;
+    const row = activeHeld ? activeRow : 0;
+    const shown = shownRuns.current.get(rowKey(rows[row])) ?? [];
+    const at = activeHeld ? shown.findIndex((r) => r.run_id === active?.run) : -1;
+    const col = at < 0 ? shown.length - 1 : at;
     const moves: Record<string, () => void> = {
       ArrowRight: () => focus(row, col + 1),
       ArrowLeft: () => focus(row, col - 1),
       ArrowDown: () => row + 1 < rows.length && focus(row + 1, col),
       ArrowUp: () => row > 0 && focus(row - 1, col),
       Home: () => focus(row, 0),
-      End: () => focus(row, count - 1),
+      End: () => focus(row, shown.length - 1),
     };
     const move = moves[e.key];
     if (move) {
@@ -119,49 +125,53 @@ export function RunLedger({
 
   return (
     <div role="group" aria-label="Runs by mission" onKeyDown={onKeyDown} className="space-y-2">
-      {rows.map((row, i) => (
-        <LedgerRowView
-          key={`${row.summary.mission}@${row.summary.mission_version}`}
-          row={row}
-          index={i}
-          active={active}
-          onShown={(n) => {
-            shownCounts.current[i] = n;
-          }}
-          register={(col, el) => {
-            if (el) cells.current.set(`${i}:${col}`, el);
-            else cells.current.delete(`${i}:${col}`);
-          }}
-          onFocusCell={(col) => setActive({ row: i, col })}
-          onInspect={onInspect}
-        />
-      ))}
+      {rows.map((row, i) => {
+        const k = rowKey(row);
+        return (
+          <LedgerRowView
+            key={k}
+            row={row}
+            stopRun={activeHeld ? (active?.row === k ? active.run : null) : i === 0 ? "newest" : null}
+            onShown={(shown) => {
+              shownRuns.current.set(k, shown);
+            }}
+            register={(runId, el) => {
+              if (el) cells.current.set(runId, el);
+              else cells.current.delete(runId);
+            }}
+            onFocusCell={(runId) => setActive({ row: k, run: runId })}
+            onInspect={onInspect}
+          />
+        );
+      })}
     </div>
   );
 }
 
+const rowKey = (row: LedgerRow) => `${row.summary.mission}@${row.summary.mission_version}`;
+
 function LedgerRowView({
   row,
-  index,
-  active,
+  stopRun,
   onShown,
   register,
   onFocusCell,
   onInspect,
 }: {
   row: LedgerRow;
-  index: number;
-  active: { row: number; col: number };
-  onShown: (n: number) => void;
-  register: (col: number, el: HTMLAnchorElement | null) => void;
-  onFocusCell: (col: number) => void;
+  /** The run that holds the ledger's tab stop when it is in this row, "newest" for the row's
+   *  newest shown run, null when the stop is in another row. */
+  stopRun: string | "newest" | null;
+  onShown: (shown: RunScore[]) => void;
+  register: (runId: string, el: HTMLAnchorElement | null) => void;
+  onFocusCell: (runId: string) => void;
   onInspect?: (kind: RunKind | null) => void;
 }) {
   const [inspected, setInspected] = useState<number | null>(null);
   const [ref, fit] = useFitCount<HTMLDivElement>(MIN_CELL, GAP, MAX_CELLS, FALLBACK_CELLS);
   const shown = row.runs.slice(-fit);
   const earlier = row.runs.length - shown.length;
-  onShown(shown.length);
+  onShown(shown);
   const inspect = (col: number | null) => {
     setInspected(col);
     onInspect?.(col === null ? null : runGlyph(shown[col]).kind);
@@ -169,15 +179,10 @@ function LedgerRowView({
   const s = row.summary;
   const older = s.current_version === false;
   const aside = asideLine(s);
-  // The one tab stop: the cell last focused, else the first row's newest run.
-  const stop =
-    active.col < 0
-      ? index === 0
-        ? shown.length - 1
-        : -1
-      : active.row === index
-        ? Math.min(active.col, shown.length - 1)
-        : -1;
+  // The one tab stop: the cell last focused, else the first row's newest run. A focused run that
+  // no longer fits hands the stop to its row's newest.
+  const held = stopRun === null ? -1 : shown.findIndex((r) => r.run_id === stopRun);
+  const stop = stopRun === null ? -1 : held >= 0 ? held : shown.length - 1;
 
   return (
     <div
@@ -202,9 +207,9 @@ function LedgerRowView({
             key={r.run_id}
             run={r}
             tabbable={col === stop}
-            register={(el) => register(col, el)}
+            register={(el) => register(r.run_id, el)}
             onFocus={() => {
-              onFocusCell(col);
+              onFocusCell(r.run_id);
               inspect(col);
             }}
             onInspect={(on) => inspect(on ? col : null)}
@@ -273,14 +278,15 @@ function LedgerCell({
 }
 
 /** A cell's frame for its run, in the run strip's language: grey when an operator stopped it,
- *  an empty grey striped cell for an environment failure (never red: the failure is ours), dashed
- *  while grading. Shared with the key's examples. */
+ *  an empty grey striped cell for an environment failure (never red: the failure is ours), an
+ *  empty dashed one when grading failed, dashed and pulsing while grading. Shared with the key's examples. */
 export function cellLook(run: RunScore): string {
   const g = runGlyph(run);
   return cn(
     "relative flex flex-col overflow-hidden rounded-sm",
     g.grey && "opacity-60 grayscale",
-    g.kind === "infra_failed" && "border border-dashed border-text-tertiary",
+    (g.kind === "infra_failed" || g.kind === "grading_failed") &&
+      "border border-dashed border-text-tertiary",
     g.kind === "grading" && "border border-dashed border-border-hover motion-safe:animate-pulse",
   );
 }

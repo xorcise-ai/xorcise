@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { cn } from "@/components/ui/cn";
 import type { RunScore } from "@/lib/api/types";
-import { hatch, runKind, type RunKind } from "./run-glyph";
+import { hatch, judgeDegraded, runKind, type RunKind } from "./run-glyph";
 import { RunInspector } from "./run-inspector";
 
 /** The plot's marks, shared with the key's examples. */
@@ -69,8 +69,13 @@ export function AgreementPlot({
     onHoverAgent?.(null);
     onInspect?.(null);
   };
-  const placed = runs.filter((r) => r.bucket === "scored" || r.bucket === "stopped");
-  const rail = runs.filter((r) => r.bucket === "no_judge");
+  // A run has a place on the judge axis only if its judge ran: a stopped run whose judge never
+  // did sits on the rail with the no-judge runs, at its checks score, not at a judge score of 0.
+  const unjudged = (r: RunScore) => r.bucket === "no_judge" || judgeDegraded(r.judge_status);
+  const placed = runs.filter(
+    (r) => (r.bucket === "scored" || r.bucket === "stopped") && !unjudged(r),
+  );
+  const rail = runs.filter((r) => (r.bucket === "no_judge" || r.bucket === "stopped") && unjudged(r));
   const seen = new Map<string, number>();
   const nudge = (key: string) => {
     const n = seen.get(key) ?? 0;
@@ -156,12 +161,13 @@ export function AgreementPlot({
               <div
                 key={r.run_id}
                 data-testid="agreement-rail"
+                data-bucket={r.bucket}
                 data-agent={agentName(r.agent_id)}
                 onMouseEnter={() => enter(r, true)}
                 onMouseLeave={leave}
                 className={cn(
                   "absolute top-1 size-2.5 -translate-x-1/2",
-                  PLOT_MARK.no_judge,
+                  r.bucket === "stopped" ? PLOT_MARK.stopped : PLOT_MARK.no_judge,
                   dim(r) && "opacity-20",
                 )}
                 style={{ left: `calc(${pctPos(r.deterministic)} + ${nudge(`rail:${r.deterministic}`)}px)` }}
