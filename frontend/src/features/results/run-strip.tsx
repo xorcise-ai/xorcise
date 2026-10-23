@@ -176,11 +176,13 @@ export function StripColumn({ run, small = false }: { run: RunScore; small?: boo
   return (
     <span aria-hidden className="flex h-full w-full flex-col justify-end">
       {/* One clipped bar, so the corner follows whatever is on top: the cap, the judge's share
-          or the dashed no-judge outline. */}
+          or the dashed no-judge outline. A capped bar is never shorter than its cap: a run that
+          timed out having scored nothing is the one the cap is for, and at 0% it clipped away. */}
       <span
         data-part="bar"
         className={cn(
           "relative flex w-full flex-col-reverse overflow-hidden",
+          g.cap && "min-h-1",
           corner,
           g.grey && "opacity-60 grayscale",
         )}
