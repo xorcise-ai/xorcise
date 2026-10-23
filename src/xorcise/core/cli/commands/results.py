@@ -37,7 +37,11 @@ def with_compat_keys(summary: dict[str, Any]) -> dict[str, Any]:
     script reading them keeps working. Each is computed by the current rule: the mean and best are
     over the same runs as the median (timed-out runs included; no-judge, stopped, grading-failed
     and environment-failed runs not), and the rates are over the agent's attempts, an environment
-    failure not being one (#109)."""
+    failure not being one (#109).
+
+    A server older than this CLI may not send `mean` or `grading_failed`: they read as absent
+    (None, 0) rather than failing the command."""
+    summary = {"mean": None, "grading_failed": 0, **summary}
     attempts = summary["runs"] - summary["infra_failed"]
     partial = attempts - summary["completed"]
     return {
