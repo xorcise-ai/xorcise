@@ -96,7 +96,12 @@ export function AgentList() {
     return m;
   }, [summaries.data]);
 
-  const scoresLoading = summaries.isLoading;
+  // Until the summaries are in, a card without one is not an agent without evaluations.
+  const scoresState: ScoresState = summaries.isLoading
+    ? "loading"
+    : summaries.isError
+      ? "error"
+      : "ready";
 
   return (
     <Page className="gap-3">
@@ -155,10 +160,11 @@ export function AgentList() {
                 No agents match the current filters.
               </p>
             ) : (
-              <AgentGrid agents={filtered} summaryByAgentId={summaryByAgentId} />
-            )}
-            {scoresLoading && (
-              <p className="text-caption text-text-tertiary">Updating scores…</p>
+              <AgentGrid
+                agents={filtered}
+                summaryByAgentId={summaryByAgentId}
+                scoresState={scoresState}
+              />
             )}
           </>
         )}
@@ -170,19 +176,27 @@ export function AgentList() {
 /** Four across on wide screens (the shared card rhythm with the catalog + runs), stepping down
  *  responsively. Cards STRETCH to the tallest in their row (equal-height), with the action row
  *  pinned to the bottom. */
+type ScoresState = "loading" | "error" | "ready";
+
 function AgentGrid({
   agents,
   summaryByAgentId,
+  scoresState,
 }: {
   agents: AgentEntry[];
   summaryByAgentId: Map<string, ScoreSummary>;
+  scoresState: ScoresState;
 }) {
   return (
     <ul className="grid grid-cols-1 items-stretch gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
       {agents.map((agent, i) => (
         <li key={agent.id}>
           <Reveal delay={i * 40} className="h-full">
-            <AgentCard agent={agent} summary={summaryByAgentId.get(agent.id)} />
+            <AgentCard
+              agent={agent}
+              summary={summaryByAgentId.get(agent.id)}
+              scoresState={scoresState}
+            />
           </Reveal>
         </li>
       ))}
@@ -193,9 +207,11 @@ function AgentGrid({
 function AgentCard({
   agent,
   summary,
+  scoresState,
 }: {
   agent: AgentEntry;
   summary: ScoreSummary | undefined;
+  scoresState: ScoresState;
 }) {
   const { Logo, name: harnessName } = harnessOf(agent.kind);
   const detailHref = `/agents/detail?name=${encodeURIComponent(agent.name)}`;
@@ -236,6 +252,12 @@ function AgentCard({
 
       {summary ? (
         <PerformanceSummary summary={summary} columns={3} className="mt-3" />
+      ) : scoresState === "loading" ? (
+        <PerformanceSummary loading columns={3} className="mt-3" />
+      ) : scoresState === "error" ? (
+        <p className="flex flex-1 items-center justify-center px-2 text-center text-dense text-err">
+          Couldn’t load this agent’s scores.
+        </p>
       ) : (
         // Centre the empty-state line in the card's body rather than stranding it at the top with
         // dead space below — flex-1 claims the space between the header and the action row.

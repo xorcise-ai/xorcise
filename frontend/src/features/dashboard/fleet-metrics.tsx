@@ -16,7 +16,9 @@ import { useFleetPerformance, type ToneMix } from "./use-fleet-performance";
 export function FleetMetrics() {
   const f = useFleetPerformance();
 
-  if (f.isLoading) {
+  // The Scored, Median and Best tiles are the fleet summary's: wait for it too, or they read as
+  // a fleet that never scored.
+  if (f.isLoading || f.summaryState.fleet === "loading") {
     return (
       <Card className="shrink-0">
         <CardContent className="p-4">
@@ -35,7 +37,9 @@ export function FleetMetrics() {
   return (
     <Card className="shrink-0">
       <CardContent className="space-y-3 p-4">
-        {f.evaluated === 0 ? (
+        {f.isError ? (
+          <p className="text-body text-err">Couldn’t load the fleet’s runs.</p>
+        ) : f.evaluated === 0 ? (
           <p className="text-body text-text-secondary">
             No completed evaluations yet — start a run to see fleet performance.
           </p>
@@ -43,7 +47,7 @@ export function FleetMetrics() {
           <>
             <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3 lg:grid-cols-5">
               <StatTile label="Evaluated" value={String(f.evaluated)} />
-              <StatTile label="Scored" value={String(fleet?.scored ?? 0)} />
+              <StatTile label="Scored" value={fleet ? String(fleet.scored) : "—"} />
               <StatTile label="Median" value={pct(fleet?.median)} tone="primary" />
               <StatTile label="Best" value={pct(fleet?.best)} />
               <StatTile label="Pass rate" value={pct(passRate)} />
@@ -55,6 +59,9 @@ export function FleetMetrics() {
                 {timed && <p>{timed}</p>}
                 {aside && <p>{aside}: not in the median.</p>}
               </div>
+            )}
+            {f.summaryState.fleet === "error" && (
+              <p className="text-caption text-err">Couldn’t load the fleet’s scores.</p>
             )}
             <StatusMix mix={f.mix} total={f.evaluated} />
           </>

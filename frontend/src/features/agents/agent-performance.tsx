@@ -7,6 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { pct, shortTime } from "@/lib/api/format";
 import { PerformanceSummary } from "@/features/results/performance-summary";
+import { Skeleton } from "@/components/ui/skeleton";
 import { StatTile } from "@/components/ui/stat-tile";
 import { asideLine, timedOutLine, type RunKind } from "@/features/results/run-glyph";
 import { RunKey } from "@/features/results/run-key";
@@ -25,12 +26,15 @@ export function AgentPerformance({
   summary,
   summaryState = "ready",
   ledger,
+  ledgerState = "ready",
 }: {
   summary: ScoreSummary | null | undefined;
   /** Whether the summary is still on its way, failed to load, or in: with none in, the agent has
    *  no finished run yet. */
   summaryState?: "loading" | "error" | "ready";
   ledger: LedgerRow[];
+  /** The same for the ledger's runs: with none in, the agent has no finished run yet. */
+  ledgerState?: "loading" | "error" | "ready";
 }) {
   // The kind of the run under the pointer or focus in the ledger, so the key can light it up.
   const [activeKind, setActiveKind] = useState<RunKind | null>(null);
@@ -102,6 +106,12 @@ export function AgentPerformance({
               />
               <RunLedger rows={ledger} onInspect={setActiveKind} />
             </>
+          ) : ledgerState === "loading" ? (
+            <div role="status" aria-label="Loading runs by mission…">
+              <Skeleton className="h-16 w-full" />
+            </div>
+          ) : ledgerState === "error" ? (
+            <p className="text-body text-err">Couldn’t load this agent’s runs by mission.</p>
           ) : (
             <p className="text-body text-text-secondary">No finished runs yet.</p>
           )}
