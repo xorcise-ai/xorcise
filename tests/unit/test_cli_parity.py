@@ -603,6 +603,16 @@ def test_leaderboard_says_which_runs_are_in_the_median_and_which_are_not(monkeyp
     assert "'Infra failed' counts runs cut short by an environment failure" in out
 
 
+def test_leaderboard_reads_a_server_older_than_the_mean(monkeypatch):
+    """A server from before `mean` and `grading_failed` still gets a table, not a KeyError."""
+    old = _summary("a1", agent_name="alpha")
+    del old["mean"], old["grading_failed"]
+    _wire(monkeypatch, [old])
+    result = runner.invoke(app, ["leaderboard"])
+    assert result.exit_code == 0, result.output
+    assert "alpha" in result.stdout
+
+
 def test_leaderboard_with_no_finished_runs(monkeypatch):
     _wire(monkeypatch, [])
     result = runner.invoke(app, ["leaderboard"])
