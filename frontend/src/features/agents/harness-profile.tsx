@@ -55,12 +55,18 @@ function selectedDescriptor(
   return byKind.get(HARNESSES.some((h) => h.kind === typed) ? typed : GENERIC_KIND);
 }
 
-/** Your own label under Generic (not `generic` itself, and not blank, which saves as generic).
- *  The generic adapter is only its likely replay: the trace may still identify a real harness,
- *  and what the label's harness exports is unknown, so it is not shown the generic profile. */
+/** Your own label under Generic (not `generic` itself, and not blank, which saves as generic). */
 function isOwnLabel(kind: string): boolean {
   const typed = kind.trim();
   return typed !== "" && typed !== GENERIC_KIND && !HARNESSES.some((h) => h.kind === typed);
+}
+
+/** Any kind without a verified adapter of its own: `generic`, a blank ID, or your own label.
+ *  The generic adapter's profile is what it CAN map, at best: which spans an arbitrary agent
+ *  actually exports is unknown, so the page says unknown rather than counting them supported. */
+function isUnverified(kind: string): boolean {
+  const typed = kind.trim();
+  return !HARNESSES.some((h) => h.kind === typed);
 }
 
 export function capabilitySummary(
@@ -127,8 +133,7 @@ export function HarnessProfile({
     );
   }
 
-  // Unknown only for your own label: `generic` is a registered adapter with a real profile.
-  const unknown = isOwnLabel(kind);
+  const unknown = isUnverified(kind);
   const isGeneric = descriptor.kind === GENERIC_KIND;
   const summary = capabilitySummary(descriptor.capabilities);
   const effectiveLaunch = launchPreview ?? descriptor.launch;
@@ -141,10 +146,10 @@ export function HarnessProfile({
             <div className="min-w-0">
               <h3 className="text-body font-bold text-heading">Export span support</h3>
               <p className="truncate text-dense text-text-tertiary">
-                {unknown
+                {isOwnLabel(kind)
                   ? "Unknown until your harness has a verified adapter"
                   : isGeneric
-                    ? "Generic adapter · unverified"
+                    ? "Generic adapter · best effort"
                     : descriptor.display_name}
               </p>
             </div>
@@ -271,7 +276,7 @@ export function HarnessReviewFacts({ kind }: { kind: string | null }) {
   const { byKind } = useHarnessDescriptors();
   const descriptor = kind === null ? undefined : selectedDescriptor(kind, byKind);
   if (kind === null || !descriptor) return null;
-  const unknown = isOwnLabel(kind);
+  const unknown = isUnverified(kind);
   const verified = descriptor.capabilities.verified;
   const summary = capabilitySummary(descriptor.capabilities);
   return (
