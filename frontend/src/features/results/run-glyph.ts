@@ -15,6 +15,7 @@ export type RunKind =
   | "partial_judge"
   | "no_judge"
   | "stopped"
+  | "grading_failed"
   | "infra_failed"
   | "grading";
 
@@ -23,6 +24,7 @@ export function runKind(r: RunScore): RunKind {
     case "infra_failed":
     case "grading":
     case "stopped":
+    case "grading_failed":
     case "no_judge":
       return r.bucket;
     default:
@@ -68,6 +70,12 @@ export const KIND_META: Record<
     inMedian: false,
     body: "An operator ended it, so its score says nothing about the agent.",
   },
+  grading_failed: {
+    label: "grading failed",
+    title: "Grading failed",
+    inMedian: false,
+    body: "Grading itself failed, so nothing graded it: not the checks, not the judge. Re-evaluate it to score it.",
+  },
   infra_failed: {
     label: "environment failure",
     title: "Environment failure",
@@ -105,7 +113,8 @@ export interface RunGlyph {
   grey: boolean;
   /** Ran out of its budget: a red cap on top. Red means only this: the agent did not finish. */
   cap: boolean;
-  /** No score to draw: an environment failure (a grey striped slot), or a grade not recorded. */
+  /** No score to draw: an environment failure (a grey striped slot), a run whose grading failed
+   *  (an empty dashed slot), or a grade not recorded yet. */
   empty: boolean;
   /** The whole run in words, for a screen reader or a tooltip. */
   label: string;
@@ -118,6 +127,7 @@ export const BUCKET_LABEL: Record<ScoreBucket, string> = {
   scored: "scored",
   no_judge: "no judge",
   stopped: "stopped",
+  grading_failed: "grading failed",
   infra_failed: "environment failure",
   grading: "grading",
 };
@@ -132,24 +142,35 @@ export function judgeDegraded(status: string | null | undefined): boolean {
   return !!status && status !== "ok" && status !== "partial";
 }
 
+/** The judge half was never measured: a run with no judge, or a stopped one whose judge never ran
+ *  (its bucket says it was stopped, but its judge half is no more a zero than a no-judge run's). */
+function judgeUnmeasured(r: RunScore): boolean {
+  return r.bucket === "no_judge" || judgeDegraded(r.judge_status);
+}
+
 function judgeWords(r: RunScore): string {
   if (r.judge_status === "partial" && r.judge_upper != null)
     return `judge ${pct(r.judge)}–${pct(r.judge_upper)} (part of the rubric)`;
-  if (r.bucket === "no_judge") return "no judge";
+  if (judgeUnmeasured(r)) return "no judge";
   return `judge ${pct(r.judge)}`;
 }
 
 function overallWords(r: RunScore): string {
-  if (r.bucket === "no_judge") return `overall ${pct(r.overall)} with the judge half unmeasured`;
+  if (judgeUnmeasured(r)) return `overall ${pct(r.overall)} with the judge half unmeasured`;
   if (r.overall_upper != null && r.overall != null && r.overall_upper > r.overall)
     return `overall ${pct(r.overall)}–${pct(r.overall_upper)}`;
   return `overall ${pct(r.overall)}`;
 }
 
+/** Nothing graded the run, so it has no score to show or draw. */
+function noScore(r: RunScore): boolean {
+  return r.bucket === "infra_failed" || r.bucket === "grading" || r.bucket === "grading_failed";
+}
+
 /** A run's scores in the inspector's three cells: "—" where there is no score to show. */
 export function runCells(r: RunScore): { checks: string; judge: string; overall: string } {
-  const none = r.bucket === "infra_failed" || r.bucket === "grading";
-  const judge = none || r.bucket === "no_judge"
+  const none = noScore(r);
+  const judge = none || judgeUnmeasured(r)
     ? "—"
     : r.judge_status === "partial" && r.judge_upper != null
       ? `${pct(r.judge)}–${pct(r.judge_upper)}`
@@ -171,6 +192,8 @@ export function runSentence(r: RunScore): string {
       return `${when} · environment failure: not graded, and not an attempt by the agent`;
     case "grading":
       return `${when} · finished, grade not recorded yet`;
+    case "grading_failed":
+      return `${when} · grading failed: nothing graded it, so it has no score`;
     case "no_judge":
       return `${when} · ${heading} · deterministic ${pct(r.deterministic)} · no judge · ${overallWords(r)}`;
     default:
@@ -181,10 +204,10 @@ export function runSentence(r: RunScore): string {
 export function runGlyph(r: RunScore): RunGlyph {
   const kind = runKind(r);
   const base = { kind, bucket: r.bucket, label: runSentence(r), cap: kind === "timed_out" };
-  if (r.bucket === "infra_failed" || r.bucket === "grading") {
+  if (noScore(r)) {
     return { ...base, det: 0, judge: 0, judgeRange: 0, unmeasured: 0, grey: false, empty: true };
   }
-  const noJudge = r.bucket === "no_judge";
+  const noJudge = judgeUnmeasured(r);
   const partial = r.judge_status === "partial" && r.judge_upper != null;
   return {
     ...base,
@@ -197,17 +220,19 @@ export function runGlyph(r: RunScore): RunGlyph {
   };
 }
 
-/** "2 no judge · 1 stopped · 1 environment failure": the runs a summary counts apart from its
+/** "2 no judge · 1 stopped · 1 grading failed · 1 environment failure": the runs a summary counts apart from its
  *  median, in one line. Empty when there are none. */
 export function asideLine(s: {
   no_judge: number;
   stopped: number;
+  grading_failed?: number;
   infra_failed: number;
   grading: number;
 }): string {
   const parts: string[] = [];
   if (s.no_judge) parts.push(`${s.no_judge} ${BUCKET_LABEL.no_judge}`);
   if (s.stopped) parts.push(`${s.stopped} ${BUCKET_LABEL.stopped}`);
+  if (s.grading_failed) parts.push(`${s.grading_failed} ${BUCKET_LABEL.grading_failed}`);
   if (s.infra_failed)
     parts.push(`${s.infra_failed} environment ${s.infra_failed === 1 ? "failure" : "failures"}`);
   if (s.grading) parts.push(`${s.grading} ${BUCKET_LABEL.grading}`);

@@ -6,8 +6,13 @@ same runs differently.
 
 The headline is the MEDIAN over runs graded with a judge, a partly-judged run counting at its
 lower bound. A run that timed out is in it, at the score it earned: not finishing within the
-budget is the agent's failure. A run whose judge never ran, one an operator stopped, one cut short
-by an environment failure and one still grading are each counted in their own column, never in it.
+budget is the agent's failure. A run whose judge never ran, one an operator stopped, one whose
+grading crashed, one cut short by an environment failure and one still grading are each counted in
+their own column, never in it. The mean beside it is over the same runs.
+
+`--json` emits the server's summaries, ranked, plus the keys it carried before the median
+(`avg_overall`, `best_overall`, `completion_rate`, `partial_rate`, `judge_degraded`), each computed
+by the rule above.
 """
 
 from __future__ import annotations
@@ -27,28 +32,22 @@ from xorcise.core.cli._ux import (
 from xorcise.core.cli.rest_client import RestClient
 
 
-def _agent_names(client: RestClient) -> dict[str, str]:
-    """agent id → name, so the table reads in operator terms (summaries carry only the id)."""
-    return {a["id"]: a["name"] for a in client.get("/agents")}
-
-
-def rank(summaries: list[dict[str, Any]], names: dict[str, str]) -> list[dict[str, Any]]:
-    """Name each agent's summary and rank them: best median first; an agent with no scored run
-    has no median and sinks; ties go to more scored runs, then the name. A deleted agent's runs
-    keep its short id, as the GUI shows them."""
-    named = [
-        {**s, "agent_name": names.get(str(s["agent_id"]), str(s["agent_id"])[:8])}
-        for s in summaries
-    ]
-    named.sort(
-        key=lambda s: (
-            0 if s["median"] is not None else 1,
-            -(s["median"] or 0.0),
-            -s["scored"],
-            s["agent_name"],
-        )
-    )
-    return named
+def with_compat_keys(summary: dict[str, Any]) -> dict[str, Any]:
+    """The server's summary plus the keys `--json` carried before the median (v0.2.0), so a
+    script reading them keeps working. Each is computed by the current rule: the mean and best are
+    over the same runs as the median (timed-out runs included; no-judge, stopped, grading-failed
+    and environment-failed runs not), and the rates are over the agent's attempts, an environment
+    failure not being one (#109)."""
+    attempts = summary["runs"] - summary["infra_failed"]
+    partial = attempts - summary["completed"]
+    return {
+        **summary,
+        "avg_overall": summary["mean"],
+        "best_overall": summary["best"],
+        "judge_degraded": summary["no_judge"],
+        "completion_rate": summary["completed"] / attempts if attempts else None,
+        "partial_rate": partial / attempts if attempts else None,
+    }
 
 
 def _score(value: float | None) -> str:
@@ -73,8 +72,9 @@ def leaderboard(
     """Rank agents by the median score of their finished runs.
 
     Runs that timed out count, at the score they earned. Runs whose judge never ran (No judge), \
-runs an operator stopped (Stopped), runs cut short by an environment failure (Infra failed) and \
-runs still grading are counted in their own columns and never in the median.
+runs an operator stopped (Stopped), runs whose grading crashed (Grading failed), runs cut short by \
+an environment failure (Infra failed) and runs still grading are counted in their own columns and \
+never in the median. Mean is over the same runs as the median.
     """
     client = RestClient()
     summaries: list[dict[str, Any]] = client.get("/results/summary?by=agent")
@@ -85,7 +85,8 @@ runs still grading are counted in their own columns and never in the median.
             return
         console.print("no finished runs yet — nothing to rank")
         return
-    ranked = rank(summaries, _agent_names(client))
+    # Already ranked and named by the server, the same order the GUI shows.
+    ranked = [with_compat_keys(s) for s in summaries]
     if as_json is True:
         emit_json(ranked)
         return
@@ -94,9 +95,11 @@ runs still grading are counted in their own columns and never in the median.
         "Runs",
         "Scored",
         "Median",
+        "Mean",
         "Best",
         "Timed out",
         "Stopped",
+        "Grading failed",
         "Infra failed",
         "No judge",
         "Last run",
@@ -108,9 +111,11 @@ runs still grading are counted in their own columns and never in the median.
             str(s["runs"]),
             str(s["scored"]),
             _score(s["median"]),
+            _score(s["mean"]),
             _score(s["best"]),
             _count(s["timed_out"]),
             _count(s["stopped"]),
+            _count(s["grading_failed"], "warn"),
             _count(s["infra_failed"]),
             _count(s["no_judge"], "warn"),
             humanize_when(s["last_run"]),
@@ -119,16 +124,21 @@ runs still grading are counted in their own columns and never in the median.
     notes = []
     if any(s["timed_out"] for s in ranked):
         notes.append(
-            "'Timed out' runs ran out of their budget. They ARE in Median/Best, at the score "
-            "they earned: not finishing in time is the agent's failure."
+            "'Timed out' runs ran out of their budget. They ARE in Median/Mean/Best, at the "
+            "score they earned: not finishing in time is the agent's failure."
         )
     if any(s["no_judge"] for s in ranked):
         notes.append(
             "'No judge' counts runs graded with the judge half unavailable. Half of each score is "
-            "unmeasured, so they are left out of Median/Best."
+            "unmeasured, so they are left out of Median/Mean/Best."
         )
     if any(s["stopped"] for s in ranked):
-        notes.append("'Stopped' counts runs an operator ended. Left out of Median/Best.")
+        notes.append("'Stopped' counts runs an operator ended. Left out of Median/Mean/Best.")
+    if any(s["grading_failed"] for s in ranked):
+        notes.append(
+            "'Grading failed' counts runs whose grading crashed, so nothing graded them. Left out "
+            "of Median/Mean/Best; `xorcise run regrade` grades one again."
+        )
     if any(s["infra_failed"] for s in ranked):
         notes.append(
             "'Infra failed' counts runs cut short by an environment failure: never graded, and "

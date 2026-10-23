@@ -76,10 +76,7 @@ export function ResultsByMission() {
       if (list) list.push(s);
       else m.set(k, [s]);
     }
-    for (const list of m.values())
-      list.sort(
-        (a, b) => (b.median ?? -1) - (a.median ?? -1) || b.scored - a.scored,
-      );
+    // Already ranked within each version by the server: best median first.
     return m;
   }, [perAgent.data]);
 

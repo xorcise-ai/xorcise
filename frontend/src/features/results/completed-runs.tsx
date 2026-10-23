@@ -47,17 +47,9 @@ export function CompletedRuns() {
     return m;
   }, [scores.data]);
 
-  // Best median first. An agent with no scored run has no median and sinks; ties go to the agent
-  // with more scored runs, then the name.
-  const ranked = useMemo(() => {
-    const name = (id: string) => agentById.get(id)?.name ?? id.slice(0, 8);
-    return [...(summaries.data ?? [])].sort(
-      (a, b) =>
-        (b.median ?? -1) - (a.median ?? -1) ||
-        b.scored - a.scored ||
-        name(a.agent_id ?? "").localeCompare(name(b.agent_id ?? "")),
-    );
-  }, [summaries.data, agentById]);
+  // Ranked by the server (best median first, unscored last), so the dashboard, the agent list and
+  // `xorcise leaderboard` show the same order.
+  const ranked = summaries.data ?? [];
 
   const loading = scores.isLoading || summaries.isLoading;
   return (
@@ -82,7 +74,7 @@ export function CompletedRuns() {
                 <AgentPerformanceCard
                   summary={s}
                   runs={runsByAgent.get(id) ?? []}
-                  name={agent?.name ?? id.slice(0, 8)}
+                  name={s.agent_name ?? agent?.name ?? id.slice(0, 8)}
                   harness={agent?.kind ?? undefined}
                   linked={!!agent}
                   onInspect={setActiveKind}

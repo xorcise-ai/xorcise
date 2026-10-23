@@ -94,12 +94,12 @@ describe("Dashboard fleet performance", () => {
     ).toBeInTheDocument();
   });
 
-  it("TopAgents ranks agents by median and hides agents with no scored run", async () => {
+  it("TopAgents keeps the server's ranking and hides agents with no scored run", async () => {
     serve({
       agent: [
-        summaryFixture({ agent_id: "a1", median: 0.7 }),
-        summaryFixture({ agent_id: "a2", median: null, scored: 0 }),
-        summaryFixture({ agent_id: "a3deadbeef", median: 0.9 }),
+        summaryFixture({ agent_id: "a3deadbeef", agent_name: "a3deadbe", median: 0.9 }),
+        summaryFixture({ agent_id: "a1", agent_name: "scout", median: 0.7 }),
+        summaryFixture({ agent_id: "a2", agent_name: "probe", median: null, scored: 0 }),
       ],
     });
     renderWithProviders(<TopAgents />);

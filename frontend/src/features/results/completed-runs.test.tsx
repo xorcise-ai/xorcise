@@ -74,18 +74,20 @@ const KINDS: RunScore[] = [
 ];
 
 describe("CompletedRuns: one card per agent, around its run strip", () => {
-  it("ranks agents by the median of their scored runs, unscored last", async () => {
+  it("keeps the server's ranking and its names, never sorting on its own", async () => {
+    // The server ranks (best median first, unscored last): every view shows its order, so this
+    // deliberately out-of-median order must survive.
     serve(
       [],
       [
-        summaryFixture({ agent_id: "agent-1", median: 0.6 }),
-        summaryFixture({ agent_id: "agent-2", median: 0.8 }),
-        summaryFixture({ agent_id: "ghost", median: null, scored: 0 }),
+        summaryFixture({ agent_id: "agent-1", agent_name: "scout", median: 0.6 }),
+        summaryFixture({ agent_id: "agent-2", agent_name: "raptor", median: 0.8 }),
+        summaryFixture({ agent_id: "ghost", agent_name: "ghost", median: null, scored: 0 }),
       ],
     );
     renderWithProviders(<CompletedRuns />);
     await waitFor(() => expect(strips()).toHaveLength(3));
-    expect(strips().map((l) => l.split(":")[0])).toEqual(["raptor", "scout", "ghost"]);
+    expect(strips().map((l) => l.split(":")[0])).toEqual(["scout", "raptor", "ghost"]);
   });
 
   it("says the median once, what it covers, and links the name to the profile", async () => {

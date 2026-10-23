@@ -147,6 +147,9 @@ export function AgentDetail({ name }: { name: string | null }) {
             <SectionHeading>Performance</SectionHeading>
             <AgentPerformance
               summary={overall.data?.[0]}
+              summaryState={
+                overall.isLoading ? "loading" : overall.isError ? "error" : "ready"
+              }
               ledger={ledger}
             />
           </section>

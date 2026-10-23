@@ -305,6 +305,7 @@ def _record_grade(run_id: str, run: RunEntry, recorded: str | None) -> None:
             trace_ref=run_id,
             judge_status="unavailable",
             judge_detail=f"grading failed: {exc}",
+            grading_failed=True,
         )
     from xorcise.core.config import get_settings
     from xorcise.core.contracts.reporting import ResultConditions

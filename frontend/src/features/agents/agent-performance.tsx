@@ -23,9 +23,13 @@ import type { AgentRunRow } from "./agent-run-history";
  */
 export function AgentPerformance({
   summary,
+  summaryState = "ready",
   ledger,
 }: {
   summary: ScoreSummary | null | undefined;
+  /** Whether the summary is still on its way, failed to load, or in: with none in, the agent has
+   *  no finished run yet. */
+  summaryState?: "loading" | "error" | "ready";
   ledger: LedgerRow[];
 }) {
   // The kind of the run under the pointer or focus in the ledger, so the key can light it up.
@@ -59,8 +63,12 @@ export function AgentPerformance({
                 </p>
               )}
             </div>
-          ) : (
+          ) : summaryState === "loading" ? (
             <PerformanceSummary loading />
+          ) : summaryState === "error" ? (
+            <p className="text-body text-err">Couldn’t load this agent’s performance.</p>
+          ) : (
+            <p className="text-body text-text-secondary">No finished runs yet.</p>
           )}
           {showSplit && (
             <dl className="grid grid-cols-2 gap-x-4 gap-y-3 border-t border-border pt-4 sm:grid-cols-3 lg:grid-cols-6">

@@ -143,7 +143,7 @@ export function TopAgents({ className }: { className?: string }) {
     >
       {ranked.map((s, i) => {
         const id = s.agent_id ?? "";
-        const name = f.agentName(id);
+        const name = s.agent_name ?? f.agentName(id);
         return (
           <LeaderRow
             key={id}

@@ -91,6 +91,10 @@ class GradeResult(_Frozen):
     # judge-half disclosure + per-criterion breakdown (additive; defaults preserve shape)
     judge_status: JudgeStatus = "ok"
     judge_detail: str | None = None
+    # Grading itself crashed, so nothing was graded: neither the checks nor the judge. The zero
+    # result is a stand-in recorded so the run does not wait on a grade forever
+    # (rest.run_terminate); the performance views keep it out of every score.
+    grading_failed: bool = False
     judge_breakdown: tuple[CriterionScore, ...] = ()
     # `overall` and `breakdown.judge` are conservative lower bounds: unscored rubric weight earns
     # no credit. These additive fields expose the best-case bound and how much rubric weight was

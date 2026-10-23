@@ -23,6 +23,7 @@ describe("RunKey: what counts in the median, then what is left out", () => {
     expect(group("Left out of the median")).toEqual([
       "no judge",
       "stopped",
+      "grading failed",
       "environment failure",
       "grading",
     ]);

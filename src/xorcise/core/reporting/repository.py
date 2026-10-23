@@ -15,6 +15,7 @@ from xorcise.core.contracts.grading import GradeResult, JudgeStatus
 from xorcise.core.contracts.reporting import AgentHistoryEntry, ResultConditions, RunStats
 from xorcise.core.db import session_scope
 from xorcise.core.reporting.models import ResultRow
+from xorcise.core.reporting.scores import GradeFacts
 
 log = logging.getLogger(__name__)
 
@@ -123,24 +124,38 @@ def get_result(run_id: str) -> GradeResult | None:
         return GradeResult.model_validate_json(row.detail_json)
 
 
-def recorded_grades(agent_id: str | None = None) -> dict[str, tuple[GradeResult, str | None]]:
-    """Every recorded grade with the judge model it was produced under, by run id: one query for
-    the performance views instead of one `/result` read per run. A grade that cannot be read back
-    is left out, so its run reads as not graded yet rather than as a score."""
-    query = select(ResultRow)
+def recorded_grades(agent_id: str | None = None) -> dict[str, GradeFacts]:
+    """What the performance views need of every recorded grade, by run id: one query instead of
+    one `/result` read per run. The scores come from the row's columns and the rest from a plain
+    JSON read of the stored grade, never a full validation of it. A grade that cannot be read
+    back is left out, so its run reads as not graded yet rather than as a score."""
+    query = select(
+        ResultRow.run_id,
+        ResultRow.overall,
+        ResultRow.deterministic,
+        ResultRow.judge,
+        ResultRow.judge_model,
+        ResultRow.detail_json,
+    ).where(ResultRow.detail_json != "")
     if agent_id is not None:
         query = query.where(ResultRow.agent_id == agent_id)
-    grades: dict[str, tuple[GradeResult, str | None]] = {}
+    grades: dict[str, GradeFacts] = {}
     with session_scope() as s:
-        for row in s.scalars(query):
-            if not row.detail_json:
-                continue
+        for run_id, overall, deterministic, judge, judge_model, detail_json in s.execute(query):
             try:
-                grade = GradeResult.model_validate_json(row.detail_json)
+                detail = json.loads(detail_json)
+                if not isinstance(detail, dict):
+                    raise ValueError("not a JSON object")
             except ValueError:
-                log.warning("result for run %s cannot be read back; skipped", row.run_id)
+                log.warning("result for run %s cannot be read back; skipped", run_id)
                 continue
-            grades[row.run_id] = (grade, row.judge_model)
+            grades[run_id] = GradeFacts.from_detail(
+                detail,
+                overall=overall,
+                deterministic=deterministic,
+                judge=judge,
+                judge_model=judge_model,
+            )
     return grades
 
 

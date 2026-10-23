@@ -27,7 +27,8 @@ const FALLBACK_COLUMNS = 24;
  * - stopped by an operator: grey, since its score says nothing about the agent;
  * - environment failure: an empty grey striped slot, never a score and never red: ours, not the
  *   agent's;
- * - grading: an empty dashed slot until the grade lands.
+ * - grading failed: an empty dashed slot that stays: nothing graded it, so there is nothing to draw;
+ * - grading: an empty dashed slot, pulsing, until the grade lands.
  *
  * The dashed line is the median of the scored runs, which the server computes over ALL the agent's
  * runs, not just the ones that fit. Each column opens its run. Pointing at a column, or focusing
@@ -154,7 +155,7 @@ export function StripColumn({ run, small = false }: { run: RunScore; small?: boo
     return (
       <span
         aria-hidden
-        data-part={g.kind === "infra_failed" ? "infra" : "grading"}
+        data-part={g.kind === "infra_failed" ? "infra" : g.kind}
         className={cn(
           "block h-full w-full border border-b-0 border-dashed",
           corner,

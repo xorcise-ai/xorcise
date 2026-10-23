@@ -1800,6 +1800,11 @@
             "title": "Check Breakdown",
             "type": "array"
           },
+          "grading_failed": {
+            "default": false,
+            "title": "Grading Failed",
+            "type": "boolean"
+          },
           "hard_fails": {
             "default": [],
             "items": {
@@ -4169,9 +4174,15 @@
         "description": "Recorded result + disclosed conditions + partial state.",
         "properties": {
           "agent_model": {
-            "default": "not disclosed",
-            "title": "Agent Model",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Model"
           },
           "conditions": {
             "$ref": "#/components/schemas/ResultConditions"
@@ -4275,6 +4286,7 @@
               "scored",
               "no_judge",
               "stopped",
+              "grading_failed",
               "infra_failed",
               "grading"
             ],
@@ -4626,6 +4638,17 @@
             ],
             "title": "Agent Id"
           },
+          "agent_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Name"
+          },
           "assisted": {
             "default": 0,
             "title": "Assisted",
@@ -4663,6 +4686,11 @@
             "title": "Grading",
             "type": "integer"
           },
+          "grading_failed": {
+            "default": 0,
+            "title": "Grading Failed",
+            "type": "integer"
+          },
           "infra_failed": {
             "default": 0,
             "title": "Infra Failed",
@@ -4698,6 +4726,17 @@
               }
             ],
             "title": "Last Run"
+          },
+          "mean": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean"
           },
           "mean_deterministic": {
             "anyOf": [
@@ -6874,7 +6913,7 @@
     },
     "/api/results/summary": {
       "get": {
-        "description": "Finished runs summarised as one group (`all`), per agent, per mission version (`mission`),\nor per agent on each mission version (`mission_agent`).\n\nThe median is over runs graded with a judge, a partly-judged run counting at its lower bound.\nA run that timed out is in it, at the score it earned. Runs with no judge, runs an operator\nstopped, environment failures and runs still grading are counted separately and never in it.",
+        "description": "Finished runs summarised as one group (`all`), per agent, per mission version (`mission`),\nor per agent on each mission version (`mission_agent`).\n\nThe median is over runs graded with a judge, a partly-judged run counting at its lower bound.\nA run that timed out is in it, at the score it earned. Runs with no judge, runs an operator\nstopped, runs whose grading crashed, environment failures and runs still grading are counted\nseparately and never in it. `mean` is over the same runs as the median.\n\nGroups with an agent come back ranked (best median first) and named (`agent_name`), so every\nclient shows one order under one set of names.",
         "operationId": "score_summary_api_results_summary_get",
         "parameters": [
           {
@@ -6984,7 +7023,7 @@
         ]
       },
       "post": {
-        "description": "Create a 1:1:1 run: gated on a registered agent + installed mission.\n\nEvery failure maps to a clean JSON error (never a raw text/plain 500 that the CLI can't\ndecode): the deps build + spine run share one try so the fail-loud\nRuntimeError (Docker/Headscale unreachable) surfaces as a 503 with its remediation.\n\nThe 201 response is RunCreatedEntry \u2014 a RunEntry superset that adds run_control_key so the\nagent can authenticate run-control calls. The key is NEVER returned by\nGET /api/runs (list) or GET /api/runs/{id} (get) \u2014 only this once, like an API token.",
+        "description": "Create a 1:1:1 run: gated on a registered agent + installed mission.\n\nEvery failure maps to a clean JSON error (never a raw text/plain 500 that the CLI can't\ndecode): the deps build + spine run share one try so the fail-loud\nRuntimeError (Docker/Headscale unreachable) surfaces as a 503 with its remediation. So does\na server with no runner (RunnerUnavailableError, #168): the deps build refuses before a\nmission is pulled or a run row written, where a stub used to answer 201 for a run that then\nsat at `created` forever.\n\nThe 201 response is RunCreatedEntry \u2014 a RunEntry superset that adds run_control_key so the\nagent can authenticate run-control calls. The key is NEVER returned by\nGET /api/runs (list) or GET /api/runs/{id} (get) \u2014 only this once, like an API token.",
         "operationId": "create_run_api_runs_post",
         "requestBody": {
           "content": {

@@ -2,9 +2,9 @@
 
 The median is over runs graded with a judge, a partly-judged run counting at its lower bound. A
 run that timed out is in it, at the score it earned: not finishing within the budget is the
-agent's failure. A run whose judge never ran, one an operator stopped, an environment failure and
-a run still grading are each counted and disclosed, never in the median. An older mission version
-is summarised apart from the current one.
+agent's failure. A run whose judge never ran, one an operator stopped, an environment failure, a
+run whose grading crashed and a run still grading are each counted and disclosed, never in the
+median. An older mission version is summarised apart from the current one.
 """
 
 from __future__ import annotations
@@ -18,7 +18,13 @@ from fastapi.testclient import TestClient
 from tests._helpers import install_mission
 from xorcise.core.contracts.grading import GradeResult, JudgeStatus, ScoreBreakdown
 from xorcise.core.contracts.run import RunEntry
-from xorcise.core.reporting.scores import bucket, score_rows, summarize
+from xorcise.core.reporting.scores import (
+    GradeFacts,
+    bucket,
+    current_versions,
+    score_rows,
+    summarize,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -79,7 +85,42 @@ def _grade(
     ],
 )
 def test_each_finished_run_counts_one_way(trigger, grade, expected) -> None:
-    assert bucket(_run(1, trigger), grade) == expected
+    assert bucket(_run(1, trigger), GradeFacts.of(grade) if grade else None) == expected
+
+
+def _crashed(**over: Any) -> GradeResult:
+    """rest.run_terminate's stand-in when grading itself raises."""
+    fields: dict[str, Any] = {
+        "run_id": "x",
+        "overall": 0.0,
+        "breakdown": ScoreBreakdown(),
+        "judge_status": "unavailable",
+        "judge_detail": "grading failed: boom",
+        "grading_failed": True,
+    }
+    fields.update(over)
+    return GradeResult(**fields)
+
+
+@pytest.mark.parametrize("trigger", ["done", "timeout", "operator"])
+def test_a_run_whose_grading_crashed_is_not_a_run_with_no_judge(trigger) -> None:
+    """Nothing graded it, the checks included: its zero is a stand-in, not a score to disclose as
+    "no judge"."""
+    assert bucket(_run(1, trigger), GradeFacts.of(_crashed())) == "grading_failed"
+
+
+def test_a_crash_recorded_before_the_flag_is_read_from_its_detail() -> None:
+    legacy = _crashed(grading_failed=False)
+    assert bucket(_run(1), GradeFacts.of(legacy)) == "grading_failed"
+    # Read straight from a stored row that predates the field.
+    facts = GradeFacts.from_detail(
+        {"judge_status": "unavailable", "judge_detail": "grading failed: boom"},
+        overall=0.0,
+        deterministic=0.0,
+        judge=0.0,
+        judge_model=None,
+    )
+    assert facts.grading_failed
 
 
 def test_a_run_still_in_progress_is_not_a_row() -> None:
@@ -89,8 +130,12 @@ def test_a_run_still_in_progress_is_not_a_row() -> None:
 # --- the median and its disclosures ------------------------------------------------------------
 
 
+def _facts(grades: dict[str, GradeResult], judge_model: str | None = None) -> dict[str, GradeFacts]:
+    return {k: GradeFacts.of(g, judge_model) for k, g in grades.items()}
+
+
 def _summary(runs: list[RunEntry], grades: dict[str, GradeResult], by: Any = "agent"):
-    rows = score_rows(runs, {k: (g, "judge-m") for k, g in grades.items()}, {"m1": "1.0.0"})
+    rows = score_rows(runs, _facts(grades, "judge-m"), {"m1": "1.0.0"})
     return summarize(rows, by)
 
 
@@ -106,6 +151,7 @@ def test_the_median_is_over_scored_runs_only() -> None:
         _run(6, "deploy_failed"),
         _run(7),  # grading
         _run(8, "operator"),
+        _run(9),  # grading crashed
     ]
     grades = {
         "r1": _grade("r1", 1, 0.8),
@@ -114,16 +160,19 @@ def test_the_median_is_over_scored_runs_only() -> None:
         "r4": _grade("r4", 1, 0, "unavailable"),
         "r5": _grade("r5", 0.2, 0.1),
         "r8": _grade("r8", 0, 0),
+        "r9": _crashed(run_id="r9"),
     }
     (s,) = _summary(runs, grades)
-    assert s.runs == 8
+    assert s.runs == 9
     assert s.scored == 4
     assert s.timed_out == 1
     # 0.9, 0.8, 0.7 and the timeout's 0.15: the timeout pulls the median down, as it should.
     assert s.median == pytest.approx(0.75)
-    assert (s.no_judge, s.stopped, s.infra_failed, s.grading) == (1, 1, 1, 1)
-    assert s.completed == 5
+    assert (s.no_judge, s.stopped, s.grading_failed, s.infra_failed, s.grading) == (1, 1, 1, 1, 1)
+    assert s.completed == 6
     assert s.best == pytest.approx(0.9)
+    # The mean is over the same four runs: (0.9 + 0.8 + 0.7 + 0.15) / 4.
+    assert s.mean == pytest.approx(0.6375)
     assert s.mean_deterministic == pytest.approx(0.75)
     assert s.mean_judge == pytest.approx(0.525)
 
@@ -142,7 +191,7 @@ def test_one_summary_over_every_run() -> None:
 
 
 def test_rows_carry_how_many_intel_each_run_was_given() -> None:
-    grades = {"r1": (_grade("r1", 1, 0.8), None), "r2": (_grade("r2", 1, 0.8), None)}
+    grades = _facts({"r1": _grade("r1", 1, 0.8), "r2": _grade("r2", 1, 0.8)})
     rows = score_rows([_run(1), _run(2), _run(3)], grades, {"m1": "1.0.0"}, {"r2": 3, "r3": 1})
     assert [r.intel_disclosed for r in rows] == [0, 3, 1]
     # r3 is still grading, so only r2 is an assisted run in the median.
@@ -181,7 +230,7 @@ def test_no_scored_run_leaves_the_median_empty_not_zero() -> None:
 def test_an_older_mission_version_is_its_own_group_and_marked_older() -> None:
     runs = [_run(1, mission_version="1.0.0"), _run(2, mission_version="1.1.0")]
     grades = {"r1": _grade("r1", 1, 0.2), "r2": _grade("r2", 1, 0.8)}
-    rows = score_rows(runs, {k: (g, None) for k, g in grades.items()}, {"m1": "1.1.0"})
+    rows = score_rows(runs, _facts(grades), {"m1": "1.1.0"})
     assert [(r.mission_version, r.current_version) for r in rows] == [
         ("1.0.0", False),
         ("1.1.0", True),
@@ -201,19 +250,89 @@ def test_a_pre_contract_run_is_labelled_by_its_install_revision() -> None:
 
 def test_for_a_mission_no_longer_installed_its_newest_version_is_current() -> None:
     runs = [_run(1, mission_version="1.0.0"), _run(2, mission_version="2.0.0")]
-    rows = score_rows(runs, {}, {})
+    rows = score_rows(runs, {}, current_versions(runs, {}))
     assert [r.current_version for r in rows] == [False, True]
+
+
+def test_which_version_is_current_does_not_depend_on_which_runs_are_shown() -> None:
+    """One agent's runs only reached 1.0.0, another's 2.0.0: narrowed to the first agent, 1.0.0
+    must still read as older, as it does on every other view."""
+    runs = [
+        _run(1, mission_version="1.0.0"),
+        _run(2, agent_id="a2", mission_version="2.0.0"),
+    ]
+    current = current_versions(runs, {})
+    (row,) = score_rows([runs[0]], {}, current)
+    assert row.current_version is False
+    # The installed version wins over the newest run's.
+    assert current_versions(runs, {"m1": "1.0.0"}) == {"m1": "1.0.0"}
 
 
 def test_summaries_per_agent_on_each_mission_version() -> None:
     runs = [_run(1), _run(2, agent_id="a2"), _run(3, agent_id="a2")]
     grades = {k: _grade(k, 1, 0.6) for k in ("r1", "r2", "r3")}
     out = _summary(runs, grades, by="mission_agent")
+    # The same median: the agent with more scored runs ranks first.
     assert [(s.agent_id, s.mission, s.mission_version, s.runs) for s in out] == [
-        ("a1", "m1", "1.0.0", 1),
         ("a2", "m1", "1.0.0", 2),
+        ("a1", "m1", "1.0.0", 1),
     ]
     assert out[0].judge_models == ("judge-m",)
+
+
+def test_the_judge_models_are_those_behind_the_median() -> None:
+    """A run left out of the median cannot make its scores look like a mix of judges."""
+    runs = [_run(1), _run(2), _run(3, "operator")]
+    facts = {
+        "r1": GradeFacts.of(_grade("r1", 1, 0.8), "judge-a"),
+        "r2": GradeFacts.of(_grade("r2", 1, 0, "unavailable"), "judge-b"),
+        "r3": GradeFacts.of(_grade("r3", 1, 0.8), "judge-c"),
+    }
+    (s,) = summarize(score_rows(runs, facts, {}), "all")
+    assert s.judge_models == ("judge-a",)
+
+
+def test_agents_come_back_ranked_and_named() -> None:
+    """Best median first; an agent with no scored run last; ties to more scored runs, then the
+    name. Every client shows this order, so none ranks on its own."""
+    runs = [
+        _run(1, agent_id="a1"),
+        _run(2, agent_id="a2"),
+        _run(3, agent_id="a2"),
+        _run(4, agent_id="a3"),
+        _run(5, agent_id="deadbeef-gone"),
+        _run(6, agent_id="a4"),
+    ]
+    grades = {
+        "r1": _grade("r1", 1, 0.6),
+        "r2": _grade("r2", 1, 0.6),
+        "r3": _grade("r3", 1, 0.6),
+        "r4": _grade("r4", 1, 0, "unavailable"),
+        "r5": _grade("r5", 1, 1),
+        "r6": _grade("r6", 1, 0.6),
+    }
+    names = {"a1": "Zed", "a2": "yak", "a3": "alpha", "a4": "beta"}
+    out = summarize(score_rows(runs, _facts(grades), {}), "agent", names)
+    assert [s.agent_name for s in out] == ["deadbeef", "yak", "beta", "Zed", "alpha"]
+
+
+def test_per_mission_agents_rank_within_each_version_in_turn() -> None:
+    runs = [
+        _run(1, agent_id="a1", mission_version="1.0.0"),
+        _run(2, agent_id="a2", mission_version="1.0.0"),
+        _run(3, agent_id="a1", mission_version="2.0.0"),
+    ]
+    grades = {
+        "r1": _grade("r1", 0, 0),
+        "r2": _grade("r2", 1, 1),
+        "r3": _grade("r3", 1, 1),
+    }
+    out = summarize(score_rows(runs, _facts(grades), {}), "mission_agent")
+    assert [(s.mission_version, s.agent_id) for s in out] == [
+        ("1.0.0", "a2"),
+        ("1.0.0", "a1"),
+        ("2.0.0", "a1"),
+    ]
 
 
 # --- the routes --------------------------------------------------------------------------------
@@ -264,7 +383,9 @@ def test_the_routes_serve_rows_and_summaries(migrated_home) -> None:
     only_a = c.get("/api/results/runs", params={"agent": a.id}).json()
     assert {r["run_id"] for r in only_a} == {"s1", "s2", "s3"}
 
-    summary = {s["agent_id"]: s for s in c.get("/api/results/summary").json()}
+    ranked = c.get("/api/results/summary").json()
+    assert [s["agent_name"] for s in ranked] == ["scout", "probe"]
+    summary = {s["agent_id"]: s for s in ranked}
     assert summary[a.id]["median"] == pytest.approx(0.9)
     assert (summary[a.id]["scored"], summary[a.id]["no_judge"]) == (1, 1)
     assert summary[a.id]["infra_failed"] == 1
@@ -297,3 +418,61 @@ def test_the_routes_count_intel_and_summarise_everything(migrated_home) -> None:
     assert rows["s2"]["bucket"] == "stopped"
     (everything,) = c.get("/api/results/summary", params={"by": "all"}).json()
     assert (everything["runs"], everything["scored"], everything["stopped"]) == (2, 1, 1)
+
+
+def test_the_routes_read_a_recorded_grade_without_the_judges_evidence(migrated_home) -> None:
+    """Only the scores and the judge's status are read: a grade whose evidence no longer
+    validates still counts, by its columns."""
+    from sqlalchemy import update
+
+    from xorcise.core import agents, reporting
+    from xorcise.core.db import session_scope
+    from xorcise.core.reporting.models import ResultRow
+
+    install_mission(migrated_home, "c1")
+    a = agents.register("scout", endpoint="http://s")
+    _graded("s1", a.id, "done", _grade("s1", 1, 0.6))
+    with session_scope() as s:
+        s.execute(
+            update(ResultRow).values(detail_json='{"judge_status": "ok", "breakdown": "junk"}')
+        )
+    assert reporting.recorded_grades()["s1"].overall == pytest.approx(0.8)
+    (row,) = _client().get("/api/results/runs").json()
+    assert (row["bucket"], row["overall"]) == ("scored", pytest.approx(0.8))
+
+
+def test_a_corrupt_install_record_does_not_break_the_routes(migrated_home, monkeypatch) -> None:
+    from xorcise.core import agents
+    from xorcise.core.rest.routers import results
+
+    install_mission(migrated_home, "c1")
+    a = agents.register("scout", endpoint="http://s")
+    _graded("s1", a.id, "done", _grade("s1", 1, 0.6))
+
+    def broken(*_: Any) -> None:
+        raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+    monkeypatch.setattr(results, "get_installed", broken)
+    resp = _client().get("/api/results/runs")
+    assert resp.status_code == 200
+    assert resp.json()[0]["current_version"] is True
+
+
+def test_the_routes_re_drive_a_run_still_grading(migrated_home, monkeypatch) -> None:
+    """A grade lost to a restart would otherwise leave the run `grading` on every view for good:
+    reading the views heals it, as polling its `/result` does."""
+    from xorcise.core import agents
+    from xorcise.core.rest import run_terminate
+
+    install_mission(migrated_home, "c1")
+    a = agents.register("scout", endpoint="http://s")
+    _graded("s1", a.id, "done", None)
+    _graded("s2", a.id, "done", _grade("s2", 1, 0.6))
+    driven: list[str] = []
+    monkeypatch.setattr(
+        run_terminate, "ensure_graded_async", lambda run_id, _schedule: driven.append(run_id)
+    )
+    c = _client()
+    c.get("/api/results/runs")
+    c.get("/api/results/summary")
+    assert driven == ["s1", "s1"]
