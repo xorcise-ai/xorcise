@@ -22,6 +22,7 @@ vi.mock("next/link", () => ({
 }));
 
 import { CompletedRuns } from "./completed-runs";
+import { StripColumn } from "./run-strip";
 
 function serve(scores: RunScore[], summaries: ScoreSummary[]) {
   server.use(
@@ -127,6 +128,27 @@ describe("CompletedRuns: one card per agent, around its run strip", () => {
     expect(col("timed_out")).toHaveAttribute("href", "/runs/result?id=timeout");
     expect(col("timed_out")).toHaveAccessibleName(/timed out · in the median/);
     expect(col("stopped")).toHaveAccessibleName(/stopped · left out/);
+  });
+
+  it("keeps the red cap on a run that timed out having scored nothing", () => {
+    const { container } = renderWithProviders(
+      <StripColumn
+        run={scoreFixture({
+          run_id: "t0",
+          timed_out: true,
+          outcome: "partial",
+          terminal_trigger: "timeout",
+          overall: 0,
+          deterministic: 0,
+          judge: 0,
+        })}
+      />,
+    );
+    const bar = container.querySelector<HTMLElement>('[data-part="bar"]')!;
+    expect(bar.style.height).toBe("0%");
+    // A bar at 0% clips everything in it: its floor is the cap's height, so the cap still shows.
+    expect(bar.className).toContain("min-h-1");
+    expect(bar.querySelector('[data-part="cap"]')!.className).toContain("h-1");
   });
 
   it("opens the inspector on a column and lights up its kind in the key", async () => {
