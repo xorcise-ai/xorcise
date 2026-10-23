@@ -132,6 +132,37 @@ describe("Dashboard fleet performance", () => {
     expect(screen.getByText("median blends 1/2 assisted")).toBeInTheDocument();
   });
 
+  it("never reads a summary still loading, or failed, as having no runs", async () => {
+    serve({});
+    let fail: () => void = () => {};
+    const failed = new Promise<void>((resolve) => (fail = resolve));
+    server.use(
+      http.get("*/api/results/summary", async () => {
+        await failed;
+        return new HttpResponse(null, { status: 500 });
+      }),
+    );
+    renderWithProviders(
+      <>
+        <FleetMetrics />
+        <TopAgents />
+        <TopMissions />
+      </>,
+    );
+    await waitFor(() => expect(screen.getAllByRole("status")).toHaveLength(2));
+    expect(screen.queryByText("No scored runs yet.")).toBeNull();
+    expect(screen.queryByText("No mission runs yet.")).toBeNull();
+
+    fail();
+    await waitFor(() =>
+      expect(screen.getAllByText("Couldn’t load the scores.")).toHaveLength(2),
+    );
+    expect(await screen.findByText("Couldn’t load the fleet’s scores.")).toBeInTheDocument();
+    expect(screen.getByText("Evaluated")).toBeInTheDocument();
+    expect(screen.queryByText("No scored runs yet.")).toBeNull();
+    expect(screen.queryByText("No mission runs yet.")).toBeNull();
+  });
+
   it("says when runs with no judge are left out of an agent's median", async () => {
     serve({ agent: [summaryFixture({ agent_id: "a1", no_judge: 2 })] });
     renderWithProviders(<TopAgents />);

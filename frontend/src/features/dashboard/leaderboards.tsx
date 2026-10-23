@@ -11,14 +11,14 @@ import { cn } from "@/components/ui/cn";
 import { pct } from "@/lib/api/format";
 import { Sparkline } from "./charts";
 import type { ScoreSummary } from "@/lib/api/types";
-import { useFleetPerformance } from "./use-fleet-performance";
+import { useFleetPerformance, type SummaryState } from "./use-fleet-performance";
 
 /** Shared leaderboard shell: a titled card whose ranked list is its one internal scroller. */
 function Leaderboard({
   icon,
   title,
   className,
-  loading,
+  state,
   emptyLabel,
   empty,
   children,
@@ -26,7 +26,8 @@ function Leaderboard({
   icon: ReactNode;
   title: string;
   className?: string;
-  loading: boolean;
+  /** The summary it ranks: while it loads, or if it failed, there is no empty state to show. */
+  state: SummaryState;
   emptyLabel: string;
   empty: boolean;
   children: ReactNode;
@@ -46,10 +47,12 @@ function Leaderboard({
           <ArrowUpRight className="size-3" />
         </Link>
       </div>
-      {loading ? (
+      {state === "loading" ? (
         <div role="status" aria-label="Loading…" className="p-4">
           <SkeletonRows count={5} />
         </div>
+      ) : state === "error" ? (
+        <p className="p-4 text-body text-err">Couldn’t load the scores.</p>
       ) : empty ? (
         <p className="p-4 text-body text-text-secondary">{emptyLabel}</p>
       ) : (
@@ -137,7 +140,7 @@ export function TopAgents({ className }: { className?: string }) {
       icon={<Trophy className="size-3.5 text-primary" />}
       title="Top agents"
       className={className}
-      loading={f.isLoading}
+      state={f.summaryState.agents}
       empty={ranked.length === 0}
       emptyLabel="No scored runs yet."
     >
@@ -175,7 +178,7 @@ export function TopMissions({ className }: { className?: string }) {
       icon={<Target className="size-3.5 text-primary" />}
       title="Most-run missions"
       className={className}
-      loading={f.isLoading}
+      state={f.summaryState.missions}
       empty={ranked.length === 0}
       emptyLabel="No mission runs yet."
     >

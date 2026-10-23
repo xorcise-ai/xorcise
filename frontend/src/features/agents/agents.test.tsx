@@ -112,6 +112,27 @@ describe("AgentList", () => {
     );
   });
 
+  it("never says an agent has no evaluations while the scores load, or when they fail", async () => {
+    let fail: () => void = () => {};
+    const failed = new Promise<void>((resolve) => (fail = resolve));
+    server.use(
+      http.get("*/api/agents", () =>
+        HttpResponse.json([agentFixture({ name: "scout", id: "agent-1" })]),
+      ),
+      http.get("*/api/results/summary", async () => {
+        await failed;
+        return new HttpResponse(null, { status: 500 });
+      }),
+    );
+    renderWithProviders(<AgentList />);
+    await screen.findByText("scout");
+    expect(screen.queryByText(/No evaluations yet/i)).toBeNull();
+
+    fail();
+    expect(await screen.findByText("Couldn’t load this agent’s scores.")).toBeInTheDocument();
+    expect(screen.queryByText(/No evaluations yet/i)).toBeNull();
+  });
+
   it("lists agents newest → oldest regardless of transport order", async () => {
     server.use(
       http.get("*/api/agents", () =>

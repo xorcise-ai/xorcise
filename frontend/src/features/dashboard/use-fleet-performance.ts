@@ -15,11 +15,21 @@ const OUTCOME_TONE: Record<NonNullable<RunEntry["outcome"]>, RunTone> = {
   infra_failed: "red",
 };
 
+/** Where one of the server's summaries is: until it is `ready`, a view drawn from it has nothing
+ *  to say about the runs, so it must not read as having no runs. */
+export type SummaryState = "loading" | "error" | "ready";
+
+function stateOf(q: { isLoading: boolean; isError: boolean }): SummaryState {
+  return q.isLoading ? "loading" : q.isError ? "error" : "ready";
+}
+
 export interface FleetPerformance {
+  /** The runs list and the agents (the counts and the outcome mix) are still loading. */
   isLoading: boolean;
+  /** The runs list failed to load. */
   isError: boolean;
-  /** The score summaries are still loading (the run counts above them may already be in). */
-  resultsLoading: boolean;
+  /** Each score summary's state, apart: the run counts above them may already be in. */
+  summaryState: { fleet: SummaryState; agents: SummaryState; missions: SummaryState };
   /** Total terminal (evaluated) runs across the fleet. */
   evaluated: number;
   /** Terminal runs by outcome (green = completed, amber = partial, red = infra failure). */
@@ -77,8 +87,12 @@ export function useFleetPerformance(): FleetPerformance {
 
     return {
       isLoading: runs.isLoading || agents.isLoading,
-      isError: runs.isError || fleet.isError,
-      resultsLoading: fleet.isLoading || byAgent.isLoading || byMission.isLoading,
+      isError: runs.isError,
+      summaryState: {
+        fleet: stateOf(fleet),
+        agents: stateOf(byAgent),
+        missions: stateOf(byMission),
+      },
       evaluated: terminal.length,
       mix,
       attempts: terminal.length - mix.red,
@@ -100,8 +114,10 @@ export function useFleetPerformance(): FleetPerformance {
     fleet.isError,
     byAgent.data,
     byAgent.isLoading,
+    byAgent.isError,
     byMission.data,
     byMission.isLoading,
+    byMission.isError,
     scores.data,
   ]);
 }

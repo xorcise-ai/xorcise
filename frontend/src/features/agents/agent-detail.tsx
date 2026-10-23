@@ -151,6 +151,13 @@ export function AgentDetail({ name }: { name: string | null }) {
                 overall.isLoading ? "loading" : overall.isError ? "error" : "ready"
               }
               ledger={ledger}
+              ledgerState={
+                versions.isLoading || scores.isLoading
+                  ? "loading"
+                  : versions.isError || scores.isError
+                    ? "error"
+                    : "ready"
+              }
             />
           </section>
 

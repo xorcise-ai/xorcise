@@ -26,6 +26,20 @@ describe("AgentPerformance", () => {
     expect(screen.getByText("Couldn’t load this agent’s performance.")).toBeInTheDocument();
   });
 
+  it("does not say there are no runs while the ledger loads, or when it fails", () => {
+    const { rerender } = render(
+      <AgentPerformance summary={summaryFixture()} ledger={[]} ledgerState="loading" />,
+    );
+    expect(screen.queryByText("No finished runs yet.")).toBeNull();
+    expect(screen.getByRole("status", { name: "Loading runs by mission…" })).toBeInTheDocument();
+
+    rerender(<AgentPerformance summary={summaryFixture()} ledger={[]} ledgerState="error" />);
+    expect(screen.queryByText("No finished runs yet.")).toBeNull();
+    expect(
+      screen.getByText("Couldn’t load this agent’s runs by mission."),
+    ).toBeInTheDocument();
+  });
+
   it("headlines the median and the averages of the same scored runs, from the server", () => {
     render(
       <AgentPerformance
