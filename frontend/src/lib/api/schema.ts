@@ -643,6 +643,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/results/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Run Scores
+         * @description Every finished run, oldest first, with its scores and how it counts (`bucket`).
+         *
+         *     `agent` (an agent id) and `mission` (a mission slug) narrow it. A run still in progress is
+         *     not listed; one still being graded is, as `grading`.
+         */
+        get: operations["run_scores_api_results_runs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/results/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Score Summary
+         * @description Finished runs summarised as one group (`all`), per agent, per mission version (`mission`),
+         *     or per agent on each mission version (`mission_agent`).
+         *
+         *     The median is over runs graded with a judge, a partly-judged run counting at its lower bound.
+         *     A run that timed out is in it, at the score it earned. Runs with no judge, runs an operator
+         *     stopped, runs whose grading crashed, environment failures and runs still grading are counted
+         *     separately and never in it. `mean` is over the same runs as the median.
+         *
+         *     Groups with an agent come back ranked (best median first) and named (`agent_name`), so every
+         *     client shows one order under one set of names.
+         */
+        get: operations["score_summary_api_results_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs": {
         parameters: {
             query?: never;
@@ -665,7 +717,10 @@ export interface paths {
          *
          *     Every failure maps to a clean JSON error (never a raw text/plain 500 that the CLI can't
          *     decode): the deps build + spine run share one try so the fail-loud
-         *     RuntimeError (Docker/Headscale unreachable) surfaces as a 503 with its remediation.
+         *     RuntimeError (Docker/Headscale unreachable) surfaces as a 503 with its remediation. So does
+         *     a server with no runner (RunnerUnavailableError, #168): the deps build refuses before a
+         *     mission is pulled or a run row written, where a stub used to answer 201 for a run that then
+         *     sat at `created` forever.
          *
          *     The 201 response is RunCreatedEntry — a RunEntry superset that adds run_control_key so the
          *     agent can authenticate run-control calls. The key is NEVER returned by
@@ -2145,6 +2200,11 @@ export interface components {
              */
             check_breakdown: components["schemas"]["CheckVerdict"][];
             /**
+             * Grading Failed
+             * @default false
+             */
+            grading_failed: boolean;
+            /**
              * Hard Fails
              * @default []
              */
@@ -3138,11 +3198,8 @@ export interface components {
          * @description Recorded result + disclosed conditions + partial state.
          */
         RunResultView: {
-            /**
-             * Agent Model
-             * @default not disclosed
-             */
-            agent_model: string;
+            /** Agent Model */
+            agent_model?: string | null;
             conditions: components["schemas"]["ResultConditions"];
             /** Evidence Digest */
             evidence_digest?: string | null;
@@ -3174,6 +3231,65 @@ export interface components {
             partial_trigger?: string | null;
             /** Telemetry Window */
             telemetry_window?: string | null;
+        };
+        /**
+         * RunScore
+         * @description One finished run, as the performance views draw it.
+         */
+        RunScore: {
+            /** Agent Id */
+            agent_id: string;
+            /**
+             * Bucket
+             * @enum {string}
+             */
+            bucket: "scored" | "no_judge" | "stopped" | "grading_failed" | "infra_failed" | "grading";
+            /** Completed At */
+            completed_at?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Current Version */
+            current_version: boolean;
+            /** Deterministic */
+            deterministic?: number | null;
+            /**
+             * Intel Disclosed
+             * @default 0
+             */
+            intel_disclosed: number;
+            /** Judge */
+            judge?: number | null;
+            /** Judge Model */
+            judge_model?: string | null;
+            /** Judge Status */
+            judge_status?: ("ok" | "partial" | "model-not-configured" | "unavailable") | null;
+            /** Judge Upper */
+            judge_upper?: number | null;
+            /** Mission */
+            mission: string;
+            /** Mission Version */
+            mission_version: string;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "completed" | "partial" | "infra_failed";
+            /** Overall */
+            overall?: number | null;
+            /** Overall Upper */
+            overall_upper?: number | null;
+            /** Run Id */
+            run_id: string;
+            /** Terminal Trigger */
+            terminal_trigger?: string | null;
+            /**
+             * Timed Out
+             * @default false
+             */
+            timed_out: boolean;
         };
         /**
          * RunStats
@@ -3278,6 +3394,101 @@ export interface components {
              * @default 0
              */
             judge: number;
+        };
+        /**
+         * ScoreSummary
+         * @description A group of finished runs (every run, one agent, one mission version, or one agent on one
+         *     mission version), summarised by the rules in `ScoreBucket`.
+         */
+        ScoreSummary: {
+            /** Agent Id */
+            agent_id?: string | null;
+            /** Agent Name */
+            agent_name?: string | null;
+            /**
+             * Assisted
+             * @default 0
+             */
+            assisted: number;
+            /** Best */
+            best?: number | null;
+            /**
+             * Completed
+             * @default 0
+             */
+            completed: number;
+            /** Current Version */
+            current_version?: boolean | null;
+            /**
+             * Grading
+             * @default 0
+             */
+            grading: number;
+            /**
+             * Grading Failed
+             * @default 0
+             */
+            grading_failed: number;
+            /**
+             * Infra Failed
+             * @default 0
+             */
+            infra_failed: number;
+            /** Judge Gap */
+            judge_gap?: number | null;
+            /**
+             * Judge Models
+             * @default []
+             */
+            judge_models: string[];
+            /** Last Run */
+            last_run?: string | null;
+            /** Mean */
+            mean?: number | null;
+            /** Mean Deterministic */
+            mean_deterministic?: number | null;
+            /** Mean Judge */
+            mean_judge?: number | null;
+            /** Median */
+            median?: number | null;
+            /** Mission */
+            mission?: string | null;
+            /** Mission Version */
+            mission_version?: string | null;
+            /**
+             * No Judge
+             * @default 0
+             */
+            no_judge: number;
+            /**
+             * Partial Judge
+             * @default 0
+             */
+            partial_judge: number;
+            /** Q1 */
+            q1?: number | null;
+            /** Q3 */
+            q3?: number | null;
+            /**
+             * Runs
+             * @default 0
+             */
+            runs: number;
+            /**
+             * Scored
+             * @default 0
+             */
+            scored: number;
+            /**
+             * Stopped
+             * @default 0
+             */
+            stopped: number;
+            /**
+             * Timed Out
+             * @default 0
+             */
+            timed_out: number;
         };
         /** SubmitArtifactRequest */
         SubmitArtifactRequest: {
@@ -4500,6 +4711,71 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MissionUpdateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_scores_api_results_runs_get: {
+        parameters: {
+            query?: {
+                agent?: string | null;
+                mission?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunScore"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    score_summary_api_results_summary_get: {
+        parameters: {
+            query?: {
+                by?: "all" | "agent" | "mission" | "mission_agent";
+                agent?: string | null;
+                mission?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScoreSummary"][];
                 };
             };
             /** @description Validation Error */

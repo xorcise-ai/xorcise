@@ -22,6 +22,13 @@ export type RunCreatedEntry = S["RunCreatedEntry"];
 export type GradeResult = S["GradeResult"];
 export type RunResultView = S["RunResultView"];
 export type RunStats = S["RunStats"];
+/** One finished run as the performance views draw it, with how it counts (`bucket`), decided
+ *  by the server (reporting.scores) — GET /results/runs. */
+export type RunScore = S["RunScore"];
+export type ScoreBucket = RunScore["bucket"];
+/** Finished runs summarised per agent, mission version, or agent on a mission version —
+ *  GET /results/summary. The median is over `scored` runs only. */
+export type ScoreSummary = S["ScoreSummary"];
 
 /** The FINAL answer /result, /report and /stats give for a run cut short by an environment
  *  failure (`deploy_failed` / `crashed`): never graded, because the failure is not the agent's.

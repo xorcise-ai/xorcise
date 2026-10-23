@@ -26,6 +26,7 @@ from xorcise.core.rest.routers import (
     harnesses,
     health,
     missions,
+    results,
     runcontrol,
     runs,
     system,
@@ -54,6 +55,7 @@ def build_rest_app() -> FastAPI:
     app.include_router(health.router, prefix="/api")
     app.include_router(agents.router, prefix="/api")
     app.include_router(runs.router, prefix="/api")
+    app.include_router(results.router, prefix="/api")
     app.include_router(runcontrol.router, prefix="/api")
     app.include_router(missions.router, prefix="/api")
     app.include_router(catalog.router, prefix="/api")

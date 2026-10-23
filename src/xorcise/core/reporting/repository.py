@@ -4,6 +4,7 @@ and are cascade-deleted with it."""
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Collection
 from typing import cast, get_args
 from uuid import uuid4
@@ -14,6 +15,9 @@ from xorcise.core.contracts.grading import GradeResult, JudgeStatus
 from xorcise.core.contracts.reporting import AgentHistoryEntry, ResultConditions, RunStats
 from xorcise.core.db import session_scope
 from xorcise.core.reporting.models import ResultRow
+from xorcise.core.reporting.scores import GradeFacts
+
+log = logging.getLogger(__name__)
 
 
 def _judge_status(row: ResultRow) -> JudgeStatus | None:
@@ -118,6 +122,60 @@ def get_result(run_id: str) -> GradeResult | None:
         if row is None or not row.detail_json:
             return None
         return GradeResult.model_validate_json(row.detail_json)
+
+
+def has_result(run_id: str) -> bool:
+    """Whether a result is recorded for the run, without reading it back: True even for one
+    whose stored grade no longer validates, which get_result would raise on."""
+    with session_scope() as s:
+        return (
+            s.scalar(
+                select(ResultRow.id).where(ResultRow.run_id == run_id, ResultRow.detail_json != "")
+            )
+            is not None
+        )
+
+
+def recorded_grades(agent_id: str | None = None) -> dict[str, GradeFacts]:
+    """What the performance views need of every recorded grade, by run id: one query instead of
+    one `/result` read per run. The scores come from the row's columns and the rest from a plain
+    JSON read of the stored grade, never a full validation of it. A grade that cannot be read
+    back counts as a grading failure (GradeFacts.unreadable): left out, its run would read as
+    still grading, and the views would re-drive a grade that already exists."""
+    query = select(
+        ResultRow.run_id,
+        ResultRow.overall,
+        ResultRow.deterministic,
+        ResultRow.judge,
+        ResultRow.judge_model,
+        ResultRow.detail_json,
+    ).where(ResultRow.detail_json != "")
+    if agent_id is not None:
+        query = query.where(ResultRow.agent_id == agent_id)
+    grades: dict[str, GradeFacts] = {}
+    with session_scope() as s:
+        for run_id, overall, deterministic, judge, judge_model, detail_json in s.execute(query):
+            try:
+                detail = json.loads(detail_json)
+                if not isinstance(detail, dict):
+                    raise ValueError("not a JSON object")
+            except ValueError:
+                log.warning("result for run %s cannot be read back; counted as failed", run_id)
+                grades[run_id] = GradeFacts.unreadable(
+                    overall=overall,
+                    deterministic=deterministic,
+                    judge=judge,
+                    judge_model=judge_model,
+                )
+                continue
+            grades[run_id] = GradeFacts.from_detail(
+                detail,
+                overall=overall,
+                deterministic=deterministic,
+                judge=judge,
+                judge_model=judge_model,
+            )
+    return grades
 
 
 def get_stats(run_id: str) -> RunStats | None:

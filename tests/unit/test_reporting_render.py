@@ -767,6 +767,27 @@ def test_the_cli_and_the_report_render_the_model_identically(
     assert _agent_model(ctx) == _agent_model_line({"model": declared}, observed, dropped)
 
 
+@pytest.mark.parametrize(
+    ("declared", "observed", "expected"),
+    [
+        ("", (), None),
+        ("  ", (" ",), None),  # blank names name nothing, as the report's line agrees
+        ("gpt-5.5", (), "gpt-5.5 (disclosed)"),
+        ("", ("gpt-5.5",), "gpt-5.5 (reported by the harness)"),
+    ],
+)
+def test_the_served_model_cell_is_null_exactly_when_the_report_says_not_disclosed(
+    declared: str, observed: tuple[str, ...], expected: str | None
+) -> None:
+    from xorcise.core.reporting.render import agent_model_cell
+
+    ctx = _ctx(
+        conditions=ResultConditions(model=declared or None),
+        stats=RunStats(models=observed),
+    )
+    assert agent_model_cell(ctx) == expected
+
+
 def test_a_capped_model_list_says_how_many_it_is_not_showing() -> None:
     """Without the marker a bounded list reads as the complete one."""
     from xorcise.core.reporting.render import _agent_model
