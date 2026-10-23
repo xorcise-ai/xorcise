@@ -124,11 +124,24 @@ def get_result(run_id: str) -> GradeResult | None:
         return GradeResult.model_validate_json(row.detail_json)
 
 
+def has_result(run_id: str) -> bool:
+    """Whether a result is recorded for the run, without reading it back: True even for one
+    whose stored grade no longer validates, which get_result would raise on."""
+    with session_scope() as s:
+        return (
+            s.scalar(
+                select(ResultRow.id).where(ResultRow.run_id == run_id, ResultRow.detail_json != "")
+            )
+            is not None
+        )
+
+
 def recorded_grades(agent_id: str | None = None) -> dict[str, GradeFacts]:
     """What the performance views need of every recorded grade, by run id: one query instead of
     one `/result` read per run. The scores come from the row's columns and the rest from a plain
     JSON read of the stored grade, never a full validation of it. A grade that cannot be read
-    back is left out, so its run reads as not graded yet rather than as a score."""
+    back counts as a grading failure (GradeFacts.unreadable): left out, its run would read as
+    still grading, and the views would re-drive a grade that already exists."""
     query = select(
         ResultRow.run_id,
         ResultRow.overall,
@@ -147,7 +160,13 @@ def recorded_grades(agent_id: str | None = None) -> dict[str, GradeFacts]:
                 if not isinstance(detail, dict):
                     raise ValueError("not a JSON object")
             except ValueError:
-                log.warning("result for run %s cannot be read back; skipped", run_id)
+                log.warning("result for run %s cannot be read back; counted as failed", run_id)
+                grades[run_id] = GradeFacts.unreadable(
+                    overall=overall,
+                    deterministic=deterministic,
+                    judge=judge,
+                    judge_model=judge_model,
+                )
                 continue
             grades[run_id] = GradeFacts.from_detail(
                 detail,

@@ -201,8 +201,8 @@ def ensure_graded_async(run_id: str, schedule: Callable[[Callable[[], None]], No
     is_term, trigger, _ = runs.terminal_state(run_id)
     if not is_term or trigger in UNGRADED_TRIGGERS:
         return False  # nothing to grade yet — or, for an environment failure, ever
-    if reporting.get_result(run_id) is not None:
-        return False
+    if reporting.has_result(run_id):
+        return False  # graded, even if that grade no longer reads back
     # Read-only fast path: the slot itself is claimed by grade_and_record (so EVERY scheduling
     # path de-dups, not just this one). A racing poll that slips past this check schedules a
     # task that no-ops on the slot — one judge call either way.
