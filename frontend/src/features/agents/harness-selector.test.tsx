@@ -79,7 +79,8 @@ describe("HarnessSelector", () => {
     expect(screen.getByRole("radio", { name: /^generic/i })).toHaveAttribute("aria-checked", "true");
     expect(input).toHaveValue("generic");
     expect(input).not.toHaveAttribute("readonly");
-    expect(screen.getByText(/replay with the generic adapter/i)).toBeInTheDocument();
+    // Generic is not verified against any harness: it carries the warning box, not quiet help.
+    expect(screen.getByText("The generic adapter isn’t verified against any harness.")).toBeInTheDocument();
     expect(screen.queryByRole("radio", { name: /custom/i })).not.toBeInTheDocument();
 
     // Your own label: still the Generic card, now holding the label.
@@ -230,19 +231,23 @@ describe("HarnessSelector", () => {
       expect(screen.queryByRole("button", { name: /^use /i })).not.toBeInTheDocument();
     });
 
-    it("stays quiet for a registered or blank kind", async () => {
+    it("stays quiet for a built-in, and warns that generic or a blank ID is unverified", async () => {
       const { rerender } = renderWithProviders(
         <HarnessSelector value="openhand" onChange={() => {}} />,
       );
       await waitFor(() => expect(status()).toHaveTextContent(/isn’t a registered harness/));
 
-      rerender(<HarnessSelector value="generic" onChange={() => {}} />);
+      rerender(<HarnessSelector value="openhands" onChange={() => {}} />);
       expect(status()).toBeEmptyDOMElement();
+      // generic is registered, so it is not "unrecognised", but it is not verified either.
+      rerender(<HarnessSelector value="generic" onChange={() => {}} />);
+      expect(status()).toHaveTextContent("The generic adapter isn’t verified against any harness.");
+      expect(status()).not.toHaveTextContent(/isn’t a registered harness/);
       rerender(<HarnessSelector value="  openhands-x" onChange={() => {}} />);
       expect(status()).toHaveTextContent("“openhands-x” isn’t a registered harness.");
       rerender(<HarnessSelector value="   " onChange={() => {}} />);
-      expect(status()).toBeEmptyDOMElement();
-      expect(screen.getByText(/a blank id saves as generic/i)).toBeInTheDocument();
+      expect(status()).toHaveTextContent(/A blank ID saves as generic/);
+      expect(status()).toHaveTextContent("The generic adapter isn’t verified against any harness.");
     });
 
     it("cannot judge, and so does not warn, once the harness list has failed", async () => {
