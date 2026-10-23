@@ -6,11 +6,11 @@ import type { RunEntry } from "@/lib/api/types";
 describe("isTerminal", () => {
   it("detects terminal runs", () => {
     expect(isTerminal({ state: "terminal" })).toBe(true);
-    expect(isTerminal({ state: "active" })).toBe(false);
+    expect(isTerminal({ state: "xorcising" })).toBe(false);
   });
 });
 
-const run = (state: string, trigger: RunEntry["terminal_trigger"] = null) => ({
+const run = (state: RunEntry["state"], trigger: RunEntry["terminal_trigger"] = null) => ({
   state,
   ...serverView(state, trigger),
 });
@@ -20,7 +20,7 @@ const run = (state: string, trigger: RunEntry["terminal_trigger"] = null) => ({
 describe("runPresentation", () => {
   it.each([
     ["created", null, "amber", { label: "Open live run", target: "live" }],
-    ["active", null, "amber", { label: "Open live run", target: "live" }],
+    ["xorcising", null, "amber", { label: "Open live run", target: "live" }],
     ["terminal", "done", "green", { label: "View result", target: "result" }],
     ["terminal", "timeout", "red", { label: "View partial result", target: "result" }],
     // An operator stop is graded partial, so it has a result to open — it used to send the
@@ -29,6 +29,9 @@ describe("runPresentation", () => {
     // An environment failure is never graded: inspect the run, there is no result.
     ["terminal", "deploy_failed", "red", { label: "Inspect run", target: "live" }],
     ["terminal", "crashed", "red", { label: "Inspect run", target: "live" }],
+    // A run that ended before its agent started is never graded either (#187).
+    ["terminal", "cancelled", "muted", { label: "Inspect run", target: "live" }],
+    ["terminal", "never_started", "muted", { label: "Inspect run", target: "live" }],
     ["terminal", null, "muted", { label: "Inspect run", target: "live" }],
   ] as const)("%s/%s → %s, %o", (state, trigger, tone, action) => {
     const view = runPresentation(run(state, trigger));

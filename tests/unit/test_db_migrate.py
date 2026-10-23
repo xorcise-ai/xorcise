@@ -293,6 +293,102 @@ def test_upgrade_makes_seq_unique_and_renumbers_existing_duplicates(tmp_path, mo
         assert [(i["column_names"], i["unique"]) for i in indexes] == [(["run_id"], False)]
 
 
+def test_upgrade_records_when_existing_runs_started_from_their_evidence(tmp_path, monkeypatch):
+    """0009 (#209): each run's earliest evidence sets started_at and start_trigger, and an
+    unfinished run that holds any moves to xorcising. A finished run keeps `terminal`; a run
+    holding no evidence is left alone. The downgrade moves xorcising runs back to created."""
+    from alembic import command
+    from sqlalchemy import text
+
+    from xorcise.core.db.migrate import _alembic_config
+
+    monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
+    config.get_settings.cache_clear()
+    db.get_engine.cache_clear()
+    db.upgrade()
+    command.downgrade(_alembic_config(), "0008_unique_telemetry_seq")
+    runs = {
+        "otel-first": "created",  # a log at 00:01 beats a flag at 00:02
+        "brief-first": "created",  # fetched its brief at 00:01, exported at 00:03
+        "joined": "terminal",  # only a confirmed join: the key fetch it stands in for
+        "untouched": "created",  # no evidence: never started
+    }
+    with db.get_engine().begin() as conn:
+        for run_id, state in runs.items():
+            conn.execute(
+                text(
+                    "INSERT INTO runs (id, agent_id, mission, state, created_at) "
+                    "VALUES (:r, 'a1', 'm', :state, :now)"
+                ),
+                {"r": run_id, "state": state, "now": _NOW},
+            )
+        conn.execute(
+            text(
+                "INSERT INTO logs (run_id, seq, payload, created_at) VALUES "
+                "('otel-first', 0, 'x', '2026-10-13 00:01:00'), "
+                "('brief-first', 0, 'x', '2026-10-13 00:03:00')"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO run_submissions (run_id, kind, name, payload, created_at) VALUES "
+                "('otel-first', 'flag', 'f', 'p', '2026-10-13 00:02:00')"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO run_observed_facts (run_id, kind, name, value, created_at) VALUES "
+                "('brief-first', 'runcontrol-lifecycle', 'prompt', 'fetched', "
+                "'2026-10-13 00:01:00'), "
+                "('joined', 'network-lifecycle', 'join', 'created', '2026-10-13 00:00:30'), "
+                "('joined', 'network-lifecycle', 'join', 'confirmed', '2026-10-13 00:04:00')"
+            )
+        )
+
+    db.upgrade()
+
+    with db.get_engine().begin() as conn:
+        got = {
+            row.id: (row.state, str(row.started_at)[:19] if row.started_at else None, row.trig)
+            for row in conn.execute(
+                text("SELECT id, state, started_at, start_trigger AS trig FROM runs")
+            )
+        }
+    assert got == {
+        "otel-first": ("xorcising", "2026-10-13 00:01:00", "telemetry"),
+        "brief-first": ("xorcising", "2026-10-13 00:01:00", "run_control"),
+        "joined": ("terminal", "2026-10-13 00:04:00", "tailnet_key"),
+        "untouched": ("created", None, None),
+    }
+
+    with db.get_engine().begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO runs (id, agent_id, mission, state, created_at, terminal_trigger) "
+                "VALUES ('cancelled', 'a1', 'm', 'terminal', :now, 'cancelled')"
+            ),
+            {"now": _NOW},
+        )
+    command.downgrade(_alembic_config(), "0008_unique_telemetry_seq")
+    cols = {c["name"] for c in inspect(db.get_engine()).get_columns("runs")}
+    assert not {"started_at", "start_trigger"} & cols
+    with db.get_engine().begin() as conn:
+        trigger, detail = conn.execute(
+            text("SELECT terminal_trigger, terminal_detail FROM runs WHERE id = 'cancelled'")
+        ).one()
+    # An earlier build does not know `cancelled` and would grade it; it never grades `crashed`.
+    assert trigger == "crashed" and "cancelled" in detail
+    with db.get_engine().begin() as conn:
+        states = {row.id: row.state for row in conn.execute(text("SELECT id, state FROM runs"))}
+    assert states == {
+        "otel-first": "created",
+        "brief-first": "created",
+        "joined": "terminal",
+        "untouched": "created",
+        "cancelled": "terminal",
+    }
+
+
 def test_upgrade_is_idempotent(tmp_path, monkeypatch):
     monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
     config.get_settings.cache_clear()
@@ -321,7 +417,7 @@ def test_head_revision_is_the_latest_migration(tmp_path, monkeypatch):
     monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
     config.get_settings.cache_clear()
     db.get_engine.cache_clear()
-    assert db.head_revision() == "0008_unique_telemetry_seq"
+    assert db.head_revision() == "0009_record_when_a_run_started"
 
 
 def test_boot_state_fresh_on_empty_db(tmp_path, monkeypatch):

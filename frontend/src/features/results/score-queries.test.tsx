@@ -36,7 +36,7 @@ describe("the performance queries follow the runs list", () => {
     await waitFor(() => expect(result.current.data?.[0].runs).toBe(2));
 
     // A run still going changes nothing.
-    runs = [...runs, runFixture({ run_id: "r3", state: "active", terminal_trigger: null })];
+    runs = [...runs, runFixture({ run_id: "r3", state: "xorcising", terminal_trigger: null })];
     await act(() => client.invalidateQueries({ queryKey: ["runs"], exact: true }));
     expect(summaryCalls).toBe(2);
 
