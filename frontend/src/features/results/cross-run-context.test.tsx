@@ -45,6 +45,28 @@ describe("CrossRunContext", () => {
     expect(await screen.findByText(/First run for this agent on this mission/)).toBeInTheDocument();
   });
 
+  it("does not call a run the first when the runs before it were left out of the median", async () => {
+    serve([
+      summaryFixture({ agent_id: "agent-1", mission: "sqli-login", mission_version: "2.0.0", runs: 10, scored: 1, stopped: 9 }),
+    ]);
+    renderWithProviders(<CrossRunContext run={run} thisOverall={0.8} />);
+    expect(
+      await screen.findByText("No other scored run for this agent on this mission to compare against yet."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/First run/)).toBeNull();
+  });
+
+  it("does not measure a run left out of the median against it", async () => {
+    serve(
+      [summaryFixture({ agent_id: "agent-1", mission: "sqli-login", mission_version: "2.0.0", runs: 4, scored: 3, median: 0.6, no_judge: 1 })],
+      [scoreFixture({ run_id: "r9", mission_version: "2.0.0", bucket: "no_judge" })],
+    );
+    renderWithProviders(<CrossRunContext run={run} thisOverall={0.4} />);
+    expect(await screen.findByText("not in the median")).toBeInTheDocument();
+    expect(screen.queryByText(/pts vs median/)).toBeNull();
+    expect(screen.getByText("Median (n=3)")).toBeInTheDocument();
+  });
+
   it("takes the version from the server's row for this run, not from the run itself", async () => {
     // A pre-contract run carries no SemVer; the server labels it by its install revision.
     serve(
