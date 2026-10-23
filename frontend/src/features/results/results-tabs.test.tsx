@@ -53,7 +53,7 @@ function seedRuns() {
           run_id: "live-1",
           agent_id: "agent-1",
           mission: "xss-stored",
-          state: "active",
+          state: "xorcising",
         }),
       ]),
     ),

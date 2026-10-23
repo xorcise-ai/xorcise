@@ -56,7 +56,7 @@ describe("RunNotificationsWatcher", () => {
         calls += 1;
         return HttpResponse.json(
           calls === 1
-            ? [runFixture({ run_id: "r1", state: "active" })]
+            ? [runFixture({ run_id: "r1", state: "xorcising" })]
             : [
                 runFixture({
                   run_id: "r1",
@@ -72,7 +72,7 @@ describe("RunNotificationsWatcher", () => {
     renderWithProviders(<Harness />);
 
     await waitFor(() =>
-      expect(screen.getByTestId("first-state")).toHaveTextContent("active"),
+      expect(screen.getByTestId("first-state")).toHaveTextContent("xorcising"),
     );
     // Baseline snapshot: no toast.
     expect(useToastStore.getState().toasts).toHaveLength(0);
@@ -151,7 +151,7 @@ describe("RunNotificationsWatcher", () => {
           runFixture({
             run_id: "r9",
             name: "quiet run",
-            state: "active",
+            state: "xorcising",
             last_telemetry_at: tenMinAgo,
           }),
         ]),
@@ -177,7 +177,7 @@ describe("RunNotificationsWatcher", () => {
           runFixture({
             run_id: "r9",
             name: "quiet run",
-            state: "active",
+            state: "xorcising",
             // Polls 1+2 report the SAME silence; poll 3 shows telemetry resumed and went
             // quiet again (a newer mark that is still past the threshold).
             last_telemetry_at: calls <= 2 ? tenMinAgo : fiveMinAgo,

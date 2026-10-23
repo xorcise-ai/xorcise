@@ -36,7 +36,7 @@ from xorcise.core.cli._ux import (
     short_id,
     ux_table,
 )
-from xorcise.core.cli.rest_client import DocumentUnavailable, RestClient
+from xorcise.core.cli.rest_client import UNFINISHED_STATES, DocumentUnavailable, RestClient
 from xorcise.core.contracts.run import run_status as status_wording
 from xorcise.core.reporting.render import _SEAL_MISMATCH, agent_model_line
 
@@ -349,7 +349,7 @@ def list_runs(
     mission_names = mission_names_by_id(client)
     id_col = "Run id" if verbose is True else "Run"
     table = ux_table(
-        id_col, "Result", "Agent", "Harness", "Mission", "Score", "Started", title="Runs"
+        id_col, "Result", "Agent", "Harness", "Mission", "Score", "Created", title="Runs"
     )
     any_degraded = False
     for r in runs:
@@ -471,7 +471,7 @@ def run_status(
     """Show a run's result: scores, breakdown, evidence, deductions, and conditions."""
     client = RestClient()
     run_id = _resolve_id(client, run_id)
-    # get_run_result: an active run's server 409 becomes {"status": "active"}, so a
+    # get_run_result: an unfinished run's server 409 becomes {"status": <its state>}, so a
     # status check right after `run create` (the golden-path hint) reads as progress,
     # not a red 409 that looks like a crash.
     # verify=True: this is one run shown to a person, so the digest is worth re-hashing.
@@ -481,9 +481,9 @@ def run_status(
     # result. Tolerant read: an older server without the endpoint simply yields nothing.
     telemetry = client.get_or_none(f"/runs/{run_id}/telemetry") if "grade" in r else None
     if as_json is True:
-        # JSON first, ALWAYS parseable — the envelope itself carries status:"grading"
-        # / "active", so a polling script never receives prose on the JSON path. The telemetry
-        # block is additive so existing consumers keep working.
+        # JSON first, ALWAYS parseable — the envelope itself carries status:"grading" /
+        # "created" / "xorcising", so a polling script never receives prose on the JSON path.
+        # The telemetry block is additive so existing consumers keep working.
         emit_json({**r, "telemetry": telemetry} if telemetry is not None else r)
         return
     if r.get("status") == "not_graded":
@@ -498,11 +498,11 @@ def run_status(
             f"yet; re-run [value]xorcise run status {short_id(run_id)}[/value] shortly"
         )
         raise typer.Exit(3)
-    if r.get("status") == "active" or (r.get("state") in {"created", "active"}):
-        # Still running — in progress, not a failure (exit 3, like grading), so a
+    if r.get("status") in UNFINISHED_STATES or r.get("state") in UNFINISHED_STATES:
+        # Not finished — in progress, not a failure (exit 3, like grading), so a
         # `while xorcise run status …` poll keeps waiting instead of erroring out.
         console.print(
-            f"run {short_id(run_id)} is still running — no result yet; "
+            f"run {short_id(run_id)} {_unfinished_phrase(r)} — no result yet; "
             f"re-run [value]xorcise run status {short_id(run_id)}[/value] when it finishes"
         )
         raise typer.Exit(3)
@@ -518,18 +518,34 @@ def run_terminate(
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
 ) -> None:
-    """Stop a running run early (it is graded on what happened so far).
+    """Stop an unfinished run early (it is graded on what happened so far).
 
     The run is sealed immediately; grading then runs in the background. \
 By default this polls run status until the grade lands and prints it; \
-pass --no-wait to return on the ack.
+pass --no-wait to return on the ack. A run whose agent has not started yet is \
+cancelled instead: there is nothing to grade, so it is never graded.
     """
     client = RestClient()
     run_id = _resolve_id(client, run_id)
-    confirm_or_abort(f"Terminate run {short_id(run_id)}? (it will be graded as-is)", assume_yes=yes)
+    current = client.run_or_none(run_id) or {}
+    # A server older than #209 has no `started_at`, says `created` for working runs too, and
+    # grades every stop: only a server that records starts cancels an unstarted run.
+    unstarted = current.get("state") == "created" and "started_at" in current
+    consequence = (
+        "its agent has not started, so it will not be graded"
+        if unstarted
+        else "it will be graded as-is"
+    )
+    confirm_or_abort(f"Terminate run {short_id(run_id)}? ({consequence})", assume_yes=yes)
     entry = client.post(f"/runs/{run_id}/terminate", json={})
-    label = (entry.get("status") or {}).get("label") or entry.get("state")
+    status = entry.get("status") or {}
+    label = status.get("label") or entry.get("state")
     console.print(f"run {run_id} → {escape(str(label))}")
+    if entry.get("terminal_trigger") == "cancelled":
+        # Final already: nothing is graded, so there is nothing to wait for.
+        if status.get("detail"):
+            console.print(f"  {escape(str(status['detail']))}")
+        return
     if not wait:
         return
     console.print("[warn]grading…[/] (waiting for the result)")
@@ -645,12 +661,19 @@ def _is_grading_envelope(body: str) -> bool:
     return head.startswith("{") and '"grading"' in head
 
 
-def _not_graded_envelope(body: str) -> dict[str, Any] | None:
-    """The server's final "not graded" answer for a run whose environment failed, else None.
+def _unfinished_phrase(r: dict[str, Any]) -> str:
+    """'has not started' / 'is still xorcising', from a soft unfinished envelope or a run row."""
+    state = r.get("status") if r.get("status") in UNFINISHED_STATES else r.get("state")
+    return "has not started" if state == "created" else "is still xorcising"
 
-    Unlike "grading" this is not a state to wait out: a deploy_failed or crashed run is never
-    graded (#109), so `run report` and the bulk export must say why instead of writing it to disk.
-    Parsed rather than sniffed, because the envelope carries the trigger and the reason."""
+
+def _not_graded_envelope(body: str) -> dict[str, Any] | None:
+    """The server's final "not graded" answer for a run that is never graded, else None.
+
+    Unlike "grading" this is not a state to wait out: a deploy_failed or crashed run (#109), or
+    one that ended before the agent started (cancelled / never_started, #187), is never graded,
+    so `run report` and the bulk export must say why instead of writing it to disk. Parsed
+    rather than sniffed, because the envelope carries the trigger and the reason."""
     if not body.lstrip().startswith("{"):
         return None
     try:
@@ -698,8 +721,9 @@ def select_runs_for_export(
 
     Pure, so the filtering rules are testable without a disk or a server.
 
-    Only terminal runs qualify, always: an active run has no report, no sealed trace and no final
-    event stream, so including it would write three misleading files instead of failing honestly.
+    Only terminal runs qualify, always: an unfinished run has no report, no sealed trace and no
+    final event stream, so including it would write three misleading files instead of failing
+    honestly.
 
     `mission` and `agent_id` are the CANONICAL values the run rows carry — the mission slug and the
     agent id. The caller resolves what the operator typed (a display name, a prefix) before getting
@@ -869,11 +893,12 @@ bundled seal is RECORDED, not verified: checking it re-hashes a run's whole evid
 batch would pay once per run, so `evidence_verified` is null throughout. Use \
 `xorcise run status <id>` or the report to get a verdict on one run.
 
-    A run cut short by an environment failure (deploy_failed / crashed) is never graded, so its \
-directory has no report: `result.json` holds the server's "not_graded" answer with the reason, \
-beside the traces and events that show what went wrong. Such runs are named on stderr.
+    A run cut short by an environment failure (deploy_failed / crashed), or ended before the \
+agent started (cancelled / never_started), is never graded, so its directory has no report: \
+`result.json` holds the server's "not_graded" answer with the reason, beside the traces and \
+events that show what happened. Such runs are named on stderr.
 
-    Only finished runs are exported; an active one has no sealed record yet. \
+    Only finished runs are exported; an unfinished one has no sealed record yet. \
 A run whose OWN document answers an error — a 404 or a 500 on that run's report, result, \
 trace or events — is reported and skipped rather than aborting the batch, so one bad run does \
 not cost you the ninety-nine after it. Anything that is not one document's answer stops the \
@@ -965,9 +990,9 @@ when you need the tree to contain only this export.
     written = 0
     skipped: list[tuple[str, str]] = []
     pending: list[str] = []  # terminal but not yet graded — a retry, not a failure
-    # Runs cut short by an environment failure (deploy_failed / crashed): never graded, so there
-    # is no report — but their traces and events are exactly the evidence of what went wrong, so
-    # they ARE exported, without report.<fmt>. Named in the summary; not a failure, not pending.
+    # Runs that are never graded (deploy_failed / crashed / cancelled / never_started): no report,
+    # but their traces and events are exactly the evidence of what happened, so they ARE exported,
+    # without report.<fmt>. Named in the summary; not a failure, not pending.
     ungraded: list[tuple[str, str]] = []
     stopped: tuple[str, int] | None = None  # the run in hand when a service-wide failure ended it
     for row in selected:
@@ -1092,11 +1117,12 @@ this reports.
     """
     client = RestClient()
     run_id = _resolve_id(client, run_id)
-    # A still-active run has no report yet — say it's still running (exit 3), instead
-    # of the server's raw 409, so the golden-path hint never dead-ends in a red error.
-    if client.get_run_result(run_id).get("status") == "active":
+    # An unfinished run has no report yet — say so (exit 3), instead of the server's raw
+    # 409, so the golden-path hint never dead-ends in a red error.
+    unfinished = client.get_run_result(run_id)
+    if unfinished.get("status") in UNFINISHED_STATES:
         console.print(
-            f"run {short_id(run_id)} is still running — no report yet; "
+            f"run {short_id(run_id)} {_unfinished_phrase(unfinished)} — no report yet; "
             f"re-run [value]xorcise run report {short_id(run_id)}[/value] when it finishes"
         )
         raise typer.Exit(3)
@@ -1148,7 +1174,7 @@ def run_traces(
 
     With --export (or --out), download the run's whole RAW OTLP stream instead — spans \
 then logs, one OTLP/JSON envelope per line, no XORCISE framing — the Collector's \
-otlpjson file format, ready for external OTel viz tooling. A still-active run exports \
+otlpjson file format, ready for external OTel viz tooling. An unfinished run exports \
 a partial snapshot of what has been ingested so far (and says so); once the run is \
 terminal the record is sealed and the export is final. For the normalized per-event \
 JSONL instead, see `xorcise run events export`.
@@ -1165,7 +1191,7 @@ JSONL instead, see `xorcise run events export`.
     if export:
         # Conservative labeling: checked BEFORE the download, so a run that seals mid-flight
         # can only be over-labeled partial (harmless) — never under-labeled complete.
-        active = client.get_run_result(run_id).get("status") == "active"
+        active = client.get_run_result(run_id).get("status") in UNFINISHED_STATES
         body = client.get_text(f"/runs/{run_id}/otlp.jsonl")
         path = Path(out) if out else Path(f"xorcise-run-{run_id[:8]}-otlp.jsonl")
         try:
@@ -1175,7 +1201,7 @@ JSONL instead, see `xorcise run events export`.
             raise typer.Exit(1) from exc
         batches = sum(1 for ln in body.splitlines() if ln.strip())
         note = (
-            " — run still active, partial snapshot; re-run after it finishes for the sealed record"
+            " — run unfinished, partial snapshot; re-run after it finishes for the sealed record"
             if active
             else ""
         )

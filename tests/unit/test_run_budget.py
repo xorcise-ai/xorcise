@@ -18,7 +18,7 @@ def test_run_entry_carries_budget():
         run_id="r",
         agent_id="a",
         mission="c",
-        state="ready",
+        state="created",
         created_at=datetime.now(UTC),
         budget_seconds=900,
     )

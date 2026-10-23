@@ -32,7 +32,7 @@ export interface RunAction {
  *  (a partial one says so); anything else — an environment failure, an unknown ending — has no
  *  result to open, so it sends the operator to inspect the run. */
 export function runAction(run: Pick<RunEntry, "state" | "outcome">): RunAction {
-  if (run.state === "created" || run.state === "active")
+  if (run.state === "created" || run.state === "xorcising")
     return { label: "Open live run", target: "live" };
   if (run.outcome === "completed") return { label: "View result", target: "result" };
   if (run.outcome === "partial")
@@ -58,4 +58,16 @@ export function runPresentation(
   run: Pick<RunEntry, "state" | "status" | "outcome">,
 ): RunPresentation {
   return { label: run.status.label, tone: runTone(run.status), action: runAction(run) };
+}
+
+/** When the agent started and what showed it ("… · first OTel export"), worded by the server
+ *  (RunEntry.start_trigger_label) so the GUI, the CLI and the report agree (#209). Null for a run
+ *  the agent never started. */
+export function startedText(
+  run: Pick<RunEntry, "started_at" | "start_trigger_label">,
+  format: (iso: string) => string,
+): string | null {
+  if (!run.started_at) return null;
+  const when = format(run.started_at);
+  return run.start_trigger_label ? `${when} · ${run.start_trigger_label}` : when;
 }

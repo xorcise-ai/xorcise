@@ -12,6 +12,7 @@ import threading
 import time
 from collections.abc import Callable
 from datetime import datetime
+from typing import Literal
 
 from xorcise.core import reporting, runs
 from xorcise.core.contracts.run import (
@@ -26,6 +27,7 @@ log = logging.getLogger(__name__)
 
 __all__ = [
     "terminate_run",
+    "stop_run",
     "seal_terminal",
     "grade_and_record",
     "ensure_graded_async",
@@ -90,6 +92,35 @@ def seal_terminal(
     if get_settings().telemetry_drain_seconds == 0:
         _seal_telemetry(run_id)
     return recorded
+
+
+def stop_run(run_id: str, now: datetime) -> str:
+    """An operator's stop: the fast sync phase of `POST /runs/{id}/terminate`. Returns the trigger.
+
+    A run the agent never started ends `cancelled`: there is no attempt to grade, and grading one
+    recorded a 0.00 against the agent (#187). One it did start ends `operator` and is graded as
+    partial. `runs.end_unstarted` decides which in one conditional write, so an agent's first
+    signal landing at the same moment either starts the run first, and the stop is `operator`, or
+    finds it already ended. The caller schedules `grade_and_record` either way: for a cancelled
+    run it grades nothing, but it still seals the run, releases its environment and exports its
+    events, as for any run that is never graded."""
+    if _end_unstarted(run_id, "cancelled", now):
+        return "cancelled"
+    return seal_terminal(run_id, "operator", now)
+
+
+def _end_unstarted(
+    run_id: str, trigger: Literal["cancelled", "never_started"], now: datetime
+) -> bool:
+    """End *run_id* as *trigger* if its agent never started, sealing it as seal_terminal would.
+    False, touching nothing, when the agent started first (or the run already ended)."""
+    if not runs.end_unstarted(run_id, trigger, now):
+        return False
+    from xorcise.core.config import get_settings
+
+    if get_settings().telemetry_drain_seconds == 0:
+        _seal_telemetry(run_id)
+    return True
 
 
 def _seal_telemetry(run_id: str) -> None:
@@ -200,7 +231,7 @@ def ensure_graded_async(run_id: str, schedule: Callable[[Callable[[], None]], No
         return False
     is_term, trigger, _ = runs.terminal_state(run_id)
     if not is_term or trigger in UNGRADED_TRIGGERS:
-        return False  # nothing to grade yet — or, for an environment failure, ever
+        return False  # nothing to grade yet — or, for a run that is never graded, ever
     if reporting.has_result(run_id):
         return False  # graded, even if that grade no longer reads back
     # Read-only fast path: the slot itself is claimed by grade_and_record (so EVERY scheduling
@@ -220,10 +251,10 @@ def regrade_orphaned_terminal_runs() -> int:
     operator touching it. Idempotent + self-defending (grade_and_record records a zero fallback on
     a grading crash). Returns the count re-graded, for the boot log + tests.
 
-    A run that ended on an environment failure is never graded; if it was never finalised (a
-    `crashed` run, which reconcile closes out without finalising, or any such run whose
-    finalisation a stop cut short) it is finalised here — sealed, released, events exported — but
-    not counted, since nothing was graded."""
+    A run that is never graded (an environment failure, or a stop before the agent started) is
+    finalised here if it never was (a `crashed` run, which reconcile closes out without
+    finalising, or any such run whose finalisation a stop cut short) — sealed, released, events
+    exported — but not counted, since nothing was graded."""
     from xorcise.core.rest.events_export import default_export_path
 
     healed = 0
@@ -232,7 +263,7 @@ def regrade_orphaned_terminal_runs() -> int:
         if not is_term:
             continue
         if trigger in UNGRADED_TRIGGERS:
-            # An environment failure is ungraded BY DESIGN, not by a lost grade (#109) — but it
+            # A run like this is ungraded BY DESIGN, not by a lost grade (#109, #187) — but it
             # still needs the rest of finalisation. Reconcile marks a run `crashed` with a bare
             # mark_terminal, so this sweep is the only thing that ever seals one: without it late
             # OTLP keeps landing in a terminal run's record and no evidence digest is taken.
@@ -381,11 +412,11 @@ def _grade_run(run_id: str) -> None:
         if _drain_and_seal_telemetry(run_id):
             _warn_if_evidence_moved(run_id)
         if recorded in UNGRADED_TRIGGERS:
-            # Cut short by an environment failure: whatever the agent managed, the score could not
-            # count in any aggregate, so the judge call it costs buys nothing (#109). Only the
-            # grade is skipped — the seal above, the teardown below and the events export after
-            # it run as for any other terminal run; those are what explain the failure.
-            log.info("not grading %s: it ended %s (an environment failure)", run_id, recorded)
+            # Cut short by an environment failure (#109), or stopped before the agent started
+            # (#187): no score from it could count in any aggregate, so the judge call it costs
+            # buys nothing. Only the grade is skipped — the seal above, the teardown below and the
+            # events export after it run as for any other terminal run; those are what explain it.
+            log.info("not grading %s: it ended %s", run_id, recorded)
         else:
             _record_grade(run_id, run, recorded)
     finally:
@@ -436,10 +467,16 @@ def terminate_run(
     and schedule grade_and_record on a BackgroundTask so the caller is not blocked by the judge.
     grade_and_record is also where the run's environment is released (run_teardown, in a
     `finally`) — the ONE teardown every terminal path shares, so callers must not release it
-    themselves first."""
+    themselves first.
+
+    A budget timeout on a run whose agent never started ends `never_started` instead (#187): not
+    graded, and left out of every performance view, since there was no attempt to time out."""
     is_term, existing, _ = runs.terminal_state(run_id)
     if is_term:
         return existing if existing is not None else trigger
+    if trigger == "timeout" and _end_unstarted(run_id, "never_started", now):
+        grade_and_record(run_id)  # grades nothing; seals, releases and exports
+        return "never_started"
     recorded = seal_terminal(run_id, trigger, now, detail)
     if recorded:
         grade_and_record(run_id)

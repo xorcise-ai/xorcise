@@ -8,12 +8,47 @@ from typing import Literal, cast, get_args
 from pydantic import BaseModel, computed_field, field_validator
 
 # How a terminal run ended — the ONE vocabulary every surface classifies and labels by. Every
-# terminal_trigger write goes through runs.mark_terminal, and these five are the only values ever
-# passed to it: a budget kill is recorded as "timeout" (there is no "budget" trigger), and no server
-# has ever written "completed" or "error". The server classifies a run once (`run_outcome`), labels
-# it once (`run_status`) and ships both on every RunEntry; no client restates any of it, because a
-# private copy is how the leaderboard and the GUI came to disagree with the server (#159, #165).
-TerminalTrigger = Literal["done", "timeout", "operator", "deploy_failed", "crashed"]
+# terminal_trigger write goes through runs.mark_terminal or runs.end_unstarted, and these seven are
+# the only values ever written: a budget kill is recorded as "timeout" (there is no "budget"
+# trigger), and no server has ever written "completed" or "error". The server classifies a run once
+# (`run_outcome`), labels it once (`run_status`) and ships both on every RunEntry; no client
+# restates any of it, because a private copy is how the leaderboard and the GUI came to disagree
+# with the server (#159, #165).
+TerminalTrigger = Literal[
+    "done", "timeout", "operator", "cancelled", "never_started", "deploy_failed", "crashed"
+]
+
+#: A run's lifecycle: `created` until the agent first does something only the agent can do, then
+#: `xorcising` until it ends, then `terminal`. A run can go straight from `created` to `terminal`:
+#: an environment that never came up, or an operator's stop before the agent started (#209).
+RunState = Literal["created", "xorcising", "terminal"]
+
+#: What moved a run from `created` to `xorcising` — the first thing the agent did (#209):
+#:   telemetry    its first OTel export (a trace or log batch) was admitted to the run's record
+#:   run_control  it called run-control with the run's key: the brief, an attachment, intel, a
+#:                flag or artifact, or completion
+#:   tailnet_key  it fetched its tailnet join key (`/connect` or `/join.sh`), on a lab mission
+StartTrigger = Literal["telemetry", "run_control", "tailnet_key"]
+
+
+#: How each start trigger reads beside the start time, on every surface that shows it.
+START_TRIGGER_LABELS: dict[str, str] = {
+    "telemetry": "first OTel export",
+    "run_control": "first run-control call",
+    "tailnet_key": "fetched its tailnet key",
+}
+
+
+def as_run_state(value: str) -> RunState:
+    """A stored state, narrowed to the vocabulary. The column is free text, and a run list must
+    not fail over one row: a value outside it (none has ever been written) reads as `created`,
+    which is what any unfinished run meant before #209."""
+    return cast(RunState, value) if value in get_args(RunState) else "created"
+
+
+def as_start_trigger(value: str | None) -> StartTrigger | None:
+    """A stored start trigger, narrowed to the vocabulary; anything else reads as not recorded."""
+    return cast(StartTrigger, value) if value in get_args(StartTrigger) else None
 
 
 def as_terminal_trigger(value: str | None) -> TerminalTrigger | None:
@@ -23,12 +58,22 @@ def as_terminal_trigger(value: str | None) -> TerminalTrigger | None:
     return cast(TerminalTrigger, value) if value in get_args(TerminalTrigger) else None
 
 
-#: The run was cut short by an environment failure: the readiness gate's close-out
+#: Never graded. Two of these are an environment failure: the readiness gate's close-out
 #: (`deploy_failed`) and the boot reconcile's abort (`crashed`). Either can land before the lab is
-#: up or mid-run, after the agent has worked for a while. Never graded: the failure is ours, not
-#: the agent's, so no score from such a run may count in any aggregate — and a score that cannot
-#: count is not worth a judge call. A 0.00 here was a phantom score against the agent (#109).
-UNGRADED_TRIGGERS: frozenset[str] = frozenset({"deploy_failed", "crashed"})
+#: up or mid-run, after the agent has worked for a while. The failure is ours, not the agent's, so
+#: no score from such a run may count in any aggregate — and a score that cannot count is not
+#: worth a judge call. A 0.00 here was a phantom score against the agent (#109).
+#:
+#: A run whose agent never started (UNSTARTED_TRIGGERS) is never graded either: there is no
+#: attempt to score, and a 0.00 there would be the same phantom score.
+UNGRADED_TRIGGERS: frozenset[str] = frozenset(
+    {"cancelled", "never_started", "deploy_failed", "crashed"}
+)
+
+#: Ended before the agent ever started (#187): an operator's stop (`cancelled`), or the budget
+#: running out (`never_started`). Not a run of the agent's at all, so beyond going ungraded it is
+#: left out of every performance view.
+UNSTARTED_TRIGGERS: frozenset[str] = frozenset({"cancelled", "never_started"})
 
 #: Graded, but the run did not end on its own: a budget timeout or an operator's kill. Recorded
 #: with `partial=True`. The two count differently in the performance summaries
@@ -42,9 +87,11 @@ COMPLETED_TRIGGERS: frozenset[str] = frozenset({"done"})
 
 #: How a terminal run ended. The three sets above are disjoint, so a run has at most one:
 #: `completed` (the agent finished), `partial` (graded, but it did not end on its own; see
-#: PARTIAL_TRIGGERS for how a timeout and a stop each count) or `infra_failed` (never graded, and
-#: not one of the agent's attempts — in no score and no rate).
-RunOutcome = Literal["completed", "partial", "infra_failed"]
+#: PARTIAL_TRIGGERS for how a timeout and a stop each count), `infra_failed` (cut short by an
+#: environment failure: never graded, and not one of the agent's attempts — in no score and no
+#: rate) or `not_started` (ended before the agent started, UNSTARTED_TRIGGERS: never graded, and
+#: not a run of the agent's at all, so the performance views leave it out entirely).
+RunOutcome = Literal["completed", "partial", "infra_failed", "not_started"]
 
 
 def run_outcome(terminal_trigger: str | None) -> RunOutcome | None:
@@ -53,6 +100,8 @@ def run_outcome(terminal_trigger: str | None) -> RunOutcome | None:
         return "completed"
     if terminal_trigger in PARTIAL_TRIGGERS:
         return "partial"
+    if terminal_trigger in UNSTARTED_TRIGGERS:
+        return "not_started"
     if terminal_trigger in UNGRADED_TRIGGERS:
         return "infra_failed"
     return None
@@ -86,6 +135,18 @@ _TERMINAL_STATUS: dict[str, RunStatus] = {
         tone="muted",
         detail="An operator stopped this run before it finished, so the result is partial.",
     ),
+    "cancelled": RunStatus(
+        label="Cancelled",
+        tone="muted",
+        detail="An operator stopped this run before the agent started, so there was nothing to "
+        "grade. It is not graded or counted in any average.",
+    ),
+    "never_started": RunStatus(
+        label="Never started",
+        tone="muted",
+        detail="The run's time budget ran out before the agent started, so there was nothing to "
+        "grade. It is not graded or counted in any average.",
+    ),
     "deploy_failed": RunStatus(
         label="Deploy failed",
         tone="err",
@@ -105,16 +166,18 @@ def run_status(state: str, terminal_trigger: str | None) -> RunStatus:
     """The one status wording for a run in `state`, ended by `terminal_trigger` if terminal."""
     if state == "created":
         return RunStatus(label="Created", tone="active")
-    if state == "active":
-        return RunStatus(label="Running", tone="active")
+    if state == "xorcising":
+        return RunStatus(label="Xorcising", tone="active")
     if state == "terminal":
         return _TERMINAL_STATUS.get(terminal_trigger or "", RunStatus(label="Ended", tone="muted"))
     return RunStatus(label=state.title(), tone="muted")
 
 
 class NotGradedView(BaseModel):
-    """The FINAL answer /result, /report and /stats give for a run cut short by an environment
-    failure (`deploy_failed` / `crashed`): such a run is never graded (#109). A 200, not a 202 —
+    """The FINAL answer /result, /report and /stats give for a run that is never graded: one cut
+    short by an environment failure (`deploy_failed` / `crashed`, #109), or one an operator stopped
+    before the agent started (`cancelled`), or one whose budget ran out before it did
+    (`never_started`, #187). A 200, not a 202 —
     an answer, not progress — so a poll loop stops on it."""
 
     run_id: str
@@ -159,8 +222,12 @@ class RunEntry(BaseModel):
     # The operator-facing run label. Always populated for runs created after XOR run-naming;
     # legacy rows (no stored name) fall back to the mission in the repository mapper.
     name: str = ""
-    state: str
+    state: RunState
     created_at: datetime
+    # When the run moved to `xorcising`, and what showed the agent had started (StartTrigger).
+    # Both None for a run the agent has not started, and for runs that predate #209.
+    started_at: datetime | None = None
+    start_trigger: StartTrigger | None = None
     budget_seconds: int = 0
     terminal_trigger: TerminalTrigger | None = None
     # Why the run ended, when the trigger alone does not say. Set by the readiness gate on a
@@ -195,12 +262,29 @@ class RunEntry(BaseModel):
     def _unknown_trigger_is_none(cls, value: object) -> object:
         return as_terminal_trigger(value) if value is None or isinstance(value, str) else value
 
+    @field_validator("state", mode="before")
+    @classmethod
+    def _unknown_state_is_created(cls, value: object) -> object:
+        return as_run_state(value) if isinstance(value, str) else value
+
+    @field_validator("start_trigger", mode="before")
+    @classmethod
+    def _unknown_start_is_none(cls, value: object) -> object:
+        return as_start_trigger(value) if value is None or isinstance(value, str) else value
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def outcome(self) -> RunOutcome | None:
         """How this run counts in every aggregate (`run_outcome`), derived from terminal_trigger on
         every read and never persisted. Clients read this instead of re-deriving it (#159)."""
         return run_outcome(self.terminal_trigger)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def start_trigger_label(self) -> str | None:
+        """How `start_trigger` reads beside `started_at` (START_TRIGGER_LABELS), so the GUI, the
+        CLI and the report word it identically. None when the run has not started."""
+        return START_TRIGGER_LABELS.get(self.start_trigger or "")
 
     @computed_field  # type: ignore[prop-decorator]
     @property

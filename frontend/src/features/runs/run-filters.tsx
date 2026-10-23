@@ -68,16 +68,17 @@ export function filterRuns(
  *  on the server's state and outcome, never on label text — a label list here went stale the
  *  moment the server's wording changed (#165). */
 function statusRank(run: RunEntry): number {
-  if (run.state === "active") return 0;
+  if (run.state === "xorcising") return 0;
   if (run.state === "created") return 1;
   if (run.outcome === "completed") return 2;
   if (run.outcome === "partial") return 3;
   if (run.outcome === "infra_failed") return 4;
-  return 5;
+  if (run.outcome === "not_started") return 5;
+  return 6;
 }
 
 /** Distinct status labels present across the runs: live first, then completed, partial, infra
- *  failures and anything else, alphabetical within a group. */
+ *  failures, runs that never started and anything else, alphabetical within a group. */
 export function distinctStatuses(runs: RunEntry[]): string[] {
   const rank = new Map<string, number>();
   for (const run of runs) {
