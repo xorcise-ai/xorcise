@@ -8,7 +8,7 @@ export interface RunPhase {
     | "provisioning"
     | "environment-failed"
     | "awaiting-agent"
-    | "connecting"
+    | "awaiting-traces"
     | "streaming"
     | "stalled"
     | "solved"
@@ -26,7 +26,9 @@ export interface RunPhase {
  * any trace has arrived. Pure so the bulb + guidance + connection panel all read
  * the same source of truth (and it's unit-testable).
  *
- * Server states: "created" → "active" → "terminal" (trigger says how it ended).
+ * Server states: "created" → "xorcising" → "terminal" (trigger says how it ended). A run moves to
+ * "xorcising" the first time its agent acts: an OTel export, a run-control call, or fetching its
+ * tailnet key (#209).
  */
 export function runPhase(
   run: Pick<RunEntry, "state" | "status" | "outcome">,
@@ -102,10 +104,21 @@ export function runPhase(
       active: true,
     };
 
-  // No trace yet — either freshly created (awaiting the paste) or active but quiet.
+  // No trace yet, but the agent has started: it reached run-control or fetched its tailnet key.
+  // The run's status badge already says "Xorcising"; this says what is still missing.
+  if (run.state === "xorcising")
+    return {
+      key: "awaiting-traces",
+      label: "Awaiting traces",
+      helpText: "Your agent has started, but no trace has arrived yet. Make sure it is emitting OpenTelemetry traces so XORCISE can capture them.",
+      tone: "amber",
+      active: true,
+    };
+
+  // No trace yet, and the agent has not started: freshly created, awaiting the paste.
   return {
-    key: run.state === "active" ? "connecting" : "awaiting-agent",
-    label: run.state === "active" ? "Connecting" : "Awaiting agent",
+    key: "awaiting-agent",
+    label: "Awaiting agent",
     helpText: "No trace received yet. Make sure your agent is emitting OpenTelemetry traces so XORCISE can capture them.",
     tone: "amber",
     active: true,

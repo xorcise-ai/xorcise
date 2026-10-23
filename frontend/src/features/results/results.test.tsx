@@ -154,6 +154,30 @@ describe("ResultsView", () => {
     ).toBeInTheDocument();
   });
 
+  it("says when the agent started and what showed it, in the server's words (#209)", async () => {
+    server.use(
+      http.get("*/api/runs", () =>
+        HttpResponse.json([
+          runFixture({
+            run_id: "r1",
+            mission: "sqli-login",
+            name: "recon-run",
+            started_at: "2026-10-23T01:02:03Z",
+            start_trigger: "telemetry",
+            start_trigger_label: "first OTel export",
+          }),
+        ]),
+      ),
+      http.get("*/api/runs/r1/result", () => HttpResponse.json(resultView())),
+    );
+    renderWithProviders(<ResultsView runId="r1" />);
+    await screen.findByRole("heading", { name: "recon-run" });
+    expect(screen.getByText("Created")).toBeInTheDocument();
+    expect(screen.getByText("Started")).toBeInTheDocument();
+    expect(screen.getByText("first OTel export")).toBeInTheDocument();
+    expect(screen.getByTitle(/· first OTel export$/)).toBeInTheDocument();
+  });
+
   it("has no Telemetry window cell when the report has no such row", async () => {
     server.use(
       http.get("*/api/runs", () =>

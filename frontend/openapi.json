@@ -2885,7 +2885,7 @@
         "type": "object"
       },
       "NotGradedView": {
-        "description": "The FINAL answer /result, /report and /stats give for a run cut short by an environment\nfailure (`deploy_failed` / `crashed`): such a run is never graded (#109). A 200, not a 202 \u2014\nan answer, not progress \u2014 so a poll loop stops on it.",
+        "description": "The FINAL answer /result, /report and /stats give for a run that is never graded: one cut\nshort by an environment failure (`deploy_failed` / `crashed`, #109), or one an operator stopped\nbefore the agent started (`cancelled`), or one whose budget ran out before it did\n(`never_started`, #187). A 200, not a 202 \u2014\nan answer, not progress \u2014 so a poll loop stops on it.",
         "properties": {
           "detail": {
             "anyOf": [
@@ -2916,6 +2916,8 @@
               "done",
               "timeout",
               "operator",
+              "cancelled",
+              "never_started",
               "deploy_failed",
               "crashed"
             ],
@@ -3721,7 +3723,8 @@
                 "enum": [
                   "completed",
                   "partial",
-                  "infra_failed"
+                  "infra_failed",
+                  "not_started"
                 ],
                 "type": "string"
               },
@@ -3779,7 +3782,53 @@
             "title": "Source Agent",
             "type": "string"
           },
+          "start_trigger": {
+            "anyOf": [
+              {
+                "enum": [
+                  "telemetry",
+                  "run_control",
+                  "tailnet_key"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Trigger"
+          },
+          "start_trigger_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How `start_trigger` reads beside `started_at` (START_TRIGGER_LABELS), so the GUI, the\nCLI and the report word it identically. None when the run has not started.",
+            "readOnly": true,
+            "title": "Start Trigger Label"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
           "state": {
+            "enum": [
+              "created",
+              "xorcising",
+              "terminal"
+            ],
             "title": "State",
             "type": "string"
           },
@@ -3806,6 +3855,8 @@
                   "done",
                   "timeout",
                   "operator",
+                  "cancelled",
+                  "never_started",
                   "deploy_failed",
                   "crashed"
                 ],
@@ -3826,6 +3877,7 @@
           "created_at",
           "run_control_key",
           "outcome",
+          "start_trigger_label",
           "status"
         ],
         "title": "RunCreatedEntry",
@@ -3957,7 +4009,8 @@
                 "enum": [
                   "completed",
                   "partial",
-                  "infra_failed"
+                  "infra_failed",
+                  "not_started"
                 ],
                 "type": "string"
               },
@@ -4011,7 +4064,53 @@
             "title": "Source Agent",
             "type": "string"
           },
+          "start_trigger": {
+            "anyOf": [
+              {
+                "enum": [
+                  "telemetry",
+                  "run_control",
+                  "tailnet_key"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Trigger"
+          },
+          "start_trigger_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How `start_trigger` reads beside `started_at` (START_TRIGGER_LABELS), so the GUI, the\nCLI and the report word it identically. None when the run has not started.",
+            "readOnly": true,
+            "title": "Start Trigger Label"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
           "state": {
+            "enum": [
+              "created",
+              "xorcising",
+              "terminal"
+            ],
             "title": "State",
             "type": "string"
           },
@@ -4038,6 +4137,8 @@
                   "done",
                   "timeout",
                   "operator",
+                  "cancelled",
+                  "never_started",
                   "deploy_failed",
                   "crashed"
                 ],
@@ -4057,6 +4158,7 @@
           "state",
           "created_at",
           "outcome",
+          "start_trigger_label",
           "status"
         ],
         "title": "RunEntry",
@@ -8067,7 +8169,7 @@
     },
     "/api/runs/{run_id}/regrade": {
       "post": {
-        "description": "Re-evaluate a terminal run: re-grade its already-SEALED evidence (the deterministic checks +\nthe LLM judge) against the CURRENT settings, without re-running the agent.\n\nThe motivating case: a run the agent actually solved (deterministic checks pass) whose JUDGE\nhalf failed on a config limit \u2014 the transcript was larger than the judge's token budget, or the\nkey was rejected. The operator raises the transcript budget / fixes the key in Settings, then\nre-evaluates, and the judge half runs over the same preserved evidence.\n\nDrops the recorded result and schedules a fresh grade off the request thread (the judge can be\nslow); the new result surfaces via the SAME `202 grading \u2192 grade` poll the initial grade uses,\nso the client needs no new state machine. De-duplicated, so a double click grades once. 404 if\nthe run is unknown; 409 if it has not reached a terminal state (nothing is sealed to grade yet),\nor if it ended on an environment failure (`deploy_failed` / `crashed`), which is never graded.",
+        "description": "Re-evaluate a terminal run: re-grade its already-SEALED evidence (the deterministic checks +\nthe LLM judge) against the CURRENT settings, without re-running the agent.\n\nThe motivating case: a run the agent actually solved (deterministic checks pass) whose JUDGE\nhalf failed on a config limit \u2014 the transcript was larger than the judge's token budget, or the\nkey was rejected. The operator raises the transcript budget / fixes the key in Settings, then\nre-evaluates, and the judge half runs over the same preserved evidence.\n\nDrops the recorded result and schedules a fresh grade off the request thread (the judge can be\nslow); the new result surfaces via the SAME `202 grading \u2192 grade` poll the initial grade uses,\nso the client needs no new state machine. De-duplicated, so a double click grades once. 404 if\nthe run is unknown; 409 if it has not reached a terminal state (nothing is sealed to grade yet),\nor if it is never graded: it ended on an environment failure (`deploy_failed` / `crashed`), or\nbefore the agent started (`cancelled` / `never_started`).",
         "operationId": "regrade_run_api_runs__run_id__regrade_post",
         "parameters": [
           {
@@ -8108,7 +8210,7 @@
     },
     "/api/runs/{run_id}/report": {
       "get": {
-        "description": "The run's full result as a downloadable Markdown or HTML document (run report).\n\nThe Results page is the interactive view; this is the shareable one \u2014 the same metadata,\nscores, check table, rubric, evidence, artifacts, telemetry and conditions, rendered offline\ninto a single self-contained file (the HTML carries its own dark styling; no external asset).\n\nMirrors /result's state ladder exactly, so a caller polling for a report sees the same\ntransitions it already handles: unknown run \u2192 404; terminal-but-ungraded \u2192 202\n{\"status\": \"grading\"}; ended on an environment failure \u2192 200 {\"status\": \"not_graded\"};\nstill-active run \u2192 409. An unsupported `format` \u2192 422.\nContent-Disposition is `attachment`, so a browser downloads rather than renders it.",
+        "description": "The run's full result as a downloadable Markdown or HTML document (run report).\n\nThe Results page is the interactive view; this is the shareable one \u2014 the same metadata,\nscores, check table, rubric, evidence, artifacts, telemetry and conditions, rendered offline\ninto a single self-contained file (the HTML carries its own dark styling; no external asset).\n\nMirrors /result's state ladder exactly, so a caller polling for a report sees the same\ntransitions it already handles: unknown run \u2192 404; terminal-but-ungraded \u2192 202\n{\"status\": \"grading\"}; ended on an environment failure \u2192 200 {\"status\": \"not_graded\"};\nunfinished run \u2192 409. An unsupported `format` \u2192 422.\nContent-Disposition is `attachment`, so a browser downloads rather than renders it.",
         "operationId": "run_report_api_runs__run_id__report_get",
         "parameters": [
           {
@@ -8179,7 +8281,7 @@
     },
     "/api/runs/{run_id}/result": {
       "get": {
-        "description": "Recorded 50/50 explainable result + disclosed conditions for a run.\n\n`verify=1` re-hashes the run's evidence and answers `evidence_verified`. It is OPT-IN because\nthree first-party consumers fetch this endpoint once per run in a loop \u2014 `run list`, the\nleaderboard roll-up and the results table \u2014 and none of them shows a verdict: re-hashing on\nevery read put a whole run's evidence through SHA-256 per row, which measured at 3.3 ms per MB,\nso a 124-run dataset at 3 MB a run spent over a second of a list command on it. Unasked, the\nresponse still carries the digest (it is one indexed row read) with `evidence_status`\n\"recorded\", and `GET /report` \u2014 one run, deliberately fetched, and the surface whose whole\npoint is the mismatch banner \u2014 keeps verifying unconditionally.\n\nWhen no result is recorded yet, distinguish three cases instead of a blanket 404:\ngrading runs asynchronously after /complete, so a terminal-but-ungraded run is a normal\ntransient state, NOT a failure. Unknown run \u2192 404; terminal-but-ungraded \u2192 202\n{\"status\": \"grading\"}; still-active run \u2192 409 (no result to read yet).\n\nA run cut short by an environment failure (`deploy_failed` / `crashed`) is never graded \u2014 the\nfailure is not the agent's \u2014 so it answers a FINAL 200 {\"status\": \"not_graded\",\n\"terminal_trigger\", \"run_status\", \"detail\"} instead of a \"grading\" that would never resolve.\n`run_status` is the run's status wording (label, tone, why it ended).\n\nA terminal-ungraded run also RE-DRIVES grading here (ensure_graded_async): if the grade was\nlost to a server restart or a hung judge call, polling the result heals it rather than spinning\nat \"grading\" forever (de-duplicated, so the poll loop triggers one grade, not one per poll).",
+        "description": "Recorded 50/50 explainable result + disclosed conditions for a run.\n\n`verify=1` re-hashes the run's evidence and answers `evidence_verified`. It is OPT-IN because\nthree first-party consumers fetch this endpoint once per run in a loop \u2014 `run list`, the\nleaderboard roll-up and the results table \u2014 and none of them shows a verdict: re-hashing on\nevery read put a whole run's evidence through SHA-256 per row, which measured at 3.3 ms per MB,\nso a 124-run dataset at 3 MB a run spent over a second of a list command on it. Unasked, the\nresponse still carries the digest (it is one indexed row read) with `evidence_status`\n\"recorded\", and `GET /report` \u2014 one run, deliberately fetched, and the surface whose whole\npoint is the mismatch banner \u2014 keeps verifying unconditionally.\n\nWhen no result is recorded yet, distinguish three cases instead of a blanket 404:\ngrading runs asynchronously after /complete, so a terminal-but-ungraded run is a normal\ntransient state, NOT a failure. Unknown run \u2192 404; terminal-but-ungraded \u2192 202\n{\"status\": \"grading\"}; unfinished run \u2192 409 (no result to read yet).\n\nA run cut short by an environment failure (`deploy_failed` / `crashed`) is never graded \u2014 the\nfailure is not the agent's \u2014 so it answers a FINAL 200 {\"status\": \"not_graded\",\n\"terminal_trigger\", \"run_status\", \"detail\"} instead of a \"grading\" that would never resolve.\n`run_status` is the run's status wording (label, tone, why it ended).\n\nA terminal-ungraded run also RE-DRIVES grading here (ensure_graded_async): if the grade was\nlost to a server restart or a hung judge call, polling the result heals it rather than spinning\nat \"grading\" forever (de-duplicated, so the poll loop triggers one grade, not one per poll).",
         "operationId": "run_result_api_runs__run_id__result_get",
         "parameters": [
           {
@@ -8256,7 +8358,7 @@
     },
     "/api/runs/{run_id}/stats": {
       "get": {
-        "description": "Per-run telemetry snapshot (tokens / counts / timing) for the run report.\n\nServes the snapshot recorded at grade time when it was folded under the run's CURRENT event\nprojection. When it predates the renderer (a classifier changed since the run was graded), or\nwas never recorded (a run graded before the snapshot column existed), the projection is folded\nlive and the refreshed snapshot persisted \u2014 the derived stats column only, never the grade \u2014 so\nthis page, the report and the replay agree (report_assembly.current_run_stats). Mirrors\n/result's states otherwise: unknown run \u2192 404; terminal-but-ungraded \u2192 202\n{\"status\": \"grading\"}; still-active run \u2192 409.",
+        "description": "Per-run telemetry snapshot (tokens / counts / timing) for the run report.\n\nServes the snapshot recorded at grade time when it was folded under the run's CURRENT event\nprojection. When it predates the renderer (a classifier changed since the run was graded), or\nwas never recorded (a run graded before the snapshot column existed), the projection is folded\nlive and the refreshed snapshot persisted \u2014 the derived stats column only, never the grade \u2014 so\nthis page, the report and the replay agree (report_assembly.current_run_stats). Mirrors\n/result's states otherwise: unknown run \u2192 404; terminal-but-ungraded \u2192 202\n{\"status\": \"grading\"}; unfinished run \u2192 409.",
         "operationId": "run_stats_api_runs__run_id__stats_get",
         "parameters": [
           {
@@ -8433,7 +8535,7 @@
     },
     "/api/runs/{run_id}/terminate": {
       "post": {
-        "description": "Operator-initiated termination: abort an active run from GUI/CLI.\n\n404 if the run is unknown; 409 if it is already terminal. Closes run-control synchronously and\nreturns the terminal entry immediately; the background finalizer drains telemetry, seals, and\ngrades without blocking the caller. Result surfaces via `run status` (202 grading \u2192 grade).",
+        "description": "Operator-initiated termination: stop an unfinished run from GUI/CLI.\n\n404 if the run is unknown; 409 if it is already terminal. Closes run-control synchronously and\nreturns the terminal entry immediately; the background finalizer drains telemetry, seals, and\ngrades without blocking the caller. Result surfaces via `run status` (202 grading \u2192 grade).\nA run the agent never started (still `created`) ends `cancelled` and is never graded, so its\nresult is the final `not_graded` answer instead (#187).",
         "operationId": "terminate_run_api_runs__run_id__terminate_post",
         "parameters": [
           {

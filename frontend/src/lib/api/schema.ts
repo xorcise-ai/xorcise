@@ -1148,7 +1148,8 @@ export interface paths {
          *     slow); the new result surfaces via the SAME `202 grading → grade` poll the initial grade uses,
          *     so the client needs no new state machine. De-duplicated, so a double click grades once. 404 if
          *     the run is unknown; 409 if it has not reached a terminal state (nothing is sealed to grade yet),
-         *     or if it ended on an environment failure (`deploy_failed` / `crashed`), which is never graded.
+         *     or if it is never graded: it ended on an environment failure (`deploy_failed` / `crashed`), or
+         *     before the agent started (`cancelled` / `never_started`).
          */
         post: operations["regrade_run_api_runs__run_id__regrade_post"];
         delete?: never;
@@ -1175,7 +1176,7 @@ export interface paths {
          *     Mirrors /result's state ladder exactly, so a caller polling for a report sees the same
          *     transitions it already handles: unknown run → 404; terminal-but-ungraded → 202
          *     {"status": "grading"}; ended on an environment failure → 200 {"status": "not_graded"};
-         *     still-active run → 409. An unsupported `format` → 422.
+         *     unfinished run → 409. An unsupported `format` → 422.
          *     Content-Disposition is `attachment`, so a browser downloads rather than renders it.
          */
         get: operations["run_report_api_runs__run_id__report_get"];
@@ -1210,7 +1211,7 @@ export interface paths {
          *     When no result is recorded yet, distinguish three cases instead of a blanket 404:
          *     grading runs asynchronously after /complete, so a terminal-but-ungraded run is a normal
          *     transient state, NOT a failure. Unknown run → 404; terminal-but-ungraded → 202
-         *     {"status": "grading"}; still-active run → 409 (no result to read yet).
+         *     {"status": "grading"}; unfinished run → 409 (no result to read yet).
          *
          *     A run cut short by an environment failure (`deploy_failed` / `crashed`) is never graded — the
          *     failure is not the agent's — so it answers a FINAL 200 {"status": "not_graded",
@@ -1247,7 +1248,7 @@ export interface paths {
          *     live and the refreshed snapshot persisted — the derived stats column only, never the grade — so
          *     this page, the report and the replay agree (report_assembly.current_run_stats). Mirrors
          *     /result's states otherwise: unknown run → 404; terminal-but-ungraded → 202
-         *     {"status": "grading"}; still-active run → 409.
+         *     {"status": "grading"}; unfinished run → 409.
          */
         get: operations["run_stats_api_runs__run_id__stats_get"];
         put?: never;
@@ -1315,11 +1316,13 @@ export interface paths {
         put?: never;
         /**
          * Terminate Run
-         * @description Operator-initiated termination: abort an active run from GUI/CLI.
+         * @description Operator-initiated termination: stop an unfinished run from GUI/CLI.
          *
          *     404 if the run is unknown; 409 if it is already terminal. Closes run-control synchronously and
          *     returns the terminal entry immediately; the background finalizer drains telemetry, seals, and
          *     grades without blocking the caller. Result surfaces via `run status` (202 grading → grade).
+         *     A run the agent never started (still `created`) ends `cancelled` and is never graded, so its
+         *     result is the final `not_graded` answer instead (#187).
          */
         post: operations["terminate_run_api_runs__run_id__terminate_post"];
         delete?: never;
@@ -2634,8 +2637,10 @@ export interface components {
         };
         /**
          * NotGradedView
-         * @description The FINAL answer /result, /report and /stats give for a run cut short by an environment
-         *     failure (`deploy_failed` / `crashed`): such a run is never graded (#109). A 200, not a 202 —
+         * @description The FINAL answer /result, /report and /stats give for a run that is never graded: one cut
+         *     short by an environment failure (`deploy_failed` / `crashed`, #109), or one an operator stopped
+         *     before the agent started (`cancelled`), or one whose budget ran out before it did
+         *     (`never_started`, #187). A 200, not a 202 —
          *     an answer, not progress — so a poll loop stops on it.
          */
         NotGradedView: {
@@ -2654,7 +2659,7 @@ export interface components {
              * Terminal Trigger
              * @enum {string}
              */
-            terminal_trigger: "done" | "timeout" | "operator" | "deploy_failed" | "crashed";
+            terminal_trigger: "done" | "timeout" | "operator" | "cancelled" | "never_started" | "deploy_failed" | "crashed";
         };
         /**
          * PlaneStatus
@@ -3007,7 +3012,7 @@ export interface components {
              * @description How this run counts in every aggregate (`run_outcome`), derived from terminal_trigger on
              *     every read and never persisted. Clients read this instead of re-deriving it (#159).
              */
-            readonly outcome: ("completed" | "partial" | "infra_failed") | null;
+            readonly outcome: ("completed" | "partial" | "infra_failed" | "not_started") | null;
             /** Platform */
             platform?: string | null;
             /** Platform Digest */
@@ -3023,8 +3028,21 @@ export interface components {
              * @default generic
              */
             source_agent: string;
-            /** State */
-            state: string;
+            /** Start Trigger */
+            start_trigger?: ("telemetry" | "run_control" | "tailnet_key") | null;
+            /**
+             * Start Trigger Label
+             * @description How `start_trigger` reads beside `started_at` (START_TRIGGER_LABELS), so the GUI, the
+             *     CLI and the report word it identically. None when the run has not started.
+             */
+            readonly start_trigger_label: string | null;
+            /** Started At */
+            started_at?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "created" | "xorcising" | "terminal";
             /**
              * @description How this run is shown (`run_status`): label, tone and why it ended. Clients render this
              *     instead of mapping the trigger themselves, so the CLI and the GUI agree (#165).
@@ -3033,7 +3051,7 @@ export interface components {
             /** Terminal Detail */
             terminal_detail?: string | null;
             /** Terminal Trigger */
-            terminal_trigger?: ("done" | "timeout" | "operator" | "deploy_failed" | "crashed") | null;
+            terminal_trigger?: ("done" | "timeout" | "operator" | "cancelled" | "never_started" | "deploy_failed" | "crashed") | null;
         };
         /**
          * RunEntry
@@ -3093,7 +3111,7 @@ export interface components {
              * @description How this run counts in every aggregate (`run_outcome`), derived from terminal_trigger on
              *     every read and never persisted. Clients read this instead of re-deriving it (#159).
              */
-            readonly outcome: ("completed" | "partial" | "infra_failed") | null;
+            readonly outcome: ("completed" | "partial" | "infra_failed" | "not_started") | null;
             /** Platform */
             platform?: string | null;
             /** Platform Digest */
@@ -3107,8 +3125,21 @@ export interface components {
              * @default generic
              */
             source_agent: string;
-            /** State */
-            state: string;
+            /** Start Trigger */
+            start_trigger?: ("telemetry" | "run_control" | "tailnet_key") | null;
+            /**
+             * Start Trigger Label
+             * @description How `start_trigger` reads beside `started_at` (START_TRIGGER_LABELS), so the GUI, the
+             *     CLI and the report word it identically. None when the run has not started.
+             */
+            readonly start_trigger_label: string | null;
+            /** Started At */
+            started_at?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "created" | "xorcising" | "terminal";
             /**
              * @description How this run is shown (`run_status`): label, tone and why it ended. Clients render this
              *     instead of mapping the trigger themselves, so the CLI and the GUI agree (#165).
@@ -3117,7 +3148,7 @@ export interface components {
             /** Terminal Detail */
             terminal_detail?: string | null;
             /** Terminal Trigger */
-            terminal_trigger?: ("done" | "timeout" | "operator" | "deploy_failed" | "crashed") | null;
+            terminal_trigger?: ("done" | "timeout" | "operator" | "cancelled" | "never_started" | "deploy_failed" | "crashed") | null;
         };
         /**
          * RunEnvironmentView

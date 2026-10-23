@@ -30,8 +30,10 @@ export type ScoreBucket = RunScore["bucket"];
  *  GET /results/summary. The median is over `scored` runs only. */
 export type ScoreSummary = S["ScoreSummary"];
 
-/** The FINAL answer /result, /report and /stats give for a run cut short by an environment
- *  failure (`deploy_failed` / `crashed`): never graded, because the failure is not the agent's.
+/** The FINAL answer /result, /report and /stats give for a run that is never graded: one cut short
+ *  by an environment failure (`deploy_failed` / `crashed`), because the failure is not the agent's,
+ *  or one that ended before its agent started (`cancelled` / `never_started`), because there was
+ *  no attempt (#187).
  *  Declared in the OpenAPI schema (contracts.run.NotGradedView), so this is the generated type. */
 export type NotGradedView = S["NotGradedView"];
 /** The 202 /result, /report and /stats give while a terminal run's grade is being recorded. */

@@ -9,7 +9,8 @@ import { isTerminal, type RunTone } from "@/features/runs/run-state";
  *  green = completed, amber = partial, red = cut short by an environment failure, muted = other. */
 export type ToneMix = Record<RunTone, number>;
 
-const OUTCOME_TONE: Record<NonNullable<RunEntry["outcome"]>, RunTone> = {
+/** A run that ended before its agent started is left out first: it is not the agent's (#187). */
+const OUTCOME_TONE: Record<Exclude<NonNullable<RunEntry["outcome"]>, "not_started">, RunTone> = {
   completed: "green",
   partial: "amber",
   infra_failed: "red",
@@ -69,10 +70,14 @@ export function useFleetPerformance(): FleetPerformance {
   return useMemo(() => {
     const nameById = new Map((agentData ?? []).map((a) => [a.id, a.name]));
     const agentName = (id: string) => nameById.get(id) ?? id.slice(0, 8);
-    const terminal = (runs.data ?? []).filter(isTerminal);
+    // A run that ended before its agent started was never evaluated (#187).
+    const terminal = (runs.data ?? []).filter(
+      (r) => isTerminal(r) && r.outcome !== "not_started",
+    );
     const mix: ToneMix = { amber: 0, green: 0, red: 0, muted: 0 };
     // By outcome, not by the status tone: a timeout's tone is red, but it is a partial run.
-    for (const r of terminal) mix[r.outcome ? OUTCOME_TONE[r.outcome] : "muted"] += 1;
+    for (const r of terminal)
+      mix[r.outcome && r.outcome !== "not_started" ? OUTCOME_TONE[r.outcome] : "muted"] += 1;
 
     const trendByAgent = new Map<string, number[]>();
     for (const r of scores.data ?? []) {

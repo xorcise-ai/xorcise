@@ -111,6 +111,7 @@ export function RunPromptCard({
   runId,
   fill = false,
   awaitingEnvironment = false,
+  agentStarted = false,
 }: {
   runId: string;
   fill?: boolean;
@@ -119,6 +120,10 @@ export function RunPromptCard({
    *  invites launching into an environment whose targets do not exist yet, which is how an agent
    *  ends up joined to the tailnet with nothing to reach. */
   awaitingEnvironment?: boolean;
+  /** The agent has started (the run is xorcising, #209) but no trace has arrived. The payload stays
+   *  for reference, but "Action required — start your agent" would invite launching a second
+   *  agent on the same run. */
+  agentStarted?: boolean;
 }) {
   // Default "host": most operators paste this into a terminal (`claude -p`), where the collector
   // is localhost — host.docker.internal (the container address) does NOT resolve on the host.
@@ -188,9 +193,11 @@ export function RunPromptCard({
           <div className="flex min-w-0 items-center gap-2">
             <Terminal className="size-4 shrink-0 text-primary" />
             <h2 className="text-body font-semibold text-primary">
-              {awaitingEnvironment
-                ? "Preparing environment — launch once it is ready"
-                : "Action required — start your agent"}
+              {agentStarted
+                ? "Your agent has started — awaiting its first trace"
+                : awaitingEnvironment
+                  ? "Preparing environment — launch once it is ready"
+                  : "Action required — start your agent"}
             </h2>
           </div>
           {primaryText && (

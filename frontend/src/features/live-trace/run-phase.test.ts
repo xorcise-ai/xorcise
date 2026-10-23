@@ -4,7 +4,7 @@ import { serverView } from "@/test/fixtures";
 import type { RunEntry } from "@/lib/api/types";
 
 // A run as the server sends it: state, plus the outcome + status it derives from the trigger.
-const run = (state: string, trigger: RunEntry["terminal_trigger"] = null) => ({
+const run = (state: RunEntry["state"], trigger: RunEntry["terminal_trigger"] = null) => ({
   state,
   ...serverView(state, trigger),
 });
@@ -18,15 +18,16 @@ describe("runPhase", () => {
     expect(p.helpText).toMatch(/OpenTelemetry|trace/i);
   });
 
-  it("active but no trace yet → connecting (amber, active)", () => {
-    const p = runPhase(run("active"), 0);
-    expect(p.key).toBe("connecting");
+  it("xorcising but no trace yet → awaiting traces (amber, active)", () => {
+    const p = runPhase(run("xorcising"), 0);
+    expect(p.key).toBe("awaiting-traces");
+    expect(p.label).toBe("Awaiting traces");
     expect(p.tone).toBe("amber");
     expect(p.active).toBe(true);
   });
 
   it("trace flowing and not terminal → streaming (green, active)", () => {
-    const p = runPhase(run("active"), 5);
+    const p = runPhase(run("xorcising"), 5);
     expect(p.key).toBe("streaming");
     expect(p.tone).toBe("green");
     expect(p.active).toBe(true);
@@ -67,7 +68,7 @@ describe("runPhase", () => {
 
 describe("runPhase stall awareness", () => {
   it("flags a silent, previously-streaming run as stalled (red, inactive)", () => {
-    const p = runPhase(run("active"), 5, undefined, 240);
+    const p = runPhase(run("xorcising"), 5, undefined, 240);
     expect(p.key).toBe("stalled");
     expect(p.label).toBe("Stalled");
     expect(p.tone).toBe("red");
@@ -76,11 +77,11 @@ describe("runPhase stall awareness", () => {
   });
 
   it("never stalls a run that has not emitted at all — that state is Connecting/Awaiting", () => {
-    expect(runPhase(run("active"), 0, undefined, 240).key).toBe("connecting");
+    expect(runPhase(run("xorcising"), 0, undefined, 240).key).toBe("awaiting-traces");
   });
 
   it("a dead environment still outranks a stall", () => {
-    expect(runPhase(run("active"), 5, "failed", 240).key).toBe("environment-failed");
+    expect(runPhase(run("xorcising"), 5, "failed", 240).key).toBe("environment-failed");
   });
 
   it("a terminal run reports its outcome, never a stall", () => {
@@ -88,7 +89,7 @@ describe("runPhase stall awareness", () => {
   });
 
   it("keeps streaming while not stalled", () => {
-    expect(runPhase(run("active"), 5, undefined, null).key).toBe("streaming");
+    expect(runPhase(run("xorcising"), 5, undefined, null).key).toBe("streaming");
   });
 });
 

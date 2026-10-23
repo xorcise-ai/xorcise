@@ -24,8 +24,9 @@ export function Overview() {
 
   const installed = (missions.data ?? []).filter((c) => c.installed).length;
   const allRuns = runs.data ?? [];
-  const active = allRuns.filter((r) => r.state === "active").length;
-  const completed = allRuns.filter(isTerminal).length;
+  const xorcising = allRuns.filter((r) => r.state === "xorcising").length;
+  // A run that ended before its agent started was never evaluated (#187).
+  const completed = allRuns.filter((r) => isTerminal(r) && r.outcome !== "not_started").length;
   // Count only modules this host actually runs — a `not_deployed` module is absent, not
   // broken, and counting it would show a healthy control-only host as "2/5" and red.
   const planes = deployedPlanes(system.data?.planes ?? []);
@@ -55,7 +56,7 @@ export function Overview() {
         icon={Play}
         n={allRuns.length}
         label="Runs"
-        sub={active > 0 ? `${active} active` : undefined}
+        sub={xorcising > 0 ? `${xorcising} xorcising` : undefined}
       />
       {/* Counts every terminal run (completed, timed-out, failed…), so "Evaluated" is
           more accurate than "Completed" (report §4). */}
