@@ -22,7 +22,7 @@ vi.mock("next/link", () => ({
 }));
 
 import { CompletedRuns } from "./completed-runs";
-import { StripColumn } from "./run-strip";
+import { RunStrip, StripColumn } from "./run-strip";
 
 function serve(scores: RunScore[], summaries: ScoreSummary[]) {
   server.use(
@@ -181,6 +181,24 @@ describe("CompletedRuns: one card per agent, around its run strip", () => {
     expect(document.activeElement).toBe(cols[4]);
     fireEvent.keyDown(cols[4], { key: "Home" });
     expect(document.activeElement).toBe(cols[0]);
+  });
+
+  it("keeps the tab stop and the inspector on their run when a new run shifts a full strip", () => {
+    // jsdom cannot measure, so the strip fits its fallback of 24: full at 24 runs.
+    const runs = Array.from({ length: 24 }, (_, i) => scoreFixture({ run_id: `r${i}` }));
+    const { rerender } = renderWithProviders(<RunStrip runs={runs} median={0.5} summary="s" />);
+    const before = screen.getAllByTestId("strip-column");
+    act(() => before[10].focus());
+    expect(before[10]).toHaveAttribute("href", "/runs/result?id=r10");
+
+    rerender(
+      <RunStrip runs={[...runs, scoreFixture({ run_id: "r24" })]} median={0.5} summary="s" />,
+    );
+    const after = screen.getAllByTestId("strip-column");
+    const held = after.find((c) => c.tabIndex === 0)!;
+    expect(held).toHaveAttribute("href", "/runs/result?id=r10");
+    expect(after.indexOf(held)).toBe(9);
+    expect(after[9].className).toContain("ring-1");
   });
 
   it("shows the latest runs that fit, and says how many there are in all", async () => {

@@ -52,19 +52,24 @@ export function RunStrip({
   const [ref, fit] = useFitCount<HTMLDivElement>(MIN_COLUMN, GAP, MAX_COLUMNS, FALLBACK_COLUMNS);
   const shown = runs.slice(-fit);
   const hidden = runs.length - shown.length;
-  const [inspected, setInspected] = useState<number | null>(null);
-  const [stop, setStop] = useState<number | null>(null);
+  // The inspected run and the tab stop, by run id rather than by position, so a run that arrives
+  // while the strip is full (shifting every column left) leaves them on the same run.
+  const [inspectedId, setInspectedId] = useState<string | null>(null);
+  const [stopId, setStopId] = useState<string | null>(null);
   const cells = useRef<(HTMLAnchorElement | null)[]>([]);
+  const indexOf = (id: string | null) => (id === null ? -1 : shown.findIndex((r) => r.run_id === id));
 
-  // The one tab stop: the run last focused, else the newest.
-  const tabStop = Math.min(stop ?? shown.length - 1, shown.length - 1);
+  // The one tab stop: the run last focused, else (or once it no longer fits) the newest.
+  const held = indexOf(stopId);
+  const tabStop = held >= 0 ? held : shown.length - 1;
+  const inspected = indexOf(inspectedId);
   const inspect = (i: number | null) => {
-    setInspected(i);
+    setInspectedId(i === null ? null : shown[i].run_id);
     onInspect?.(i === null ? null : runGlyph(shown[i]).kind);
   };
   const focus = (i: number) => {
     const target = Math.max(0, Math.min(shown.length - 1, i));
-    setStop(target);
+    setStopId(shown[target]?.run_id ?? null);
     cells.current[target]?.focus();
   };
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -81,9 +86,9 @@ export function RunStrip({
     }
   };
 
-  const run = inspected === null ? null : shown[inspected];
+  const run = inspected >= 0 ? shown[inspected] : null;
   // Open the inspector on the side the column is on, so it never runs off the card.
-  const onRight = inspected !== null && inspected >= shown.length / 2;
+  const onRight = inspected >= shown.length / 2;
 
   return (
     <div className={cn("relative", className)}>
@@ -119,7 +124,7 @@ export function RunStrip({
               onMouseEnter={() => inspect(i)}
               onMouseLeave={() => inspect(null)}
               onFocus={() => {
-                setStop(i);
+                setStopId(r.run_id);
                 inspect(i);
               }}
               onBlur={() => inspect(null)}
