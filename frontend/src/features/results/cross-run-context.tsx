@@ -30,8 +30,13 @@ export function CrossRunContext({
     .filter((r) => r.mission_version === version && r.bucket === "scored" && r.overall != null)
     .map((r) => r.overall as number);
 
-  // Nothing to compare against yet: this is the agent's first scored run on this version.
-  if (!summary || summary.scored <= 1 || summary.median == null) {
+  // Whether this run is one of the median's own: a run left out of it is not compared with it.
+  const inMedian = own.bucket === "scored";
+  // Nothing to compare against yet: no OTHER scored run on this version. Only with no other run
+  // at all is this the agent's first; earlier runs may all have been stopped or unjudged.
+  const others = (summary?.scored ?? 0) - (inMedian ? 1 : 0);
+  if (!summary || others < 1 || summary.median == null) {
+    const first = (summary?.runs ?? 1) <= 1;
     return (
       <Card className="bg-card">
         <CardContent className="p-4">
@@ -39,17 +44,21 @@ export function CrossRunContext({
             Cross-run context
           </h2>
           <p className="text-body text-text-secondary">
-            First run for this agent on this mission — no prior results to compare against yet.
+            {first
+              ? "First run for this agent on this mission — no prior results to compare against yet."
+              : "No other scored run for this agent on this mission to compare against yet."}
           </p>
         </CardContent>
       </Card>
     );
   }
 
-  const delta = thisOverall - summary.median;
+  const delta = inMedian ? thisOverall - summary.median : 0;
   const deltaCls =
     delta > 0.001 ? "text-ok" : delta < -0.001 ? "text-err" : "text-text-tertiary";
-  const deltaLabel = `${delta >= 0 ? "+" : ""}${Math.round(delta * 100)} pts vs median`;
+  const deltaLabel = inMedian
+    ? `${delta >= 0 ? "+" : ""}${Math.round(delta * 100)} pts vs median`
+    : "not in the median";
   const aside = asideLine(summary);
 
   return (
