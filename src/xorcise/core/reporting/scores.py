@@ -39,7 +39,7 @@ class GradeFacts:
     overall: float
     deterministic: float
     judge: float
-    judge_status: JudgeStatus
+    judge_status: JudgeStatus | None
     judge_upper: float | None = None
     overall_upper: float | None = None
     grading_failed: bool = False
@@ -65,6 +65,22 @@ class GradeFacts:
             overall_upper=detail.get("overall_upper"),
             grading_failed=bool(detail.get("grading_failed"))
             or str(detail.get("judge_detail") or "").startswith(LEGACY_GRADING_FAILED_PREFIX),
+            judge_model=judge_model,
+        )
+
+    @classmethod
+    def unreadable(
+        cls, *, overall: float, deterministic: float, judge: float, judge_model: str | None
+    ) -> GradeFacts:
+        """For a stored grade that cannot be read back: its run was graded, so it is never left
+        `grading` (which would re-drive a grade that exists), but nothing says how, so it counts
+        as a grading failure, out of the median, with the row's own scores."""
+        return cls(
+            overall=overall,
+            deterministic=deterministic,
+            judge=judge,
+            judge_status=None,
+            grading_failed=True,
             judge_model=judge_model,
         )
 

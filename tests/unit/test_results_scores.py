@@ -441,6 +441,57 @@ def test_the_routes_read_a_recorded_grade_without_the_judges_evidence(migrated_h
     assert (row["bucket"], row["overall"]) == ("scored", pytest.approx(0.8))
 
 
+@pytest.mark.parametrize("detail", ["{not json", "[1, 2]"])
+def test_a_grade_that_cannot_be_read_back_counts_as_failed_not_grading(
+    migrated_home, detail
+) -> None:
+    """One unreadable stored grade must not take every view down: read as `grading`, it was
+    re-driven, and the re-drive's full read of it raised (a 500 on every route)."""
+    from sqlalchemy import update
+
+    from xorcise.core import agents, reporting
+    from xorcise.core.db import session_scope
+    from xorcise.core.reporting.models import ResultRow
+
+    install_mission(migrated_home, "c1")
+    a = agents.register("scout", endpoint="http://s")
+    _graded("s1", a.id, "done", _grade("s1", 1, 0.6))
+    _graded("s2", a.id, "done", _grade("s2", 1, 0.4))
+    with session_scope() as s:
+        s.execute(update(ResultRow).where(ResultRow.run_id == "s1").values(detail_json=detail))
+    assert reporting.has_result("s1")
+    c = _client()
+
+    resp = c.get("/api/results/runs")
+    assert resp.status_code == 200
+    rows = {r["run_id"]: r for r in resp.json()}
+    assert (rows["s1"]["bucket"], rows["s1"]["overall"]) == ("grading_failed", pytest.approx(0.8))
+    assert rows["s2"]["bucket"] == "scored"
+    for by in ("agent", "all", "mission", "mission_agent"):
+        resp = c.get("/api/results/summary", params={"by": by})
+        assert resp.status_code == 200, by
+        (summary,) = resp.json()
+        assert (summary["scored"], summary["grading_failed"]) == (1, 1)
+        assert summary["median"] == pytest.approx(0.7)
+
+
+def test_a_grade_that_cannot_be_read_back_is_not_re_driven(migrated_home) -> None:
+    from sqlalchemy import update
+
+    from xorcise.core import agents
+    from xorcise.core.db import session_scope
+    from xorcise.core.reporting.models import ResultRow
+    from xorcise.core.rest.run_terminate import ensure_graded_async
+
+    a = agents.register("scout", endpoint="http://s")
+    _graded("s1", a.id, "done", _grade("s1", 1, 0.6))
+    with session_scope() as s:
+        s.execute(update(ResultRow).values(detail_json="{not json"))
+    scheduled: list[object] = []
+    assert ensure_graded_async("s1", scheduled.append) is False
+    assert scheduled == []
+
+
 def test_a_corrupt_install_record_does_not_break_the_routes(migrated_home, monkeypatch) -> None:
     from xorcise.core import agents
     from xorcise.core.rest.routers import results
