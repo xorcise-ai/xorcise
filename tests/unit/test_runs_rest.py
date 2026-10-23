@@ -947,3 +947,94 @@ def test_both_deletes_declare_their_409_body(migrated_home):
         assert ref.endswith("/DeleteRefusal"), (path, ref)
     fields = spec["components"]["schemas"]["DeleteRefusal"]["properties"]
     assert set(fields) == {"detail", "reason", "run_ids", "forceable"}
+
+
+def _run_with_result(run_id: str, stats=None, model: str | None = None):
+    """A finished run with a recorded result and, optionally, a telemetry snapshot."""
+    from datetime import timedelta
+
+    from xorcise.core import agents, reporting, runs
+    from xorcise.core.contracts.grading import GradeResult, ScoreBreakdown
+    from xorcise.core.contracts.reporting import ResultConditions
+
+    agent = agents.register(f"agent-{run_id}", endpoint="http://b")
+    run = runs.create_run(agent_id=agent.id, mission="c1", run_id=run_id, run_control_key="K")
+    runs.mark_terminal(run_id, "done", run.created_at + timedelta(minutes=30))
+    reporting.record_result(
+        run_id=run_id,
+        agent_id=agent.id,
+        result=GradeResult(
+            run_id=run_id,
+            overall=0.5,
+            breakdown=ScoreBreakdown(deterministic=0.5, judge=0.5),
+            trace_ref=run_id,
+        ),
+        conditions=ResultConditions(model=model),
+        stats=stats(run.created_at) if stats else None,
+    )
+    finished = runs.get(run_id)
+    assert finished is not None
+    return finished
+
+
+def _timing(first_s: float, last_s: float, models: tuple[str, ...] = ()):
+    from datetime import timedelta
+
+    from xorcise.core.contracts.reporting import RunStats, TimingStats
+
+    def build(created):
+        return RunStats(
+            models=models,
+            timing=TimingStats(
+                elapsed_seconds=1800.0,
+                first_event_ts=created + timedelta(seconds=first_s),
+                last_event_ts=created + timedelta(seconds=last_s),
+            ),
+        )
+
+    return build
+
+
+def test_run_result_carries_the_reports_model_and_telemetry_window_cells(migrated_home):
+    """The results page renders these strings rather than re-deriving them (#146), so they are
+    the report's own cells, harness-reported qualifier included."""
+    from xorcise.core import reporting
+
+    _install_mission(migrated_home, "c1")
+    run = _run_with_result("run-cells-1", stats=_timing(1, 61, models=("gpt-x",)))
+    body = _client().get(f"/api/runs/{run.run_id}/result").json()
+    assert body["agent_model"] == "gpt-x (reported by the harness)"
+    assert body["telemetry_window"] == "1m 0s (reported by the harness)"
+
+    grade, conditions = reporting.get_result(run.run_id), reporting.result_conditions(run.run_id)
+    assert grade is not None and conditions is not None
+    md = reporting.render_markdown(
+        reporting.RunReportContext(
+            run=run,
+            agent_name="a",
+            grade=grade,
+            conditions=conditions,
+            stats=reporting.get_stats(run.run_id),
+        )
+    )
+    assert f"| Agent model | {body['agent_model']} |" in md
+    assert f"| Telemetry window | {body['telemetry_window']} |" in md
+
+
+def test_run_result_says_why_a_window_is_withheld(migrated_home):
+    _install_mission(migrated_home, "c1")
+    # An hour of telemetry in a run that lasted thirty minutes: the harness's clock, not the work.
+    run = _run_with_result("run-cells-2", stats=_timing(1, 3601), model="declared-m")
+    body = _client().get(f"/api/runs/{run.run_id}/result").json()
+    assert body["telemetry_window"] == (
+        "withheld — the harness reported more telemetry than the run has lasted"
+    )
+    assert body["agent_model"] == "declared-m (disclosed)"
+
+
+def test_run_result_without_telemetry_has_no_window_and_no_model(migrated_home):
+    _install_mission(migrated_home, "c1")
+    run = _run_with_result("run-cells-3")
+    body = _client().get(f"/api/runs/{run.run_id}/result").json()
+    assert body["telemetry_window"] is None
+    assert body["agent_model"] == "not disclosed"

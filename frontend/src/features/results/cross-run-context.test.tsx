@@ -40,3 +40,18 @@ describe("summarizeRuns", () => {
     expect(s.trend).toEqual([]);
   });
 });
+
+describe("summarizeRuns no-judge count (#143)", () => {
+  it("counts runs scored with no judge, over the runs in the average only", () => {
+    const s = summarizeRuns([
+      { overall: 0.5, partial: false, judgeDegraded: true, when: "2026-01-01" },
+      { overall: 0.9, partial: false, when: "2026-01-02" },
+      // Timed out: not in the average, so not counted either.
+      { overall: 0.2, partial: true, judgeDegraded: true, when: "2026-01-03" },
+      // Not graded yet: not in the average.
+      { overall: null, partial: false, judgeDegraded: true, when: "2026-01-04" },
+    ]);
+    expect(s.n).toBe(2);
+    expect(s.noJudge).toBe(1);
+  });
+});
