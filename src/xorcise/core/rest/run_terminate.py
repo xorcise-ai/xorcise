@@ -10,7 +10,8 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Literal
 
@@ -44,6 +45,12 @@ __all__ = [
 # run that is STILL ungraded can be re-driven by a later poll.
 _grading_lock = threading.Lock()
 _grading_in_flight: set[str] = set()
+# The slots above that a run delete holds (`grades_held`, #188), and the runs whose grade arrived
+# while one was held. A grade turned away by a delete that then does NOT happen must not be lost:
+# the watchdog never revisits a terminal run, and the release sweeper waits for a result before it
+# releases one, so it would sit ungraded with its environment up until a poll or a restart.
+_held: set[str] = set()
+_deferred: set[str] = set()
 
 # Runs THIS process sealed and has not yet graded. At XORCISE_TELEMETRY_DRAIN_SECONDS=0 —
 # the whole test suite, and a documented operator mode — seal_terminal seals synchronously, so the
@@ -198,6 +205,8 @@ def grade_and_record(run_id: str) -> None:
     grading ends."""
     with _grading_lock:
         if run_id in _grading_in_flight:
+            if run_id in _held:
+                _deferred.add(run_id)  # a delete holds it: grade once it lets go, if still here
             return  # a grade for this run is already in flight — the drain-window duplicate
         _grading_in_flight.add(run_id)
     try:
@@ -213,6 +222,45 @@ def is_grading(run_id: str) -> bool:
     leave a run's environment alone until its grade, and the teardown in its `finally`, is done."""
     with _grading_lock:
         return run_id in _grading_in_flight
+
+
+@contextmanager
+def grades_held(run_ids: Collection[str]) -> Iterator[tuple[str, ...]]:
+    """Hold the grading slot of every run in *run_ids* for the body of the `with` (#188).
+
+    Yields the runs that already have a grade in flight. When there are any, nothing is claimed,
+    and the caller refuses. When there are none, every slot is claimed in one step under the lock,
+    and a grade that starts while they are held — a result poll's re-drive, the boot regrade —
+    no-ops, as a duplicate grade already does. A run delete holds them from its checks to the end
+    of its purge: it releases the environment in between, which takes seconds, and a grade that
+    started in that window wrote a result for a run whose row was about to go. Released however
+    the body ends. A grade turned away meanwhile is re-scheduled on release for every run that
+    still exists — a refused delete — so the hold never costs a run its grade."""
+    ids = tuple(dict.fromkeys(run_ids))
+    with _grading_lock:
+        busy = tuple(r for r in ids if r in _grading_in_flight)
+        claimed = () if busy else ids
+        _grading_in_flight.update(claimed)
+        _held.update(claimed)
+    try:
+        yield busy
+    finally:
+        with _grading_lock:
+            _grading_in_flight.difference_update(claimed)
+            _held.difference_update(claimed)
+            turned_away = _deferred.intersection(claimed)
+            _deferred.difference_update(claimed)
+        for run_id in turned_away:
+            if runs.get(run_id) is not None:  # deleted: nothing left to grade
+                _regrade_later(run_id)
+
+
+def _regrade_later(run_id: str) -> None:
+    """Grade *run_id* on a thread of its own: the caller is a request handler, and a grade waits
+    out the telemetry drain and the judge. grade_and_record is idempotent and de-duplicated."""
+    threading.Thread(
+        target=grade_and_record, args=(run_id,), name=f"regrade-{run_id[:8]}", daemon=True
+    ).start()
 
 
 def ensure_graded_async(run_id: str, schedule: Callable[[Callable[[], None]], None]) -> bool:

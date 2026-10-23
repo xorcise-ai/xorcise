@@ -273,13 +273,11 @@ def delete_run(run_id: str, force: bool = False) -> Response:
     run = runs.get(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"no run '{run_id}'")
-    from xorcise.core.rest.run_purge import purge_runs
-    from xorcise.core.rest.run_teardown import check_deletable
+    from xorcise.core.rest.run_teardown import delete_runs
 
-    blocked = check_deletable([run_id], force=force)
+    blocked = delete_runs([run_id], force=force)
     if blocked is not None:
         return JSONResponse(status_code=409, content=blocked.body())
-    purge_runs([run_id])
     return Response(status_code=204)
 
 
