@@ -27,14 +27,19 @@ def _fail_on_a_live_runner(cli: Any, ours: set[str]) -> None:
 
     `reap_managed` is host-wide: it removes EVERY xorcise.managed container on the daemon, not
     only the ones a test made. Running this lane on a host whose runner holds live runs would
-    tear those runs down mid-mission, so any managed container the test did not create fails the
-    test before anything is removed."""
-    from xorcise.core.runner.docker import MANAGED_LABEL
+    tear those runs down mid-mission, so any run's managed container the test did not create
+    fails the test before anything is removed.
+
+    Only a container carrying a run id belongs to a run. One without — the nested-support probe,
+    the image-file read — is a throwaway that holds nothing of any run's, and the probe is left
+    behind whenever a server is stopped mid-probe, as the e2e lane stops its servers. Counting it
+    failed every adapters run after an e2e run, for nothing reaping it could break."""
+    from xorcise.core.runner.docker import MANAGED_LABEL, RUN_ID_LABEL
 
     live = sorted(
         c.name
         for c in cli.containers.list(all=True, filters={"label": f"{MANAGED_LABEL}=true"})
-        if c.name not in ours
+        if c.name not in ours and (c.labels or {}).get(RUN_ID_LABEL)
     )
     if live:
         pytest.fail(
@@ -44,6 +49,23 @@ def _fail_on_a_live_runner(cli: Any, ours: set[str]) -> None:
             "runner (or `xorcise down` first)",
             pytrace=False,
         )
+
+
+def test_the_live_runner_guard_counts_runs_not_throwaways() -> None:
+    """A managed container with no run id (a nested-support probe stranded by a server stopped
+    mid-probe) does not fail the guard; one with a run id does (Guru's #212 review)."""
+    from types import SimpleNamespace
+
+    from xorcise.core.runner.docker import MANAGED_LABEL, RUN_ID_LABEL
+
+    def daemon(*containers: SimpleNamespace) -> SimpleNamespace:
+        return SimpleNamespace(containers=SimpleNamespace(list=lambda **_: list(containers)))
+
+    probe = SimpleNamespace(name="eager_turing", labels={MANAGED_LABEL: "true"})
+    run = SimpleNamespace(name="run-1", labels={MANAGED_LABEL: "true", RUN_ID_LABEL: "run-1"})
+    _fail_on_a_live_runner(daemon(probe), set())  # a throwaway: no failure
+    with pytest.raises(pytest.fail.Exception, match="run-1"):
+        _fail_on_a_live_runner(daemon(probe, run), set())
 
 
 @pytest.mark.skipif(not _docker_available(), reason="needs the docker SDK + a running daemon")
