@@ -81,11 +81,11 @@ def test_doctor_runs_the_nested_probe_only_when_docker_is_up(monkeypatch) -> Non
     monkeypatch.setenv("XORCISE_ROLE", "all")
     probed: list[int] = []
 
-    def _record() -> diag.Check:
+    def _record() -> list[diag.Check]:
         probed.append(1)
-        return diag.Check("nested containers", True, "ok")
+        return [diag.Check("nested containers", True, "ok")]
 
-    monkeypatch.setattr(lifecycle, "nested_containers", _record)
+    monkeypatch.setattr(lifecycle, "nested_container_checks", _record)
 
     monkeypatch.setattr(
         lifecycle,
@@ -113,11 +113,11 @@ def test_stub_mode_skips_the_nested_probe(monkeypatch) -> None:
 
     probed: list[int] = []
 
-    def _record() -> diag.Check:
+    def _record() -> list[diag.Check]:
         probed.append(1)
-        return diag.Check("nested containers", True, "ok")
+        return [diag.Check("nested containers", True, "ok")]
 
-    monkeypatch.setattr(lifecycle, "nested_containers", _record)
+    monkeypatch.setattr(lifecycle, "nested_container_checks", _record)
     # docker UP, but stubs are the suite default: the gate's `not s.use_stubs` must still skip.
     monkeypatch.setattr(
         lifecycle, "_environment_checks", lambda: [diag.Check("docker", True, "reachable")]
@@ -133,7 +133,7 @@ def test_up_never_runs_the_nested_probe(monkeypatch) -> None:
 
     monkeypatch.setattr(
         lifecycle,
-        "nested_containers",
+        "nested_container_checks",
         lambda: (_ for _ in ()).throw(AssertionError("`up` must not probe")),
     )
     names = {c.name for c in lifecycle._environment_checks()}

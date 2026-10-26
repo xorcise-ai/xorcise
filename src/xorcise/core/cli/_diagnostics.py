@@ -342,6 +342,21 @@ def mission_base_release() -> Check:
     )
 
 
+def _nested_check(platform: str, ok: bool, detail: str, remediation: str) -> Check:
+    """One nested-container line. The native platform ("") is a blocker when refused: no lab
+    mission can run. A foreign one is only a warning, since native missions still run."""
+    from xorcise.core.runner.docker.rosetta import clip_detail
+
+    if not platform:
+        if ok:
+            return Check("nested containers", True, clip_detail(detail))
+        return Check("nested containers", False, clip_detail(detail), remediation)
+    name = f"nested containers ({platform})"
+    if ok:
+        return Check(name, True, clip_detail(detail))
+    return Check(name, True, clip_detail(detail), remediation, level="warning")
+
+
 def nested_containers() -> Check:
     """Can this host run a mission's containers INSIDE the run container?
 
@@ -363,8 +378,9 @@ def nested_containers() -> Check:
         return docker.from_env()
 
     try:
-        # fresh=True: doctor reports CURRENT health, so it re-probes rather than reading the
-        # server's memoised verdict — and a green doctor refreshes that memo (see nested_support).
+        # fresh=True: doctor reports CURRENT health, so it re-probes rather than reading a
+        # memoised verdict. This runs in the CLI's own process, so it refreshes nothing a running
+        # server holds — that is `nested_container_checks`' server path (#195).
         support = nested_support(get_settings(), _client, fresh=True)
     except Exception as exc:  # noqa: BLE001 — an undetermined probe must not crash `doctor`
         # Deliberately a WARNING, not a failure: "the probe itself broke" is a different claim
@@ -372,9 +388,7 @@ def nested_containers() -> Check:
         return Check(
             "nested containers", True, f"undetermined ({clip_detail(str(exc))})", level="warning"
         )
-    if support.ok:
-        return Check("nested containers", True, clip_detail(support.detail))
-    return Check("nested containers", False, clip_detail(support.detail), support.remediation)
+    return _nested_check("", support.ok, support.detail, support.remediation)
 
 
 def nested_containers_foreign() -> list[Check]:
@@ -384,18 +398,82 @@ def nested_containers_foreign() -> list[Check]:
     to change when they enable Rosetta and re-run `doctor`, so it must be visible here, and
     visibly cleared, rather than discoverable only by the next `run create`."""
     from xorcise.core.rest.docker_runtime import memoised_verdicts
+
+    return [
+        _nested_check(plat, v.ok, v.detail, v.remediation)
+        for plat, v in sorted(memoised_verdicts().items())
+    ]
+
+
+#: The server's re-probe starts a privileged container per platform it holds a verdict for, and
+#: a cold host pulls the probe image first, so allow minutes, not the CLI's usual seconds.
+_NESTED_REFRESH_TIMEOUT = 300.0
+
+
+def nested_container_checks() -> list[Check]:
+    """`doctor`'s nested-container lines: the running server's verdicts, re-probed (#195).
+
+    Run creation reads the verdicts the SERVER holds, in its own process. So when this home's
+    server is up, doctor asks it to re-probe and shows what it answers: a refusal cached before
+    the operator fixed the host (enabled Rosetta, say) clears there, without a restart, and the
+    foreign-platform lines show the platforms runs actually asked about. With no server running
+    there is nothing cached to clear, so doctor probes here instead. A server too old to re-probe
+    on request gets the local probe plus a warning that it still holds its old verdicts."""
+    from xorcise.core.home import pid_file
+
+    if not pid_file().exists():  # no server from this home, so no cached verdict to clear
+        return [nested_containers(), *nested_containers_foreign()]
+    from xorcise.core.cli.rest_client import _error_detail, default_base_url
+    from xorcise.core.contracts.config import NestedSupportView
     from xorcise.core.runner.docker.rosetta import clip_detail
 
-    checks: list[Check] = []
-    for plat, support in sorted(memoised_verdicts().items()):
-        name = f"nested containers ({plat})"
-        if support.ok:
-            checks.append(Check(name, True, clip_detail(support.detail)))
-        else:
-            checks.append(
-                Check(name, True, clip_detail(support.detail), support.remediation, level="warning")
+    def _undetermined(why: str) -> list[Check]:
+        return [
+            Check(
+                "nested containers",
+                True,
+                f"undetermined (server: {clip_detail(why)})",
+                level="warning",
             )
-    return checks
+        ]
+
+    try:
+        resp = httpx.post(
+            f"{default_base_url()}/system/nested-support/refresh",
+            timeout=_NESTED_REFRESH_TIMEOUT,
+            trust_env=False,
+        )
+    except httpx.ConnectError:  # the pid file outlived the server: probe here
+        return [nested_containers(), *nested_containers_foreign()]
+    except httpx.TimeoutException:
+        # The server is up and still probing. Probing here as well would print a verdict the
+        # next run does not read, which is the very bug this path exists to fix.
+        return _undetermined(f"no answer within {_NESTED_REFRESH_TIMEOUT:.0f} s, still probing")
+    except httpx.HTTPError as exc:
+        return _undetermined(f"{type(exc).__name__}: {exc}")
+    if resp.status_code in (404, 405):
+        return [
+            nested_containers(),
+            *nested_containers_foreign(),
+            Check(
+                "nested containers (server)",
+                True,
+                "the running server cannot re-probe on request, so it keeps any refusal it "
+                "cached until it restarts",
+                "restart XORCISE (xorcise down && xorcise up) after fixing the host",
+                level="warning",
+            ),
+        ]
+    if resp.is_error:
+        return _undetermined(_error_detail(resp))
+    try:
+        view = NestedSupportView.model_validate(resp.json())
+    except ValueError:  # not JSON, or not this shape (a ValidationError is a ValueError)
+        return _undetermined("its answer was not a nested-support verdict")
+    return [
+        _nested_check("", view.native.ok, view.native.detail, view.native.remediation),
+        *(_nested_check(v.platform, v.ok, v.detail, v.remediation) for v in view.foreign),
+    ]
 
 
 def control_plane_address(
