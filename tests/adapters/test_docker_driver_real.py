@@ -1,4 +1,5 @@
 import contextlib
+from typing import Any
 
 import pytest
 
@@ -19,6 +20,30 @@ def _docker_available() -> bool:
         return True
     except Exception:
         return False
+
+
+def _fail_on_a_live_runner(cli: Any, ours: set[str]) -> None:
+    """Fail before a test calls `reap_managed`, if this daemon runs a deployed XORCISE.
+
+    `reap_managed` is host-wide: it removes EVERY xorcise.managed container on the daemon, not
+    only the ones a test made. Running this lane on a host whose runner holds live runs would
+    tear those runs down mid-mission, so any managed container the test did not create fails the
+    test before anything is removed."""
+    from xorcise.core.runner.docker import MANAGED_LABEL
+
+    live = sorted(
+        c.name
+        for c in cli.containers.list(all=True, filters={"label": f"{MANAGED_LABEL}=true"})
+        if c.name not in ours
+    )
+    if live:
+        pytest.fail(
+            f"this Docker daemon holds {len(live)} XORCISE-managed container(s) this test did not "
+            f"create ({', '.join(live[:5])}{', …' if len(live) > 5 else ''}). reap_managed is "
+            "host-wide and would remove them, so run the adapters lane on a host with no deployed "
+            "runner (or `xorcise down` first)",
+            pytrace=False,
+        )
 
 
 @pytest.mark.skipif(not _docker_available(), reason="needs the docker SDK + a running daemon")
@@ -74,6 +99,7 @@ def test_reap_managed_removes_managed_containers_only() -> None:
     for n in everything:  # idempotent: clear any leftovers from a prior failed run
         with contextlib.suppress(Exception):
             cli.containers.get(n).remove(force=True)
+    _fail_on_a_live_runner(cli, everything)
     for n in managed:
         cli.containers.create(img, name=n, labels={MANAGED_LABEL: "true", RUN_ID_LABEL: n})
     cli.containers.create(img, name=unscoped, labels={MANAGED_LABEL: "true"})  # no RUN_ID_LABEL
@@ -91,3 +117,52 @@ def test_reap_managed_removes_managed_containers_only() -> None:
     finally:
         with contextlib.suppress(Exception):
             cli.containers.get(bystander).remove(force=True)
+
+
+@pytest.mark.skipif(not _docker_available(), reason="needs the docker SDK + a running daemon")
+def test_teardown_and_reap_take_the_anonymous_volume_with_the_container() -> None:
+    """A run container's anonymous volume (the dind /var/lib/docker, holding the inner daemon's
+    image store) goes with it on both teardown and reap, not left dangling per run (#66)."""
+    import docker
+
+    from xorcise.core.runner.docker import MANAGED_LABEL, RUN_ID_LABEL
+
+    cli = docker.from_env()
+    img = "alpine:3.19"
+    try:
+        cli.images.get(img)
+    except docker.errors.ImageNotFound:
+        try:
+            cli.images.pull(img)
+        except Exception:
+            pytest.skip(f"cannot obtain {img} (offline)")
+
+    names = ["xor66t-stopped", "xor66t-reaped"]
+    for n in names:  # idempotent: clear any leftovers from a prior failed run
+        with contextlib.suppress(Exception):
+            cli.containers.get(n).remove(force=True, v=True)
+    _fail_on_a_live_runner(cli, set(names))
+    volumes = {}
+    for n in names:
+        # A sourceless volume mount is an anonymous volume, as the dind image's VOLUME makes.
+        c = cli.containers.create(
+            img,
+            name=n,
+            mounts=[docker.types.Mount(target="/var/lib/docker", source=None, type="volume")],
+            labels={MANAGED_LABEL: "true", RUN_ID_LABEL: n},
+        )
+        c.reload()
+        volumes[n] = next(m["Name"] for m in c.attrs["Mounts"] if m["Type"] == "volume")
+    try:
+        driver = DockerSdkDriver()
+        assert driver.stop_by_name("xor66t-stopped") is True
+        assert "xor66t-reaped" in driver.reap_managed()
+        left = {v.name for v in cli.volumes.list()}
+        assert not (set(volumes.values()) & left), "an anonymous run volume outlived its container"
+    finally:
+        for n in names:
+            with contextlib.suppress(Exception):
+                cli.containers.get(n).remove(force=True, v=True)
+        for v in volumes.values():
+            with contextlib.suppress(Exception):
+                cli.volumes.get(v).remove(force=True)
