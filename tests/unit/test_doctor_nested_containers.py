@@ -48,7 +48,7 @@ def test_a_broken_probe_is_a_warning_not_a_failure(monkeypatch) -> None:
 
     monkeypatch.setattr(dr, "nested_support", _boom)
     check = diag.nested_containers()
-    assert check.ok is True
+    assert check.ok is False  # amber, never a green tick
     assert check.level == "warning"
     assert "undetermined" in check.detail
 

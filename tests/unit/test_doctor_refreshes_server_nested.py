@@ -255,6 +255,7 @@ def test_an_older_server_gets_the_local_probe_and_a_restart_warning(
     checks = diag.nested_container_checks()
     assert [c.detail for c in checks][0] == "local"
     assert checks[-1].level == "warning"
+    assert checks[-1].ok is False  # drawn amber with its fix, not as a passing tick
     assert "restart" in checks[-1].remediation
 
 
@@ -263,7 +264,7 @@ def test_a_server_that_cannot_probe_is_undetermined_not_failed(monkeypatch, migr
     _local_probe_forbidden(monkeypatch)
     _answer(monkeypatch, 503, {"detail": "Docker daemon is not reachable"})
     (check,) = diag.nested_container_checks()
-    assert check.ok is True and check.level == "warning"
+    assert check.ok is False and check.level == "warning"  # amber, never a green tick
     assert "undetermined" in check.detail and "not reachable" in check.detail
 
 
@@ -280,7 +281,7 @@ def test_a_server_still_probing_is_undetermined_not_probed_again(
 
     monkeypatch.setattr("xorcise.core.cli._diagnostics.httpx.post", _slow)
     (check,) = diag.nested_container_checks()
-    assert check.ok is True and check.level == "warning"
+    assert check.ok is False and check.level == "warning"  # amber, never a green tick
     assert "still probing" in check.detail
 
 
@@ -295,5 +296,23 @@ def test_an_unexpected_answer_is_undetermined_not_a_crash(
     _local_probe_forbidden(monkeypatch)
     _answer(monkeypatch, status, body)
     (check,) = diag.nested_container_checks()
-    assert check.ok is True and check.level == "warning"
+    assert check.ok is False and check.level == "warning"  # amber, never a green tick
     assert "undetermined" in check.detail
+
+
+def test_doctor_draws_an_undetermined_probe_amber_with_its_fix_not_a_green_tick(
+    monkeypatch, migrated_home
+) -> None:
+    """Guru's #213 review: "undetermined" was printed beside a green tick, which reads as a pass
+    when nothing was confirmed. It is drawn as an amber warning with what to do, and it still
+    does not fail doctor's verdict (only blockers do)."""
+    from xorcise.core.cli.commands.lifecycle import _doctor_line
+
+    _server_up()
+    _local_probe_forbidden(monkeypatch)
+    _answer(monkeypatch, 503, {"detail": "Docker daemon is not reachable"})
+    (check,) = diag.nested_container_checks()
+    line = _doctor_line(check)
+    assert "✓" not in line and "[warn]![/warn]" in line
+    assert "undetermined" in line and "re-run xorcise doctor" in line
+    assert check.level == "warning"  # advisory: never flips the verdict

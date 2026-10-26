@@ -384,9 +384,14 @@ def nested_containers() -> Check:
         support = nested_support(get_settings(), _client, fresh=True)
     except Exception as exc:  # noqa: BLE001 — an undetermined probe must not crash `doctor`
         # Deliberately a WARNING, not a failure: "the probe itself broke" is a different claim
-        # from "this host cannot nest", and only the second should fail the verdict.
+        # from "this host cannot nest", and only the second should fail the verdict. Not `ok`
+        # either: doctor draws an ok check as a green tick, and nothing here was confirmed.
         return Check(
-            "nested containers", True, f"undetermined ({clip_detail(str(exc))})", level="warning"
+            "nested containers",
+            False,
+            f"undetermined ({clip_detail(str(exc))})",
+            _UNDETERMINED_FIX,
+            level="warning",
         )
     return _nested_check("", support.ok, support.detail, support.remediation)
 
@@ -404,6 +409,12 @@ def nested_containers_foreign() -> list[Check]:
         for plat, v in sorted(memoised_verdicts().items())
     ]
 
+
+#: What to do about a nested-container probe that could not reach a verdict either way.
+_UNDETERMINED_FIX = (
+    "re-run xorcise doctor once Docker is healthy; if it stays undetermined, check that Docker "
+    "can start privileged containers"
+)
 
 #: The server's re-probe starts a privileged container per platform it holds a verdict for, and
 #: a cold host pulls the probe image first, so allow minutes, not the CLI's usual seconds.
@@ -427,12 +438,15 @@ def nested_container_checks() -> list[Check]:
     from xorcise.core.contracts.config import NestedSupportView
     from xorcise.core.runner.docker.rosetta import clip_detail
 
-    def _undetermined(why: str) -> list[Check]:
+    def _undetermined(why: str, fix: str = _UNDETERMINED_FIX) -> list[Check]:
+        # Not `ok`: doctor draws an ok check as a green tick, and nothing here was confirmed. A
+        # warning, so it never fails the verdict either (see nested_containers).
         return [
             Check(
                 "nested containers",
-                True,
+                False,
                 f"undetermined (server: {clip_detail(why)})",
+                fix,
                 level="warning",
             )
         ]
@@ -448,7 +462,10 @@ def nested_container_checks() -> list[Check]:
     except httpx.TimeoutException:
         # The server is up and still probing. Probing here as well would print a verdict the
         # next run does not read, which is the very bug this path exists to fix.
-        return _undetermined(f"no answer within {_NESTED_REFRESH_TIMEOUT:.0f} s, still probing")
+        return _undetermined(
+            f"no answer within {_NESTED_REFRESH_TIMEOUT:.0f} s, still probing",
+            "the server is still probing — re-run xorcise doctor in a minute",
+        )
     except httpx.HTTPError as exc:
         return _undetermined(f"{type(exc).__name__}: {exc}")
     if resp.status_code in (404, 405):
@@ -457,7 +474,7 @@ def nested_container_checks() -> list[Check]:
             *nested_containers_foreign(),
             Check(
                 "nested containers (server)",
-                True,
+                False,  # a warning with a fix to show, not a pass: doctor ticks an ok check
                 "the running server cannot re-probe on request, so it keeps any refusal it "
                 "cached until it restarts",
                 "restart XORCISE (xorcise down && xorcise up) after fixing the host",
