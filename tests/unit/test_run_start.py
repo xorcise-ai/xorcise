@@ -146,3 +146,53 @@ def test_a_failed_write_is_retried_by_the_next_signal(migrated_home, monkeypatch
     assert _started(rid) == ("created", None, False)
     run_start.telemetry_started(rid)
     assert _started(rid) == ("xorcising", "telemetry", True)
+
+
+def _expired_run() -> str:
+    """A run still `created` whose 1s budget ran out 10s ago (its creation time backdated)."""
+    from datetime import timedelta
+
+    from sqlalchemy import update
+
+    from xorcise.core.db import session_scope
+    from xorcise.core.runs.models import RunRow
+
+    rid = runs.create_run(
+        agent_id="a1", mission="c", run_control_key=BEARER, join_key="k", budget_seconds=1
+    ).run_id
+    with session_scope() as s:
+        s.execute(
+            update(RunRow)
+            .where(RunRow.id == rid)
+            .values(created_at=datetime.now(UTC) - timedelta(seconds=10))
+        )
+    return rid
+
+
+def test_a_signal_after_the_budget_ran_out_does_not_start_the_run(migrated_home):
+    """Guru's #211 review: the run-over gate runs after `require_run`, and the watchdog only ticks
+    every few seconds, so a first signal past the budget marked the run started just before it was
+    closed, and it was graded as a 0.00 timeout instead of ending `never_started`."""
+    rid = _expired_run()
+    run_start.telemetry_started(rid)
+    assert _started(rid) == ("created", None, False)
+    assert rid not in run_start._seen
+
+
+def test_the_run_control_gate_then_ends_it_never_started_and_ungraded(migrated_home):
+    """End to end over run-control: the agent's first call arrives after its budget ran out."""
+    from xorcise.core import reporting
+
+    rid = _expired_run()
+    r = TestClient(build_rest_app()).get(
+        f"/api/runs/{rid}/mission", headers={"Authorization": f"Bearer {BEARER}"}
+    )
+    assert r.status_code == 409  # mission over
+    ended = runs.get(rid)
+    assert ended is not None
+    assert (ended.terminal_trigger, ended.outcome, ended.started_at) == (
+        "never_started",
+        "not_started",
+        None,
+    )
+    assert reporting.get_result(rid) is None

@@ -32,6 +32,11 @@ _seen: OrderedDict[str, None] = OrderedDict()
 def note_started(run_id: str, trigger: StartTrigger) -> None:
     """Move *run_id* to `xorcising` if it is still `created`, recording *trigger* and now.
 
+    A signal that arrives after the run's budget has run out does not start it. The run is over
+    in all but the watchdog's next tick, or the run-over gate this same call is about to pass, and
+    either one ends a run still `created` as `never_started`, ungraded. Marking it started first
+    turned that into a graded 0.00 timeout for an agent that never had any budget to use.
+
     Best-effort: a failure is logged, never raised, because the call it rides on (an export, a
     flag submission) must not fail over a status. The run is only remembered once the write has
     gone through, so a failed write is retried by the agent's next signal."""
@@ -39,8 +44,11 @@ def note_started(run_id: str, trigger: StartTrigger) -> None:
         if run_id in _seen:
             _seen.move_to_end(run_id)
             return
+    now = datetime.now(UTC)
     try:
-        if runs.mark_started(run_id, trigger, datetime.now(UTC)):
+        if runs.is_budget_expired(run_id, now):
+            return  # not remembered: nothing was written, and the run is about to end anyway
+        if runs.mark_started(run_id, trigger, now):
             log.info("run %s is xorcising (first signal: %s)", run_id, trigger)
     except Exception:
         log.warning("could not record that run %s started", run_id, exc_info=True)
