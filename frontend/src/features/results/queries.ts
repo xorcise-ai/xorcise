@@ -1,15 +1,21 @@
+import { useMemo } from "react";
 import {
+  keepPreviousData,
   useQuery,
   useQueries,
   useMutation,
   useQueryClient,
 } from "@tanstack/react-query";
 import { api } from "@/lib/api/client";
+import { useRuns } from "@/features/runs/queries";
+import { isTerminal } from "@/features/runs/run-state";
 import {
   isNotGraded,
   type RunResultView,
   type RunArtifact,
   type RunStats,
+  type RunScore,
+  type ScoreSummary,
 } from "@/lib/api/types";
 
 /** How often the results view re-polls a terminal-but-ungraded run (202 {status:"grading"}). */
@@ -61,6 +67,7 @@ export function useRegradeRun(runId: string) {
       qc.invalidateQueries({ queryKey: ["runs", runId, "result"] });
       qc.invalidateQueries({ queryKey: ["runs", runId, "stats"] });
       qc.invalidateQueries({ queryKey: ["runs"] });
+      qc.invalidateQueries({ queryKey: ["results"] });
     },
   });
 }
@@ -115,4 +122,89 @@ export function useRunResults(runIds: string[]) {
       retry: false,
     })),
   });
+}
+
+/** Narrows the performance routes: an agent id and/or a mission slug. */
+export interface ScoreFilter {
+  agent?: string;
+  mission?: string;
+}
+
+function scoreQuery(filter: ScoreFilter, extra: Record<string, string> = {}): string {
+  const params = new URLSearchParams(extra);
+  if (filter.agent) params.set("agent", filter.agent);
+  if (filter.mission) params.set("mission", filter.mission);
+  const q = params.toString();
+  return q ? `?${q}` : "";
+}
+
+/** Re-poll while any run is still being graded, so its column fills in by itself. */
+const SCORES_POLL_MS = 5000;
+
+/**
+ * Which runs have finished, as a short fingerprint, for the performance queries' keys. A run that
+ * finishes, or one deleted, changes it, so every view refetches from the runs list the app already
+ * polls, never from a mutation each place would have to remember to invalidate. Undefined until
+ * the runs list has answered once, so the views do not fetch twice on load.
+ */
+function useFinishedRuns(): string | undefined {
+  const runs = useRuns();
+  return useMemo(() => {
+    if (runs.data === undefined) return runs.isError ? "unknown" : undefined;
+    // FNV-1a over the finished runs' ids, sorted: order-free, and a fixed size however many.
+    let hash = 0x811c9dc5;
+    const ids = runs.data.filter(isTerminal).map((r) => r.run_id).sort();
+    for (const id of ids) {
+      for (let i = 0; i < id.length; i++) {
+        hash ^= id.charCodeAt(i);
+        hash = Math.imul(hash, 0x01000193);
+      }
+      hash ^= 0x2c; // the separator, so "ab","c" and "a","bc" differ
+      hash = Math.imul(hash, 0x01000193);
+    }
+    return `${ids.length}:${(hash >>> 0).toString(36)}`;
+  }, [runs.data, runs.isError]);
+}
+
+/** A query held back until the runs list answers reads as loading, not as an empty answer. */
+function waitingOnRuns<Q extends { isLoading: boolean }>(query: Q, waiting: boolean): Q {
+  return waiting ? { ...query, isLoading: true } : query;
+}
+
+/**
+ * GET /results/runs: every finished run with its scores and how it counts (`bucket`), oldest
+ * first. One request for the whole page, instead of one `/result` per run, and the server decides
+ * how each run counts (reporting.scores), so no view counts a run on its own.
+ */
+export function useRunScores(filter: ScoreFilter = {}, enabled = true) {
+  const finished = useFinishedRuns();
+  const query = useQuery({
+    queryKey: ["results", "runs", filter.agent ?? "", filter.mission ?? "", finished],
+    queryFn: () => api.get<RunScore[]>(`/results/runs${scoreQuery(filter)}`),
+    enabled: enabled && finished !== undefined,
+    // A finished or deleted run refetches under a new key: keep the last answer on screen meanwhile.
+    placeholderData: keepPreviousData,
+    refetchInterval: (q) =>
+      q.state.data?.some((r) => r.bucket === "grading") ? SCORES_POLL_MS : false,
+  });
+  return waitingOnRuns(query, enabled && finished === undefined);
+}
+
+/** GET /results/summary: finished runs summarised per agent, mission version, or agent on a
+ *  mission version. The median is over `scored` runs only; everything else is counted apart.
+ *  Groups with an agent come back ranked and named (`agent_name`): show them in that order. */
+export function useScoreSummary(
+  by: "all" | "agent" | "mission" | "mission_agent",
+  filter: ScoreFilter = {},
+  enabled = true,
+) {
+  const finished = useFinishedRuns();
+  const query = useQuery({
+    queryKey: ["results", "summary", by, filter.agent ?? "", filter.mission ?? "", finished],
+    queryFn: () => api.get<ScoreSummary[]>(`/results/summary${scoreQuery(filter, { by })}`),
+    enabled: enabled && finished !== undefined,
+    placeholderData: keepPreviousData,
+    refetchInterval: (q) => (q.state.data?.some((s) => s.grading > 0) ? SCORES_POLL_MS : false),
+  });
+  return waitingOnRuns(query, enabled && finished === undefined);
 }

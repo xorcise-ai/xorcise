@@ -1,127 +1,92 @@
 "use client";
 
-import type { AgentHistoryEntry } from "@/lib/api/types";
+import { useState } from "react";
+
+import type { ScoreSummary } from "@/lib/api/types";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { pct } from "@/lib/api/format";
+import { pct, shortTime } from "@/lib/api/format";
 import { PerformanceSummary } from "@/features/results/performance-summary";
+import { Skeleton } from "@/components/ui/skeleton";
 import { StatTile } from "@/components/ui/stat-tile";
-import {
-  judgeDegraded,
-  type AgentPerformanceSummary,
-} from "@/features/results/summarize-runs";
+import { asideLine, timedOutLine, type RunKind } from "@/features/results/run-glyph";
+import { RunKey } from "@/features/results/run-key";
+import { RunLedger, type LedgerRow } from "@/features/results/run-ledger";
 import type { AgentRunRow } from "./agent-run-history";
 
-type Stats = {
-  runs: number;
-  scored: number;
-  noJudge: number; // of `scored`, how many had no judge (summarize-runs.ts judgeDegraded)
-  avgOverall: number | null;
-  bestOverall: number | null;
-  avgJudge: number | null;
-  avgDeterministic: number | null;
-  partialRate: number;
-  trend: number[]; // overall, oldest → newest
-};
-
-/** Fold a run history into headline track-record numbers (pure, client-side). */
-export function summarize(history: AgentHistoryEntry[]): Stats {
-  const runs = history.length;
-  const mean = (xs: number[]) =>
-    xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
-  // A partial run (budget timeout or operator/manual kill) did not end on the agent's
-  // own terms, so its score must not lower the track record. Score aggregates (avg/best/trend)
-  // count only non-partial runs; `runs` and `partialRate` still count every run.
-  const counted = history.filter((h) => !h.partial);
-  const nums = (pick: (h: AgentHistoryEntry) => number | null | undefined) =>
-    counted
-      .map(pick)
-      .filter((v): v is number => v !== null && v !== undefined);
-
-  const overalls = nums((h) => h.overall);
-  const byTime = [...counted].sort((a, b) =>
-    (a.created_at ?? "").localeCompare(b.created_at ?? ""),
-  );
-
-  return {
-    runs,
-    scored: overalls.length,
-    // Over the same cohort as the average: non-partial runs with a score (#143).
-    noJudge: counted.filter((h) => h.overall != null && judgeDegraded(h.judge_status)).length,
-    avgOverall: mean(overalls),
-    bestOverall: overalls.length ? Math.max(...overalls) : null,
-    // A judge that never ran left a 0 it never scored, so it has no place in a judge average
-    // (#143). Overall keeps it, by design, and is disclosed instead.
-    avgJudge: mean(
-      counted
-        .filter((h) => !judgeDegraded(h.judge_status))
-        .map((h) => h.judge)
-        .filter((v): v is number => v !== null && v !== undefined),
-    ),
-    avgDeterministic: mean(nums((h) => h.deterministic)),
-    partialRate: runs ? history.filter((h) => h.partial).length / runs : 0,
-    trend: byTime
-      .map((h) => h.overall)
-      .filter((v): v is number => v !== null && v !== undefined),
-  };
-}
-
 /**
- * Performance summary + performance-over-time for one agent (report §9). The headline tiles
- * reuse the shared <PerformanceSummary> (Runs · Average · Best · Completion · Partial · Last
- * run); §9's extra deterministic/judge averages are appended as {@link StatTile}s and shown
- * only when meaningful. The over-time card renders a real trend chart when ≥2 scored runs
- * exist, else a proper empty state (no decorative flat line).
+ * Performance summary + runs by mission for one agent (report §9). The headline is the server's
+ * summary (GET /results/summary): the median of its scored runs (a timed-out run counts, at what
+ * it earned), with every run left out of it counted and named, the same number the agent's card
+ * on Results › Agents shows. §9's deterministic/judge averages, over those same runs, follow as
+ * {@link StatTile}s when meaningful. Below, the run ledger: every run, one row per mission
+ * version.
  */
 export function AgentPerformance({
-  history,
+  summary,
+  summaryState = "ready",
+  ledger,
+  ledgerState = "ready",
 }: {
-  history: AgentHistoryEntry[];
+  summary: ScoreSummary | null | undefined;
+  /** Whether the summary is still on its way, failed to load, or in: with none in, the agent has
+   *  no finished run yet. */
+  summaryState?: "loading" | "error" | "ready";
+  ledger: LedgerRow[];
+  /** The same for the ledger's runs: with none in, the agent has no finished run yet. */
+  ledgerState?: "loading" | "error" | "ready";
 }) {
-  const s = summarize(history);
-  const partialCount = history.filter((h) => h.partial).length;
-  const lastRun = history.length
-    ? [...history]
-        .map((h) => h.created_at)
-        .filter(Boolean)
-        .sort((a, b) => b.localeCompare(a))[0]
-    : null;
-
-  const summary: AgentPerformanceSummary = {
-    agentId: "",
-    agentName: "",
-    runs: s.runs,
-    scored: s.scored,
-    avgOverall: s.avgOverall,
-    bestOverall: s.bestOverall,
-    completionRate: s.runs ? (s.runs - partialCount) / s.runs : null,
-    partialRate: s.partialRate,
-    noJudge: s.noJudge,
-    lastRun: lastRun ?? null,
-  };
-
-  const showSplit = s.avgDeterministic !== null || s.avgJudge !== null;
+  // The kind of the run under the pointer or focus in the ledger, so the key can light it up.
+  const [activeKind, setActiveKind] = useState<RunKind | null>(null);
+  const showSplit = summary?.mean_deterministic != null || summary?.mean_judge != null;
+  const aside = summary ? asideLine(summary) : "";
 
   return (
     <div className="space-y-4">
       <Card>
         <CardContent className="space-y-4">
-          <PerformanceSummary summary={summary} />
+          {summary ? (
+            <div className="space-y-2">
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3 lg:grid-cols-5">
+                <StatTile label="Runs" value={String(summary.runs)} />
+                <StatTile label="Median" value={pct(summary.median)} tone="primary" />
+                <StatTile label="Best" value={pct(summary.best)} />
+                <StatTile label="Scored" value={`${summary.scored} of ${summary.runs}`} />
+                <StatTile label="Last run" value={shortTime(summary.last_run)} small />
+              </dl>
+              {summary.timed_out > 0 && (
+                <p className="text-caption text-text-tertiary">{timedOutLine(summary)}</p>
+              )}
+              {aside && (
+                <p className="text-caption text-text-tertiary">{aside}: not in the median.</p>
+              )}
+              {summary.partial_judge > 0 && (
+                <p className="text-caption text-text-tertiary">
+                  {summary.partial_judge} judged on part of the rubric, counted at the lower
+                  bound.
+                </p>
+              )}
+            </div>
+          ) : summaryState === "loading" ? (
+            <PerformanceSummary loading />
+          ) : summaryState === "error" ? (
+            <p className="text-body text-err">Couldn’t load this agent’s performance.</p>
+          ) : (
+            <p className="text-body text-text-secondary">No finished runs yet.</p>
+          )}
           {showSplit && (
             <dl className="grid grid-cols-2 gap-x-4 gap-y-3 border-t border-border pt-4 sm:grid-cols-3 lg:grid-cols-6">
-              {s.avgDeterministic !== null && (
+              {summary?.mean_deterministic != null && (
                 <StatTile
                   label="Avg deterministic"
-                  value={pct(s.avgDeterministic)}
+                  value={pct(summary.mean_deterministic)}
                   tone="muted"
                 />
               )}
-              {s.avgJudge !== null && (
-                <StatTile
-                  label="Avg judge"
-                  value={pct(s.avgJudge)}
-                  tone="muted"
-                />
+              {/* Over the runs the judge scored in full: a judge that never ran left a 0 it never
+                  gave, and a partial judge's score is only a lower bound. */}
+              {summary?.mean_judge != null && (
+                <StatTile label="Avg judge" value={pct(summary.mean_judge)} tone="muted" />
               )}
             </dl>
           )}
@@ -130,10 +95,26 @@ export function AgentPerformance({
 
       <Card>
         <CardContent className="space-y-3">
-          <p className="text-label uppercase text-text-tertiary">
-            Score over time
-          </p>
-          <TrendChart values={s.trend} />
+          <p className="text-label uppercase text-text-tertiary">Runs by mission</p>
+          {ledger.length > 0 ? (
+            <>
+              <RunKey
+                view="ledger"
+                active={activeKind}
+                bare
+                className="border-b border-border pb-3"
+              />
+              <RunLedger rows={ledger} onInspect={setActiveKind} />
+            </>
+          ) : ledgerState === "loading" ? (
+            <div role="status" aria-label="Loading runs by mission…">
+              <Skeleton className="h-16 w-full" />
+            </div>
+          ) : ledgerState === "error" ? (
+            <p className="text-body text-err">Couldn’t load this agent’s runs by mission.</p>
+          ) : (
+            <p className="text-body text-text-secondary">No finished runs yet.</p>
+          )}
         </CardContent>
       </Card>
     </div>
@@ -202,72 +183,6 @@ function ChipRow({ label, items }: { label: string; items: string[] }) {
           </Badge>
         ))}
       </div>
-    </div>
-  );
-}
-
-/**
- * Trend chart of overall scores over time (report §9). A real line chart (area + points) once
- * two scored runs exist; otherwise a §17 empty state that says what's missing, why, and what to
- * do next — never a flat decorative line.
- */
-function TrendChart({ values }: { values: number[] }) {
-  if (values.length < 2) {
-    return (
-      <div className="rounded-md border border-dashed border-border p-4 text-center">
-        <p className="text-body font-medium text-heading">
-          Not enough data for a trend yet
-        </p>
-        <p className="mt-2 text-body text-text-secondary">
-          Complete at least two evaluations to display a performance trend.
-        </p>
-      </div>
-    );
-  }
-
-  const W = 320;
-  const H = 48;
-  const step = W / (values.length - 1);
-  const y = (v: number) => H - v * H; // scores are 0..1
-  const pts = values.map((v, i) => [i * step, y(v)] as const);
-  const line = pts.map(([px, py]) => `${px.toFixed(1)},${py.toFixed(1)}`).join(" ");
-  const area = `0,${H} ${line} ${W},${H}`;
-  const last = values[values.length - 1];
-  const best = Math.max(...values);
-
-  return (
-    <div className="space-y-2">
-      <svg
-        viewBox={`0 0 ${W} ${H}`}
-        className="h-12 w-full"
-        preserveAspectRatio="none"
-        role="img"
-        aria-label={`Overall score over ${values.length} scored runs, oldest to newest`}
-      >
-        <polygon points={area} fill="var(--color-primary)" fillOpacity="0.12" />
-        <polyline
-          points={line}
-          fill="none"
-          stroke="var(--color-primary)"
-          strokeWidth="1.5"
-          strokeLinejoin="round"
-          strokeLinecap="round"
-          vectorEffect="non-scaling-stroke"
-        />
-        {pts.map(([px, py], i) => (
-          <circle
-            key={i}
-            cx={px}
-            cy={py}
-            r={2}
-            fill="var(--color-primary)"
-            vectorEffect="non-scaling-stroke"
-          />
-        ))}
-      </svg>
-      <p className="text-caption tabular-nums text-text-tertiary">
-        {values.length} scored runs · latest {pct(last)} · best {pct(best)}
-      </p>
     </div>
   );
 }

@@ -109,8 +109,10 @@ class RunResultView(BaseModel):
     # harness's clock contradicts the server's) live in reporting.render and nowhere else, so the
     # results page renders these strings instead of re-deriving them. Both are harness-reported
     # and say so in the text. `telemetry_window` is null when the report omits the row: no
-    # telemetry, or a span nobody measured.
-    agent_model: str = "not disclosed"
+    # telemetry, or a span nobody measured. `agent_model` is null when nobody declared a model and
+    # the telemetry named none, where the report says "not disclosed": the page leaves out a row
+    # with nothing in it, as it does every other condition.
+    agent_model: str | None = None
     telemetry_window: str | None = None
     # The run's evidence seal, machine-readable — the point of #116 is that a consumer can tie a
     # grade to evidence that has not changed, and until this the digest existed only as 16
@@ -885,7 +887,8 @@ def run_result(
     seal = evidence_seal_view(run_id, verify=verify)
     # The report's own cell functions, over the same joined inputs the report reads. A run deleted
     # between the two reads above has no row to bound a window with, so it gets none.
-    agent_model, window = "not disclosed", None
+    agent_model: str | None = None
+    window: str | None = None
     if run_entry is not None:
         cells = reporting.RunReportContext(
             run=run_entry, agent_name="", grade=grade, conditions=conditions, stats=stats

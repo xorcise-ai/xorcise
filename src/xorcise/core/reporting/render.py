@@ -52,6 +52,8 @@ _PAYLOAD_LIMIT = 20_000
 _VALUE_LIMIT = 240
 
 _DASH = "—"
+# The agent-model line when nothing names a model; `/result` serves it as null.
+_NOT_DISCLOSED = "not disclosed"
 
 
 @dataclass(frozen=True)
@@ -306,10 +308,12 @@ def telemetry_window_cell(ctx: RunReportContext) -> str | None:
     return row[0][1] if row else None
 
 
-def agent_model_cell(ctx: RunReportContext) -> str:
+def agent_model_cell(ctx: RunReportContext) -> str | None:
     """The report's Agent-model cell (see `agent_model_line`), served on `/result` for the same
-    reason as `telemetry_window_cell`."""
-    return _agent_model(ctx)
+    reason as `telemetry_window_cell`, or None when nothing names a model (the report says "not
+    disclosed"). Decided here, by the same rule as the line, so the two cannot disagree."""
+    line = _agent_model(ctx)
+    return None if line == _NOT_DISCLOSED else line
 
 
 def _status_line(ctx: RunReportContext) -> str:
@@ -391,7 +395,7 @@ def agent_model_line(declared: str, observed: Sequence[str], dropped: int = 0) -
         return f"{declared} (disclosed)"
     if seen:
         return f"{named} (reported by the harness)"
-    return "not disclosed"
+    return _NOT_DISCLOSED
 
 
 def _agent_model(ctx: RunReportContext) -> str:

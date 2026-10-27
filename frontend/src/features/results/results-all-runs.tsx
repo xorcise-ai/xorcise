@@ -13,7 +13,7 @@ import { isTerminal, runPresentation, type RunTone } from "@/features/runs/run-s
 import { useAgents } from "@/features/agents/queries";
 import { useRunResults } from "./queries";
 import { NoJudge } from "./no-judge";
-import { judgeDegraded } from "./summarize-runs";
+import { judgeDegraded } from "./run-glyph";
 
 /** §10 status tone → the Badge variant carrying the same colour (mirrors the Run History cards). */
 const toneBadge: Record<RunTone, NonNullable<BadgeProps["variant"]>> = {
