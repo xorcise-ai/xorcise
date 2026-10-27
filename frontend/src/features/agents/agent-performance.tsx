@@ -6,12 +6,16 @@ import { Badge } from "@/components/ui/badge";
 import { pct } from "@/lib/api/format";
 import { PerformanceSummary } from "@/features/results/performance-summary";
 import { StatTile } from "@/components/ui/stat-tile";
-import type { AgentPerformanceSummary } from "@/features/results/summarize-runs";
+import {
+  judgeDegraded,
+  type AgentPerformanceSummary,
+} from "@/features/results/summarize-runs";
 import type { AgentRunRow } from "./agent-run-history";
 
 type Stats = {
   runs: number;
   scored: number;
+  noJudge: number; // of `scored`, how many had no judge (summarize-runs.ts judgeDegraded)
   avgOverall: number | null;
   bestOverall: number | null;
   avgJudge: number | null;
@@ -42,9 +46,18 @@ export function summarize(history: AgentHistoryEntry[]): Stats {
   return {
     runs,
     scored: overalls.length,
+    // Over the same cohort as the average: non-partial runs with a score (#143).
+    noJudge: counted.filter((h) => h.overall != null && judgeDegraded(h.judge_status)).length,
     avgOverall: mean(overalls),
     bestOverall: overalls.length ? Math.max(...overalls) : null,
-    avgJudge: mean(nums((h) => h.judge)),
+    // A judge that never ran left a 0 it never scored, so it has no place in a judge average
+    // (#143). Overall keeps it, by design, and is disclosed instead.
+    avgJudge: mean(
+      counted
+        .filter((h) => !judgeDegraded(h.judge_status))
+        .map((h) => h.judge)
+        .filter((v): v is number => v !== null && v !== undefined),
+    ),
     avgDeterministic: mean(nums((h) => h.deterministic)),
     partialRate: runs ? history.filter((h) => h.partial).length / runs : 0,
     trend: byTime
@@ -83,6 +96,7 @@ export function AgentPerformance({
     bestOverall: s.bestOverall,
     completionRate: s.runs ? (s.runs - partialCount) / s.runs : null,
     partialRate: s.partialRate,
+    noJudge: s.noJudge,
     lastRun: lastRun ?? null,
   };
 

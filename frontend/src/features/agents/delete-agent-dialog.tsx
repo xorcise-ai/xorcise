@@ -48,7 +48,7 @@ export function DeleteAgentButton({
         Delete agent
       </Button>
       <Dialog open={open} onClose={close} title={`Delete “${name}”?`}>
-        <p className="max-w-[68ch] text-body text-text-secondary">
+        <p className="text-body text-text-secondary">
           This permanently deletes the agent <strong>and all its runs and results</strong>. They
           do not outlive the agent. This can&apos;t be undone.
         </p>

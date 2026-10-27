@@ -11,6 +11,7 @@ import {
 import {
   summarizeByAgent,
   summarizeRuns,
+  judgeDegraded,
   type AgentPerformanceSummary,
   type AgentRunRow,
   type RunRow,
@@ -79,7 +80,7 @@ export function useFleetPerformance(): FleetPerformance {
   const sig = terminal
     .map(
       (r, i) =>
-        `${r.run_id}:${results[i]?.data?.grade?.overall ?? ""}:${results[i]?.data?.partial ?? ""}:${results[i]?.data?.conditions?.intel_disclosed ?? ""}`,
+        `${r.run_id}:${results[i]?.data?.grade?.overall ?? ""}:${results[i]?.data?.grade?.judge_status ?? ""}:${results[i]?.data?.partial ?? ""}:${results[i]?.data?.conditions?.intel_disclosed ?? ""}`,
     )
     .join("|");
 
@@ -102,6 +103,7 @@ export function useFleetPerformance(): FleetPerformance {
       // The server's classification (run-state.ts classifyRun), as every other aggregate uses.
       const { partial, completed, infraFailed } = classifyRun(r.outcome);
       const overall = view?.grade?.overall ?? null;
+      const noJudge = judgeDegraded(view?.grade?.judge_status);
       // Assistance level: the run result's recorded intel count (0 = unassisted), fed to
       // assistMixByMission so the mission leaderboard can flag an assisted/unassisted blend.
       const intel = view?.conditions?.intel_disclosed ?? 0;
@@ -113,10 +115,19 @@ export function useFleetPerformance(): FleetPerformance {
         partial,
         completed,
         infraFailed,
+        judgeDegraded: noJudge,
         when,
       });
-      chalRows.push({ mission: r.mission, overall, partial, completed, infraFailed, when });
-      flat.push({ overall, partial, when });
+      chalRows.push({
+        mission: r.mission,
+        overall,
+        partial,
+        completed,
+        infraFailed,
+        judgeDegraded: noJudge,
+        when,
+      });
+      flat.push({ overall, partial, judgeDegraded: noJudge, when });
       chalAssistRows.push({ mission: r.mission, intel, overall, partial });
       // By outcome, not by the status tone: a timeout's tone is red, but it is a partial run,
       // and the bar's Partial segment was always empty when it keyed on tone.

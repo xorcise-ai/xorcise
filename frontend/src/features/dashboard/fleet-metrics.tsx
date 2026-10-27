@@ -44,6 +44,14 @@ export function FleetMetrics() {
               <StatTile label="Best" value={pct(f.fleet.bestOverall)} />
               <StatTile label="Pass rate" value={pct(passRate)} />
             </dl>
+            {/* Runs scored with no judge sit in Average and Best at 50% at most (#143). */}
+            {f.fleet.noJudge > 0 && (
+              <p className="text-caption text-warning">
+                No judge on {f.fleet.noJudge} of {f.fleet.n} scored{" "}
+                {f.fleet.n === 1 ? "run" : "runs"}: scored at 50% at most, and included in
+                Average and Best.
+              </p>
+            )}
             <StatusMix mix={f.mix} total={f.evaluated} />
           </>
         )}

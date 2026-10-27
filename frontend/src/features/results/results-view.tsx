@@ -163,6 +163,7 @@ export function ResultsView({ runId }: { runId: string | null }) {
                 agents.data?.find((a) => a.id === run.data!.agent_id)?.name ??
                 run.data.agent_id.slice(0, 8)
               }
+              telemetryWindow={view.telemetry_window}
             />
           )}
 
@@ -186,7 +187,7 @@ export function ResultsView({ runId }: { runId: string | null }) {
                   <p className="text-body font-medium text-foreground">
                     Partial — {run.data?.status.label ?? "did not finish"}
                   </p>
-                  <p className="mt-2 max-w-[70ch] text-body text-text-secondary">
+                  <p className="mt-2 text-body text-text-secondary">
                     {run.data?.status.detail ??
                       "This run did not finish on the agent's own terms."}{" "}
                     Scores below reflect only what was completed.
@@ -218,7 +219,7 @@ export function ResultsView({ runId }: { runId: string | null }) {
           <ArtifactsSection runId={r.run_id} />
 
           {/* ═══ CONDITIONS — what this result was produced under ═══ */}
-          <ConditionsCard conditions={conditions} />
+          <ConditionsCard conditions={conditions} agentModel={view.agent_model} />
 
           {/* ═══ FOOTER — trace ref + deep-link + delete ═══ */}
           {/* The live view hosts the trace; static export routes by ?id= (no /runs/[id] segment). */}
@@ -252,15 +253,28 @@ export function ResultsView({ runId }: { runId: string | null }) {
  * COST, not how long the agent worked). A compact labelled grid so the reader knows exactly which
  * run this is before reading the scores it produced.
  *
- * NEARLY the set the HTML/MD exports render, not identical: the report also carries a Telemetry
- * window row (how long the harness's own telemetry spans), which this grid does not. Claiming
- * field-for-field parity here was wrong once the report gained that row.
+ * Beside Duration sits the report's Telemetry window (how long the harness's own telemetry spans),
+ * so the pair the report puts side by side reads side by side here too: they agree on a healthy
+ * run and diverge loudly on a crashed one. The cell is the server's text, its "reported by the
+ * harness" qualifier or its reason for withholding the span included (#146); absent when the
+ * report omits the row too.
  */
-function RunMetaBar({ run, agentName }: { run: RunEntry; agentName: string }) {
+function RunMetaBar({
+  run,
+  agentName,
+  telemetryWindow,
+}: {
+  run: RunEntry;
+  agentName: string;
+  telemetryWindow?: string | null;
+}) {
   const elapsed = run.completed_at
     ? (new Date(run.completed_at).getTime() - new Date(run.created_at).getTime()) / 1000
     : null;
-  const items: { label: string; value: string; mono?: boolean }[] = [
+  // `wide` cells span the whole row and wrap: the telemetry window's text is a sentence when the
+  // span is withheld, and truncating it cut off exactly the reason, or the "reported by the
+  // harness" qualifier, that keeps a self-report from reading as a platform fact.
+  const items: { label: string; value: string; mono?: boolean; wide?: boolean }[] = [
     { label: "Mission", value: `${run.mission} v${run.mission_version ?? run.install_revision}` },
     { label: "Agent", value: `${agentName} v${run.agent_version}` },
     { label: "Harness", value: run.source_agent },
@@ -269,6 +283,7 @@ function RunMetaBar({ run, agentName }: { run: RunEntry; agentName: string }) {
     ...(run.platform ? [{ label: "Platform", value: run.platform, mono: true }] : []),
     { label: "Started", value: fullTime(run.created_at), mono: true },
     { label: "Duration", value: formatDuration(elapsed), mono: true },
+    ...(telemetryWindow ? [{ label: "Telemetry window", value: telemetryWindow, wide: true }] : []),
   ];
   return (
     <Card className="bg-raised">
@@ -282,12 +297,19 @@ function RunMetaBar({ run, agentName }: { run: RunEntry; agentName: string }) {
               key={it.label}
               label={it.label}
               value={
-                <span className={cn("block truncate", it.mono && "font-mono")}>
+                <span
+                  className={cn(
+                    "block",
+                    it.wide ? "break-words" : "truncate",
+                    it.mono && "font-mono",
+                  )}
+                >
                   {it.value}
                 </span>
               }
               small
               title={it.value}
+              className={cn(it.wide && "col-span-full")}
             />
           ))}
         </StatTileRow>

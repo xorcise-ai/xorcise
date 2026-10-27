@@ -6,7 +6,7 @@ import type { RunEntry } from "@/lib/api/types";
 import { useRuns } from "@/features/runs/queries";
 import { isTerminal } from "@/features/runs/run-state";
 import { useRunResults } from "./queries";
-import { summarizeRuns, type RunRow } from "./summarize-runs";
+import { judgeDegraded, summarizeRuns, type RunRow } from "./summarize-runs";
 
 // This run in the context of the same agent's other terminal runs ON THIS MISSION. Answers
 // "is this score good for this agent here?" — unanswerable from a single number. Score comparison
@@ -29,6 +29,7 @@ export function CrossRunContext({
     return {
       overall: view?.grade?.overall ?? null,
       partial: view?.partial ?? false,
+      judgeDegraded: judgeDegraded(view?.grade?.judge_status),
       when: p.completed_at ?? p.created_at,
     };
   });
@@ -42,7 +43,7 @@ export function CrossRunContext({
           <h2 className="mb-2 text-label uppercase text-text-tertiary">
             Cross-run context
           </h2>
-          <p className="max-w-[68ch] text-body text-text-secondary">
+          <p className="text-body text-text-secondary">
             First run for this agent on this mission — no prior results to compare against yet.
           </p>
         </CardContent>
@@ -74,6 +75,13 @@ export function CrossRunContext({
           <StatTile label={`Avg (n=${summary.n})`} value={pct(summary.avgOverall)} />
           <StatTile label="Best" value={pct(summary.bestOverall)} />
         </StatTileRow>
+        {/* Peers scored with no judge sit in the average at 50% at most (#143). */}
+        {summary.noJudge > 0 && (
+          <p className="text-caption text-warning">
+            No judge on {summary.noJudge} of the {summary.n} runs in this average: scored
+            at 50% at most.
+          </p>
+        )}
         <Trend values={summary.trend} />
       </CardContent>
     </Card>

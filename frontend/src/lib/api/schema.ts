@@ -1525,6 +1525,8 @@ export interface components {
             deterministic: number;
             /** Judge */
             judge: number;
+            /** Judge Status */
+            judge_status?: ("ok" | "partial" | "model-not-configured" | "unavailable") | null;
             /** Overall */
             overall: number;
             /**
@@ -3136,6 +3138,11 @@ export interface components {
          * @description Recorded result + disclosed conditions + partial state.
          */
         RunResultView: {
+            /**
+             * Agent Model
+             * @default not disclosed
+             */
+            agent_model: string;
             conditions: components["schemas"]["ResultConditions"];
             /** Evidence Digest */
             evidence_digest?: string | null;
@@ -3165,6 +3172,8 @@ export interface components {
             partial: boolean;
             /** Partial Trigger */
             partial_trigger?: string | null;
+            /** Telemetry Window */
+            telemetry_window?: string | null;
         };
         /**
          * RunStats

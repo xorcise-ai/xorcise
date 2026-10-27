@@ -100,6 +100,18 @@ export function PerformanceSummary(props: PerformanceSummaryProps) {
         environment failure — not graded, and left out of these figures.
       </p>
     ) : null;
+  // Runs scored with no judge: in Average and Best, at 50% at most, by design (#143). Without this
+  // an agent ranked partly on unjudged runs reads exactly like one graded end to end — the gap the
+  // CLI leaderboard's "No judge" column closes. Counted over the runs the average is made of.
+  const noJudge = summary.noJudge ?? 0;
+  const judgeNote =
+    noJudge > 0 ? (
+      <p className="text-caption text-warning">
+        No judge on {noJudge} of {summary.scored} scored{" "}
+        {summary.scored === 1 ? "run" : "runs"}: scored at 50% at most, and
+        included in Average and Best.
+      </p>
+    ) : null;
   const headline: { label: string; value: string; tone?: Tone }[] = [
     { label: "Runs", value: String(summary.runs) },
     { label: "Average", value: pct(summary.avgOverall), tone: "primary" },
@@ -135,6 +147,7 @@ export function PerformanceSummary(props: PerformanceSummaryProps) {
               {shortTime(summary.lastRun)}
             </span>
           </p>
+          {judgeNote}
           {infraNote}
         </div>
       </div>
@@ -162,10 +175,11 @@ export function PerformanceSummary(props: PerformanceSummaryProps) {
       ))}
     </dl>
   );
-  if (!infraNote) return grid6(cn(grid, className));
+  if (!infraNote && !judgeNote) return grid6(cn(grid, className));
   return (
     <div className={cn("space-y-2", className)}>
       {grid6(grid)}
+      {judgeNote}
       {infraNote}
     </div>
   );

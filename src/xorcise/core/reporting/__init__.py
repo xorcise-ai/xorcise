@@ -9,9 +9,11 @@ from __future__ import annotations
 from xorcise.core.reporting.render import (
     ReportArtifact,
     RunReportContext,
+    agent_model_cell,
     render_html,
     render_markdown,
     report_filename,
+    telemetry_window_cell,
 )
 from xorcise.core.reporting.repository import (
     agent_history,
@@ -30,6 +32,7 @@ __all__ = [
     "ReportArtifact",
     "RunReportContext",
     "agent_history",
+    "agent_model_cell",
     "delete_for_runs",
     "delete_result",
     "get_result",
@@ -42,4 +45,5 @@ __all__ = [
     "report_filename",
     "result_conditions",
     "result_partial",
+    "telemetry_window_cell",
 ]

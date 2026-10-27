@@ -111,3 +111,31 @@ describe("StatTile", () => {
     expect(screen.getByText("75%")).toBeInTheDocument();
   });
 });
+
+describe("PerformanceSummary no-judge disclosure (#143)", () => {
+  const summary = {
+    agentId: "a1",
+    agentName: "scout",
+    runs: 4,
+    scored: 3,
+    avgOverall: 0.6,
+    bestOverall: 0.9,
+    completionRate: 0.75,
+    partialRate: 0.25,
+    lastRun: "2026-01-01T12:00:00Z",
+  };
+
+  it.each([3, 6] as const)("says how many runs in the average had no judge (%i columns)", (columns) => {
+    render(<PerformanceSummary summary={{ ...summary, noJudge: 2 }} columns={columns} />);
+    expect(
+      screen.getByText(
+        "No judge on 2 of 3 scored runs: scored at 50% at most, and included in Average and Best.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("says nothing when every run in the average was judged", () => {
+    render(<PerformanceSummary summary={{ ...summary, noJudge: 0 }} />);
+    expect(screen.queryByText(/No judge/)).toBeNull();
+  });
+});

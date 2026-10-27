@@ -179,12 +179,11 @@ export function HarnessSelector({
           readOnly={!idEditable}
           aria-readonly={!idEditable}
           // Read-only, it only echoes the chosen card, so it takes no Tab stop and draws no focus
-          // ring when clicked. The `!` is needed: the global :focus-visible rule in globals.css
-          // is unlayered, so it outranks any layered Tailwind utility, `outline-none` included.
+          // ring when clicked.
           tabIndex={idEditable ? undefined : -1}
           className={cn(
             !idEditable &&
-              "cursor-default border-border bg-background text-text-tertiary focus-visible:border-border focus-visible:ring-0 focus-visible:!outline-none",
+              "cursor-default border-border bg-background text-text-tertiary focus-visible:border-border focus-visible:ring-0 focus-visible:outline-none",
           )}
         />
       </label>
@@ -225,7 +224,7 @@ export function HarnessSelector({
         </div>
       </div>
       {!unrecognised && (
-        <p className={cn("max-w-[68ch] text-dense text-text-tertiary", compact && "xl:text-caption")}>
+        <p className={cn("text-dense text-text-tertiary", compact && "xl:text-caption")}>
           {help}
         </p>
       )}

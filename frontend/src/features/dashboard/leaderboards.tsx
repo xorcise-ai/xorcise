@@ -71,6 +71,7 @@ function LeaderRow({
   href,
   trend,
   assist,
+  noJudge = 0,
 }: {
   rank: number;
   name: string;
@@ -82,6 +83,9 @@ function LeaderRow({
   /** Scored-run assist mix. When any run got intel, the row flags it so the single average is not
    * read as a like-for-like comparison (assisted and unassisted runs are blended into it). */
   assist?: { unassisted: number; assisted: number };
+  /** Of the runs in `avg`, how many were scored with no judge (50% at most) — flagged so the
+   * ranking is not read as graded end to end (#143). */
+  noJudge?: number;
 }) {
   const scored = assist ? assist.unassisted + assist.assisted : 0;
   const body = (
@@ -94,6 +98,11 @@ function LeaderRow({
         {assist && assist.assisted > 0 && (
           <span className="mt-1 block text-caption text-text-tertiary">
             avg blends {assist.assisted}/{scored} assisted
+          </span>
+        )}
+        {noJudge > 0 && (
+          <span className="mt-1 block text-caption text-warning">
+            avg includes {noJudge} with no judge
           </span>
         )}
         {trend && trend.length > 0 ? (
@@ -146,6 +155,7 @@ export function TopAgents({ className }: { className?: string }) {
           name={s.agentName}
           runs={s.runs}
           avg={s.avgOverall}
+          noJudge={s.noJudge}
           trend={f.trendByAgent.get(s.agentId)}
           href={
             f.registeredAgentIds.has(s.agentId)
@@ -180,6 +190,7 @@ export function TopMissions({ className }: { className?: string }) {
           name={s.mission}
           runs={s.runs}
           avg={s.avgOverall}
+          noJudge={s.noJudge}
           assist={f.assistMixByMission.get(s.mission)}
         />
       ))}

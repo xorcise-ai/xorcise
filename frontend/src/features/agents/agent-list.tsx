@@ -17,6 +17,7 @@ import { classifyRun, isTerminal } from "@/features/runs/run-state";
 import { useRunResults } from "@/features/results/queries";
 import { PerformanceSummary } from "@/features/results/performance-summary";
 import {
+  judgeDegraded,
   summarizeByAgent,
   type AgentRunRow,
   type AgentPerformanceSummary,
@@ -113,6 +114,7 @@ export function AgentList() {
       agentName: r.agent_id, // name isn't needed here; cards key off the agent list
       overall: view?.grade?.overall ?? null,
       ...counting,
+      judgeDegraded: judgeDegraded(view?.grade?.judge_status),
       when: r.completed_at ?? r.created_at,
     };
   });

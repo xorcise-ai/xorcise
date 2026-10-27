@@ -54,7 +54,7 @@ const RUNS = [
   }),
 ];
 
-const RESULT: Record<string, { overall: number; partial: boolean }> = {
+const RESULT: Record<string, { overall: number; partial: boolean; judge_status?: string }> = {
   r1: { overall: 0.8, partial: false },
   r2: { overall: 0.6, partial: false },
   r3: { overall: 0.1, partial: true },
@@ -74,7 +74,7 @@ function handlers() {
       const r = RESULT[String(params.id)];
       return r
         ? HttpResponse.json({
-            grade: { run_id: params.id, overall: r.overall },
+            grade: { run_id: params.id, overall: r.overall, judge_status: r.judge_status },
             conditions: {},
             partial: r.partial,
           })
@@ -178,5 +178,30 @@ describe("Dashboard fleet performance", () => {
     renderWithProviders(<TopMissions />);
     await waitFor(() => expect(screen.getByText("c1")).toBeInTheDocument());
     expect(screen.getByText("avg blends 1/2 assisted")).toBeInTheDocument();
+  });
+
+  it("discloses the runs in an average that were scored with no judge (#143)", async () => {
+    // r1 had no judge; r3 had none either, but it timed out, so it is in no average.
+    RESULT.r1.judge_status = "unavailable";
+    RESULT.r3.judge_status = "unavailable";
+    try {
+      handlers();
+      renderWithProviders(
+        <>
+          <FleetMetrics />
+          <TopAgents />
+        </>,
+      );
+      expect(
+        await screen.findByText(
+          "No judge on 1 of 2 scored runs: scored at 50% at most, and included in Average and Best.",
+        ),
+      ).toBeInTheDocument();
+      // scout (r1, r2) carries the flag; probe's only run is partial, so it is not ranked.
+      expect(screen.getByText("avg includes 1 with no judge")).toBeInTheDocument();
+    } finally {
+      delete RESULT.r1.judge_status;
+      delete RESULT.r3.judge_status;
+    }
   });
 });

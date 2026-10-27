@@ -99,15 +99,14 @@ describe("HarnessSelector", () => {
   });
 
   it("keeps the read-only Harness ID out of the tab order and its focus ring off", () => {
-    // It only echoes the chosen card. A global :focus-visible rule outranks the field's own
-    // `outline-none` (unlayered CSS beats Tailwind's layers), so a click drew the amber
-    // selection ring on a field that ignores typing.
+    // It only echoes the chosen card, so a click must not draw the amber ring on a field that
+    // ignores typing. jsdom has no stylesheet; e2e/agent-kind.spec.ts checks the computed style.
     renderWithProviders(<HarnessSelector value="codex" onChange={() => {}} />);
     const input = screen.getByLabelText(/harness id/i);
     expect(input).toHaveValue("codex");
     expect(input).toHaveAttribute("readonly");
     expect(input).toHaveAttribute("tabindex", "-1");
-    expect(input.className).toMatch(/focus-visible:!outline-none/);
+    expect(input.className).toMatch(/focus-visible:outline-none/);
   });
 
   it("forwards typed input from the Generic kind field", () => {

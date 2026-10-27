@@ -104,6 +104,14 @@ class RunResultView(BaseModel):
     # clipped for display, so the list above can repeat a name this count tells apart; and the
     # count itself saturates at the fold's tracking bound (contracts.reporting.RunStats).
     models_reported_truncated: int = 0
+    # The report's Agent-model and Telemetry-window cells, word for word (#146). The rules behind
+    # them (a declared name against the names the telemetry carried; a window withheld when the
+    # harness's clock contradicts the server's) live in reporting.render and nowhere else, so the
+    # results page renders these strings instead of re-deriving them. Both are harness-reported
+    # and say so in the text. `telemetry_window` is null when the report omits the row: no
+    # telemetry, or a span nobody measured.
+    agent_model: str = "not disclosed"
+    telemetry_window: str | None = None
     # The run's evidence seal, machine-readable — the point of #116 is that a consumer can tie a
     # grade to evidence that has not changed, and until this the digest existed only as 16
     # characters of prose inside a rendered report. `evidence_digest` is the bare hex recorded at
@@ -875,6 +883,15 @@ def run_result(
     from xorcise.core.rest.evidence_seal import evidence_seal_view
 
     seal = evidence_seal_view(run_id, verify=verify)
+    # The report's own cell functions, over the same joined inputs the report reads. A run deleted
+    # between the two reads above has no row to bound a window with, so it gets none.
+    agent_model, window = "not disclosed", None
+    if run_entry is not None:
+        cells = reporting.RunReportContext(
+            run=run_entry, agent_name="", grade=grade, conditions=conditions, stats=stats
+        )
+        agent_model = reporting.agent_model_cell(cells)
+        window = reporting.telemetry_window_cell(cells)
     return RunResultView(
         grade=grade,
         conditions=conditions,
@@ -882,6 +899,8 @@ def run_result(
         partial_trigger=partial_trigger,
         models_reported=tuple(stats.models) if stats else (),
         models_reported_truncated=stats.models_truncated if stats else 0,
+        agent_model=agent_model,
+        telemetry_window=window,
         evidence_digest=seal.digest,
         evidence_verified=seal.verified,
         evidence_status=seal.status,
