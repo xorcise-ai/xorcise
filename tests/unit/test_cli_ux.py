@@ -1247,9 +1247,8 @@ def _no_nested_probe(monkeypatch) -> None:
     """Off stub mode, doctor boots a privileged DinD to probe nesting (~10 s, and a real daemon
     call). These tests are about the control plane; keep the probe out of them."""
     monkeypatch.setattr(
-        lifecycle, "nested_containers", lambda: Check("nested containers", True, "stubbed")
+        lifecycle, "nested_container_checks", lambda: [Check("nested containers", True, "stubbed")]
     )
-    monkeypatch.setattr(lifecycle, "nested_containers_foreign", lambda: [])
 
 
 def _up_with_managed_plane(tmp_path, monkeypatch, url: str) -> None:

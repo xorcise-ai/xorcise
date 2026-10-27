@@ -1403,6 +1403,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/system/nested-support/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refresh Nested Support
+         * @description Re-probe nested containers in THIS process, where run creation reads its verdicts (#195).
+         *
+         *     `doctor` calls this after the operator fixes the host (enables Rosetta, say), so the refusal
+         *     the server cached clears without a restart. A sync route: the probe starts a privileged
+         *     container and can take a minute, so it runs on the threadpool, not the event loop.
+         */
+        post: operations["refresh_nested_support_api_system_nested_support_refresh_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2608,6 +2632,40 @@ export interface components {
             tokenizer?: string | null;
             /** Transcript Max Tokens */
             transcript_max_tokens?: number | null;
+        };
+        /**
+         * NestedSupportView
+         * @description What the running server answers after re-probing nested containers (#195).
+         *
+         *     `native` is the daemon's own platform; `foreign` holds every other platform a run has asked
+         *     the server about (e.g. linux/amd64 on Apple Silicon), re-probed in the same call. These are
+         *     the verdicts run creation reads, so they are what `doctor` shows.
+         */
+        NestedSupportView: {
+            /**
+             * Foreign
+             * @default []
+             */
+            foreign: components["schemas"]["NestedVerdictView"][];
+            native: components["schemas"]["NestedVerdictView"];
+        };
+        /**
+         * NestedVerdictView
+         * @description One nested-container verdict the server holds. `platform` is "" for the daemon's native
+         *     platform; `remediation` is "" when there is nothing to fix.
+         */
+        NestedVerdictView: {
+            /** Detail */
+            detail: string;
+            /** Ok */
+            ok: boolean;
+            /** Platform */
+            platform: string;
+            /**
+             * Remediation
+             * @default
+             */
+            remediation: string;
         };
         /**
          * NetworkConfigUpdate
@@ -5794,6 +5852,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SystemInfo"];
+                };
+            };
+        };
+    };
+    refresh_nested_support_api_system_nested_support_refresh_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NestedSupportView"];
                 };
             };
         };

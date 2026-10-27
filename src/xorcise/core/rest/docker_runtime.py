@@ -64,6 +64,8 @@ log = logging.getLogger(__name__)
 # the failure the removed on-disk cache used to have.
 _MEMO_LOCK = threading.Lock()
 _memo: dict[str | None, NestedSupport] = {}
+#: Serialises `refresh_nested_support`, which probes OUTSIDE _MEMO_LOCK (see there).
+_REFRESH_LOCK = threading.Lock()
 #: The last verdict line logged, so a long-lived server logs only when the verdict CHANGES
 #: (a single value, not an unbounded set of every distinct failure string ever seen).
 _last_logged: str | None = None
@@ -134,10 +136,14 @@ def nested_support(
 
     A skipped check answers immediately without touching Docker. Otherwise the verdict is computed
     once per platform and held. `fresh=True` recomputes AND refreshes the memo — for the platform
-    asked about and, when that is the native one (what `doctor` asks), for EVERY other platform a
-    run has asked about since boot. That second half is what makes "fix Rosetta, re-run `doctor`,
-    the next run works" true: the refusal that needs clearing is the amd64 entry on an Apple
-    Silicon host, and a native re-probe alone would leave it standing while doctor printed green.
+    asked about and, when that is the native one, for EVERY other platform a run has asked about
+    since boot: the refusal that needs clearing is usually the amd64 entry on an Apple Silicon
+    host, and a native re-probe alone would leave it standing.
+
+    The memo lives in THIS process. Run creation reads the server's copy, so a re-probe only
+    clears a refusal when it runs inside the server: `doctor` asks for one through
+    `refresh_nested_support` (POST /api/system/nested-support/refresh). A probe in the CLI's own
+    process refreshes nothing the next run reads (#195).
     """
     key = canonical_platform(platform)
     if settings.nested_container_check == "skip":
@@ -162,13 +168,18 @@ def _probe_into_memo(
 ) -> tuple[NestedSupport, str | None]:
     """Probe `key` (None = native), file the verdict under every spelling it answers, log it."""
     support, native = _probe(client_factory, key)
+    _file_verdict(key, support, native)
+    return support, native
+
+
+def _file_verdict(key: str | None, support: NestedSupport, native: str | None) -> None:
+    """File a verdict under every spelling it answers, and log it. Hold _MEMO_LOCK."""
     _memo[key] = support
     if key is None and native is not None:
         _memo[native] = support  # "native" and its explicit spelling are the same question
     elif key is not None and key == native:
         _memo[None] = support
     _log_support(support)
-    return support, native
 
 
 def memoised_verdicts() -> dict[str, NestedSupport]:
@@ -180,6 +191,44 @@ def memoised_verdicts() -> dict[str, NestedSupport]:
         return {
             k: v for k, v in _memo.items() if k is not None and (native is None or v is not native)
         }
+
+
+def refresh_nested_support(
+    settings: Settings, client_factory: Callable[[], object]
+) -> tuple[NestedSupport, dict[str, NestedSupport]]:
+    """Re-probe every verdict this process holds, and return them: the native one, then each
+    foreign platform a run has asked about. The server runs this for `doctor` (#195), so "fix
+    Rosetta, re-run `doctor`, the next run works" holds without restarting XORCISE.
+
+    The probes run OUTSIDE _MEMO_LOCK and the new verdicts are swapped in afterwards. Each probe
+    starts a privileged container and can take a minute, and run creation takes that lock even
+    to read a cached verdict, so holding it here would stall every run create behind the
+    refresh. Until the swap, a run reads the verdict it would have read anyway."""
+    if settings.nested_container_check == "skip":
+        return nested_support(settings, client_factory), {}
+    with _REFRESH_LOCK:
+        with _MEMO_LOCK:
+            asked = [k for k in _memo if k is not None]
+        support, native = _probe(client_factory, None)
+        others = {k: _probe(client_factory, k)[0] for k in asked if k != native}
+        with _MEMO_LOCK:
+            _file_verdict(None, support, native)
+            for key, verdict in others.items():
+                _file_verdict(key, verdict, native)
+    return support, memoised_verdicts()
+
+
+def docker_client() -> object:
+    """A docker SDK client for a nested-support probe, or RuntimeError when the daemon is down.
+
+    DockerException is not a RuntimeError, so unwrapped it escapes the routers' except clauses as
+    a raw 500. A RuntimeError maps to a clean 503 with a remediation (mirrors mission_pull)."""
+    import docker  # type: ignore[import-untyped]
+
+    try:
+        return docker.from_env()
+    except Exception as exc:
+        raise RuntimeError("Docker daemon is not reachable — start Docker") from exc
 
 
 def prewarm_nested_support(settings: Settings, client_factory: Callable[[], object]) -> None:

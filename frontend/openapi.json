@@ -2824,6 +2824,58 @@
         "title": "ModelConfigUpdate",
         "type": "object"
       },
+      "NestedSupportView": {
+        "additionalProperties": false,
+        "description": "What the running server answers after re-probing nested containers (#195).\n\n`native` is the daemon's own platform; `foreign` holds every other platform a run has asked\nthe server about (e.g. linux/amd64 on Apple Silicon), re-probed in the same call. These are\nthe verdicts run creation reads, so they are what `doctor` shows.",
+        "properties": {
+          "foreign": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/NestedVerdictView"
+            },
+            "title": "Foreign",
+            "type": "array"
+          },
+          "native": {
+            "$ref": "#/components/schemas/NestedVerdictView"
+          }
+        },
+        "required": [
+          "native"
+        ],
+        "title": "NestedSupportView",
+        "type": "object"
+      },
+      "NestedVerdictView": {
+        "additionalProperties": false,
+        "description": "One nested-container verdict the server holds. `platform` is \"\" for the daemon's native\nplatform; `remediation` is \"\" when there is nothing to fix.",
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "platform": {
+            "title": "Platform",
+            "type": "string"
+          },
+          "remediation": {
+            "default": "",
+            "title": "Remediation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "platform",
+          "ok",
+          "detail"
+        ],
+        "title": "NestedVerdictView",
+        "type": "object"
+      },
       "NetworkConfigUpdate": {
         "additionalProperties": false,
         "description": "Partial update to the distributed network addresses. None = leave; \"\" = unset to default.",
@@ -8588,6 +8640,28 @@
           }
         },
         "summary": "Get System",
+        "tags": [
+          "system"
+        ]
+      }
+    },
+    "/api/system/nested-support/refresh": {
+      "post": {
+        "description": "Re-probe nested containers in THIS process, where run creation reads its verdicts (#195).\n\n`doctor` calls this after the operator fixes the host (enables Rosetta, say), so the refusal\nthe server cached clears without a restart. A sync route: the probe starts a privileged\ncontainer and can take a minute, so it runs on the threadpool, not the event loop.",
+        "operationId": "refresh_nested_support_api_system_nested_support_refresh_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NestedSupportView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Refresh Nested Support",
         "tags": [
           "system"
         ]
