@@ -147,7 +147,8 @@ def test_doctor_lists_foreign_platform_verdicts_as_warnings(monkeypatch) -> None
     monkeypatch.setattr(dr, "memoised_verdicts", lambda: {"linux/amd64": refused})
     checks = diag.nested_containers_foreign()
     assert [c.name for c in checks] == ["nested containers (linux/amd64)"]
-    assert checks[0].ok is True and checks[0].level == "warning"  # native missions still run
+    # Amber with its fix, not a green tick; a warning, so native missions still run.
+    assert checks[0].ok is False and checks[0].level == "warning"
     assert checks[0].remediation == "enable Rosetta …"
     monkeypatch.setattr(dr, "memoised_verdicts", lambda: {"linux/amd64": OK})
     assert diag.nested_containers_foreign()[0].level == "blocker"  # a plain green line

@@ -210,7 +210,8 @@ def test_doctor_shows_the_servers_re_probed_verdicts(monkeypatch, migrated_home)
     assert asked and asked[0].endswith("/api/system/nested-support/refresh")
     assert [(c.name, c.ok, c.level) for c in checks] == [
         ("nested containers", True, "blocker"),
-        (f"nested containers ({AMD64})", True, "warning"),  # native missions still run
+        # Amber, not a pass; a warning, so native missions still run and doctor still passes.
+        (f"nested containers ({AMD64})", False, "warning"),
     ]
     assert checks[1].remediation == "fix"
 

@@ -344,7 +344,9 @@ def mission_base_release() -> Check:
 
 def _nested_check(platform: str, ok: bool, detail: str, remediation: str) -> Check:
     """One nested-container line. The native platform ("") is a blocker when refused: no lab
-    mission can run. A foreign one is only a warning, since native missions still run."""
+    mission can run. A foreign one is only a warning, since native missions still run — but a
+    refused one is still not `ok`: doctor draws an ok check as a green tick and hides its fix,
+    which is the line an operator re-runs doctor to see clear after enabling Rosetta."""
     from xorcise.core.runner.docker.rosetta import clip_detail
 
     if not platform:
@@ -354,7 +356,7 @@ def _nested_check(platform: str, ok: bool, detail: str, remediation: str) -> Che
     name = f"nested containers ({platform})"
     if ok:
         return Check(name, True, clip_detail(detail))
-    return Check(name, True, clip_detail(detail), remediation, level="warning")
+    return Check(name, False, clip_detail(detail), remediation, level="warning")
 
 
 def nested_containers() -> Check:
