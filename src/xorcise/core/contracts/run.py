@@ -18,13 +18,15 @@ TerminalTrigger = Literal[
     "done", "timeout", "operator", "cancelled", "never_started", "deploy_failed", "crashed"
 ]
 
-#: A run's lifecycle: `created` until the agent first does something only the agent can do, then
-#: `xorcising` until it ends, then `terminal`. A run can go straight from `created` to `terminal`:
+#: A run's lifecycle: `created` until the agent first shows it is at work, then `xorcising` until
+#: it ends, then `terminal`. A run can go straight from `created` to `terminal`:
 #: an environment that never came up, or an operator's stop before the agent started (#209).
 RunState = Literal["created", "xorcising", "terminal"]
 
 #: What moved a run from `created` to `xorcising` — the first thing the agent did (#209):
-#:   telemetry    its first OTel export (a trace or log batch) was admitted to the run's record
+#:   telemetry    its first OTel export (a trace or log batch) was admitted to the run's record.
+#:                The receiver takes no credential, so this one is not proof that the sender
+#:                was the agent (see rest/run_start.py)
 #:   run_control  it called run-control with the run's key: the brief, an attachment, intel, a
 #:                flag or artifact, or completion
 #:   tailnet_key  it fetched its tailnet join key (`/connect` or `/join.sh`), on a lab mission

@@ -1,9 +1,19 @@
 """Record that a run has started: the move from `created` to `xorcising` (#209).
 
-A run starts the first time the agent does something only the agent can do: its first OTel export
-is admitted, it calls run-control with the run's key, or it fetches its tailnet join key. The
-run-control router and the OTLP receiver both report here. The receiver is a part-island that may
-not import the runs module, so the role that boots it hands it `note_started` as a callback.
+A run starts the first time the agent shows it is at work: its first OTel export is admitted, it
+calls run-control with the run's key, or it fetches its tailnet join key. The run-control router
+and the OTLP receiver both report here. The receiver is a part-island that may not import the runs
+module, so the role that boots it hands it `note_started` as a callback.
+
+Only the last two need the run's key. The OTLP receiver takes no credential and routes a batch by
+the run id the batch names, and a run id is not a secret. So anything that can reach the OTLP port
+can start any run whose id it knows. That run is then graded when it ends: a stop as `operator`
+and a spent budget as `timeout`, where it would have ended `cancelled` or `never_started`,
+ungraded. The same batch is admitted to the run's record, so its spans also reach the transcript
+the judge grades. That was true of the receiver before runs had a start. This is a known
+limitation, not a boundary. The OTLP port is bound to the same addresses as the REST API, which is
+unauthenticated too, so whatever can reach it can already stop or delete the run outright. Closing
+it means exporters carrying the run's key in their OTLP headers.
 
 `runs.mark_started` is first-wins, so a repeat is harmless, but it is a database write, and a run
 exports a batch every few seconds. This process remembers the runs it has already seen start and
@@ -60,5 +70,6 @@ def note_started(run_id: str, trigger: StartTrigger) -> None:
 
 
 def telemetry_started(run_id: str) -> None:
-    """The OTLP receiver's `on_admitted`: an admitted export is the agent at work."""
+    """The OTLP receiver's `on_admitted`: an admitted export is taken as the agent at work,
+    although the receiver cannot tell who sent it (see the module docstring)."""
     note_started(run_id, "telemetry")

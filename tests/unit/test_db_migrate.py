@@ -82,6 +82,14 @@ def test_upgrade_drops_results_recorded_for_environment_failures(tmp_path, monke
         grade = GradeResult(run_id=run.run_id, overall=0.0, breakdown=ScoreBreakdown())
         reporting.record_result(run.run_id, "a1", grade, partial=trigger == "timeout")
         ids[trigger] = run.run_id
+    # Telemetry for the timeout: without any, its agent never started, and 0009 drops that grade.
+    from sqlalchemy import text
+
+    with db.get_engine().begin() as conn:
+        conn.execute(
+            text("INSERT INTO logs (run_id, seq, payload, created_at) VALUES (:r, 0, 'x', :now)"),
+            {"r": ids["timeout"], "now": _NOW},
+        )
 
     command.downgrade(_alembic_config(), "0004_trace_seal_evidence_digest")
     db.upgrade()
@@ -387,6 +395,102 @@ def test_upgrade_records_when_existing_runs_started_from_their_evidence(tmp_path
         "untouched": "created",
         "cancelled": "terminal",
     }
+
+
+def test_upgrade_ends_finished_runs_with_no_start_evidence_unstarted_and_drops_their_grades(
+    tmp_path, monkeypatch
+):
+    """0009 (#187): an earlier build graded a timeout or an operator's stop whose agent never
+    started. The upgrade ends it as this build would, `never_started` or `cancelled`, and deletes
+    the grade, keeping the old trigger and score in terminal_detail. A run with start evidence,
+    and a trigger this build never grades, are left as they were."""
+    from datetime import UTC, datetime
+
+    from alembic import command
+    from sqlalchemy import text
+
+    from xorcise.core import reporting, runs
+    from xorcise.core.contracts.grading import GradeResult, ScoreBreakdown
+    from xorcise.core.contracts.run import TerminalTrigger
+    from xorcise.core.db.migrate import _alembic_config
+
+    monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
+    config.get_settings.cache_clear()
+    db.get_engine.cache_clear()
+    db.upgrade()
+    now = datetime(2026, 10, 13, tzinfo=UTC)
+    ids: dict[str, str] = {}
+    cases: tuple[tuple[str, TerminalTrigger, float | None], ...] = (
+        ("idle-timeout", "timeout", 0.04),
+        ("idle-stop", "operator", None),
+        ("worked-timeout", "timeout", 0.5),
+        ("idle-crash", "crashed", None),
+    )
+    for name, trigger, score in cases:
+        run = runs.create_run(agent_id="a1", mission="m", budget_seconds=60)
+        runs.mark_terminal(run.run_id, trigger, now)
+        if score is not None:
+            grade = GradeResult(run_id=run.run_id, overall=score, breakdown=ScoreBreakdown())
+            reporting.record_result(run.run_id, "a1", grade, partial=True)
+        ids[name] = run.run_id
+
+    command.downgrade(_alembic_config(), "0008_unique_telemetry_seq")
+    with db.get_engine().begin() as conn:
+        conn.execute(
+            text("INSERT INTO logs (run_id, seq, payload, created_at) VALUES (:r, 0, 'x', :now)"),
+            {"r": ids["worked-timeout"], "now": _NOW},
+        )
+        conn.execute(
+            text("UPDATE runs SET terminal_detail = 'stopped from the CLI.' WHERE id = :r"),
+            {"r": ids["idle-stop"]},
+        )
+        # results.run_id is not unique: a grade that raced another one left a second row.
+        conn.execute(
+            text(
+                "INSERT INTO results (id, run_id, agent_id, overall, deterministic, judge, "
+                "created_at, detail_json, budget_seconds, agent_version, install_revision, "
+                "partial, stats_json) SELECT 'raced', run_id, agent_id, 0.0, deterministic, "
+                "judge, created_at, detail_json, budget_seconds, agent_version, "
+                "install_revision, partial, stats_json FROM results WHERE run_id = :r"
+            ),
+            {"r": ids["idle-timeout"]},
+        )
+    db.upgrade()
+
+    with db.get_engine().begin() as conn:
+        got = {
+            row.id: (row.terminal_trigger, row.terminal_detail)
+            for row in conn.execute(text("SELECT id, terminal_trigger, terminal_detail FROM runs"))
+        }
+    trigger, detail = got[ids["idle-timeout"]]
+    assert trigger == "never_started"
+    assert detail.startswith("Ended as timeout and graded 0.04 by an earlier build.")
+    trigger, detail = got[ids["idle-stop"]]
+    assert trigger == "cancelled"
+    assert detail.startswith("stopped from the CLI. Ended as operator by an earlier build.")
+    assert got[ids["worked-timeout"]] == ("timeout", None)
+    assert got[ids["idle-crash"]] == ("crashed", None)
+
+    with db.get_engine().begin() as conn:
+        left = conn.execute(
+            text("SELECT COUNT(*) FROM results WHERE run_id = :r"), {"r": ids["idle-timeout"]}
+        ).scalar_one()
+    assert left == 0
+    kept = reporting.get_result(ids["worked-timeout"])
+    assert kept is not None and kept.overall == 0.5
+
+    # A downgrade ends it `crashed`, and says so after the note the upgrade wrote.
+    command.downgrade(_alembic_config(), "0008_unique_telemetry_seq")
+    with db.get_engine().begin() as conn:
+        trigger, detail = conn.execute(
+            text("SELECT terminal_trigger, terminal_detail FROM runs WHERE id = :r"),
+            {"r": ids["idle-timeout"]},
+        ).one()
+    assert trigger == "crashed"
+    assert detail.startswith("Ended as timeout and graded 0.04 by an earlier build.")
+    assert detail.endswith(
+        "Recorded as crashed by a schema downgrade, so this build does not grade it."
+    )
 
 
 def test_upgrade_is_idempotent(tmp_path, monkeypatch):
