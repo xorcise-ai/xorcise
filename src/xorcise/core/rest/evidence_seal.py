@@ -164,7 +164,8 @@ def seal_with_digest(run_id: str) -> None:
     from xorcise.core.otel.store import SqliteSealStore
 
     seals = SqliteSealStore()
-    _latch_telemetry_fact(run_id)
+    if not seals.is_sealed(run_id):  # a repeat seal: the store would refuse the fact anyway
+        _latch_telemetry_fact(run_id)
     # Close admission BEFORE hashing. Hashing first meant anything the receiver admitted while the
     # digest was being computed was hashed out of existence, and the freshly sealed run verified
     # False immediately — the seal accusing itself. `seal()` is first-wins and idempotent, so this

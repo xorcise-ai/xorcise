@@ -230,3 +230,34 @@ def test_viewing_a_sealed_runs_terrain_leaves_its_evidence_verified(client):
         f.kind == "telemetry-lifecycle" for f in SqliteObservedFactsStore().list_for_run("r-sealed")
     )
     assert verify_evidence("r-sealed") is True
+
+
+def test_a_finished_run_not_yet_sealed_still_records_the_telemetry_fact(client):
+    """Ended but still in its drain window: the evidence is not sealed, so the view-time backstop
+    still applies, and the fact is hashed when the run is sealed."""
+    import json
+    from datetime import UTC, datetime
+
+    from xorcise.core.contracts.telemetry import TraceRecord
+    from xorcise.core.otel.store import SqliteTraceStore
+    from xorcise.core.rest.evidence_seal import seal_with_digest, verify_evidence
+    from xorcise.core.runs.observed import SqliteObservedFactsStore
+
+    runs.create_run(
+        run_id="r-draining",
+        agent_id="a1",
+        mission="not-installed",
+        budget_seconds=60,
+        source_agent="generic",
+    )
+    SqliteTraceStore().append(
+        TraceRecord(run_id="r-draining", seq=0, payload=json.dumps({"resourceSpans": []}))
+    )
+    runs.mark_terminal("r-draining", "done", datetime.now(UTC))
+
+    client.get("/api/runs/r-draining/terrain2")
+
+    facts = SqliteObservedFactsStore().list_for_run("r-draining")
+    assert [f.kind for f in facts] == ["telemetry-lifecycle"]
+    seal_with_digest("r-draining")
+    assert verify_evidence("r-draining") is True

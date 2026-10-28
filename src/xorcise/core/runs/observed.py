@@ -10,6 +10,7 @@ against. The exact v1 fact vocabulary is deliberately small.
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -20,6 +21,8 @@ from sqlalchemy.orm import Session
 from xorcise.core.contracts.telemetry import ObservedFact
 from xorcise.core.db import session_scope
 from xorcise.core.runs.models import RunObservedFactRow
+
+log = logging.getLogger(__name__)
 
 
 def _utc(value: datetime | None) -> datetime | None:
@@ -99,11 +102,17 @@ class SqliteObservedFactsStore(ObservedFactsStore):
 
         Under the run's admission lock, the one that orders telemetry against sealing (#184), so a
         fact either commits before the seal, and is hashed, or sees the seal and is refused. Lazy
-        import keeps the OTel store off this module's import path (plane isolation)."""
+        import keeps the OTel store off this module's import path (plane isolation).
+
+        A run that took such a fact before this fix keeps reading `mismatch`, on purpose. Nothing
+        repairs it: that would mean deleting rows from sealed evidence, the very act the seal exists
+        to expose. A `telemetry-lifecycle` or `network-lifecycle`/`join` fact whose `created_at` is
+        after the run's `sealed_at` is this bug, not tampering."""
         from xorcise.core.otel.store.admission import is_sealed_in, under_admission
 
         def add(s: Session) -> bool:
             if is_sealed_in(s, fact.run_id):
+                log.info("run %s is sealed; not recording %s/%s", fact.run_id, fact.kind, fact.name)
                 return False
             s.add(
                 RunObservedFactRow(

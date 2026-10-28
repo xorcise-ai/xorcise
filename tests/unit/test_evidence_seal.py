@@ -905,3 +905,26 @@ def test_the_join_reconciler_cannot_add_a_fact_after_the_seal(migrated_home) -> 
 
     assert not any(f.value == "confirmed" for f in store.list_for_run("r1"))
     assert verify_evidence("r1") is True
+
+
+def test_a_repeat_seal_does_not_try_to_record_the_telemetry_fact_again(
+    migrated_home, monkeypatch
+) -> None:
+    """The store would refuse it, but only after a facts read and a write transaction."""
+    from xorcise.core.rest import evidence_seal
+
+    _seed("r1")
+    calls: list[str] = []
+    real = evidence_seal._latch_telemetry_fact
+
+    def spy(run_id: str) -> None:
+        calls.append(run_id)
+        real(run_id)
+
+    monkeypatch.setattr(evidence_seal, "_latch_telemetry_fact", spy)
+
+    evidence_seal.seal_with_digest("r1")
+    evidence_seal.seal_with_digest("r1")
+
+    assert calls == ["r1"]
+    assert evidence_seal.verify_evidence("r1") is True
