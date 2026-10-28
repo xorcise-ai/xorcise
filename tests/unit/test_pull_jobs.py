@@ -250,9 +250,9 @@ def test_pull_mission_cancel_at_bundle_install_boundary_installs_nothing(tmp_pat
 
 
 def test_pull_mission_cancel_on_cached_image_installs_nothing(tmp_path) -> None:
-    """When the image is already local no layer events fire, so only the phase-boundary
-    checkpoints can honour a cancel — this proves they do, the pull is skipped, and nothing is
-    installed (covers the image_exists=True branch with a cancel)."""
+    """When the image is already local docker's pull moves no layers and no layer events fire,
+    so only the phase-boundary checkpoints can honour a cancel — this proves they do and that
+    nothing is installed."""
     from xorcise.core.catalog import StubCatalogSource
     from xorcise.core.contracts.errors import PullCancelled
     from xorcise.core.missions import get_installed
@@ -260,8 +260,8 @@ def test_pull_mission_cancel_on_cached_image_installs_nothing(tmp_path) -> None:
     from xorcise.core.runner.docker import StubDockerDriver
 
     class _CachedDriver(StubDockerDriver):
-        def image_exists(self, image: str) -> bool:
-            return True  # already in the local store → pull skipped, on_layer never fires
+        def pull(self, image: str, **kwargs: object) -> None:
+            self.pulled.append(image)  # every layer already local: no progress events at all
 
     driver = _CachedDriver()
     calls = {"n": 0}
@@ -273,7 +273,7 @@ def test_pull_mission_cancel_on_cached_image_installs_nothing(tmp_path) -> None:
     deps = PullDeps(source=StubCatalogSource(enabled=True), driver=driver, install_root=tmp_path)
     with pytest.raises(PullCancelled):
         pull_mission("sqli-login", deps, should_cancel=should_cancel)
-    assert driver.pulled == []  # the pull was skipped (image cached)
+    assert driver.pulled == ["xorcise/mission-sqli-login:1"]  # the registry was still asked
     assert get_installed("sqli-login", tmp_path) is None
 
 

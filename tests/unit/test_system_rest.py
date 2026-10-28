@@ -33,3 +33,53 @@ def test_system_reports_the_serving_pid(migrated_home) -> None:
 
     body = _client().get("/api/system").json()
     assert body["pid"] == os.getpid()  # TestClient serves in-process
+
+
+@pytest.mark.unit
+def test_system_counts_environments_a_teardown_left_up(migrated_home) -> None:
+    """#173: only runs whose teardown FAILED are counted. A run whose grade has not finished yet is
+    unreleased too, but that is normal and not something for an operator to act on."""
+    from datetime import UTC, datetime, timedelta
+
+    from xorcise.core import runs
+
+    t0 = datetime(2026, 10, 14, 12, 0, tzinfo=UTC)
+    for i, rid in enumerate(("old", "new", "grading")):
+        runs.reserve_run(rid, "a1", "c", network_cidr=f"10.200.{i}.0/24", entry_cidrs="")
+        runs.finalize_run(rid, budget_seconds=300, prompt="P")
+        runs.mark_terminal(rid, "done", t0 + timedelta(minutes=i))
+    runs.record_release_failure("new", "container: later error")
+    runs.record_release_failure("old", "tailnet: Headscale is not reachable")
+
+    releases = _client().get("/api/system").json()["releases"]
+    assert releases["pending"] == 2
+    assert releases["oldest_ended_at"].startswith("2026-10-14T12:00:00")
+    assert releases["oldest_error"] == "tailnet: Headscale is not reachable"
+
+
+@pytest.mark.unit
+def test_system_reports_no_backlog_when_every_release_landed(migrated_home) -> None:
+    assert _client().get("/api/system").json()["releases"] == {
+        "pending": 0,
+        "oldest_ended_at": None,
+        "oldest_error": "",
+    }
+
+
+@pytest.mark.unit
+def test_system_reports_the_boot_reconcile(migrated_home, monkeypatch) -> None:
+    from xorcise.core.contracts.config import BootReconcileView
+    from xorcise.core.rest import reconcile
+
+    monkeypatch.setattr(
+        reconcile,
+        "_status",
+        BootReconcileView(state="done", aborted=1, release_pending=("r1",), failed=("r2",)),
+    )
+    view = _client().get("/api/system").json()["boot_reconcile"]
+    assert (view["state"], view["aborted"], view["release_pending"], view["failed"]) == (
+        "done",
+        1,
+        ["r1"],
+        ["r2"],
+    )

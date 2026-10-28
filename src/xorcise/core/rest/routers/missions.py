@@ -8,9 +8,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from xorcise.core.config import get_settings
+from xorcise.core.config import Settings, get_settings
 from xorcise.core.contracts.catalog import CatalogEntry
 from xorcise.core.contracts.errors import NotFoundError, PlatformUnsupportedError
 from xorcise.core.contracts.mission import MissionManifest
@@ -33,6 +34,7 @@ from xorcise.core.rest.mission_pull import (
     update_mission,
 )
 from xorcise.core.rest.pull_jobs import PullJob, pull_job_store
+from xorcise.core.rest.runner_wiring import require_runner
 
 router = APIRouter(prefix="/missions", tags=["missions"])
 
@@ -63,8 +65,16 @@ class MissionUpdateOut(BaseModel):
     entry: CatalogEntry
 
 
+class PullJobRequest(BaseModel):
+    # Pull again even when installed and the image is local, then reinstall.
+    refresh: bool = False
+
+
 class PullJobStarted(BaseModel):
     job_id: str
+    # True when this POST joined a pull already in flight instead of starting one. A joined
+    # refresh did not happen: the running job keeps the options it was started with.
+    joined: bool = False
 
 
 class PullJobView(BaseModel):
@@ -83,6 +93,47 @@ class PullJobView(BaseModel):
     detail: str | None = None
     cancel_requested: bool = False  # a cancel was requested; status stays pulling until cancelled
     entry: CatalogEntry | None = None  # the installed entry, once status == installed
+
+
+class MissionDeleteOut(BaseModel):
+    """DELETE /{id}?purge=true result. The mission is uninstalled whatever image_outcome says."""
+
+    mission_id: str
+    image: str | None  # the image the install used; None for a static mission
+    image_outcome: str  # removed | kept | failed | none
+    detail: str | None = None
+
+
+class PruneRequest(BaseModel):
+    apply: bool = False  # false = a dry run: report what would be removed, remove nothing
+    # The images the operator confirmed from a dry run. When set, only those that are still
+    # candidates go; the rest come back under `skipped`. Unset keeps every candidate in scope.
+    image_ids: list[str] | None = None
+
+
+class PruneCandidateView(BaseModel):
+    image_id: str
+    tags: list[str]
+    slug: str
+    size_bytes: int
+    reason: str  # superseded | not installed
+
+
+class PruneFailureView(BaseModel):
+    image_id: str
+    tags: list[str]
+    error: str
+
+
+class PruneReport(BaseModel):
+    """What prune found (candidates) and, when applied, what it removed or could not."""
+
+    applied: bool
+    candidates: list[PruneCandidateView]
+    removed: list[str]  # image ids
+    failed: list[PruneFailureView]
+    skipped: list[str] = []  # confirmed image ids that are no longer candidates, left alone
+    reclaimable_bytes: int  # an upper bound: images built on one base share layers
 
 
 def _installed_entry(ic: InstalledMission) -> CatalogEntry:
@@ -162,6 +213,8 @@ def ingest(payload: IngestRequest, background: BackgroundTasks) -> IngestStarted
     to hang a browser request — so it runs on a background task; poll GET /missions/ingest/{id}
     for status + progress logs (the CLI and the GUI both do). Routes the install through the
     controller so the server remains the single writer (parity with /pull)."""
+    # Refused here, not in the worker: the build runs after the 202, too late to answer 503 (#168).
+    require_runner(get_settings(), "build missions")
     job_id = job_store().start()
     background.add_task(_run_ingest, job_id, payload.bundle_dir)
     return IngestStarted(job_id=job_id)
@@ -181,6 +234,59 @@ def ingest_status(job_id: str, since: int = 0) -> IngestJobView:
         slug=job.slug,
         image=job.image,
         detail=job.detail,
+    )
+
+
+@router.post("/prune")
+def prune_images(payload: PruneRequest | None = None) -> PruneReport:
+    """Find (and with apply=true, remove) the local mission images nothing uses any more.
+
+    A candidate is an image XORCISE owns — mission-base lineage AND only mission-repository
+    tags — that no install record, live run, container or in-flight pull uses. Removal is never
+    forced; an image that turns out to be in use is reported under `failed` and the rest still
+    go. `image_ids` limits the removal to images the operator confirmed: one that is no longer
+    a candidate is reported under `skipped` and kept. 409 when an install record cannot be read
+    (its image is unknown, so nothing is removed) or when this server does not manage Docker
+    images at all.
+    """
+    from xorcise.core.rest.mission_images import InstallRecordUnreadable, prune
+    from xorcise.core.rest.mission_pull import image_store_driver
+
+    settings = get_settings()
+    apply = payload is not None and payload.apply
+    only = (
+        frozenset(payload.image_ids)
+        if payload is not None and payload.image_ids is not None
+        else None
+    )
+    try:
+        driver = image_store_driver(settings)
+        if driver is None:
+            raise HTTPException(status_code=409, detail=_not_managing_images(settings))
+        plan = prune(driver, Path(settings.missions_root), apply=apply, only=only)
+    except InstallRecordUnreadable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:  # Docker not reachable: the same 503 run create answers
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return PruneReport(
+        applied=plan.applied,
+        candidates=[
+            PruneCandidateView(
+                image_id=c.image_id,
+                tags=list(c.tags),
+                slug=c.slug,
+                size_bytes=c.size_bytes,
+                reason=c.reason,
+            )
+            for c in plan.candidates
+        ],
+        removed=list(plan.removed),
+        failed=[
+            PruneFailureView(image_id=f.image_id, tags=list(f.tags), error=f.error)
+            for f in plan.failed
+        ],
+        skipped=list(plan.skipped),
+        reclaimable_bytes=plan.reclaimable_bytes,
     )
 
 
@@ -294,7 +400,7 @@ def _cancel_probe(job_id: str) -> Callable[[], bool]:
     return probe
 
 
-def _run_pull(job_id: str, mission_id: str) -> None:
+def _run_pull(job_id: str, mission_id: str, refresh: bool = False) -> None:
     """Background worker: pull + install a library mission, streaming byte progress to the
     job. Any failure is recorded on the job (never crashes the worker) so the GUI poll ends
     cleanly — the same worker-boundary contract as _run_ingest. A cancel request (via the
@@ -306,6 +412,7 @@ def _run_pull(job_id: str, mission_id: str) -> None:
             build_pull_deps(get_settings()),
             progress=_job_progress_sink(job_id),
             should_cancel=_cancel_probe(job_id),
+            refresh=refresh,
         )
     except PullCancelled:  # cooperative cancel — a clean stop, not a failure
         store.finish_cancelled(job_id)
@@ -351,17 +458,26 @@ def _pull_job_view(job: PullJob) -> PullJobView:
 
 
 @router.post("/{mission_id}/pull-jobs", status_code=202)
-def start_pull_job(mission_id: str, background: BackgroundTasks) -> PullJobStarted:
+def start_pull_job(
+    mission_id: str, background: BackgroundTasks, payload: PullJobRequest | None = None
+) -> PullJobStarted:
     """Start (or join) a background pull for a library mission (202 + job_id, idempotent).
 
     The image download can take minutes — far past what a browser will hold one request open
     for — so it runs on a background task; poll GET /missions/pull-jobs/{job_id}. A POST
     while a pull for this mission is active returns the SAME job_id without starting a
-    second worker (server-side double-pull guard)."""
+    second worker (server-side double-pull guard).
+
+    The body is optional. `refresh: true` pulls again even when the mission is installed and
+    its image is local. A refresh that arrives while a pull is already active joins that pull
+    as-is: the running job does not turn into a refresh."""
+    # Refused here, not in the worker: the pull runs after the 202, too late to answer 503 (#168).
+    require_runner(get_settings(), "pull missions")
     job_id, created = pull_job_store().start(mission_id)
     if created:
-        background.add_task(_run_pull, job_id, mission_id)
-    return PullJobStarted(job_id=job_id)
+        refresh = payload is not None and payload.refresh
+        background.add_task(_run_pull, job_id, mission_id, refresh)
+    return PullJobStarted(job_id=job_id, joined=not created)
 
 
 @router.get("/pull-jobs/{job_id}")
@@ -395,21 +511,91 @@ def cancel_pull_job(job_id: str) -> PullJobView:
     return _pull_job_view(job)
 
 
-@router.delete("/{mission_id}", status_code=204)
-def delete_mission(mission_id: str) -> Response:
+@router.delete(
+    "/{mission_id}",
+    status_code=204,
+    responses={200: {"model": MissionDeleteOut, "description": "Uninstalled, with purge=true"}},
+)
+def delete_mission(mission_id: str, purge: bool = False) -> Response:
     """Uninstall an installed mission — local (your_own) or pulled (library).
 
     Removes the local install directory so the mission leaves Your Own / drops back to
     not-installed in the library. 404 if nothing is installed under that id. Routes the write
-    through the server's install root (single writer, parity with ingest/pull). The fused image is
-    intentionally left in the local store; pruning it is a separate concern.
+    through the server's install root (single writer, parity with ingest/pull).
+
+    Without `purge` the image stays in the local store and the answer is a bare 204 (POST
+    /missions/prune reclaims it later). With `purge=true` the image is removed too, under
+    prune's rules: it stays when it is not a XORCISE mission image or another install, an
+    active run or a container still uses it. The uninstall stands either way; the 200 body
+    says what became of the image.
     """
     from xorcise.core.missions.runtime import delete_installed
 
-    install_root = Path(get_settings().missions_root)
+    settings = get_settings()
+    install_root = Path(settings.missions_root)
+    image: str | None = None
+    if purge:
+        from xorcise.core.rest.mission_images import installed_image_ref
+
+        image = installed_image_ref(mission_id, install_root)  # before the record is gone
     if not delete_installed(mission_id, install_root):
         raise HTTPException(status_code=404, detail=f"no installed mission '{mission_id}'")
-    return Response(status_code=204)
+    if not purge:
+        return Response(status_code=204)
+    out = _purge_image(mission_id, image, install_root)
+    return JSONResponse(content=out.model_dump(), status_code=200)
+
+
+def _not_managing_images(settings: Settings) -> str:
+    stubs = ", stubs forced" if settings.use_stubs else ""
+    return (
+        f"this server does not manage Docker images (role '{settings.role}'{stubs}); "
+        "run it where Docker runs (role 'all' or 'runner')"
+    )
+
+
+def _purge_image(mission_id: str, image: str | None, install_root: Path) -> MissionDeleteOut:
+    from xorcise.core.rest.mission_images import ImageOutcome, purge_image
+    from xorcise.core.rest.mission_pull import image_store_driver
+
+    if image is None:
+        return MissionDeleteOut(
+            mission_id=mission_id,
+            image=None,
+            image_outcome=ImageOutcome.FAILED,
+            detail="the install record did not name a readable image",
+        )
+    if not image:  # a static mission: nothing to remove, whatever state Docker is in
+        return MissionDeleteOut(
+            mission_id=mission_id,
+            image=None,
+            image_outcome=ImageOutcome.NONE,
+            detail="a static mission has no image",
+        )
+    try:
+        settings = get_settings()
+        driver = image_store_driver(settings)
+        if driver is None:
+            return MissionDeleteOut(
+                mission_id=mission_id,
+                image=image,
+                image_outcome=ImageOutcome.NONE,
+                detail=_not_managing_images(settings),
+            )
+        purge = purge_image(image, driver=driver, install_root=install_root)
+    except Exception as exc:  # noqa: BLE001 — the uninstall already stood; report, not 500
+        return MissionDeleteOut(
+            mission_id=mission_id,
+            image=image or None,
+            image_outcome=ImageOutcome.FAILED,
+            detail=str(exc),
+        )
+    return MissionDeleteOut(
+        mission_id=mission_id,
+        image=image or None,
+        image_outcome=purge.outcome,
+        detail=purge.detail,
+    )
 
 
 @router.get("/{mission_id}/manifest")

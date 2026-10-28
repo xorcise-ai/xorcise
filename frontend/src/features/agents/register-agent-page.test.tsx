@@ -5,13 +5,17 @@ import { http, HttpResponse } from "msw";
 import { server } from "@/test/msw/server";
 import { renderWithProviders } from "@/test/render";
 import { agentFixture } from "@/test/fixtures";
+import { useToastStore } from "@/stores/toasts";
 
 const push = vi.fn();
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
 
 import { RegisterAgentPage } from "./register-agent-page";
 
-beforeEach(() => push.mockClear());
+beforeEach(() => {
+  push.mockClear();
+  useToastStore.setState({ toasts: [] });
+});
 
 describe("RegisterAgentPage — register mode", () => {
   it("renders the numbered step cards in order", async () => {
@@ -44,6 +48,7 @@ describe("RegisterAgentPage — register mode", () => {
 
     const submit = screen.getByRole("button", { name: /^register agent$/i });
     expect(submit).toBeDisabled();
+    expect(submit).toHaveAccessibleDescription("Name the agent and choose a harness to register.");
     fireEvent.blur(screen.getByLabelText(/name/i));
     expect(screen.getByText(/name is required/i)).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent(/name is required/i);
@@ -51,6 +56,95 @@ describe("RegisterAgentPage — register mode", () => {
     // Clicking the (disabled) button never fires a submit while the form is invalid.
     fireEvent.click(submit);
     expect(posted).toBe(false);
+  });
+
+  // #141: every agent has a kind, so registering needs a deliberate harness choice.
+  it("keeps Register agent disabled, saying why, until a harness is chosen", async () => {
+    let body: Record<string, unknown> | null = null;
+    server.use(
+      http.post("*/api/agents", async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ ...agentFixture({ name: "scout" }), warnings: [] });
+      }),
+    );
+    renderWithProviders(<RegisterAgentPage editName={null} />);
+    fireEvent.change(screen.getByLabelText(/name/i), { target: { value: "scout" } });
+
+    const submit = screen.getByRole("button", { name: /^register agent$/i });
+    expect(submit).toBeDisabled();
+    expect(submit).toHaveAccessibleDescription("Choose a harness to register.");
+    expect(screen.getByText("Harness").nextElementSibling).toHaveTextContent("Not selected");
+    for (const radio of screen.getAllByRole("radio", { name: /openhands|claude|codex|generic/i })) {
+      expect(radio).toHaveAttribute("aria-checked", "false");
+    }
+
+    fireEvent.click(screen.getByRole("radio", { name: /^generic/i }));
+    expect(submit).toBeEnabled();
+    expect(submit).not.toHaveAccessibleDescription();
+    expect(screen.getByText("Harness").nextElementSibling).toHaveTextContent(/^Generic$/);
+    fireEvent.click(submit);
+    await waitFor(() => expect(body).toMatchObject({ name: "scout", kind: "generic" }));
+  });
+
+  it("sends a blank kind when the Generic ID is cleared, which the server saves as generic", async () => {
+    let body: Record<string, unknown> | null = null;
+    server.use(
+      http.post("*/api/agents", async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ ...agentFixture({ name: "scout" }), warnings: [] });
+      }),
+    );
+    renderWithProviders(<RegisterAgentPage editName={null} />);
+    fireEvent.change(screen.getByLabelText(/name/i), { target: { value: "scout" } });
+    fireEvent.click(screen.getByRole("radio", { name: /^generic/i }));
+    fireEvent.change(screen.getByLabelText(/harness id/i), { target: { value: "" } });
+
+    expect(screen.getByText("Harness").nextElementSibling).toHaveTextContent(/^Generic$/);
+    fireEvent.click(screen.getByRole("button", { name: /^register agent$/i }));
+    await waitFor(() => expect(body).not.toBeNull());
+    expect(body).toMatchObject({ name: "scout", kind: null });
+  });
+
+  it("shows the server's warning about the saved kind once the agent is registered", async () => {
+    // The page's own check needs GET /harnesses; when that fails it cannot judge. The server's
+    // answer to the POST still can, so it is shown either way.
+    server.use(
+      http.get("*/api/harnesses", () => HttpResponse.json({}, { status: 500 })),
+      http.post("*/api/agents", () =>
+        HttpResponse.json({
+          ...agentFixture({ name: "typo", kind: "openhand" }),
+          warnings: ["'openhand' is not a registered harness; did you mean 'openhands'?"],
+        }),
+      ),
+    );
+    renderWithProviders(<RegisterAgentPage editName={null} />);
+    fireEvent.change(screen.getByLabelText(/name/i), { target: { value: "typo" } });
+    fireEvent.click(screen.getByRole("radio", { name: /^generic/i }));
+    fireEvent.change(screen.getByLabelText(/harness id/i), { target: { value: "openhand" } });
+    fireEvent.click(screen.getByRole("button", { name: /^register agent$/i }));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/agents"));
+    expect(useToastStore.getState().toasts).toEqual([
+      expect.objectContaining({
+        tone: "warn",
+        title: "Registered “typo” with a warning",
+        body: "'openhand' is not a registered harness; did you mean 'openhands'?",
+      }),
+    ]);
+  });
+
+  it("raises no toast when the server has nothing to warn about", async () => {
+    server.use(
+      http.post("*/api/agents", () =>
+        HttpResponse.json({ ...agentFixture({ name: "scout", kind: "codex" }), warnings: [] }),
+      ),
+    );
+    renderWithProviders(<RegisterAgentPage editName={null} />);
+    fireEvent.change(screen.getByLabelText(/name/i), { target: { value: "scout" } });
+    fireEvent.click(screen.getByRole("radio", { name: /codex/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^register agent$/i }));
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/agents"));
+    expect(useToastStore.getState().toasts).toEqual([]);
   });
 
   it("submits the declaration and navigates to /agents on success", async () => {
@@ -94,6 +188,7 @@ describe("RegisterAgentPage — register mode", () => {
     fireEvent.change(screen.getByLabelText(/name/i), {
       target: { value: "scout" },
     });
+    fireEvent.click(screen.getByRole("radio", { name: /openhands/i }));
     fireEvent.click(screen.getByRole("button", { name: /^register agent$/i }));
 
     await waitFor(() =>
@@ -157,9 +252,45 @@ describe("RegisterAgentPage — register mode", () => {
     );
   });
 
-  it("shows custom harness export capabilities as unknown, not supported", async () => {
+  // The generic adapter maps what it can, at best: which spans an arbitrary agent exports is
+  // unknown, so Generic reads as unknown, never as a count of supported spans.
+  it("keeps the Generic harness's export capabilities unknown, not supported", async () => {
     renderWithProviders(<RegisterAgentPage editName={null} />);
-    fireEvent.click(screen.getByRole("radio", { name: /custom/i }));
+    fireEvent.click(screen.getByRole("radio", { name: /^generic/i }));
+
+    await waitFor(() => expect(screen.getByText("9 unknown")).toBeInTheDocument());
+    expect(
+      screen.getByText("Generic adapter · best effort"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/\d+ supported/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/thinking \/ cot: unknown/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/thinking \/ cot: supported/i)).not.toBeInTheDocument();
+    expect(screen.getByText("Visibility").nextElementSibling).toHaveTextContent(
+      /^Unverified · capabilities unknown$/,
+    );
+  });
+
+  it("keeps a blank Harness ID unknown too, since it saves as generic", async () => {
+    renderWithProviders(<RegisterAgentPage editName={null} />);
+    fireEvent.click(screen.getByRole("radio", { name: /^generic/i }));
+    fireEvent.change(screen.getByLabelText(/harness id/i), { target: { value: "" } });
+    await waitFor(() => expect(screen.getByText("9 unknown")).toBeInTheDocument());
+  });
+
+  it("profiles a padded built-in slug as that harness, since it saves as one", async () => {
+    renderWithProviders(<RegisterAgentPage editName={null} />);
+    fireEvent.click(screen.getByRole("radio", { name: /^generic/i }));
+    fireEvent.change(screen.getByLabelText(/harness id/i), { target: { value: " codex " } });
+    await waitFor(() =>
+      expect(screen.getByLabelText(/agent messages: not supported/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByText("Harness").nextElementSibling).toHaveTextContent(/^Codex CLI$/);
+  });
+
+  it("keeps your own label's export capabilities unknown, not supported", async () => {
+    renderWithProviders(<RegisterAgentPage editName={null} />);
+    fireEvent.click(screen.getByRole("radio", { name: /^generic/i }));
+    fireEvent.change(screen.getByLabelText(/harness id/i), { target: { value: "my-agent-cli" } });
 
     await waitFor(() =>
       expect(screen.getByText("9 unknown")).toBeInTheDocument(),
@@ -167,6 +298,7 @@ describe("RegisterAgentPage — register mode", () => {
     expect(screen.getByLabelText(/user messages: unknown/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/agent messages: unknown/i)).toBeInTheDocument();
     expect(screen.queryByLabelText(/user messages: supported/i)).not.toBeInTheDocument();
+    expect(screen.getByText("Harness").nextElementSibling).toHaveTextContent(/^my-agent-cli$/);
   });
 
   it("offers harness-specific free-text model suggestions in the optional harness config", async () => {
@@ -394,9 +526,19 @@ describe("RegisterAgentPage — edit mode", () => {
     await waitFor(() =>
       expect(screen.getByDisplayValue("scout")).toBeInTheDocument(),
     );
-    expect(
-      screen.getByText(/renaming keeps the agent.s history/i),
-    ).toBeInTheDocument();
+    const note = screen.getByText(/renaming keeps the agent.s history/i);
+    expect(note).toBeVisible();
+
+    // The note holds the line reserved for the Name error (so edit mode has no empty gap under
+    // the field); a cleared name swaps the error in without moving anything below it.
+    const name = screen.getByDisplayValue("scout");
+    fireEvent.change(name, { target: { value: "" } });
+    fireEvent.blur(name);
+    const error = screen.getByRole("alert");
+    expect(error).toHaveTextContent("Name is required.");
+    expect(error.parentElement?.parentElement).toBe(note.parentElement);
+    expect(note).toHaveClass("invisible");
+    expect(note).toHaveAttribute("aria-hidden", "true");
   });
 
   it("unknown editName falls back to register mode with a notice", async () => {
@@ -427,9 +569,9 @@ describe("RegisterAgentPage — edit mode", () => {
     expect(screen.queryByText(/no agent named/i)).not.toBeInTheDocument();
   });
 
-  // C1 regression guard: a custom (non-built-in) saved kind must show up as the Custom card
+  // C1 regression guard: your own (non-built-in) saved kind must show up as the Generic card
   // selected AND its kind input populated on the very first paint — not blank.
-  it("edit mode with a custom kind selects the Custom card and shows it in the kind input", async () => {
+  it("edit mode with your own kind selects the Generic card and shows it in the kind input", async () => {
     server.use(
       http.get("*/api/agents", () =>
         HttpResponse.json([agentFixture({ name: "scout", kind: "my-cli" })]),
@@ -440,11 +582,63 @@ describe("RegisterAgentPage — edit mode", () => {
     await waitFor(() =>
       expect(screen.getByDisplayValue("scout")).toBeInTheDocument(),
     );
-    expect(screen.getByRole("radio", { name: /custom/i })).toHaveAttribute(
+    expect(screen.getByRole("radio", { name: /^generic/i })).toHaveAttribute(
       "aria-checked",
       "true",
     );
     expect(screen.getByLabelText(/harness id/i)).toHaveValue("my-cli");
+  });
+
+  it("warns after an edit only when it gave the agent a new unregistered kind", async () => {
+    // The CLI's rule: a kind the agent already had is not a new choice, so saving the model on
+    // `my-cli` does not repeat the warning; changing the kind to another unregistered one does.
+    const warning = "'my-cli2' is not a registered harness";
+    server.use(
+      http.get("*/api/agents", () =>
+        HttpResponse.json([agentFixture({ name: "scout", kind: "my-cli" })]),
+      ),
+      http.put("*/api/agents/scout", async ({ request }) => {
+        const decl = (await request.json()) as { kind: string };
+        return HttpResponse.json({
+          ...agentFixture({ name: "scout", kind: decl.kind }),
+          warnings: [warning.replace("my-cli2", decl.kind)],
+        });
+      }),
+    );
+    renderWithProviders(<RegisterAgentPage editName="scout" />);
+    await waitFor(() => expect(screen.getByDisplayValue("scout")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+    await waitFor(() => expect(push).toHaveBeenCalledTimes(1));
+    expect(useToastStore.getState().toasts).toEqual([]);
+  });
+
+  it("toasts the server's warning when an edit changes the kind", async () => {
+    server.use(
+      http.get("*/api/agents", () =>
+        HttpResponse.json([agentFixture({ name: "scout", kind: "my-cli" })]),
+      ),
+      http.put("*/api/agents/scout", async ({ request }) => {
+        const decl = (await request.json()) as { kind: string };
+        return HttpResponse.json({
+          ...agentFixture({ name: "scout", kind: decl.kind }),
+          warnings: [`'${decl.kind}' is not a registered harness`],
+        });
+      }),
+    );
+    renderWithProviders(<RegisterAgentPage editName="scout" />);
+    await waitFor(() => expect(screen.getByDisplayValue("scout")).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText(/harness id/i), { target: { value: "my-cli2" } });
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/agents/detail?name=scout"));
+    expect(useToastStore.getState().toasts).toEqual([
+      expect.objectContaining({
+        tone: "warn",
+        title: "Saved “scout” with a warning",
+        body: "'my-cli2' is not a registered harness",
+      }),
+    ]);
   });
 
   // I3 regression guard: the mutation's list invalidation is AWAITED before mutateAsync
@@ -494,17 +688,19 @@ describe("RegisterAgentPage — edit mode", () => {
   });
 
   // Ported from register-agent.test.tsx (dialog test deleted alongside the dialog in Task 4).
-  it("editing an agent with a null kind does not silently re-tag it as OpenHands", async () => {
+  // #141: an agent saved without a harness is stored as `generic`; editing it must keep that,
+  // shown as the Generic card, not re-tag it or call it "Custom (generic)".
+  it("editing a generic agent selects the Generic card and saves it unchanged", async () => {
     server.use(
       http.get("*/api/agents", () =>
-        HttpResponse.json([agentFixture({ name: "scout", kind: null })]),
+        HttpResponse.json([agentFixture({ name: "scout", kind: "generic" })]),
       ),
     );
     let body: Record<string, unknown> | null = null;
     server.use(
       http.put("*/api/agents/scout", async ({ request }) => {
         body = (await request.json()) as Record<string, unknown>;
-        return HttpResponse.json(agentFixture({ name: "scout", kind: null }));
+        return HttpResponse.json({ ...agentFixture({ name: "scout" }), warnings: [] });
       }),
     );
     renderWithProviders(<RegisterAgentPage editName="scout" />);
@@ -512,11 +708,18 @@ describe("RegisterAgentPage — edit mode", () => {
     await waitFor(() =>
       expect(screen.getByDisplayValue("scout")).toBeInTheDocument(),
     );
+    expect(screen.getByRole("radio", { name: /^generic/i })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(screen.getByLabelText(/harness id/i)).toHaveValue("generic");
+    expect(screen.getByText("Harness").nextElementSibling).toHaveTextContent(/^Generic$/);
+    expect(screen.queryByText(/custom/i)).not.toBeInTheDocument();
     // Save without touching the harness selector.
     fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
 
     await waitFor(() => expect(body).not.toBeNull());
-    expect(body).toMatchObject({ name: "scout", kind: null });
+    expect(body).toMatchObject({ name: "scout", kind: "generic" });
   });
 
   // Regression guard for the seed-once fix: the agents list is invalidated (and refetched) by

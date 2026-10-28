@@ -132,7 +132,7 @@ const HARNESS_DESCRIPTORS: HarnessDescriptor[] = [
   },
   {
     kind: "generic",
-    display_name: "Custom",
+    display_name: "Generic",
     description: "Any CLI agent — replayed and launched through generic fallbacks.",
     model_hints: [],
     capabilities: profile("generic"),
@@ -167,6 +167,8 @@ export const handlers = [
   http.get("*/api/agents", () => HttpResponse.json([])),
   http.get("*/api/missions", () => HttpResponse.json([])),
   http.get("*/api/runs", () => HttpResponse.json([])),
+  http.get("*/api/results/runs", () => HttpResponse.json([])),
+  http.get("*/api/results/summary", () => HttpResponse.json([])),
   // The server returns empty records for an unknown run (read_since -> []).
   http.get("*/api/runs/:id/traces", ({ params }) =>
     HttpResponse.json({ run_id: params.id, records: [] }),
@@ -212,6 +214,10 @@ export const handlers = [
     }),
   ),
   http.get("*/api/catalog/status", () => HttpResponse.json({ state: "connected" })),
+  // No banners by default. The setup runs MSW with onUnhandledRequest: "error", so this
+  // handler must exist for every test the moment anything calls the endpoint; a test that
+  // asserts on a banner overrides it with server.use(...).
+  http.get("*/api/announcements", () => HttpResponse.json({ announcements: [] })),
   http.get("*/api/system", () =>
     HttpResponse.json({
       role: "all",

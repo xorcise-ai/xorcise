@@ -14,6 +14,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
+from xorcise.core.contracts.announcements import Announcement
 from xorcise.core.contracts.catalog import CatalogStatus
 from xorcise.core.contracts.errors import NotFoundError
 from xorcise.core.contracts.mission import MissionManifest
@@ -158,6 +159,16 @@ class CatalogSource(ABC):
         (the stub, a pre-contract deployment whose /v1/mission-base 404s, or a network
         failure). None means UNKNOWN — callers render nothing, never a fabricated version."""
         return None
+
+    def announcements(self) -> tuple[Announcement, ...]:
+        """Active announcements from the remote service; empty when there are none or it
+        cannot say.
+
+        NON-abstract on purpose, same convention as mission_base(): StubCatalogSource and any
+        source written before announcements existed keep working untouched. Empty is also the
+        honest answer for "cannot say" — a banner is decoration, so the only two outcomes a
+        caller ever has to handle are "here are the banners" and "no banners"."""
+        return ()
 
     def fetch_delivery(self, mission_id: str) -> DeliveryBundle | None:
         """The out-of-band attachment bundle for a library mission.

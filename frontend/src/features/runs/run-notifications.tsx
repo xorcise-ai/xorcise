@@ -7,50 +7,31 @@ import { useToastStore, type Toast } from "@/stores/toasts";
 import { useUiStore } from "@/stores/ui";
 import { STALL_TICK_MS, isStalled, secondsSince, useNow } from "./stall";
 import type { RunEntry } from "@/lib/api/types";
+import { runAction } from "./run-state";
 
 /** Background poll cadence for run-transition notifications. The watcher shares
  *  the ["runs"] cache with useRuns/useRun, so a page-level 2s poll (live view)
  *  and mutation invalidations feed it too — 5s is only the floor. */
 const NOTIFY_POLL_MS = 5000;
 
-/** Toast content for a run that just reached a terminal state. */
+/** Toast content for a run that just reached a terminal state. The title is the server's status
+ *  label (the word the CLI and every card use) and the link is the run's primary action — a
+ *  deploy failure or crash used to toast a neutral "Run terminated" (#165). */
 function transitionToast(run: RunEntry): Omit<Toast, "id"> {
-  const resultHref = `/runs/result?id=${encodeURIComponent(run.run_id)}`;
-  const liveHref = `/runs/live?id=${encodeURIComponent(run.run_id)}`;
-  switch (run.terminal_trigger) {
-    case "done":
-    case "completed":
-      return {
-        tone: "ok",
-        title: `Run completed — ${run.name}`,
-        href: resultHref,
-        hrefLabel: "View result",
-      };
-    case "timeout":
-      return {
-        tone: "warn",
-        title: `Run timed out — ${run.name}`,
-        href: resultHref,
-        hrefLabel: "View partial result",
-      };
-    case "budget":
-      return {
-        tone: "warn",
-        title: `Run hit its budget — ${run.name}`,
-        href: resultHref,
-        hrefLabel: "View result",
-      };
-    case "error":
-      return {
-        tone: "err",
-        title: `Run failed — ${run.name}`,
-        href: liveHref,
-        hrefLabel: "Inspect run",
-      };
-    default:
-      // operator termination / unknown trigger
-      return { tone: "info", title: `Run terminated — ${run.name}` };
-  }
+  const action = runAction(run);
+  const href =
+    action.target === "result"
+      ? `/runs/result?id=${encodeURIComponent(run.run_id)}`
+      : `/runs/live?id=${encodeURIComponent(run.run_id)}`;
+  const tone: Toast["tone"] =
+    run.outcome === "completed"
+      ? "ok"
+      : run.outcome === "partial"
+        ? "warn"
+        : run.status.tone === "err"
+          ? "err"
+          : "info";
+  return { tone, title: `${run.status.label} — ${run.name}`, href, hrefLabel: action.label };
 }
 
 /** Invisible app-wide watcher (mounted in AppShell): polls the shared ["runs"]

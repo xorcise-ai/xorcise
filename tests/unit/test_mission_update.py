@@ -4,6 +4,7 @@ row, and an in-place atomic re-pull as the single user-facing operation."""
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from pathlib import Path
 from typing import Any
@@ -18,8 +19,14 @@ from xorcise.core.contracts.errors import NotFoundError
 from xorcise.core.missions import get_installed
 from xorcise.core.missions.errors import MissionCollisionError
 from xorcise.core.rest.catalog_view import CatalogViewDeps, list_catalog
-from xorcise.core.rest.mission_pull import PullDeps, pull_mission, update_mission
-from xorcise.core.runner.docker import StubDockerDriver
+from xorcise.core.rest.mission_pull import (
+    PullCancelled,
+    PullDeps,
+    PullError,
+    pull_mission,
+    update_mission,
+)
+from xorcise.core.runner.docker import ImageRecord, StubDockerDriver
 
 pytestmark = pytest.mark.unit
 
@@ -132,6 +139,97 @@ def test_update_falls_back_to_the_release_ref_without_digests(tmp_path: Path) ->
 
 
 # ── browse-row detection (§34) ───────────────────────────────────────────────────────────────
+
+
+# ── an update that pulls a re-pushed tag moves that tag before it can fail ──────────────────
+# The catalog can re-push a release under the SAME tag, so the update re-pulls it (the digest
+# differs). Docker moves the tag the moment the pull lands, before the platform check, the
+# bundle check and the install. If any of those stops the update, the tag must go back to the
+# image the install record describes, or that image turns untagged and prune removes it.
+
+
+class _RepushedTag(StubDockerDriver):
+    """Every pull of a tag moves it to a fresh image, as a registry that re-pushed in place."""
+
+    pulls = 0
+
+    def pull(self, image: str, **kwargs: Any) -> None:
+        super().pull(image, **kwargs)
+        for rid, rec in list(self.images.items()):
+            self.images[rid] = dataclasses.replace(
+                rec, tags=tuple(t for t in rec.tags if t != image)
+            )
+        self.pulls += 1
+        new = f"sha256:img{self.pulls}"
+        self.images[new] = ImageRecord(new, (image,), {}, 1)
+
+
+def _repushed(tmp_path: Path) -> tuple[_RepushedTag, PullDeps, str]:
+    """An install of v1, then a catalog that re-pushed v1's tag with a new digest."""
+    d = _RepushedTag()
+    pull_mission("sqli-login", PullDeps(_Catalog(enabled=True), d, tmp_path))
+    moved = _Catalog(enabled=True)
+    object.__setattr__(moved, "index_digest", "sha256:repushed")  # same tag, new digest
+    installed_image = d.image_id(_IMAGE_V1)
+    assert installed_image is not None
+    return d, PullDeps(moved, d, tmp_path), installed_image
+
+
+def _still_v1(tmp_path: Path) -> None:
+    record = get_installed("sqli-login", tmp_path)
+    assert record is not None
+    assert (record.install_revision, record.index_digest) == (1, "sha256:one")
+
+
+def test_a_failed_update_of_a_repushed_tag_puts_the_tag_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from xorcise.core.rest import mission_pull
+
+    d, deps, installed_image = _repushed(tmp_path)
+
+    def corrupt(*_: object) -> bytes:
+        raise PullError("delivery bundle sha256 mismatch")
+
+    monkeypatch.setattr(mission_pull, "_fetch_verified_delivery", corrupt)
+    with pytest.raises(PullError, match="sha256 mismatch"):
+        update_mission("sqli-login", deps)
+    assert d.pulled == [_IMAGE_V1, _IMAGE_V1]  # the update did pull the re-pushed tag
+    assert d.image_id(_IMAGE_V1) == installed_image
+    _still_v1(tmp_path)
+
+
+def test_a_cancelled_update_of_a_repushed_tag_puts_the_tag_back(tmp_path: Path) -> None:
+    d, deps, installed_image = _repushed(tmp_path)
+    with pytest.raises(PullCancelled):
+        update_mission(
+            "sqli-login",
+            deps,
+            should_cancel=lambda: d.image_id(_IMAGE_V1) != installed_image,
+        )
+    assert d.image_id(_IMAGE_V1) == installed_image
+    _still_v1(tmp_path)
+
+
+def test_an_update_that_fails_after_its_install_committed_keeps_the_new_tag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The record already describes the new image, so the tag must stay on it."""
+    import xorcise.core.missions as missions
+
+    d, deps, installed_image = _repushed(tmp_path)
+    real = missions.install_pulled
+
+    def committed_then_failed(**kwargs: Any) -> object:
+        real(**kwargs)
+        raise OSError("could not remove the .bak directory")
+
+    monkeypatch.setattr(missions, "install_pulled", committed_then_failed)
+    with pytest.raises(OSError):
+        update_mission("sqli-login", deps)
+    record = get_installed("sqli-login", tmp_path)
+    assert record is not None and record.index_digest == "sha256:repushed"
+    assert d.image_id(_IMAGE_V1) not in (None, installed_image)
 
 
 def test_installed_row_flags_update_available(tmp_path: Path) -> None:

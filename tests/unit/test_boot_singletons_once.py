@@ -28,10 +28,11 @@ pytestmark = pytest.mark.unit
 def _count_startup_constructions(monkeypatch, migrated_home, fire: int) -> dict[str, int]:
     """Build the role_all app, fire its startup hooks `fire` times, count singletons made."""
     import xorcise.core.rest.budget_watchdog as bw
+    import xorcise.core.rest.release_sweeper as rs
     import xorcise.core.rest.run_readiness as rr
     from xorcise.core.roles.boot import role_all
 
-    counts = {"budget": 0, "readiness": 0, "reconcile": 0}
+    counts = {"budget": 0, "readiness": 0, "reconcile": 0, "release": 0}
 
     class _CountingBudget(bw.BudgetWatchdog):
         def __init__(self, *a, **k):
@@ -49,11 +50,20 @@ def _count_startup_constructions(monkeypatch, migrated_home, fire: int) -> dict[
         def start(self) -> None:
             pass
 
+    class _CountingRelease(rs.ReleaseSweeper):
+        def __init__(self, *a, **k):
+            counts["release"] += 1
+            super().__init__(*a, **k)
+
+        def start(self) -> None:
+            pass
+
     def _counting_reconcile() -> None:
         counts["reconcile"] += 1
 
     monkeypatch.setattr(bw, "BudgetWatchdog", _CountingBudget)
     monkeypatch.setattr(rr, "ReadinessWatchdog", _CountingReadiness)
+    monkeypatch.setattr(rs, "ReleaseSweeper", _CountingRelease)
     monkeypatch.setattr("xorcise.core.rest.reconcile.reconcile_all_on_startup", _counting_reconcile)
 
     app = role_all.build_rest_app()
@@ -75,7 +85,7 @@ def _count_startup_constructions(monkeypatch, migrated_home, fire: int) -> dict[
 
 def test_one_listener_creates_one_of_each(monkeypatch, migrated_home):
     counts = _count_startup_constructions(monkeypatch, migrated_home, fire=1)
-    assert counts == {"budget": 1, "readiness": 1, "reconcile": 1}
+    assert counts == {"budget": 1, "readiness": 1, "reconcile": 1, "release": 1}
 
 
 @pytest.mark.parametrize("listeners", [2, 3])
@@ -87,7 +97,7 @@ def test_extra_listeners_still_create_only_one_of_each(monkeypatch, migrated_hom
     same verdict, which is how one run gets closed out twice and one teardown loses a 409.
     """
     counts = _count_startup_constructions(monkeypatch, migrated_home, fire=listeners)
-    assert counts == {"budget": 1, "readiness": 1, "reconcile": 1}, (
+    assert counts == {"budget": 1, "readiness": 1, "reconcile": 1, "release": 1}, (
         f"startup ran {listeners}x (one uvicorn.Server per bind host, same app) and built "
         f"duplicate background singletons: {counts}"
     )
@@ -101,10 +111,11 @@ def test_a_lifespan_restart_builds_fresh_singletons(monkeypatch, migrated_home):
     import asyncio
 
     import xorcise.core.rest.budget_watchdog as bw
+    import xorcise.core.rest.release_sweeper as rs
     import xorcise.core.rest.run_readiness as rr
     from xorcise.core.roles.boot import role_all
 
-    counts = {"budget": 0, "readiness": 0, "reconcile": 0}
+    counts = {"budget": 0, "readiness": 0, "reconcile": 0, "release": 0}
 
     class _Budget(bw.BudgetWatchdog):
         def __init__(self, *a, **k):
@@ -128,7 +139,19 @@ def test_a_lifespan_restart_builds_fresh_singletons(monkeypatch, migrated_home):
         async def stop(self) -> None:
             pass
 
+    class _Release(rs.ReleaseSweeper):
+        def __init__(self, *a, **k):
+            counts["release"] += 1
+            super().__init__(*a, **k)
+
+        def start(self) -> None:
+            pass
+
+        async def stop(self) -> None:
+            pass
+
     monkeypatch.setattr(bw, "BudgetWatchdog", _Budget)
+    monkeypatch.setattr(rs, "ReleaseSweeper", _Release)
     monkeypatch.setattr(rr, "ReadinessWatchdog", _Readiness)
     monkeypatch.setattr(
         "xorcise.core.rest.reconcile.reconcile_all_on_startup",
@@ -145,4 +168,4 @@ def test_a_lifespan_restart_builds_fresh_singletons(monkeypatch, migrated_home):
 
     asyncio.run(cycle())
     asyncio.run(cycle())
-    assert counts == {"budget": 2, "readiness": 2, "reconcile": 2}
+    assert counts == {"budget": 2, "readiness": 2, "reconcile": 2, "release": 2}

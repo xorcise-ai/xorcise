@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from xorcise.core.contracts.control import RunState
 from xorcise.core.contracts.errors import NotFoundError
+from xorcise.core.contracts.run import TerminalTrigger
 
 if TYPE_CHECKING:
     from xorcise.core.contracts.control import StatusResult, TeardownResult
@@ -47,7 +48,7 @@ log = logging.getLogger(__name__)
 
 #: The trigger recorded for a run whose environment never came up. Distinct from "timeout" (the
 #: agent ran out of BUDGET, which is a legitimate result) — this one is an environment failure.
-DEPLOY_FAILED = "deploy_failed"
+DEPLOY_FAILED: TerminalTrigger = "deploy_failed"
 
 #: The fence's "services up, router not on the tailnet" reading — and what to check when a run
 #: times out on exactly that. The router logs in to the control plane at the address `xorcise up`
@@ -162,7 +163,7 @@ class ReadinessWatchdog:
         self,
         deps: _ReadinessDeps,
         list_pending: Callable[[], list[tuple[str, datetime]]],
-        terminate: Callable[[str, str, datetime, str], object],
+        terminate: Callable[[str, TerminalTrigger, datetime, str], object],
         now_fn: Callable[[], datetime],
         timeout_seconds: float,
         interval: float = 5.0,

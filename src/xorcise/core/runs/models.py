@@ -25,6 +25,12 @@ class RunRow(Base):
     # `<mission> · <agent> #<n>` default); nullable for rows created before this column.
     name: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
     state: Mapped[str] = mapped_column(String(32), default="created")
+    # When the agent first did something only the agent can do, and which thing it was
+    # (contracts.run.StartTrigger): set once, by the move from `created` to `xorcising` (#209).
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
+    start_trigger: Mapped[str | None] = mapped_column(String(16), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
@@ -48,12 +54,25 @@ class RunRow(Base):
     # network_cidr is the /24 for allocation; entry_cidrs is the carved set the ACL rule needs (they
     # differ for multi-entry-network missions). Read via active_run_networks(); empty pre-column.
     entry_cidrs: Mapped[str] = mapped_column(Text, default="", server_default="")
-    # terminal state machine. trigger ∈ {done, timeout, flag}; first-wins.
+    # terminal state machine. trigger ∈ contracts.run.TerminalTrigger; first-wins.
     terminal_trigger: Mapped[str | None] = mapped_column(String(16), default=None)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     # why the run ended, when the trigger alone does not say (the readiness gate's deploy_failed
     # evidence). Nullable: the ordinary triggers carry no detail, and rows predate the column.
     terminal_detail: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    # Environment release (#173). A POSITIVE mark: set only once both the container and the tailnet
+    # nodes are gone, so "terminal and released_at IS NULL" is exactly the set still to release.
+    # A crash between the terminal transition and the teardown therefore leaves the run visibly
+    # unreleased and retried, where a "release failed" flag set after the fact would miss it.
+    released_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
+    # Failed release attempts so far, and the last one's error: they drive the retry log levels and
+    # the run page's "releasing" detail. Success clears the error and keeps the count as history.
+    release_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    release_error: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     # disclosed conditions: captured at run-create time, never mutated.
     model: Mapped[str | None] = mapped_column(
         String(255), nullable=True, default=None

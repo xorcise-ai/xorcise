@@ -9,6 +9,7 @@ import type {
   AgentEntry,
   AgentDeclaration,
   AgentHistoryEntry,
+  AgentSaveView,
 } from "@/lib/api/types";
 
 /** The agent LIST. Per-name queries hang off the same prefix — see invalidateAgentList. */
@@ -61,7 +62,7 @@ export function useRegisterAgent() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (decl: AgentDeclaration) =>
-      api.post<AgentEntry>("/agents", decl),
+      api.post<AgentSaveView>("/agents", decl),
     onSuccess: () => invalidateAgentList(qc),
   });
 }
@@ -74,7 +75,7 @@ export function useUpdateAgent() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ name, decl }: { name: string; decl: AgentDeclaration }) =>
-      api.put<AgentEntry>(`/agents/${encodeURIComponent(name)}`, decl),
+      api.put<AgentSaveView>(`/agents/${encodeURIComponent(name)}`, decl),
     onSuccess: () => invalidateAgentList(qc),
   });
 }
@@ -82,8 +83,9 @@ export function useUpdateAgent() {
 export function useDeleteAgent() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (name: string) =>
-      api.del(`/agents/${encodeURIComponent(name)}`),
+    // `force` overrides only a failed environment teardown (see isForceableRefusal).
+    mutationFn: ({ name, force = false }: { name: string; force?: boolean }) =>
+      api.del(`/agents/${encodeURIComponent(name)}${force ? "?force=true" : ""}`),
     onSuccess: () => invalidateAgentList(qc),
   });
 }

@@ -121,8 +121,7 @@ export function MissionPicker({
                 {selected.installed ? "installed" : "pulls on start"}
               </Badge>
             </div>
-            {/* prose-tight is the declared measure for help text sitting under a
-                control (68ch, 1.6) — the arbitrary max-w-[68ch] restated it by hand. */}
+            {/* prose-tight is the declared leading for help text sitting under a control. */}
             {!selected.installed && (
               <p className="prose-tight text-dense text-text-tertiary">
                 Not installed yet — this mission is pulled automatically when

@@ -14,6 +14,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from typing import Any
 
 import httpx
 import typer
@@ -31,8 +32,7 @@ from xorcise.core.cli._diagnostics import (
     external_control_plane,
     home_present,
     mission_base_release,
-    nested_containers,
-    nested_containers_foreign,
+    nested_container_checks,
     openssl_present,
     probe_channel,
     python_version,
@@ -54,7 +54,7 @@ from xorcise.core.cli._shared import (
     golden_path_steps,
 )
 from xorcise.core.cli._update import begin_update_check
-from xorcise.core.cli._ux import print_table, step_progress, ux_table
+from xorcise.core.cli._ux import _stdin_is_interactive, print_table, step_progress, ux_table
 from xorcise.core.cli._ux import service_label as _service_label
 from xorcise.core.config import get_settings, ui_url
 from xorcise.core.headscale import provision
@@ -69,6 +69,7 @@ from xorcise.core.home import (
     write_runtime_ports,
     xorcise_home,
 )
+from xorcise.core.rest.runner_wiring import RUNNER_ROLES
 from xorcise.core.roles.boot import AppSpec
 
 
@@ -216,9 +217,10 @@ def _maybe_provision_headscale(
         # distributed topology keeps a local container here is not something this command can
         # establish, and refusing to start would break any setup that does work. The point is
         # that `up` must not imply run creation is ready when it cannot confirm that.
-        serves_runs = not getattr(settings, "use_stubs", False) and getattr(
-            settings, "role", "all"
-        ) in {"all", "runner"}
+        serves_runs = (
+            not getattr(settings, "use_stubs", False)
+            and getattr(settings, "role", "all") in RUNNER_ROLES
+        )
         if serves_runs:
             local = control_plane(getattr(settings, "headscale_container", "headscale"))
             if not local.ok:
@@ -288,6 +290,16 @@ def _apply_runtime_env(role: str, *, stub: bool, ports: dict[str, int] | None = 
             if getattr(s, f"{plane}_port") != value:
                 os.environ[_PLANE_ENV[plane]] = str(value)
     get_settings.cache_clear()
+
+
+def _refuse_loopback_only_distributed() -> None:
+    """Exit 1 when the distributed topology would listen on loopback only (#169)."""
+    from xorcise.core.roles.boot.role_all import distributed_bind_refusal
+
+    refusal = distributed_bind_refusal(get_settings())
+    if refusal is not None:
+        err_console.print(f"[err]error[/err]: {refusal}", highlight=False)
+        raise typer.Exit(1)
 
 
 def _role_bind_hosts(role: str, configured_host: str) -> list[str]:
@@ -423,6 +435,10 @@ def up(
     # surface ~20 lines in, after the home was created, the DB migrated and two RSA
     # keys generated — as a raw `docker compose … failed` with no remediation.
     _require_prerequisites(stub=stub)
+    # Before anything is written. A topology set in config.toml needs a home that already exists,
+    # so checking ahead of init_home misses nothing.
+    get_settings.cache_clear()
+    _refuse_loopback_only_distributed()
 
     init_home()
     scaffold_config(xorcise_home())
@@ -502,7 +518,40 @@ def up(
         notice = check_update()
         if notice:
             console.print(notice)
+    _report_boot_reconcile(f"http://{settings.host}:{settings.rest_port}/api/system")
     console.print(next_steps_block(ui_url()))
+
+
+# How long `up` waits for the start-up reconcile to report. It runs in the background once the
+# server answers, and is usually done in well under a second; a slow Docker or Headscale should not
+# hold `up` hostage, so past this it says where to look instead.
+_RECONCILE_WAIT_SECONDS = 5.0
+
+
+def _report_boot_reconcile(system_url: str) -> None:
+    """Tell the operator what the server recovered at start: runs picked back up, closed out as
+    crashed, or kept because their teardown failed (#173). Silent on a clean start."""
+    from xorcise.core.cli.commands.system import boot_reconcile_lines
+
+    deadline = time.monotonic() + _RECONCILE_WAIT_SECONDS
+    view: dict[str, Any] | None = None
+    while True:
+        try:
+            body = httpx.get(system_url, timeout=2, trust_env=False).json()
+            view = body.get("boot_reconcile") if isinstance(body, dict) else None
+        except Exception:  # noqa: BLE001 — a status line is never worth failing `up` over
+            return
+        if not view or view.get("state") in {"done", "failed"}:
+            break
+        if time.monotonic() >= deadline:
+            console.print(
+                "boot reconcile: still checking the runs that were live before this start — "
+                "see [value]xorcise system[/value]"
+            )
+            return
+        time.sleep(0.25)
+    for line in boot_reconcile_lines(view):
+        console.print(line)
 
 
 def _runtime_port_overlay() -> dict[str, int]:
@@ -984,10 +1033,10 @@ def doctor(
         # so the operator waits instead of killing it (and stranding the privileged probe).
         if as_json is not True:
             console.print("  [dim]○ probing nested containers (may take a minute)…[/dim]")
-        env_checks.append(nested_containers())
-        # The foreign platforms runs have asked about (re-probed by the line above), so a
-        # cleared Rosetta refusal shows up here and not only on the next run.
-        env_checks.extend(nested_containers_foreign())
+        # The running server's verdicts, re-probed in the server (#195): that is where run
+        # creation reads them, so a cleared Rosetta refusal clears for the next run too. Its
+        # foreign-platform lines list the platforms runs actually asked about.
+        env_checks.extend(nested_container_checks())
     port_checks: list[Check] = []
     server_ports = _running_server_ports()
     # Probe the ports the server actually runs on (runtime overlay, same resolution
@@ -1119,11 +1168,6 @@ def _await_exit(pid: int, timeout: float = 8.0, poll: float = 0.1) -> bool:
     except (ProcessLookupError, PermissionError):
         return True
     return False
-
-
-def _stdin_is_interactive() -> bool:
-    """Seam for tests: CliRunner swaps sys.stdin, so the guard resolves it at call time."""
-    return sys.stdin.isatty()
 
 
 @app.command(rich_help_panel="Getting started")

@@ -4,3 +4,7 @@ out/
 *.tsbuildinfo
 playwright-report/
 test-results/
+# Next generates this on every build and dev run, and the two write different paths into it
+# (.next/types vs .next/dev/types), so no committed version stays clean (#126). Type checking
+# never read it: tsconfig.json's "include" does not list it, so `npm run typecheck` is unaffected.
+next-env.d.ts

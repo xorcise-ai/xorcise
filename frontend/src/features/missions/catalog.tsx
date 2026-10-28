@@ -22,6 +22,7 @@ import { LibraryStats } from "./library-stats";
 import { IngestButton } from "./ingest-button";
 import { IngestComingSoon } from "./ingest-coming-soon";
 import { OtherProviders } from "./other-providers";
+import { CatalogAnnouncement } from "@/features/announcements/catalog-announcement";
 import type { CatalogEntry, CatalogStatus } from "@/lib/api/types";
 
 /** localStorage key the catalog uses to remember the grid/list view between visits. */
@@ -149,6 +150,12 @@ export function MissionCatalog() {
 
               {/* ── XORCISE Remote (the free library) ── */}
               <TabsContent value="library" className="space-y-2">
+                {/* One site satisfies both placement constraints at once: directly below the
+                    sticky search/filter/provider controls and directly above the "Connected"
+                    line. And because TabsContent returns null when its tab is inactive, the
+                    banner is absent from Your Own and Other providers with no conditional of
+                    its own. The panel's space-y-2 supplies the gap — no margin here. */}
+                <CatalogAnnouncement />
                 <RemoteStatusLine status={status.data} />
                 {disconnected ? (
                   <p className="text-body text-text-secondary">

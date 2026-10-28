@@ -6,9 +6,11 @@ import { useRouter } from "next/navigation";
 import { useAgent, useAgentHistory } from "./queries";
 import { useRuns } from "@/features/runs/queries";
 import { useMissions } from "@/features/missions/queries";
+import { useRunScores, useScoreSummary } from "@/features/results/queries";
+import { ledgerRows } from "@/features/results/run-ledger";
 import { AgentRunHistory, buildAgentRunRows } from "./agent-run-history";
 import { AgentPerformance, AgentCoverage } from "./agent-performance";
-import { HARNESSES, CustomMark } from "./harnesses";
+import { HARNESSES, GenericMark, harnessLabel } from "./harnesses";
 import { DeleteAgentButton } from "./delete-agent-dialog";
 import { NotFoundState } from "@/components/layout/not-found-state";
 import { Skeleton, SkeletonRows } from "@/components/ui/skeleton";
@@ -32,6 +34,11 @@ export function AgentDetail({ name }: { name: string | null }) {
   const runs = useRuns();
   const missions = useMissions();
   const router = useRouter();
+  // The performance views key on the agent's id, known once the agent has loaded.
+  const agentId = agent.data?.id ?? "";
+  const scores = useRunScores({ agent: agentId }, !!agentId);
+  const overall = useScoreSummary("agent", { agent: agentId }, !!agentId);
+  const versions = useScoreSummary("mission", { agent: agentId }, !!agentId);
 
   if (!name) {
     return (
@@ -69,8 +76,8 @@ export function AgentDetail({ name }: { name: string | null }) {
 
   const a = agent.data;
   const harness = HARNESSES.find((h) => h.kind === a.kind);
-  const HarnessLogo = harness?.Logo ?? CustomMark;
-  const harnessName = harness?.name ?? "Custom";
+  const HarnessLogo = harness?.Logo ?? GenericMark;
+  const harnessName = harnessLabel(a.kind);
   const telemetry = a.otel
     ? "Configured"
     : a.endpoint
@@ -82,7 +89,11 @@ export function AgentDetail({ name }: { name: string | null }) {
     runs.data,
     missions.data,
   );
-  const hasHistory = (history.data?.length ?? 0) > 0;
+  // An environment failure is never graded, so it is in no history entry; the ledger shows it.
+  const hasHistory = (history.data?.length ?? 0) > 0 || (scores.data?.length ?? 0) > 0;
+  const missionName = (slug: string) =>
+    missions.data?.find((m) => m.mission_id === slug)?.name ?? slug;
+  const ledger = ledgerRows(versions.data ?? [], scores.data ?? [], missionName);
 
   return (
     <div className="mx-auto max-w-4xl space-y-6 p-6">
@@ -134,7 +145,20 @@ export function AgentDetail({ name }: { name: string | null }) {
         <>
           <section>
             <SectionHeading>Performance</SectionHeading>
-            <AgentPerformance history={history.data ?? []} />
+            <AgentPerformance
+              summary={overall.data?.[0]}
+              summaryState={
+                overall.isLoading ? "loading" : overall.isError ? "error" : "ready"
+              }
+              ledger={ledger}
+              ledgerState={
+                versions.isLoading || scores.isLoading
+                  ? "loading"
+                  : versions.isError || scores.isError
+                    ? "error"
+                    : "ready"
+              }
+            />
           </section>
 
           <section>

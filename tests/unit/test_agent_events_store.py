@@ -12,6 +12,7 @@ from xorcise.core.contracts.agent_event import (
     RawTraceRef,
     RunEventsView,
 )
+from xorcise.core.otel.store import delete_for_runs
 from xorcise.core.otel.store.agent_events import SqliteAgentEventStore
 
 
@@ -119,11 +120,11 @@ def test_get_staleness_and_overwrite(migrated_home):
     assert store.get_staleness("r3") == ("openhands", "1", 1, 2)
 
 
-def test_drop_and_clear(migrated_home):
+def test_delete_for_runs_and_clear(migrated_home):
     store = SqliteAgentEventStore()
     store.put("r1", _view("r1", [_event("r1", 0)], max_seq=0), 0)
     store.put("r2", _view("r2", [_event("r2", 0)], max_seq=0), 0)
-    store.drop("r1")
+    delete_for_runs(["r1"])
     assert store.read_view("r1") is None and store.read_view("r2") is not None
     store.clear()
     assert store.read_view("r2") is None

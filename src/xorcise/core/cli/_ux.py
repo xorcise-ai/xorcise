@@ -13,10 +13,11 @@ import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import typer
 from rich import box
+from rich.markup import escape
 from rich.table import Table
 
 from xorcise.core.cli._shared import console, err_console
@@ -36,6 +37,7 @@ _KIND_LABELS = {
     "gemini": "Gemini CLI",
     "goose": "Goose",
     "cai": "CAI",
+    "generic": "Generic",
 }
 
 # Mission source slugs → the labels the GUI catalog uses.
@@ -147,9 +149,10 @@ def short_id(full: str) -> str:
 
 
 def kind_label(kind: str | None) -> str:
-    """Agent kind slug → readable label; unregistered/no harness reads as Custom."""
+    """Agent kind slug → readable label. A blank kind reads as Generic: it is stored as
+    `generic` (#141), and a run of it replays with the generic adapter."""
     if not kind:
-        return "Custom"
+        return _KIND_LABELS["generic"]
     return _KIND_LABELS.get(kind, kind.replace("-", " ").title())
 
 
@@ -166,7 +169,7 @@ def size_label(size_bytes: int | None) -> str:
 
     Decimal units, mirroring the GUI's formatBytes (frontend missions/queries.ts) so the
     CLI and the console quote the same mission with the same number — the parity rule
-    run_state_label follows for run outcomes.
+    run_status_markup follows for run outcomes.
 
     None means UNKNOWN, not zero: an installed mission carries no size (it is already
     downloaded) and a catalog predating the size fields serves none. Rendering "0 B"
@@ -184,44 +187,19 @@ def size_label(size_bytes: int | None) -> str:
     return f"{max(0, round(n))} B"
 
 
-def run_state_label(state: str | None, trigger: str | None = None) -> str:
-    """Server-side run state (+ terminal trigger) → the user-facing result word.
-
-    Mirrors the GUI's runPresentation vocabulary (frontend run-state.ts) so both
-    surfaces describe the same run the same way."""
-    if state == "created":
-        return "Created"
-    if state == "active":
-        return "Running"
-    if state == "terminal":
-        return {
-            "done": "Completed",
-            "completed": "Completed",
-            "timeout": "Timed out",
-            "budget": "Partial",
-            "error": "Failed",
-            "crashed": "Crashed",
-            "operator": "Terminated",
-        }.get(trigger or "", "Ended")
-    return (state or DASH).title()
+# The server's status tone (contracts.run.RunTone) → the theme style that renders it.
+_TONE_STYLES = {"ok": "ok", "active": "accent", "err": "err", "muted": "dim"}
 
 
-# Status words → semantic theme styles (functional colours stay status-only).
-_STATE_STYLES = {
-    "Completed": "ok",
-    "Running": "accent",
-    "Partial": "warn",
-    "Timed out": "err",
-    "Crashed": "err",
-    "Failed": "err",
-}
+def run_status_markup(run: dict[str, Any]) -> str:
+    """The run's status label in its colour, for table cells.
 
-
-def run_state_markup(state: str | None, trigger: str | None = None) -> str:
-    """The state label wrapped in its status colour, for table cells."""
-    label = run_state_label(state, trigger)
-    style = _STATE_STYLES.get(label, "dim")
-    return f"[{style}]{label}[/{style}]"
+    The label and tone are the server's (`status` on every run, contracts.run.run_status) — the
+    same wording the GUI renders, so the two surfaces cannot describe one run differently (#165)."""
+    status = run.get("status") or {}
+    label = str(status.get("label") or (run.get("state") or DASH))
+    style = _TONE_STYLES.get(str(status.get("tone")), "dim")
+    return f"[{style}]{escape(label)}[/{style}]"
 
 
 # Prose is wrapped to the terminal, capped for readability — 200-char lines on a
@@ -332,15 +310,32 @@ def fail(
 
 
 def _stdin_is_interactive() -> bool:
-    """Seam for tests — CliRunner swaps sys.stdin, so isatty can't be patched directly."""
-    return sys.stdin.isatty()
+    """Seam for tests — CliRunner swaps sys.stdin, so isatty can't be patched directly.
+
+    CPython leaves ``sys.stdin`` as None when the process is started with fd 0 CLOSED
+    (`xorcise … <&-`, or a launcher that hands over no stdin at all), so the bare ``.isatty()``
+    raised an AttributeError that surfaced as "unexpected error: 'NoneType' object has no
+    attribute 'isatty'". No stream is not a terminal — every caller here (the confirmation
+    gates, the `--key-stdin` read) wants exactly that reading."""
+    return sys.stdin is not None and sys.stdin.isatty()
 
 
 def confirm_or_abort(question: str, *, assume_yes: bool) -> None:
     """TTY-gated confirmation for destructive commands.
 
     --yes and non-interactive stdin both skip the prompt (a prompt would hang CI
-    or an agent harness; scripts keep their historical no-prompt behaviour)."""
+    or an agent harness; scripts keep their historical no-prompt behaviour).
+
+    A CLOSED fd 0 now counts as non-interactive, and that is a real behaviour change, not just
+    a crash fix (#125): the bare `.isatty()` this used to call raised on the `None` CPython
+    leaves at `xorcise agent rm a <&-`, so the command died one line short of the destructive
+    call. It now proceeds unprompted — what `</dev/null` has always done, and the posture every
+    caller of this seam was scripted against — so `mission uninstall`, `run terminate`,
+    `run regrade`, `run delete` and `agent rm` all changed with it. Where a missing terminal
+    must STOP the command instead of waving it through, `confirm_gate` below takes the opposite
+    posture and moved with the same fix. `down --purge` holds that line too but is not one of
+    its callers: it repeats the `_stdin_is_interactive` check inline, so editing either of
+    these two functions leaves it exactly where it is."""
     if assume_yes or not _stdin_is_interactive():
         return
     if not typer.confirm(question):
@@ -355,7 +350,13 @@ def confirm_gate(question: str, *, assume_yes: bool, what: str, example: str) ->
     scripted before the prompt existed. This gate is the opposite: it exists to STOP a script
     from making the choice unnoticed, so without a TTY and without --yes it fails closed — exit
     2, naming the flag — the same posture as `down --purge`. Interactively the default answer
-    is No; `n` prints "aborted" and exits 1."""
+    is No; `n` prints "aborted" and exits 1.
+
+    A CLOSED fd 0 reaches that refusal cleanly only since #125: the shared
+    `_stdin_is_interactive` raised an AttributeError on the `None` CPython leaves there, which
+    `app.py` turned into "unexpected error" and exit 1. The posture is unchanged — `agent
+    register` and `agent update` with an unrecognised `--kind` refused then and refuse now —
+    but the exit code and the message did move."""
     if assume_yes:
         return
     if not _stdin_is_interactive():

@@ -177,6 +177,85 @@ def test_a_failed_lifespan_startup_is_reported_as_a_failure() -> None:
     assert "never started" in str(failures[0]) and str(port) in str(failures[0])
 
 
+async def _failing_lifespan_app(scope: Any, receive: Any, send: Any) -> None:
+    if scope["type"] == "lifespan":
+        await receive()
+        await send({"type": "lifespan.startup.failed", "message": "config error"})
+
+
+async def _healthy_app(scope: Any, receive: Any, send: Any) -> None:
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            else:
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+
+def test_a_startup_failure_uvicorn_exits_on_is_reported_as_a_failure(monkeypatch) -> None:
+    """#122: uvicorn >= 0.53 calls sys.exit(3) when the app's startup fails, instead of
+    returning. SystemExit escapes gather and asyncio.run, so `serve` exited 3 with no message.
+
+    The lock holds uvicorn below 0.53, so this patches the locked version to exit the way the
+    newer one does (`Server.startup`: `if self.lifespan.should_exit: sys.exit(STARTUP_FAILURE)`).
+    The test above covers the returning behaviour; this one covers the exiting one."""
+    import sys
+
+    import uvicorn
+
+    startup = uvicorn.Server.startup
+
+    async def exiting_startup(self: uvicorn.Server, sockets: Any = None) -> None:
+        await startup(self, sockets=sockets)
+        if self.lifespan.should_exit:
+            sys.exit(3)
+
+    monkeypatch.setattr(uvicorn.Server, "startup", exiting_startup)
+    ok_port, bad_port = _released_port(), _released_port()
+    bound = serve_mod.bind_specs(
+        [
+            AppSpec(_healthy_app, ok_port, host="127.0.0.1"),
+            AppSpec(_failing_lifespan_app, bad_port, host="127.0.0.1"),
+        ],
+        "127.0.0.1",
+    )
+    try:
+        failures = asyncio.run(serve_mod.serve_bound(bound))  # returns: SystemExit did not escape
+    finally:
+        for b in bound:
+            b.close()
+    # Only the app that failed is reported, by its port; the healthy one was shut down cleanly.
+    assert len(failures) == 1
+    message = str(failures[0])
+    assert "never started" in message
+    assert str(bad_port) in message and str(ok_port) not in message
+
+
+def test_a_system_exit_after_startup_is_not_mistaken_for_uvicorns(monkeypatch) -> None:
+    """Only uvicorn's startup exit becomes a recorded failure. A SystemExit once the server has
+    started is not uvicorn's to report, so it propagates as it did before #122."""
+    import sys
+
+    import uvicorn
+
+    async def exiting_main_loop(self: uvicorn.Server) -> None:
+        sys.exit(5)
+
+    monkeypatch.setattr(uvicorn.Server, "main_loop", exiting_main_loop)
+    bound = serve_mod.bind_specs(
+        [AppSpec(_healthy_app, _released_port(), host="127.0.0.1")], "127.0.0.1"
+    )
+    try:
+        with pytest.raises(SystemExit) as exited:
+            asyncio.run(serve_mod.serve_bound(bound))
+    finally:
+        for b in bound:
+            b.close()
+    assert exited.value.code == 5
+
+
 def test_bind_specs_holds_the_address_so_a_concurrent_binder_loses_immediately() -> None:
     """Review of #81: bound-but-not-listening sockets share an address under SO_REUSEADDR, so a
     concurrent `serve` could bind the same port and win the listen() race inside uvicorn. The

@@ -9,17 +9,23 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from sqlalchemy.orm import Session
+
 from xorcise.core.db import session_scope
 from xorcise.core.otel.ports import SealStore
+from xorcise.core.otel.store.admission import under_admission
 from xorcise.core.otel.store.models import TraceSealRow
 
 
 class InMemorySealStore(SealStore):
     def __init__(self) -> None:
         self._sealed: dict[str, datetime] = {}
+        self._digests: dict[str, str] = {}
 
-    def seal(self, run_id: str) -> None:
+    def seal(self, run_id: str, digest: str | None = None) -> None:
         self._sealed.setdefault(run_id, datetime.now(UTC))
+        if digest is not None:
+            self._digests.setdefault(run_id, digest)
 
     def is_sealed(self, run_id: str) -> bool:
         return run_id in self._sealed
@@ -27,12 +33,29 @@ class InMemorySealStore(SealStore):
     def sealed_at(self, run_id: str) -> datetime | None:
         return self._sealed.get(run_id)
 
+    def evidence_digest(self, run_id: str) -> str | None:
+        return self._digests.get(run_id)
+
+    def attach_digest(self, run_id: str, digest: str) -> None:
+        self._digests.setdefault(run_id, digest)
+
 
 class SqliteSealStore(SealStore):
-    def seal(self, run_id: str) -> None:
-        with session_scope() as s:
-            if s.get(TraceSealRow, run_id) is None:  # idempotent: first seal wins
-                s.add(TraceSealRow(run_id=run_id))
+    def seal(self, run_id: str, digest: str | None = None) -> None:
+        def close_admission(s: Session) -> None:
+            # First seal wins, digest included. A later seal must NOT overwrite it: whoever can
+            # re-seal could otherwise launder edited evidence into a clean verification.
+            if s.get(TraceSealRow, run_id) is None:
+                s.add(TraceSealRow(run_id=run_id, evidence_digest=digest))
+
+        # Under the admission lock, so a batch being admitted right now either commits first, and
+        # is in whatever the caller hashes next, or waits and then sees this seal (#184).
+        #
+        # NOT dead code, although SQLite would pass without it: SQLite has one write lock for the
+        # whole file, which already orders this insert against `append_next`. An engine that locks
+        # rows does not, and there only this lock keeps a batch from landing during the hash.
+        # `test_seal_takes_the_admission_lock` pins it, since no SQLite race test can.
+        under_admission(run_id, close_admission)
 
     def is_sealed(self, run_id: str) -> bool:
         with session_scope() as s:
@@ -42,3 +65,20 @@ class SqliteSealStore(SealStore):
         with session_scope() as s:
             row = s.get(TraceSealRow, run_id)
             return row.sealed_at if row is not None else None
+
+    def evidence_digest(self, run_id: str) -> str | None:
+        with session_scope() as s:
+            row = s.get(TraceSealRow, run_id)
+            return row.evidence_digest if row is not None else None
+
+    def attach_digest(self, run_id: str, digest: str) -> None:
+        """Record the digest for an ALREADY-sealed run, first-wins.
+
+        Separate from `seal()` so admission can be closed before the evidence is hashed. Never
+        overwrites: whoever could replace a digest could launder edited evidence into a clean
+        verification, which is the one thing the seal exists to prevent.
+        """
+        with session_scope() as s:
+            row = s.get(TraceSealRow, run_id)
+            if row is not None and not row.evidence_digest:
+                row.evidence_digest = digest

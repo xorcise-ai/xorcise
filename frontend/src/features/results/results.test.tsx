@@ -3,7 +3,7 @@ import { screen, waitFor, fireEvent } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { server } from "@/test/msw/server";
 import { renderWithProviders } from "@/test/render";
-import { runFixture } from "@/test/fixtures";
+import { runFixture, serverView } from "@/test/fixtures";
 import type { GradeResult, RunResultView } from "@/lib/api/types";
 
 vi.mock("next/link", () => ({
@@ -132,6 +132,66 @@ describe("ResultsView", () => {
     expect(screen.getByText("linux/arm64")).toBeInTheDocument();
   });
 
+  it("puts the report's Telemetry window beside Duration, in the server's words (#146)", async () => {
+    server.use(
+      http.get("*/api/runs", () =>
+        HttpResponse.json([runFixture({ run_id: "r1", mission: "sqli-login", name: "recon-run" })]),
+      ),
+      http.get("*/api/runs/r1/result", () =>
+        HttpResponse.json(
+          resultView({
+            telemetry_window: "withheld — the harness dated the first event before the run started",
+          }),
+        ),
+      ),
+    );
+    renderWithProviders(<ResultsView runId="r1" />);
+    await screen.findByRole("heading", { name: "recon-run" });
+    expect(screen.getByText("Duration")).toBeInTheDocument();
+    expect(screen.getByText("Telemetry window")).toBeInTheDocument();
+    expect(
+      screen.getByText("withheld — the harness dated the first event before the run started"),
+    ).toBeInTheDocument();
+  });
+
+  it("says when the agent started and what showed it, in the server's words (#209)", async () => {
+    server.use(
+      http.get("*/api/runs", () =>
+        HttpResponse.json([
+          runFixture({
+            run_id: "r1",
+            mission: "sqli-login",
+            name: "recon-run",
+            started_at: "2026-10-23T01:02:03Z",
+            start_trigger: "telemetry",
+            start_trigger_label: "first OTel export",
+          }),
+        ]),
+      ),
+      http.get("*/api/runs/r1/result", () => HttpResponse.json(resultView())),
+    );
+    renderWithProviders(<ResultsView runId="r1" />);
+    await screen.findByRole("heading", { name: "recon-run" });
+    expect(screen.getByText("Created")).toBeInTheDocument();
+    expect(screen.getByText("Started")).toBeInTheDocument();
+    expect(screen.getByText("first OTel export")).toBeInTheDocument();
+    expect(screen.getByTitle(/· first OTel export$/)).toBeInTheDocument();
+  });
+
+  it("has no Telemetry window cell when the report has no such row", async () => {
+    server.use(
+      http.get("*/api/runs", () =>
+        HttpResponse.json([runFixture({ run_id: "r1", mission: "sqli-login", name: "recon-run" })]),
+      ),
+      http.get("*/api/runs/r1/result", () =>
+        HttpResponse.json(resultView({ telemetry_window: null })),
+      ),
+    );
+    renderWithProviders(<ResultsView runId="r1" />);
+    await screen.findByRole("heading", { name: "recon-run" });
+    expect(screen.queryByText("Telemetry window")).toBeNull();
+  });
+
   it("omits the platform cell for a run that recorded none (pre-contract)", async () => {
     server.use(
       http.get("*/api/runs", () =>
@@ -163,25 +223,34 @@ describe("ResultsView", () => {
     );
   });
 
-  it("shows a partial banner with the trigger when the run timed out", async () => {
+  it("shows a partial banner in the server's words when the run timed out", async () => {
     server.use(
+      http.get("*/api/runs", () =>
+        HttpResponse.json([
+          runFixture({ run_id: "r1", state: "terminal", terminal_trigger: "timeout" }),
+        ]),
+      ),
       http.get("*/api/runs/r1/result", () =>
-        HttpResponse.json(
-          resultView({ partial: true, partial_trigger: "budget_exhausted" }),
-        ),
+        HttpResponse.json(resultView({ partial: true, partial_trigger: "timeout" })),
       ),
     );
     renderWithProviders(<ResultsView runId="r1" />);
     await waitFor(() =>
-      expect(screen.getByText(/Partial — timed out/i)).toBeInTheDocument(),
+      expect(screen.getByText(/Partial — Timed out/)).toBeInTheDocument(),
     );
-    expect(screen.getByText("budget_exhausted")).toBeInTheDocument();
+    // The run's status sentence — the one `xorcise run status` prints for this run (#165).
+    expect(screen.getByText(/reached its time budget/)).toBeInTheDocument();
   });
 
   it("shows an operator-stopped partial banner, not a timeout one", async () => {
     // A manual (operator) termination is partial too, but it did NOT time out — the banner must
     // say it was stopped by the operator, not that it missed a deadline.
     server.use(
+      http.get("*/api/runs", () =>
+        HttpResponse.json([
+          runFixture({ run_id: "r1", state: "terminal", terminal_trigger: "operator" }),
+        ]),
+      ),
       http.get("*/api/runs/r1/result", () =>
         HttpResponse.json(
           resultView({ partial: true, partial_trigger: "operator" }),
@@ -190,9 +259,9 @@ describe("ResultsView", () => {
     );
     renderWithProviders(<ResultsView runId="r1" />);
     await waitFor(() =>
-      expect(screen.getByText(/Partial — stopped early/i)).toBeInTheDocument(),
+      expect(screen.getByText(/Partial — Stopped/)).toBeInTheDocument(),
     );
-    expect(screen.getByText(/terminated by the operator/i)).toBeInTheDocument();
+    expect(screen.getByText(/An operator stopped this run/)).toBeInTheDocument();
     expect(screen.queryByText(/timed out/i)).not.toBeInTheDocument();
     expect(
       screen.queryByText(/did not finish before its deadline/i),
@@ -313,6 +382,41 @@ describe("ResultsView", () => {
       expect(screen.getByText(/grading in progress/i)).toBeInTheDocument(),
     );
     expect(screen.queryByText("Overall")).not.toBeInTheDocument();
+  });
+
+  it("says an environment failure was not graded instead of waiting on a grade forever", async () => {
+    // #109: a deploy_failed / crashed run is never graded; the server answers a FINAL
+    // {status:"not_graded"} carrying the trigger + the recorded reason.
+    let polls = 0;
+    server.use(
+      http.get("*/api/runs/r1/result", () => {
+        polls += 1;
+        return HttpResponse.json({
+          run_id: "r1",
+          status: "not_graded",
+          terminal_trigger: "deploy_failed",
+          run_status: serverView("terminal", "deploy_failed").status,
+          detail: "not ready within the readiness window",
+        });
+      }),
+    );
+    renderWithProviders(<ResultsView runId="r1" />);
+    expect(await screen.findByText(/Not graded — Deploy failed/)).toBeInTheDocument();
+    // The server's sentence, not a GUI-written one.
+    expect(
+      screen.getByText(serverView("terminal", "deploy_failed").status.detail ?? ""),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("not ready within the readiness window"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/grading in progress/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("Overall")).not.toBeInTheDocument();
+    // The evidence and the delete stay reachable; re-grading (refused) does not.
+    expect(screen.getByRole("button", { name: /delete/i })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /re-evaluate/i }),
+    ).not.toBeInTheDocument();
+    expect(polls).toBe(1);
   });
 
   // ═══ Re-evaluate (re-grade the saved evidence) ═══

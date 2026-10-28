@@ -47,7 +47,7 @@ jobs:
 
       # Node must precede `uv build` — the hook builds the UI that ships in the wheel.
       - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: frontend/.nvmrc
           # Omitting `cache:` is not enough — setup-node self-enables caching if package.json
@@ -55,7 +55,7 @@ jobs:
           package-manager-cache: false
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: false
@@ -145,8 +145,24 @@ jobs:
             rm -f notes/release-notes.md
           fi
 
+      # The banner that opens the notes, drawn for this tag by scripts/release_banner.py (standard
+      # library only). Rendered here for the same reason the notes are: this tree is the tag.
+      # Best-effort: a release never waits on its artwork.
+      - name: Render the release banner
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p notes
+          if uv run python scripts/release_banner.py "$TAG" > notes/banner.svg; then
+            echo "Release banner rendered for $TAG ($(wc -c < notes/banner.svg) bytes)."
+          else
+            rm -f notes/banner.svg
+            echo "::warning::Could not render the release banner; the notes will open without one."
+          fi
+
       - name: Upload release notes
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-notes
           path: notes/
@@ -161,7 +177,7 @@ jobs:
 
       # The one and only handoff — every downstream job consumes exactly these bytes.
       - name: Upload dist artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
           path: dist/
@@ -179,7 +195,7 @@ jobs:
       contents: write # create the draft GitHub Release and upload its assets
     steps:
       - name: Download dist artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dist
           path: dist
@@ -187,11 +203,62 @@ jobs:
       # Kept OUT of dist/ deliberately: `gh release create ... dist/*` uploads everything in
       # that directory as a release asset, and the notes are the release body, not an asset.
       - name: Download release notes
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true   # absent when CHANGELOG had no matching section
         with:
           name: release-notes
           path: notes
+
+      # Host the banner where the notes can show it. A release attachment cannot be that place:
+      # GitHub serves attachments as downloads (application/octet-stream), so an <img> of one is
+      # broken, while a file on a branch is served as image/svg+xml. `release-assets` holds only
+      # banners, starts with no history, and no workflow runs on it. Best-effort, like the render.
+      - name: Publish the release banner
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ ! -s notes/banner.svg ]; then
+            echo "No release banner was rendered; the notes open without one."
+            exit 0
+          fi
+          branch=release-assets
+          path="banners/$TAG.svg"
+
+          publish() {
+            # First use: start the branch with no history, holding only a README.
+            if ! gh api "repos/$REPO/branches/$branch" --silent 2>/dev/null; then
+              printf '%s\n' "# release-assets" "" \
+                "Banners for the top of each release's notes, published by .github/workflows/release.yml." \
+                "Nothing here is code, and nothing builds from this branch." > notes/readme.md
+              tree=$(jq -n --rawfile c notes/readme.md \
+                '{tree: [{path: "README.md", mode: "100644", type: "blob", content: $c}]}' \
+                | gh api "repos/$REPO/git/trees" --input - --jq .sha) || return 1
+              commit=$(jq -n --arg t "$tree" \
+                '{message: "Start the release-assets branch", tree: $t, parents: []}' \
+                | gh api "repos/$REPO/git/commits" --input - --jq .sha) || return 1
+              jq -n --arg r "refs/heads/$branch" --arg s "$commit" '{ref: $r, sha: $s}' \
+                | gh api "repos/$REPO/git/refs" --input - --silent || return 1
+            fi
+            # A re-run for the same tag replaces its banner, which the contents API allows only
+            # with the current file's sha.
+            current=$(gh api "repos/$REPO/contents/$path?ref=$branch" --jq .sha 2>/dev/null) || current=""
+            base64 -w0 notes/banner.svg > notes/banner.b64
+            jq -n --arg m "Banner for $TAG" --arg b "$branch" --rawfile c notes/banner.b64 --arg s "$current" \
+              '{message: $m, branch: $b, content: $c} + (if $s == "" then {} else {sha: $s} end)' \
+              | gh api -X PUT "repos/$REPO/contents/$path" --input - --silent
+          }
+
+          if publish; then
+            url="https://raw.githubusercontent.com/$REPO/$branch/$path"
+            printf '<p align="center"><img src="%s" width="880" alt="XORCISE %s"></p>\n\n' \
+              "$url" "$TAG" > notes/banner.md
+            echo "Release banner published: $url"
+          else
+            echo "::warning::Could not publish the release banner; the notes will open without one."
+          fi
 
       - name: Create the draft release
         env:
@@ -219,16 +286,24 @@ jobs:
             echo "Tag $TAG is a prerelease."
           fi
 
-          # CHANGELOG body when the build job found one, generated notes otherwise. Both are
-          # passed together when we have a body: `--notes-file` becomes the release text and
+          # The banner when one was published, then the CHANGELOG body when the build job found
+          # one, then generated notes. With a body, `--notes-file` becomes the release text and
           # `--generate-notes` appends GitHub's contributor/full-changelog footer under it, so
           # the hand-written section gains the compare link without losing its own words.
-          notes_flags="--generate-notes"
+          mkdir -p notes
+          : > notes/body.md
+          if [ -s notes/banner.md ]; then
+            cat notes/banner.md >> notes/body.md
+          fi
           if [ -s notes/release-notes.md ]; then
-            notes_flags="--notes-file notes/release-notes.md --generate-notes"
+            cat notes/release-notes.md >> notes/body.md
             echo "Release body: CHANGELOG section ($(wc -c < notes/release-notes.md) bytes) + generated footer."
           else
             echo "Release body: generated notes only (no CHANGELOG section for $TAG)."
+          fi
+          notes_flags="--generate-notes"
+          if [ -s notes/body.md ]; then
+            notes_flags="--notes-file notes/body.md --generate-notes"
           fi
 
           gh release create "$TAG" \
@@ -256,7 +331,7 @@ jobs:
       id-token: write # mint the OIDC token PyPI Trusted Publishing exchanges for upload rights
     steps:
       - name: Download dist artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dist
           path: dist

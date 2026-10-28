@@ -7,7 +7,7 @@
       "esnext"
     ],
     "strict": true,
-    "jsx": "preserve",
+    "jsx": "react-jsx",
     "module": "esnext",
     "moduleResolution": "bundler",
     "baseUrl": ".",
@@ -32,7 +32,8 @@
   "include": [
     "next.config.ts",
     "src",
-    ".next/types/**/*.ts"
+    ".next/types/**/*.ts",
+    ".next/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"

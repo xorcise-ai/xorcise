@@ -178,6 +178,12 @@ class PullJobStore:
             row = s.scalar(select(PullJobRow).where(PullJobRow.job_id == job_id))
             return _to_job(row) if row is not None else None
 
+    def active_mission_ids(self) -> set[str]:
+        """Every mission with a still-'pulling' job: its image may be mid-download."""
+        with session_scope() as s:
+            rows = s.scalars(select(PullJobRow).where(PullJobRow.status == _PULLING)).all()
+            return {row.mission_id for row in rows}
+
     def active_for(self, mission_id: str) -> PullJob | None:
         """The still-'pulling' job for this mission, if any — reload-resume + dedup lookup."""
         with session_scope() as s:

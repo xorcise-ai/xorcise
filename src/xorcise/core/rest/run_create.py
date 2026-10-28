@@ -14,6 +14,7 @@ import shlex
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -32,6 +33,8 @@ from xorcise.core.contracts.control import DeployRequest, MissionRef, NetworkSpe
 from xorcise.core.contracts.run import RunEntry
 from xorcise.core.missions import get_installed
 from xorcise.core.rest.mission_pull import PullDeps, build_pull_deps, pull_mission
+from xorcise.core.rest.reconcile import first_line, release_reservation
+from xorcise.core.rest.runner_wiring import RUNNER_ROLES, require_runner
 from xorcise.core.runcontrol.intel_policy import allowed_intel
 from xorcise.core.runs.observed import (
     InMemoryObservedFactsStore,
@@ -40,6 +43,7 @@ from xorcise.core.runs.observed import (
     network_facts,
 )
 from xorcise.core.runs.prompt import (
+    RUN_BEARER_ENV,
     assemble_mission_prompt,
     rebase_run_control_host,
     render_prompt_text,
@@ -137,17 +141,31 @@ class RunCreateDeps:
     image_platform: Callable[[str], str | None] = _no_image_platform
 
 
+# The credential the in-process control adapters are built with. Only meaningful across a process
+# boundary; in-process it is a fixed shared value, so every builder here uses the same one.
+CONTROL_API_KEY = "local"
+
+
 def _use_real_headscale(settings: Settings) -> bool:
     """Real fence iff this process owns the Headscale plane and stubs aren't forced."""
-    return not settings.use_stubs and settings.role in {"all", "runner"}
+    return not settings.use_stubs and settings.role in RUNNER_ROLES
+
+
+# The action a release names when this server has no runner to do it (#168).
+RELEASE = "release a run's environment"
 
 
 def _probe_headscale(cli: HeadscaleCli, container: str) -> None:
     """Fail loud with a remediation if the Headscale control plane is unreachable.
 
-    Mirrors the Docker fail-loud path: the remediation (which names XORCISE_USE_STUBS) lives here
-    in the rest layer, not in the headscale part-island. Without this, a missing/stopped container
-    surfaces as a bare HeadscaleError ('No such container') deep inside create_run."""
+    Mirrors the Docker fail-loud path: the remediation lives here in the rest layer, not in the
+    headscale part-island. Without this, a missing/stopped container surfaces as a bare
+    HeadscaleError ('No such container') deep inside create_run.
+
+    The remediation names the real fix only, never stub mode: this message also reaches the run
+    page and /system as a failed teardown's error (#173), and an operator who switched stubs on as
+    the "fix" would have every pending release recorded as done with nothing removed. Stubs are
+    for testing (`xorcise up --stub`), not a remedy."""
     from xorcise.core.headscale import HeadscaleError
 
     try:
@@ -155,7 +173,7 @@ def _probe_headscale(cli: HeadscaleCli, container: str) -> None:
     except HeadscaleError as exc:
         raise RuntimeError(
             f"Headscale control plane {container!r} is not reachable — run 'xorcise up' "
-            "to provision a local one, or set XORCISE_USE_STUBS=1"
+            "to provision a local one"
         ) from exc
 
 
@@ -167,43 +185,25 @@ def _real_headscale_cli(settings: Settings) -> HeadscaleCli:
     return cli
 
 
-def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None) -> RunCreateDeps:
-    """Wire the in-process run-create deps from settings.
-
-    Real-by-default: `use_docker=None` derives from settings — real DockerSdkDriver-backed
-    control (`_use_real_docker`) and the real DockerExecHeadscaleCli fence
-    (`_use_real_headscale`) on a Docker/Headscale-owning role (`all`/`runner`), stub
-    when `use_stubs` is set or the role doesn't own the plane. An explicit `use_docker` bool
-    overrides both (tests inject False; the integration loop passes True).
-    """
-    # Lazy by design: wiring the concrete adapters is the ONE place the server touches the
-    # headscale/runner planes. Keeping these out of module scope lets the control plane
-    # import this module at boot without leaking those planes (role isolation).
-    from xorcise.core.headscale import NetworkController, StubHeadscaleCli
-    from xorcise.core.orchestration.clients.control import (
-        InProcessControlStub,
-        RunnerControlAdapter,
-    )
-    from xorcise.core.orchestration.clients.headscale_client import HeadscaleFenceClient
-    from xorcise.core.rest.mission_pull import _real_docker_driver, _use_real_docker
-
-    control_real = _use_real_docker(settings) if use_docker is None else use_docker
-    fence_real = _use_real_headscale(settings) if use_docker is None else use_docker
-
-    # Topology-resolved agent-facing host: local uses the docker host-gateway alias so
-    # the agent reaches the COLLECTOR (OTLP) without the tailnet; distributed uses the advertised
-    # tailnet host. Used ONLY for the OTLP endpoint (deps.advertise_host).
-    local = settings.deployment_topology == "local"
-    agent_host = _agent_facing_host(settings)
-    # The tailnet control plane — the Headscale login server the per-run ROUTER dials
-    # (NetworkSpec.login_server) and the agent's `tailscale up --login-server` join recipe
-    # (mission.login_server) — ALWAYS uses the advertised tailnet host, NEVER host.docker.internal:
-    # the per-run router container gets no host-gateway mapping and cannot resolve that alias.
-    # This is topology-independent (the mission data plane is unchanged).
+def _login_server(settings: Settings) -> str:
+    """The tailnet control plane: the Headscale login server the per-run ROUTER dials
+    (NetworkSpec.login_server) and the agent's `tailscale up --login-server` join recipe
+    (mission.login_server). ALWAYS the advertised tailnet host, NEVER host.docker.internal: the
+    per-run router container gets no host-gateway mapping and cannot resolve that alias. This is
+    topology-independent (the mission data plane is unchanged)."""
     tailnet_host = settings.headscale_advertise_host or settings.host
-    login_server = settings.headscale_url or f"http://{tailnet_host}:{settings.headscale_port}"
+    return settings.headscale_url or f"http://{tailnet_host}:{settings.headscale_port}"
+
+
+def _build_fence(settings: Settings, *, fence_real: bool) -> NetworkFencePort:
+    """The tailnet fence. The real one probes Headscale first and raises if it is unreachable."""
+    # Lazy, like every adapter import here: keeps the headscale plane off this module's import path.
+    from xorcise.core.headscale import NetworkController, StubHeadscaleCli
+    from xorcise.core.orchestration.clients.headscale_client import HeadscaleFenceClient
+
+    local = settings.deployment_topology == "local"
     cli = _real_headscale_cli(settings) if fence_real else StubHeadscaleCli()
-    fence = HeadscaleFenceClient(
+    return HeadscaleFenceClient(
         NetworkController(
             cli,
             router_tag=settings.router_tag,
@@ -217,6 +217,71 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
             active_provider=_acl_active_provider if fence_real else None,
         )
     )
+
+
+def build_teardown_fence(settings: Settings) -> NetworkFencePort:
+    """The fence alone, for releasing a run's tailnet nodes (#173).
+
+    Separate from build_run_create_deps so a release builds only the plane it is about to use.
+    Built together, a down Headscale raised before the Docker half existed, and the run's
+    container leaked although Docker was fine. Raises if Headscale is unreachable, and
+    RunnerUnavailableError on a server with no runner, whose stub fence would report the nodes
+    removed while they stay up (#168)."""
+    require_runner(settings, RELEASE)
+    return _build_fence(settings, fence_real=_use_real_headscale(settings))
+
+
+def build_teardown_control(settings: Settings) -> ControlPort:
+    """The control port alone, for releasing a run's container (#173). It skips what only a create
+    needs (the nesting and base checks, the subnet lister), and a down Headscale cannot stop it.
+    Raises if Docker is unreachable, and RunnerUnavailableError on a server with no runner."""
+    from xorcise.core.orchestration.clients.control import (
+        InProcessControlStub,
+        RunnerControlAdapter,
+    )
+    from xorcise.core.rest.mission_pull import _real_docker_driver, _use_real_docker
+
+    require_runner(settings, RELEASE)
+    if not _use_real_docker(settings):
+        return InProcessControlStub(api_key=CONTROL_API_KEY)
+    from xorcise.core.runner.service import RunnerControlService
+
+    return RunnerControlAdapter(
+        RunnerControlService(_real_docker_driver(), login_server=_login_server(settings)),
+        api_key=CONTROL_API_KEY,
+    )
+
+
+def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None) -> RunCreateDeps:
+    """Wire the in-process run-create deps from settings.
+
+    Real-by-default: `use_docker=None` derives from settings — real DockerSdkDriver-backed
+    control (`_use_real_docker`) and the real DockerExecHeadscaleCli fence
+    (`_use_real_headscale`) on a Docker/Headscale-owning role (`all`/`runner`), stub
+    when `use_stubs` is set. An explicit `use_docker` bool overrides both (tests inject False;
+    the integration loop passes True). Raises RunnerUnavailableError on a server with no runner,
+    whose stub control port would accept a run, start nothing and report it ready forever (#168).
+    """
+    # Lazy by design: wiring the concrete adapters is the ONE place the server touches the
+    # headscale/runner planes. Keeping these out of module scope lets the control plane
+    # import this module at boot without leaking those planes (role isolation).
+    from xorcise.core.orchestration.clients.control import (
+        InProcessControlStub,
+        RunnerControlAdapter,
+    )
+    from xorcise.core.rest.mission_pull import _real_docker_driver, _use_real_docker
+
+    if use_docker is None:
+        require_runner(settings, "launch runs")
+    control_real = _use_real_docker(settings) if use_docker is None else use_docker
+    fence_real = _use_real_headscale(settings) if use_docker is None else use_docker
+
+    # Topology-resolved agent-facing host: local uses the docker host-gateway alias so
+    # the agent reaches the COLLECTOR (OTLP) without the tailnet; distributed uses the advertised
+    # tailnet host. Used ONLY for the OTLP endpoint (deps.advertise_host).
+    agent_host = _agent_facing_host(settings)
+    login_server = _login_server(settings)
+    fence = _build_fence(settings, fence_real=fence_real)
     control: ControlPort
     # Default: no Docker to enumerate (stub/unit path) → the allocator sees no leftover subnets.
     live_subnets: Callable[[], set[str]] = _no_live_subnets
@@ -232,7 +297,7 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
         driver = _real_docker_driver()
         control = RunnerControlAdapter(
             RunnerControlService(driver, login_server=login_server),
-            api_key="local",
+            api_key=CONTROL_API_KEY,
         )
         # Reconcile allocation against live Docker networks (incl. LEFTOVERS the DB no longer
         # tracks), filtered to the run pool so Docker's own bridges never mask a run subnet.
@@ -246,25 +311,14 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
         # so it costs ~nothing per run after the first (boot pre-warms the native one — see
         # role_all).
         from xorcise.core.rest.docker_runtime import (
+            docker_client,
             local_image_platform,
             require_base_compatible,
             require_nested_support,
         )
 
-        def _client() -> object:
-            import docker  # type: ignore[import-untyped]
-
-            try:
-                return docker.from_env()
-            except Exception as exc:  # daemon down / from_env failure — DockerException is NOT a
-                # RuntimeError, so unwrapped it escapes the runs router's except clauses as a raw
-                # 500; RuntimeError maps to a clean 503 with a remediation (mirrors mission_pull).
-                raise RuntimeError(
-                    "Docker daemon is not reachable — start Docker or set XORCISE_USE_STUBS=1"
-                ) from exc
-
         def require_nested(platform: str | None) -> None:
-            require_nested_support(settings, _client, platform=platform)
+            require_nested_support(settings, docker_client, platform=platform)
 
         def check_base_compat(image_ref: str, origin: str) -> None:
             require_base_compatible(image_ref, label_lookup=driver.image_labels, origin=origin)
@@ -272,13 +326,13 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
         def image_platform(image_ref: str) -> str | None:
             return local_image_platform(settings, image_ref)
     else:
-        control = InProcessControlStub(api_key="local")
+        control = InProcessControlStub(api_key=CONTROL_API_KEY)
     ca_cert = Path(settings.headscale_ca_cert).read_text() if settings.headscale_ca_cert else ""
     extra_hosts = (settings.headscale_host_alias,) if settings.headscale_host_alias else ()
     return RunCreateDeps(
         control=control,
         fence=fence,
-        api_key="local",
+        api_key=CONTROL_API_KEY,
         install_root=Path(settings.missions_root),
         login_server=login_server,
         base_network=settings.base_network,
@@ -371,6 +425,7 @@ def build_startup_tips(
     *,
     otlp_traces_endpoint: str = "",
     otlp_logs_endpoint: str = "",
+    run_bearer: str = "",
 ) -> StartupTips:
     """Assemble copy-paste launch tips from a LaunchProfile + the harness's command template
     + per-harness launch tips.
@@ -381,8 +436,25 @@ def build_startup_tips(
     reference ``{otlp_traces_endpoint}`` / ``{otlp_logs_endpoint}``; both are filled here from the
     mode-aware per-signal collector URLs the caller computed. Templates that omit these placeholders
     (Claude Code) are unaffected — the extra keys are simply unused. ``shell_block`` =
-    ``export K=<quoted V>`` lines then the command (omitted when the harness has no template)."""
+    ``export K=<quoted V>`` lines then the command (omitted when the harness has no template).
+
+    ``run_bearer`` is the run-control token. With a launch command it is exported as
+    XORCISE_RUN_BEARER beside the OTel env — the prompt refers to that variable rather than carrying
+    the token, so the token never rides the command's argv (#172). ``export`` is a shell builtin,
+    so pasting the block puts it on no command line either. It lives ONLY in the block: ``env``
+    stays the telemetry env, because ``xorcise run launch-profile`` prints that as a dotenv file
+    an operator may save anywhere. Without a command there is no block to carry it, and the served
+    prompt inlines it instead (routers/runs.run_prompt)."""
     lines = [f"export {k}={shlex.quote(v)}" for k, v in profile.env]
+    notes = tuple(profile.notes)
+    if command_template and run_bearer:
+        lines.append(f"export {RUN_BEARER_ENV}={shlex.quote(run_bearer)}")
+        notes += (
+            f"The block also exports {RUN_BEARER_ENV}, this run's run-control token; the agent "
+            "reads it from its environment. A command that starts the agent somewhere else — a "
+            "container, a remote host — must pass it through, e.g. "
+            f"docker run -e {RUN_BEARER_ENV}.",
+        )
     command: str | None = None
     if command_template:
         filled = shlex.quote(mission) if mission else "<mission>"
@@ -397,7 +469,7 @@ def build_startup_tips(
         command=command,
         shell_block="\n".join(lines),
         correlation=profile.correlation,
-        notes=profile.notes,
+        notes=notes,
         tips=tuple(tips),
     )
 
@@ -494,13 +566,14 @@ def _reserve_run_subnet(
     entry_networks: tuple[str, ...],
     *,
     name: str | None = None,
+    sandbox_ref: str | None = None,
 ) -> tuple[str, dict[str, str]]:
     """Allocate a /prefix avoiding every live run's subnet and reserve it as a DB row.
 
     Returns (cidr, entry_subnets). Retries on the partial-unique-index collision — a concurrent
     cross-process reservation of the same subnet — picking the next free one. The reserved row is
-    state 'created' with network_cidr + entry_cidrs set; finalize_run fills the rest and delete_run
-    releases it if the create fails before finalize."""
+    state 'created' with network_cidr + entry_cidrs set; finalize_run fills the rest and
+    release_reservation releases it if the create fails before finalize."""
     from sqlalchemy.exc import IntegrityError
 
     from xorcise.core.headscale import allocate_cidr  # lazy: keep headscale off the boot path
@@ -525,6 +598,7 @@ def _reserve_run_subnet(
                     network_cidr=cidr,
                     entry_cidrs=",".join(entry_subnets.values()),
                     name=name,
+                    sandbox_ref=sandbox_ref,
                 )
                 return cidr, entry_subnets
             except IntegrityError:
@@ -665,7 +739,7 @@ def create_run(
     entry_networks = tuple(installed.environment.entry_networks) or ("default",)
     # reserve the run's subnet as a DB row BEFORE deploy — durable + visible to every
     # process the instant it's taken (retires the in-memory _RESERVED_CIDRS). On any failure before
-    # finalize, delete the reservation to free the subnet.
+    # finalize, release the reservation: tear down what the create started, then free the subnet.
     cidr, entry_subnets = _reserve_run_subnet(
         deps,
         run_id,
@@ -673,6 +747,9 @@ def create_run(
         mission_slug,
         entry_networks,
         name=run_name,
+        # Recorded now, not at finalize: `mission prune` must see the image as in use for the
+        # whole deploy, even if a concurrent update re-points the install record meanwhile.
+        sandbox_ref=installed.mission_ref.image,
     )
     try:
         return _create_run_with_cidr(
@@ -689,8 +766,24 @@ def create_run(
             entry_subnets=entry_subnets,
             intel_policy=policy,
         )
-    except Exception:
-        runs.delete_run(run_id)  # release the reservation on failure
+    except Exception as exc:
+        try:
+            release_reservation(
+                deps,
+                run_id,
+                detail=f"the create failed before this run's deploy finished ({first_line(exc)}); "
+                "its environment is torn down automatically",
+                at=datetime.now(UTC),
+            )
+        except Exception:
+            # Raising here would report the release's error, often a locked database, in place of
+            # why the create failed.
+            log.warning(
+                "create: releasing failed run %s did not finish; boot reconcile or the release "
+                "sweeper completes it",
+                run_id,
+                exc_info=True,
+            )
         raise
 
 

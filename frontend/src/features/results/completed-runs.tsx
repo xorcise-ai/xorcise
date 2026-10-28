@@ -1,167 +1,165 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Trophy } from "lucide-react";
+import { Trophy } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Reveal } from "@/components/ui/reveal";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/components/ui/cn";
-import { useRuns } from "@/features/runs/queries";
-import { isTerminal } from "@/features/runs/run-state";
+import { pct, shortTime } from "@/lib/api/format";
+import type { RunScore, ScoreSummary } from "@/lib/api/types";
 import { useAgents } from "@/features/agents/queries";
 import { HarnessGlyph } from "@/features/agents/harnesses";
-import { useRunResults } from "./queries";
-import {
-  summarizeByAgent,
-  type AgentRunRow,
-  type AgentPerformanceSummary,
-} from "./summarize-runs";
-import { PerformanceSummary } from "./performance-summary";
+import { useRunScores, useScoreSummary } from "./queries";
+import { asideLine, type RunKind } from "./run-glyph";
+import { RunKey } from "./run-key";
+import { RunStrip } from "./run-strip";
 import { LoadingCards } from "./loading-cards";
 
 /**
- * Agents view of the Results page (report §14) — the default secondary view. Agent-centric: it
- * folds the terminal runs and their recorded results — data the Results feature already fetches —
- * into one performance card per agent, ranked best-first, entirely client-side (no new backend
- * field). Individual run scorecards stay reachable from Run History and each agent's profile. The
- * page header + view tabs live in the <ResultsTabs> shell that renders this.
+ * Agents view of the Results page (report §14) — the default secondary view. One card per agent
+ * with its run strip: every recent run drawn as what the checks and the judge each gave it, and
+ * the median of the runs that count. The server decides which runs count (GET /results/summary,
+ * reporting.scores); the card only draws them. The page header + view tabs live in the
+ * <ResultsTabs> shell that renders this.
  */
 export function CompletedRuns() {
-  const runs = useRuns();
+  // The kind of the run under the pointer or focus in any card, so the key can light it up.
+  const [activeKind, setActiveKind] = useState<RunKind | null>(null);
+  const scores = useRunScores();
+  const summaries = useScoreSummary("agent");
   const agents = useAgents();
 
-  const completed = useMemo(
-    () => (runs.data ?? []).filter(isTerminal),
-    [runs.data],
-  );
-  const results = useRunResults(completed.map((r) => r.run_id));
-
   // Operators think in agent names, not opaque ids (mirrors RunCard / the run filters).
-  const agentNameById = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const a of agents.data ?? []) m.set(a.id, a.name);
-    return m;
-  }, [agents.data]);
-
-  // The agent's harness kind → its identity glyph on the card. A run from a deleted agent has no
-  // kind (falls back to the neutral mark).
-  const agentKindById = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const a of agents.data ?? []) if (a.kind) m.set(a.id, a.kind);
-    return m;
-  }, [agents.data]);
-
-  const rows: AgentRunRow[] = completed.map((r, i) => {
-    const view = results[i]?.data;
-    const trigger = r.terminal_trigger;
-    // The result view carries the authoritative partial flag; fall back to the run's own
-    // trigger (always present) so a still-loading / unrecorded result still classifies.
-    const partial =
-      view?.partial ?? (trigger === "timeout" || trigger === "budget");
-    const completedOnOwnTerms = trigger === "done" || trigger === "completed";
-    return {
-      agentId: r.agent_id,
-      agentName: agentNameById.get(r.agent_id) ?? r.agent_id.slice(0, 8),
-      overall: view?.grade?.overall ?? null,
-      partial,
-      completed: completedOnOwnTerms,
-      when: r.completed_at ?? r.created_at,
-    };
-  });
-
-  const summaries = useMemo(() => summarizeByAgent(rows), [rows]);
-  const loadingResults = results.some((q) => q.isLoading);
-  // A profile link resolves only for an agent still registered (matched by id); a run from a
-  // deleted agent shows its numbers but no dead link.
-  const registered = useMemo(
-    () => new Set((agents.data ?? []).map((a) => a.id)),
+  const agentById = useMemo(
+    () => new Map((agents.data ?? []).map((a) => [a.id, a])),
     [agents.data],
   );
 
+  const runsByAgent = useMemo(() => {
+    const m = new Map<string, RunScore[]>();
+    for (const r of scores.data ?? []) {
+      const list = m.get(r.agent_id);
+      if (list) list.push(r);
+      else m.set(r.agent_id, [r]);
+    }
+    return m;
+  }, [scores.data]);
+
+  // Ranked by the server (best median first, unscored last), so the dashboard, the agent list and
+  // `xorcise leaderboard` show the same order.
+  const ranked = summaries.data ?? [];
+
+  const loading = scores.isLoading || summaries.isLoading;
   return (
     <div className="space-y-4">
-      {runs.isError && (
+      {(scores.isError || summaries.isError) && (
         <p className="text-body text-err">Couldn’t load results.</p>
       )}
 
-      {runs.isLoading && <LoadingCards />}
+      {loading && <LoadingCards />}
 
-      {runs.data && completed.length === 0 && <EmptyResults />}
+      {summaries.data && ranked.length === 0 && <EmptyResults />}
 
-      {summaries.length > 0 && (
-        <>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {summaries.map((s, i) => (
-              <Reveal key={s.agentId} delay={i * 40}>
+      {ranked.length > 0 && <RunKey view="strip" active={activeKind} />}
+
+      {ranked.length > 0 && (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {ranked.map((s, i) => {
+            const id = s.agent_id ?? "";
+            const agent = agentById.get(id);
+            return (
+              <Reveal key={id} delay={i * 40}>
                 <AgentPerformanceCard
                   summary={s}
-                  kind={agentKindById.get(s.agentId)}
-                  linked={registered.has(s.agentId)}
+                  runs={runsByAgent.get(id) ?? []}
+                  name={s.agent_name ?? agent?.name ?? id.slice(0, 8)}
+                  harness={agent?.kind ?? undefined}
+                  linked={!!agent}
+                  onInspect={setActiveKind}
                 />
               </Reveal>
-            ))}
-          </div>
-          {loadingResults && (
-            <p className="text-caption text-text-tertiary">Updating scores…</p>
-          )}
-        </>
+            );
+          })}
+        </div>
       )}
     </div>
   );
 }
 
+/** The card's text alternative to its strip: what a sighted reader takes from it, in words. */
+export function stripSummary(name: string, s: ScoreSummary): string {
+  const median =
+    s.median != null
+      ? `median ${pct(s.median)} over ${s.scored} scored ${s.scored === 1 ? "run" : "runs"}${s.timed_out ? ` (${s.timed_out} timed out)` : ""}`
+      : "no scored run yet";
+  const aside = asideLine(s);
+  return `${name}: ${s.runs} ${s.runs === 1 ? "run" : "runs"}, ${median}${aside ? `; ${aside}, not in the median` : ""}.`;
+}
+
+/**
+ * One agent: its median, its run strip, and one line on what the median covers. Everything else a
+ * run carries (its kind, its scores, whether it counts) is in the strip: drawn by each column and
+ * spelled out by the inspector, so the card does not repeat it. The agent's name opens its
+ * profile; each column opens its run.
+ */
 function AgentPerformanceCard({
   summary,
-  kind,
+  runs,
+  name,
+  harness,
   linked,
+  onInspect,
 }: {
-  summary: AgentPerformanceSummary;
-  kind?: string;
+  summary: ScoreSummary;
+  runs: RunScore[];
+  name: string;
+  harness?: string;
   linked: boolean;
+  onInspect: (kind: RunKind | null) => void;
 }) {
-  const header = (
-    <div className="flex items-center justify-between gap-2">
-      <span className="flex min-w-0 items-center gap-2">
-        <HarnessGlyph kind={kind} className="[&_svg]:!size-5" />
-        {/* Card head — 14px/700, the same value CardTitle carries (Figma sets a card
-            head in JetBrains Mono Bold at 14). `row` not `body` because this name is
-            one truncating line and body's 1.6 leading only pays for wrapped copy. */}
-        <span className="truncate text-row font-bold text-heading">
-          {summary.agentName}
-        </span>
-      </span>
-      {linked && (
-        <span className="flex shrink-0 items-center gap-1 text-dense text-text-secondary transition-colors group-hover:text-heading">
-          View profile
-          <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" />
-        </span>
-      )}
-    </div>
-  );
-
-  const body = (
-    <>
-      {header}
-      {/* Compact tiles + a two-line footer: the wide 6-up grid collided its COMPLETION/PARTIAL
-          labels and wrapped the timestamp across three lines inside this card width. */}
-      <PerformanceSummary summary={summary} columns={3} className="mt-4" />
-    </>
-  );
-
-  if (!linked) {
-    return <Card className="h-full p-4">{body}</Card>;
-  }
-
+  const left = summary.runs - summary.scored;
   return (
-    <Link
-      href={`/agents/detail?name=${encodeURIComponent(summary.agentName)}`}
-      className="block h-full"
-    >
-      <Card className="group h-full p-4 transition-colors hover:border-border-hover">
-        {body}
-      </Card>
-    </Link>
+    <Card className="flex h-full flex-col gap-3 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <span className="flex min-w-0 items-center gap-2">
+          <HarnessGlyph kind={harness} className="[&_svg]:!size-5" />
+          {/* Card head — 14px/700, the same value CardTitle carries. */}
+          {linked ? (
+            <Link
+              href={`/agents/detail?name=${encodeURIComponent(name)}`}
+              className="truncate rounded-sm text-row font-bold text-heading hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {name}
+              <span className="sr-only">: view profile</span>
+            </Link>
+          ) : (
+            <span className="truncate text-row font-bold text-heading">{name}</span>
+          )}
+        </span>
+        <span className="flex shrink-0 flex-col items-end">
+          <span className="text-stat font-bold leading-none text-primary">
+            {pct(summary.median)}
+          </span>
+          <span className="mt-1 text-label uppercase text-text-tertiary">median</span>
+        </span>
+      </div>
+      <RunStrip
+        runs={runs}
+        median={summary.median}
+        summary={stripSummary(name, summary)}
+        onInspect={onInspect}
+      />
+      {/* Wraps rather than squeezes: in a narrow card the date drops to its own line. */}
+      <div className="mt-auto flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-caption text-text-tertiary">
+        <span>
+          {summary.scored} of {summary.runs} runs in the median
+          {left > 0 && <span className="whitespace-nowrap">{` · ${left} left out`}</span>}
+        </span>
+        <span className="shrink-0">last run {shortTime(summary.last_run)}</span>
+      </div>
+    </Card>
   );
 }
 

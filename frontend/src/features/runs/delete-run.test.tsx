@@ -31,6 +31,59 @@ describe("DeleteRunDialog", () => {
     expect(onDeleted).not.toHaveBeenCalled();
   });
 
+  it("offers Delete anyway only when the refusal is a failed teardown, and forces it", async () => {
+    // #173: a finished run whose environment could not be torn down is the one refusal the
+    // operator may override, accepting that its container or tailnet nodes may stay up.
+    const urls: string[] = [];
+    server.use(
+      http.delete("*/api/runs/r4", ({ request }) => {
+        urls.push(request.url);
+        if (new URL(request.url).searchParams.get("force") === "true")
+          return new HttpResponse(null, { status: 204 });
+        return HttpResponse.json(
+          {
+            detail: "the environment of run r4 could not be torn down (tailnet: down).",
+            reason: "unreleased",
+            run_ids: ["r4"],
+            forceable: true,
+          },
+          { status: 409 },
+        );
+      }),
+    );
+    const onDeleted = vi.fn();
+    renderWithProviders(
+      <DeleteRunDialog runId="r4" open onClose={vi.fn()} onDeleted={onDeleted} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /delete permanently/i }));
+    expect(await screen.findByText(/could not be torn down/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /delete anyway/i }));
+    await waitFor(() => expect(onDeleted).toHaveBeenCalled());
+    expect(urls.map((u) => new URL(u).search)).toEqual(["", "?force=true"]);
+  });
+
+  it("does not offer Delete anyway for a refusal forcing cannot fix", async () => {
+    server.use(
+      http.delete("*/api/runs/r5", () =>
+        HttpResponse.json(
+          {
+            detail: "run r5 is still being graded.",
+            reason: "grading",
+            run_ids: ["r5"],
+            forceable: false,
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+    renderWithProviders(
+      <DeleteRunDialog runId="r5" open onClose={vi.fn()} onDeleted={vi.fn()} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /delete permanently/i }));
+    expect(await screen.findByText(/still being graded/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /delete anyway/i })).toBeNull();
+  });
+
   it("falls back to a generic line when the server gives no detail", async () => {
     server.use(
       http.delete("*/api/runs/r3", () => new HttpResponse(null, { status: 500 })),

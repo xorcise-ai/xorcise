@@ -42,7 +42,7 @@ export function GradingDetail({ grade: r }: { grade: GradeResult }) {
     <>
       {/* ═══ JUDGE STATUS NOTES (verbatim — tests assert these) ═══ */}
       {r.judge_status === "model-not-configured" && (
-        <p className="max-w-[68ch] rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-body text-foreground">
+        <p className="rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-body text-foreground">
           No LLM judge ran — the judge model isn&apos;t configured.{" "}
           <Link href="/settings?focus=judge" className="text-primary underline">
             Configure it in Settings →
@@ -84,7 +84,7 @@ export function GradingDetail({ grade: r }: { grade: GradeResult }) {
       {truncCount > 0 && (
         <div className="flex items-start gap-2 rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-body text-text-secondary">
           <Scissors className="mt-0.5 size-3.5 shrink-0 text-primary" aria-hidden />
-          <p className="max-w-[68ch]">
+          <p>
             <span className="font-medium text-foreground">{truncCount}</span> transcript
             span{truncCount === 1 ? "" : "s"} had a long body shortened (head + tail kept) so the
             evidence fit the judge’s per-span token cap.{" "}

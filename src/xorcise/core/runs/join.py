@@ -1,9 +1,10 @@
 """Render the one-shot tailnet join script served to the agent (domain module). Pure; no I/O.
 
 An agent (or a BYO harness we don't launch) fetches this from run-control — ``GET
-/runs/<id>/join.sh`` — and runs it: ``curl -fsS -H "Authorization: Bearer <key>" <base>/join.sh
-| sh``. The script folds the whole tailnet-join dance the agent used to reconstruct by hand into
-one command:
+/runs/<id>/join.sh`` — and runs it, passing the bearer to curl on stdin so it never sits on an
+argv: ``printf 'header = "Authorization: Bearer %s"\n' "$XORCISE_RUN_BEARER" | curl -fsS -K -
+<base>/join.sh | sh``. The script folds the whole tailnet-join dance the agent used to
+reconstruct by hand into one command:
 
   1. on macOS, start a pinned Linux Tailscale sidecar with loopback-only proxy ports; elsewhere,
      install a version-pinned static client if one isn't already present (no root/apt);
@@ -24,8 +25,10 @@ DNS) live here now, in one place, exercised by every launch mode.
 
 from __future__ import annotations
 
-# Pinned to a client proven against headscale:stable. Bump when the control plane needs a newer
-# client; kept explicit (not "latest") so a run is reproducible and not at the mercy of upstream.
+# Pinned to a client proven against the pinned control plane (headscale.provision.
+# HEADSCALE_IMAGE_PIN; Headscale v0.29.x needs a client of v1.80.0 or later). Bump when the
+# control plane needs a newer client; kept explicit (not "latest") so a run is reproducible and
+# not at the mercy of upstream.
 TAILSCALE_CLIENT_VERSION = "1.98.9"
 
 # `%%NAME%%` placeholders are substituted below rather than via an f-string/`.format()` — the shell
@@ -33,17 +36,58 @@ TAILSCALE_CLIENT_VERSION = "1.98.9"
 _TEMPLATE = r"""#!/bin/sh
 # XORCISE tailnet join — fetched from run-control and run as one command. Self-contained.
 set -eu
+# Every file this script writes is private to this user: the work dir holds the one-time join key
+# while `up` reads it, and the daemon state/log after.
+umask 077
 
+# SECRETS NEVER GO ON A COMMAND LINE. Any local user can read every process argv through `ps` or
+# /proc/<pid>/cmdline, and on a Linux host that includes processes inside the Docker sidecar. So:
+# the join key reaches `tailscale up` as `--auth-key=file:`; the bearer reaches curl as `-K -`
+# config on stdin from the `printf` builtin (a builtin never execs, so never has an argv); and the
+# self-reaper holds only WATCH_KEY, a liveness-only token run-control accepts on nothing but
+# `/alive` — it is the one value that may touch an argv (BusyBox wget in the sidecar), because
+# leaking it discloses only whether the run is still going.
 LOGIN_SERVER="%%LOGIN_SERVER%%"
 AUTHKEY="%%JOIN_KEY%%"
 VER="%%VERSION%%"
 RC_BASE="%%RC_BASE%%"
 RC_KEY="%%RC_KEY%%"
-WORK="${XORCISE_TS_DIR:-$(mktemp -d 2>/dev/null || echo /tmp/xorcise-ts)}"
-mkdir -p "$WORK"
+WATCH_KEY="%%WATCH_KEY%%"
+# Always a fresh mktemp dir (mode 0700, unpredictable name). The old fixed /tmp/xorcise-ts fallback
+# was a path another local user could pre-create or plant a symlink at before this script wrote a
+# key into it. XORCISE_TS_DIR picks the PARENT, never the dir itself, for the same reason.
+#
+# The parent must be one where no other user can rename our dir out from under us and plant their
+# own at its path: owned by this user or root, and either writable by nobody else or sticky (like
+# /tmp, where only an entry's owner may rename it).
+ts_parent_is_safe() {
+  # `$1/.` is the directory itself even when $1 is a symlink: `ls -ldn` on a link would report
+  # the link's own lrwxrwxrwx mode and owner instead.
+  set -- $(ls -ldn "$1/.")
+  [ "$3" = "$(id -u)" ] || [ "$3" = 0 ] || return 1
+  case "$1" in
+    ?????w* | ????????w*) case "$1" in *t | *T | *t? | *T?) return 0 ;; *) return 1 ;; esac ;;
+  esac
+}
+TS_PARENT="${XORCISE_TS_DIR:-${TMPDIR:-/tmp}}"
+mkdir -p "$TS_PARENT"
+if ! ts_parent_is_safe "$TS_PARENT"; then
+  echo "xorcise: refusing to keep the join key under $TS_PARENT: another user could replace" >&2
+  echo "  what is created there. Point XORCISE_TS_DIR at a directory only you can write to." >&2
+  exit 1
+fi
+WORK=$(mktemp -d "$TS_PARENT/xorcise-ts.XXXXXX")
+# Removed on every exit: `up` deletes it as soon as it returns, this covers an abort before that.
+# A shell killed by a signal skips its EXIT trap, so the usual ones become an exit that runs it.
+trap 'rm -f "$WORK/authkey"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 CA="$WORK/ca.pem"
 %%CA_BLOCK%%
+# The CA is public, and the sidecar mounts it for a container user that is not this one.
+[ -s "$CA" ] && chmod 644 "$CA"
 # Trust the embedded CA only when the run shipped one (air-gapped); else use system trust.
 if [ -s "$CA" ]; then SSLENV="env SSL_CERT_FILE=$CA"; else SSLENV=""; fi
 
@@ -66,6 +110,16 @@ if command -v setsid >/dev/null 2>&1; then DETACH="setsid"; else DETACH="nohup";
 # into container args/env/image metadata. `XORCISE_TAILSCALE_MODE=sidecar|native` is an explicit
 # diagnostic override that skips the capability detection entirely.
 TS_MODE="${XORCISE_TAILSCALE_MODE:-auto}"
+# Which client the native path runs (section 2). Checked here, before the mode is chosen, so a bad
+# value fails the same way whether this host ends up on the sidecar or on the native path.
+TS_CLIENT="${XORCISE_TAILSCALE_CLIENT:-auto}"
+case "$TS_CLIENT" in
+  auto | fetched) ;;
+  *)
+    echo "xorcise: invalid XORCISE_TAILSCALE_CLIENT=$TS_CLIENT (want auto or fetched)" >&2
+    exit 1
+    ;;
+esac
 # One probe, cached: `docker info` on an unreachable daemon blocks for its full timeout, and this
 # used to be asked twice on every join (once to detect, once to guard).
 HAVE_DOCKER=no
@@ -144,11 +198,12 @@ if [ "$TS_MODE" = sidecar ]; then
   if [ -s "$CA" ]; then
     set -- "$@" -v "$CA:/xorcise/ca.pem:ro" -e SSL_CERT_FILE=/xorcise/ca.pem
   fi
-  # PID 1 supervises both tailscaled and the run watcher. The bearer is injected afterwards over
-  # docker-exec stdin into an ephemeral, mode-0600 container file, so it never appears in image,
-  # environment, mount, or command metadata. When run-control returns terminal 409 (or the cap is
-  # reached), the watcher signals PID 1; PID 1 logs out, stops tailscaled, and exits. Docker --rm
-  # then removes the sidecar without relying on a host process surviving the agent harness.
+  # PID 1 supervises both tailscaled and the run watcher. The watch token is injected afterwards
+  # over docker-exec stdin into an ephemeral, mode-0600 container file, so it never appears in
+  # image, environment, mount, or command metadata. When run-control returns terminal 409 (or the
+  # cap is reached), the watcher signals PID 1; PID 1 logs out, stops tailscaled, and exits.
+  # Docker --rm then removes the sidecar without relying on a host process surviving the agent
+  # harness.
   set -- "$@" --entrypoint sh "$SIDECAR_IMAGE" -c '
     sock=$1
     shift
@@ -189,10 +244,12 @@ if [ "$TS_MODE" = sidecar ]; then
       } <"$config"
       rm -f "$config"
 
+      # $key is the liveness-only watch token, never the bearer: BusyBox wget can take a header
+      # only on its argv, which a Linux host shows to every local user.
       while kill -0 "$tailscaled_pid" >/dev/null 2>&1; do
         sleep 15
         response=$(wget -S -O /dev/null \
-          --header="Authorization: Bearer $key" "$base/mission" 2>&1 || true)
+          --header="Authorization: Bearer $key" "$base/alive" 2>&1 || true)
         printf "%s\n" "$response" | grep -Eq "HTTP/[0-9.]+ 409" && break
         [ "$(date +%s 2>/dev/null || echo 0)" -ge "$cap" ] && break
       done
@@ -244,7 +301,7 @@ if [ "$TS_MODE" = sidecar ]; then
   fi
 
   if ! {
-    printf '%s\n' "$RC_KEY"
+    printf '%s\n' "$WATCH_KEY"
     printf '%s\n' "$REAPER_BASE"
     printf '%s\n' "$REAP_CAP"
   } | docker exec -i "$SIDECAR" sh -c \
@@ -254,13 +311,17 @@ if [ "$TS_MODE" = sidecar ]; then
     exit 1
   fi
 
-  # The one-time key is read from stdin inside the container. LOGIN_SERVER + hostname are
-  # non-secret positional args; neither the key nor CA content appears in `docker inspect`.
-  printf '%s\n' "$AUTHKEY" | docker exec -i "$SIDECAR" sh -c '
-    IFS= read -r key
+  # The one-time key goes over stdin into a mode-0600 container file that `up` reads as
+  # `--auth-key=file:`, never as the flag's value: the container's processes are host processes
+  # on Linux, so an argv there is as readable as one here. LOGIN_SERVER + hostname are non-secret
+  # positional args; neither the key nor CA content appears in `docker inspect`.
+  printf '%s' "$AUTHKEY" | docker exec -i "$SIDECAR" sh -c '
+    umask 077
+    cat > /tmp/xorcise-authkey
     tailscale --socket="$1" up \
-      --login-server="$2" --authkey="$key" \
+      --login-server="$2" --auth-key=file:/tmp/xorcise-authkey \
       --accept-routes --accept-dns=false --hostname="$3" --timeout=30s || true
+    rm -f /tmp/xorcise-authkey
   ' _ "$SIDECAR_SOCK" "$LOGIN_SERVER" "xorcise-agent-$RUN_TOKEN"
 
   IP=""
@@ -312,13 +373,44 @@ if [ "$TS_MODE" = sidecar ]; then
 fi
 
 # 2) Native Linux/BSD path: locate the client, or fetch the pinned static binary (no root/apt).
+# The fetched client is unpacked into $WORK and run from there — never installed, so the join
+# leaves nothing behind on this system. XORCISE_TAILSCALE_CLIENT=fetched asks for it explicitly.
 TS="$(command -v tailscale || true)"
 TSD="$(command -v tailscaled || true)"
+# The client's own `up --help`, read once: it answers both questions asked of it below — can it
+# read the key from a file, and which spelling of the key flag does it know.
+TS_HELP=""
+if [ "$TS_CLIENT" = fetched ]; then
+  TS=""
+  TSD=""
+elif [ -n "$TS" ] && [ -n "$TSD" ]; then
+  TS_HELP=$("$TS" up --help 2>&1 || true)
+fi
+if [ -n "$TS_HELP" ] && ! printf '%s\n' "$TS_HELP" | grep -q '"file:"'; then
+  # A client that cannot read --auth-key from a file would need the key on its argv, where every
+  # local user can read it. Stop rather than expose it, and say how to proceed either way.
+  echo "xorcise: the tailscale client at $TS is too old to read its auth key from a file." >&2
+  echo "  Passing the key as an argument instead would show it to every user on this host." >&2
+  if [ "$(uname -s)" = "Darwin" ]; then
+    # No static macOS client exists to fetch (see below), so upgrading is the only way forward.
+    echo "  Upgrade it (brew upgrade tailscale; the tested version is v$VER), then re-run." >&2
+  else
+    echo "  Either upgrade it (the pinned, tested version is v$VER), or re-run the join with" >&2
+    echo "  XORCISE_TAILSCALE_CLIENT=fetched to run a temporary v$VER client from a scratch" >&2
+    echo "  directory instead — nothing is installed on this system." >&2
+  fi
+  exit 1
+fi
 if [ -z "$TS" ] || [ -z "$TSD" ]; then
   # macOS has no fetchable static userspace client: the only macOS build is the GUI app / system
   # extension (no standalone tailscaled CLI). A client already on PATH is used above and works in
   # userspace mode; when absent we can't install one from here, so guide the operator to the
   # userspace-capable Homebrew CLI instead of fetching a Linux binary that can't exec on Darwin.
+  if [ "$(uname -s)" = "Darwin" ] && [ "$TS_CLIENT" = fetched ]; then
+    echo "xorcise: XORCISE_TAILSCALE_CLIENT=fetched is Linux-only — there is no static macOS" >&2
+    echo "  client to fetch. Unset it and use the tailscale CLI (brew install tailscale)." >&2
+    exit 1
+  fi
   if [ "$(uname -s)" = "Darwin" ]; then
     echo "xorcise: tailscale not found on this macOS host, and no static macOS client can be" >&2
     echo "  auto-installed. Install the CLI, then re-run:  brew install tailscale" >&2
@@ -330,14 +422,22 @@ if [ -z "$TS" ] || [ -z "$TSD" ]; then
     *) A=amd64 ;;
   esac
   # Prefer the run-control-served client (air-gapped: the server caches it, no public egress
-  # needed); fall back to the public CDN when run-control can't serve it.
-  curl -fsSL -H "Authorization: Bearer $RC_KEY" \
-    "$RC_BASE/tailscale.tgz?arch=$A" -o "$WORK/ts.tgz" ||
+  # needed); fall back to the public CDN when run-control can't serve it. The bearer reaches curl
+  # as config on stdin (`-K -`), not as a `-H` argument.
+  printf 'header = "Authorization: Bearer %s"\n' "$RC_KEY" |
+    curl -fsSL -K - "$RC_BASE/tailscale.tgz?arch=$A" -o "$WORK/ts.tgz" ||
     curl -fsSL "https://pkgs.tailscale.com/stable/tailscale_${VER}_${A}.tgz" -o "$WORK/ts.tgz"
   tar xzf "$WORK/ts.tgz" -C "$WORK"
   TS="$WORK/tailscale_${VER}_${A}/tailscale"
   TSD="$WORK/tailscale_${VER}_${A}/tailscaled"
+  TS_HELP=$("$TS" up --help 2>&1 || true)
 fi
+
+# `--auth-key` is the current spelling; clients from before it only know `--authkey`, which later
+# ones keep as a hidden alias. Use the one this client documents, so an older client that can read
+# a key file still joins instead of rejecting the flag (and `up || true` hiding why).
+AUTHKEY_FLAG=--authkey
+if printf '%s\n' "$TS_HELP" | grep -q -- '-auth-key'; then AUTHKEY_FLAG=--auth-key; fi
 
 SOCK="$WORK/tailscaled.sock"
 STATE="$WORK/tailscaled.state"
@@ -409,9 +509,12 @@ else
 fi
 
 # 4) Join. --timeout so `up` can never block indefinitely (the old 120s hang); poll separately.
+# The key is read from a mode-0600 file (the umask above), never passed as the flag value.
+printf '%s' "$AUTHKEY" >"$WORK/authkey"
 $SSLENV "$TS" --socket="$SOCK" up \
-  --login-server="$LOGIN_SERVER" --authkey="$AUTHKEY" \
+  --login-server="$LOGIN_SERVER" "$AUTHKEY_FLAG=file:$WORK/authkey" \
   --accept-routes --accept-dns=false --hostname=xorcise-agent --timeout=30s || true
+rm -f "$WORK/authkey"
 
 # 5) Poll for the assigned tailnet IP.
 IP=""
@@ -471,13 +574,19 @@ fi
 # under a headless harness (`claude -p`) every tool call is a fresh short-lived session, so that
 # check tore the daemon down mid-run seconds after the join returned. Dynamic ports (above) mean a
 # briefly-leaked daemon no longer blocks a later run, so 409 + cap is sufficient.
+# It holds only the liveness-only watch token, handed over in its environment (readable by this
+# user alone, unlike an argv) and passed on to curl as stdin config, so no argv ever carries it.
+# Polling /alive rather than /mission also keeps the reaper from counting as the agent reading
+# its brief.
 REAP_CAP=$(($(date +%s 2>/dev/null || echo 0) + ${XORCISE_REAP_MAX:-%%REAP_CAP_SECONDS%%}))
-$DETACH sh -c '
-  sock=$1; base=$2; key=$3; ts=$4; cap=$5
+XORCISE_WATCH_KEY="$WATCH_KEY" $DETACH sh -c '
+  sock=$1; base=$2; ts=$3; cap=$4
+  key=$XORCISE_WATCH_KEY
+  unset XORCISE_WATCH_KEY
   while :; do
     sleep 15
-    code=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $key" \
-      "$base/mission" 2>/dev/null || echo 000)
+    code=$(printf "header = \"Authorization: Bearer %s\"\n" "$key" |
+      curl -s -o /dev/null -w "%{http_code}" -K - "$base/alive" 2>/dev/null) || code=000
     [ "$code" = "409" ] && break
     [ "$(date +%s 2>/dev/null || echo 0)" -ge "$cap" ] && break
   done
@@ -487,9 +596,11 @@ $DETACH sh -c '
     sleep 1
     kill -9 "$p" 2>/dev/null || true
   done
+  # The socket lives in the mktemp work dir this join created (never a dir the operator named),
+  # so it is removed wherever the parent is, not only under /tmp.
   w=$(dirname "$sock")
-  case "$w" in /tmp/*) rm -rf "$w" 2>/dev/null || true ;; esac
- ' _ "$SOCK" "$RC_BASE" "$RC_KEY" "$TS" "$REAP_CAP" </dev/null >/dev/null 2>&1 &
+  case "${w##*/}" in xorcise-ts.*) rm -rf "$w" 2>/dev/null || true ;; esac
+ ' _ "$SOCK" "$RC_BASE" "$TS" "$REAP_CAP" </dev/null >/dev/null 2>&1 &
 """
 
 _CA_BLOCK = "cat > \"$CA\" <<'XORCISE_CA_EOF'\n{ca}\nXORCISE_CA_EOF"
@@ -503,6 +614,7 @@ def render_join_script(
     ca_cert: str,
     run_control_base: str = "",
     run_control_key: str = "",
+    watch_token: str = "",
     version: str = "",
     reap_cap_seconds: int = 86400,
 ) -> str:
@@ -512,10 +624,13 @@ def render_join_script(
     ``join_key`` the per-run one-time auth key, ``ca_cert`` the control-plane CA PEM (empty for a
     public control plane). ``run_control_base``/``run_control_key`` let the script fetch the pinned
     client from run-control's ``GET /tailscale.tgz`` (air-gapped) before falling back to the public
-    CDN — the same authed base the agent used to fetch this script. ``version`` overrides the pinned
-    client (defaults to the module pin). ``reap_cap_seconds`` is the self-reaper's hard-cap backstop
-    (baked as the ``XORCISE_REAP_MAX`` default); callers pass the run budget + a margin so a daemon
-    leaked by a hard-killed box self-reaps in ~run-lifetime instead of a blanket day.
+    CDN — the same authed base the agent used to fetch this script. ``watch_token`` is the run's
+    liveness-only credential for ``GET /alive``, the one the self-reaper polls with; it never gets
+    the bearer, because the sidecar's reaper can only send a header from an argv. ``version``
+    overrides the pinned client (defaults to the module pin). ``reap_cap_seconds`` is the
+    self-reaper's hard-cap backstop (baked as the ``XORCISE_REAP_MAX`` default); callers pass the
+    run budget + a margin so a daemon leaked by a hard-killed box self-reaps in ~run-lifetime
+    instead of a blanket day.
     """
     ca = ca_cert.strip()
     ca_block = _CA_BLOCK.format(ca=ca) if ca else _NO_CA
@@ -525,6 +640,7 @@ def render_join_script(
         .replace("%%VERSION%%", version or TAILSCALE_CLIENT_VERSION)
         .replace("%%RC_BASE%%", run_control_base)
         .replace("%%RC_KEY%%", run_control_key)
+        .replace("%%WATCH_KEY%%", watch_token)
         .replace("%%CA_BLOCK%%", ca_block)
         .replace("%%REAP_CAP_SECONDS%%", str(reap_cap_seconds))
     )

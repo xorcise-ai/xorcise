@@ -76,10 +76,23 @@ def test_start_is_idempotent_while_a_job_is_active(migrated_home, monkeypatch):
 
     r = _client().post("/api/missions/sqli-login/pull-jobs")
     assert r.status_code == 202
-    assert r.json()["job_id"] == active_id
+    assert r.json() == {"job_id": active_id, "joined": True}
     # still the one in-flight job, untouched by the joined POST
     job = pull_job_store().get(active_id)
     assert job is not None and job.status == "pulling"
+
+
+def test_a_refresh_says_when_it_joined_a_pull_instead_of_starting_one(migrated_home, monkeypatch):
+    """A refresh that lands on an in-flight pull joins it as-is, so the caller must be able to
+    tell the operator the refresh did not happen; a refresh with nothing in flight starts."""
+    _stub_catalog(monkeypatch)
+    c = _client()
+    started = c.post("/api/missions/sqli-login/pull-jobs", json={"refresh": True})
+    assert started.status_code == 202 and started.json()["joined"] is False
+
+    active_id, _ = pull_job_store().start("sqli-login")
+    joined = c.post("/api/missions/sqli-login/pull-jobs", json={"refresh": True})
+    assert joined.json() == {"job_id": active_id, "joined": True}
 
 
 def test_sync_pull_conflicts_409_while_a_job_is_active(migrated_home, monkeypatch):

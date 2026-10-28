@@ -9,14 +9,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import Callable
 from datetime import datetime
+
+from xorcise.core.contracts.run import TerminalTrigger
+
+log = logging.getLogger(__name__)
 
 
 class BudgetWatchdog:
     def __init__(
         self,
-        terminate: Callable[[str, str, datetime], object],
+        terminate: Callable[[str, TerminalTrigger, datetime], object],
         list_active: Callable[[], list[tuple[str, datetime]]],
         now_fn: Callable[[], datetime],
         interval: float,
@@ -32,14 +37,30 @@ class BudgetWatchdog:
         fired = 0
         for run_id, deadline in self._list_active():
             if now >= deadline:
-                self._terminate(run_id, "timeout", now)
-                fired += 1
+                # Isolate each run: one failed terminate must not abort the scan, or escape and
+                # end run() for the life of the process, after which no idle run ever times out.
+                # The run stays active, so the next tick retries it, as the readiness gate does.
+                try:
+                    self._terminate(run_id, "timeout", now)
+                    fired += 1
+                except Exception:
+                    log.warning(
+                        "budget: terminate failed for %s (retried next tick)", run_id, exc_info=True
+                    )
         return fired
 
     async def run(self) -> None:
         while True:
             await asyncio.sleep(self._interval)
-            self.tick()
+            # Worker thread: terminate grades in the same call (the telemetry drain sleep, the
+            # judge, Docker teardown), and REST and OTLP share this loop - on it, neither would
+            # answer until the grade finished.
+            try:
+                await asyncio.to_thread(self.tick)
+            except Exception:
+                # The scan itself failed (listing the active runs). Same rule: the next tick
+                # retries, and the task never dies.
+                log.warning("budget: scan failed (retried next tick)", exc_info=True)
 
     def start(self) -> None:
         if self._task is None:

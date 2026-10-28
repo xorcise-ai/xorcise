@@ -82,10 +82,9 @@ export function ComingSoonPanel({
 
         <div className="grid grid-cols-1 gap-5 @3xl:grid-cols-[1.35fr_1fr] @3xl:items-center @3xl:gap-8">
           <div>
-            {/* Measure caps, not layout limits. Narrow: the dialog is the cap. Wide: the
-                column is, and prose stops at the 68ch readable band the type rules set.
-                Centred, the panel's own width IS the cap — it is sized to the measure at
-                the call site — so the caps come off and the prose fills the box. */}
+            {/* Left-aligned, the prose fills its column (globals.css, Prose). Centred, it
+                keeps the 68ch measure on a wide panel: centred slack splits evenly either
+                side, so it reads as a column rather than a box left mostly empty. */}
             <h3
               className={cn(
                 "text-lead text-heading @3xl:max-w-none",
@@ -96,8 +95,8 @@ export function ComingSoonPanel({
             </h3>
             <p
               className={cn(
-                "mt-2 text-body text-text-secondary @3xl:max-w-[68ch]",
-                centered ? "text-pretty" : "max-w-md",
+                "mt-2 text-body text-text-secondary",
+                centered && "text-pretty @3xl:max-w-[68ch]",
               )}
             >
               {children}

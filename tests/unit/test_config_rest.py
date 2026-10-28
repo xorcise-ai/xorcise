@@ -97,3 +97,70 @@ def test_put_terrain_model_persists_and_clear_reverts_to_judge(migrated_home) ->
     body = client.put("/api/config/terrain-model", json={"model_name": ""}).json()
     assert body["terrain"]["uses_judge_default"] is True
     assert body["terrain"]["model_name"] == "judge-m"
+
+
+# --- a line break in any text field is refused, not written (#160) ------------------------------
+#
+# Values land in ~/.xorcise/.env unquoted, so a line break splits the line: dotenv reads back the
+# first fragment and the rest persists as a line the writer can never parse. The CLI refuses a
+# multi-line piped key, but this route is also reached by the GUI, scripts and `--key` on argv.
+
+
+def _text_fields() -> list[tuple[str, str]]:
+    """(route, field) for every text field of every setter that writes ~/.xorcise/.env."""
+    from xorcise.core.contracts.config import (
+        ModelConfigUpdate,
+        NetworkConfigUpdate,
+        TerrainModelConfigUpdate,
+    )
+
+    cases = []
+    for route, model in (
+        ("/api/config/model", ModelConfigUpdate),
+        ("/api/config/terrain-model", TerrainModelConfigUpdate),
+        ("/api/config/network", NetworkConfigUpdate),
+    ):
+        for field, info in model.model_fields.items():
+            if info.annotation == str | None:
+                cases.append((route, field))
+    return cases
+
+
+@pytest.mark.unit
+# \n and \r, plus separators the writer's own splitlines() splits on that a search for those two
+# misses — the gap the first version of this fix had.
+@pytest.mark.parametrize("brk", ["\n", "\r", "\r\n", "\v", "\x1e", "\x85", "\u2028", "\u2029"])
+@pytest.mark.parametrize(("route", "field"), _text_fields())
+def test_a_multi_line_text_field_is_refused_and_nothing_is_written(
+    migrated_home, route, field, brk
+) -> None:
+    env = migrated_home / ".env"
+    env.write_text("XORCISE_MODEL_NAME=before\n")
+
+    r = _client().put(route, json={field: f"secret-line1{brk}secret-line2"})
+
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert isinstance(detail, str)  # a sentence the CLI and the GUI can show as-is
+    assert field in detail and "single line" in detail
+    assert "secret-line" not in r.text  # the value may be the API key: never echoed
+    assert env.read_text() == "XORCISE_MODEL_NAME=before\n"
+
+
+@pytest.mark.unit
+def test_every_env_writing_setter_has_its_text_fields_covered() -> None:
+    """The case list above is derived from the contracts; this pins that it found them all, so a
+    change in how fields are typed cannot silently empty it."""
+    assert sorted(_text_fields()) == sorted(
+        [
+            ("/api/config/model", "key"),
+            ("/api/config/model", "base_url"),
+            ("/api/config/model", "model_name"),
+            ("/api/config/model", "tokenizer"),
+            ("/api/config/terrain-model", "key"),
+            ("/api/config/terrain-model", "base_url"),
+            ("/api/config/terrain-model", "model_name"),
+            ("/api/config/network", "headscale_url"),
+            ("/api/config/network", "advertise_host"),
+        ]
+    )

@@ -1,32 +1,35 @@
+import { CircleHelp } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { cn } from "@/components/ui/cn";
-import { CUSTOM_LABEL, HARNESSES, HarnessGlyph } from "@/features/agents/harnesses";
+import { GENERIC_LABEL, HARNESSES, HarnessGlyph } from "@/features/agents/harnesses";
 import type { HarnessCapabilityProfile } from "@/lib/api/types";
 import { CapabilityDot } from "./capability-dot";
 import { DISPLAY_GROUPS, groupLevel, groupNote } from "./capability-groups";
 import { useCapabilities } from "./use-capabilities";
 
 /** One column of the matrix: a harness `kind` paired with the adapter profile it renders (the
- * live adapter's own profile for a built-in harness, always the `generic` profile for Custom —
- * a custom kind has no adapter of its own yet, so it inherits generic's declared capabilities). */
+ * live adapter's own profile for a built-in harness, always the `generic` profile for Generic —
+ * `generic` and your own label have no adapter of their own, so they inherit generic's). */
 interface MatrixColumn {
   kind: string;
   name: string;
   profile: HarnessCapabilityProfile | undefined;
-  /** Custom always renders the generic adapter's profile, which is never "verified" against a
-   * real harness — the header badge says so rather than implying it was measured. */
+  /** Generic has no verified adapter: the generic adapter maps what it can, at best, and which
+   * spans an arbitrary agent exports is unknown. Its cells say unknown rather than borrowing the
+   * generic adapter's profile as if it were measured. */
   unverified: boolean;
 }
 
 /**
  * The harness capability dot-matrix shown beneath the harness picker at agent
- * creation: rows = the display groups, columns = every built-in harness + Custom, so a user
+ * creation: rows = the display groups, columns = every built-in harness + Generic, so a user
  * can see — before registering an agent — what telemetry that harness's adapter actually
  * declares, honestly (gaps show as an unsupported/partial dot with the adapter's own note,
- * never hidden). `selectedKind` highlights the chosen column with the amber selection token —
- * the one place this matrix uses amber; every dot's own state is shape-coded, never color-coded.
+ * never hidden). Generic's cells are amber question marks, as on the register page: unknown, not
+ * measured. `selectedKind` highlights the chosen column with the amber selection token; every
+ * dot's own state is shape-coded, never color-coded.
  */
 export function CapabilityMatrix({ selectedKind }: { selectedKind: string }) {
   const { profiles, byName, isLoading, isError } = useCapabilities();
@@ -39,8 +42,8 @@ export function CapabilityMatrix({ selectedKind }: { selectedKind: string }) {
       unverified: false,
     })),
     {
-      kind: "__custom__",
-      name: CUSTOM_LABEL,
+      kind: "__generic__",
+      name: GENERIC_LABEL,
       profile: byName.get("generic"),
       unverified: true,
     },
@@ -76,11 +79,11 @@ export function CapabilityMatrix({ selectedKind }: { selectedKind: string }) {
     );
   }
 
-  // Custom has no fixed `kind` of its own — it represents "whatever the user typed that ISN'T one
-  // of the built-in harnesses" (including the empty string, the picker's unselected default). So
-  // it must highlight whenever selectedKind matches NO built-in HARNESSES kind, not only "".
+  // Generic stands for `generic` and for any label of your own: whatever ISN'T one of the
+  // built-in harnesses (a blank kind too, which is saved as `generic`). So it must highlight
+  // whenever selectedKind matches NO built-in HARNESSES kind, not only "generic".
   const isSelected = (col: MatrixColumn) =>
-    col.kind === "__custom__"
+    col.kind === "__generic__"
       ? !HARNESSES.some((h) => h.kind === selectedKind)
       : selectedKind === col.kind;
 
@@ -108,11 +111,11 @@ export function CapabilityMatrix({ selectedKind }: { selectedKind: string }) {
                   )}
                 >
                   <span className="flex items-center gap-1.5 normal-case">
-                    <HarnessGlyph kind={col.kind === "__custom__" ? null : col.kind} />
+                    <HarnessGlyph kind={col.kind === "__generic__" ? null : col.kind} />
                     {col.name}
                     {col.unverified && (
                       <span className="text-caption normal-case text-text-tertiary">
-                        (unverified — generic adapter)
+                        (unknown — generic adapter, best effort)
                       </span>
                     )}
                   </span>
@@ -134,7 +137,12 @@ export function CapabilityMatrix({ selectedKind }: { selectedKind: string }) {
                     key={col.kind}
                     className={cn(isSelected(col) && "bg-primary/10")}
                   >
-                    {col.profile ? (
+                    {col.unverified ? (
+                      <CircleHelp
+                        className="size-3 text-primary"
+                        aria-label={`${group.label}: unknown`}
+                      />
+                    ) : col.profile ? (
                       <CapabilityDot
                         level={groupLevel(col.profile, group)}
                         label={group.label}

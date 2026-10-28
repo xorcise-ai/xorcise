@@ -173,15 +173,8 @@
             "type": "string"
           },
           "kind": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Kind"
+            "title": "Kind",
+            "type": "string"
           },
           "launch_command_template": {
             "anyOf": [
@@ -271,6 +264,7 @@
         },
         "required": [
           "name",
+          "kind",
           "id",
           "created_at"
         ],
@@ -496,8 +490,8 @@
         "title": "AgentEventKind",
         "type": "string"
       },
-      "AgentHistoryEntry": {
-        "description": "One recorded result in an agent's track record (the 50/50 breakdown).",
+      "AgentHistoryView": {
+        "description": "A history row plus the run's status wording (contracts.run.run_status), joined here because\ncontracts never import one another. A row whose run has since been deleted still reads exactly\nas the run did \u2014 the GUI used to invent a \"budget\" trigger for it instead (#165).",
         "properties": {
           "agent_id": {
             "title": "Agent Id",
@@ -525,6 +519,23 @@
             "title": "Judge",
             "type": "number"
           },
+          "judge_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ok",
+                  "partial",
+                  "model-not-configured",
+                  "unavailable"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge Status"
+          },
           "overall": {
             "title": "Overall",
             "type": "number"
@@ -549,6 +560,9 @@
             "title": "Run Id",
             "type": "string"
           },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
           "trace_ref": {
             "anyOf": [
               {
@@ -567,9 +581,206 @@
           "overall",
           "deterministic",
           "judge",
+          "created_at",
+          "status"
+        ],
+        "title": "AgentHistoryView",
+        "type": "object"
+      },
+      "AgentSaveView": {
+        "description": "A register/update result plus anything the operator should know about what was saved.\nThe save itself is never refused for these: a kind no harness answers to is the sanctioned\nway to label your own CLI, so it is disclosed here rather than rejected (#141).",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "endpoint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "launch_command_template": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Launch Command Template"
+          },
+          "launch_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "host",
+                  "container"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Launch Mode"
+          },
+          "launch_tips": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Launch Tips"
+          },
+          "mission_preamble": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mission Preamble"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "otel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Otel"
+          },
+          "version": {
+            "default": 1,
+            "title": "Version",
+            "type": "integer"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "id",
           "created_at"
         ],
-        "title": "AgentHistoryEntry",
+        "title": "AgentSaveView",
+        "type": "object"
+      },
+      "Announcement": {
+        "additionalProperties": false,
+        "description": "One active banner. `revision` increments when a published announcement is edited,\nso the browser can re-show a banner the reader had already dismissed.",
+        "properties": {
+          "body_md": {
+            "title": "Body Md",
+            "type": "string"
+          },
+          "dismissible": {
+            "title": "Dismissible",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "placement": {
+            "enum": [
+              "application",
+              "catalog"
+            ],
+            "title": "Placement",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "tone": {
+            "enum": [
+              "information",
+              "maintenance",
+              "incident",
+              "resolved"
+            ],
+            "title": "Tone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "revision",
+          "placement",
+          "tone",
+          "body_md",
+          "dismissible"
+        ],
+        "title": "Announcement",
+        "type": "object"
+      },
+      "AnnouncementsResponse": {
+        "additionalProperties": false,
+        "description": "GET /api/announcements. Empty is the normal answer \u2014 nothing published, the remote\ncatalog switched off, an older deployment that 404s, or any failure at all.",
+        "properties": {
+          "announcements": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/Announcement"
+            },
+            "title": "Announcements",
+            "type": "array"
+          }
+        },
+        "title": "AnnouncementsResponse",
         "type": "object"
       },
       "ArtifactSpec": {
@@ -684,6 +895,73 @@
           }
         },
         "title": "AttributionStatus",
+        "type": "object"
+      },
+      "BootReconcileView": {
+        "additionalProperties": false,
+        "description": "What this server's start-up reconcile did, so the CLI can say it (#173).\n\nAt boot the server converges the live Docker/Headscale world to the persisted runs: a run whose\ncontainer survived the restart is adopted, one whose container is gone is closed out\n(`crashed`), and a reservation whose deploy never finished is released. Before this, the only\nrecord was a line in serve.log, and a reconcile that failed outright said nothing at all.\n\n  pending  the reconcile has not started yet\n  running  it is converging now (it runs in the background, after the server answers)\n  done     finished; the counts say what it did\n  failed   a whole step failed (`error`); the steps after it still ran, and the next start\n           retries. Single runs that could not be converged are listed in `failed`\n           whatever the state.",
+        "properties": {
+          "aborted": {
+            "default": 0,
+            "title": "Aborted",
+            "type": "integer"
+          },
+          "adopted": {
+            "default": 0,
+            "title": "Adopted",
+            "type": "integer"
+          },
+          "error": {
+            "default": "",
+            "title": "Error",
+            "type": "string"
+          },
+          "failed": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Failed",
+            "type": "array"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "release_pending": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Release Pending",
+            "type": "array"
+          },
+          "released": {
+            "default": 0,
+            "title": "Released",
+            "type": "integer"
+          },
+          "state": {
+            "default": "pending",
+            "enum": [
+              "pending",
+              "running",
+              "done",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "title": "BootReconcileView",
         "type": "object"
       },
       "CatalogConfigUpdate": {
@@ -1345,6 +1623,43 @@
         "title": "CriterionScore",
         "type": "object"
       },
+      "DeleteRefusal": {
+        "description": "The 409 body of DELETE /runs/{id} and DELETE /agents/{name} (#173).\n\nA run's row is the only handle anything has on its environment, so a delete is refused while\nthat environment may still be up:\n  running     a run has not finished (any state but terminal). Terminate it first.\n  grading     its grade is in flight, and grading may still need the environment.\n  unreleased  a finished run's environment could not be torn down (Docker or Headscale down).\nOnly `unreleased` is `forceable`: `force=true` deletes anyway, accepting that a container or\ntailnet nodes may be left running.",
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "forceable": {
+            "title": "Forceable",
+            "type": "boolean"
+          },
+          "reason": {
+            "enum": [
+              "running",
+              "grading",
+              "unreleased"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "run_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Run Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "detail",
+          "reason",
+          "run_ids",
+          "forceable"
+        ],
+        "title": "DeleteRefusal",
+        "type": "object"
+      },
       "EnvironmentSpec": {
         "additionalProperties": false,
         "description": "Authored container/network SOURCE. Ingestion fuses this into the run-ready\nimage (MissionRef.image). No file reading here \u2014 pure shape.",
@@ -1484,6 +1799,11 @@
             },
             "title": "Check Breakdown",
             "type": "array"
+          },
+          "grading_failed": {
+            "default": false,
+            "title": "Grading Failed",
+            "type": "boolean"
           },
           "hard_fails": {
             "default": [],
@@ -1625,6 +1945,26 @@
           "breakdown"
         ],
         "title": "GradeResult",
+        "type": "object"
+      },
+      "GradingView": {
+        "description": "The 202 /result, /report and /stats give while a terminal run's grade is still being\nrecorded \u2014 transient progress, not a failure: poll again.",
+        "properties": {
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "const": "grading",
+            "default": "grading",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id"
+        ],
+        "title": "GradingView",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -2117,6 +2457,48 @@
         "title": "MissionBaseView",
         "type": "object"
       },
+      "MissionDeleteOut": {
+        "description": "DELETE /{id}?purge=true result. The mission is uninstalled whatever image_outcome says.",
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "image": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image"
+          },
+          "image_outcome": {
+            "title": "Image Outcome",
+            "type": "string"
+          },
+          "mission_id": {
+            "title": "Mission Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mission_id",
+          "image",
+          "image_outcome"
+        ],
+        "title": "MissionDeleteOut",
+        "type": "object"
+      },
       "MissionInfo": {
         "description": "What `GET /runs/{id}/mission` returns: the run's single mission, unlocked.",
         "properties": {
@@ -2442,6 +2824,58 @@
         "title": "ModelConfigUpdate",
         "type": "object"
       },
+      "NestedSupportView": {
+        "additionalProperties": false,
+        "description": "What the running server answers after re-probing nested containers (#195).\n\n`native` is the daemon's own platform; `foreign` holds every other platform a run has asked\nthe server about (e.g. linux/amd64 on Apple Silicon), re-probed in the same call. These are\nthe verdicts run creation reads, so they are what `doctor` shows.",
+        "properties": {
+          "foreign": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/NestedVerdictView"
+            },
+            "title": "Foreign",
+            "type": "array"
+          },
+          "native": {
+            "$ref": "#/components/schemas/NestedVerdictView"
+          }
+        },
+        "required": [
+          "native"
+        ],
+        "title": "NestedSupportView",
+        "type": "object"
+      },
+      "NestedVerdictView": {
+        "additionalProperties": false,
+        "description": "One nested-container verdict the server holds. `platform` is \"\" for the daemon's native\nplatform; `remediation` is \"\" when there is nothing to fix.",
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "platform": {
+            "title": "Platform",
+            "type": "string"
+          },
+          "remediation": {
+            "default": "",
+            "title": "Remediation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "platform",
+          "ok",
+          "detail"
+        ],
+        "title": "NestedVerdictView",
+        "type": "object"
+      },
       "NetworkConfigUpdate": {
         "additionalProperties": false,
         "description": "Partial update to the distributed network addresses. None = leave; \"\" = unset to default.",
@@ -2502,6 +2936,55 @@
         "title": "NetworkConfigView",
         "type": "object"
       },
+      "NotGradedView": {
+        "description": "The FINAL answer /result, /report and /stats give for a run that is never graded: one cut\nshort by an environment failure (`deploy_failed` / `crashed`, #109), or one an operator stopped\nbefore the agent started (`cancelled`), or one whose budget ran out before it did\n(`never_started`, #187). A 200, not a 202 \u2014\nan answer, not progress \u2014 so a poll loop stops on it.",
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "run_status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "status": {
+            "const": "not_graded",
+            "default": "not_graded",
+            "title": "Status",
+            "type": "string"
+          },
+          "terminal_trigger": {
+            "enum": [
+              "done",
+              "timeout",
+              "operator",
+              "cancelled",
+              "never_started",
+              "deploy_failed",
+              "crashed"
+            ],
+            "title": "Terminal Trigger",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "terminal_trigger",
+          "run_status"
+        ],
+        "title": "NotGradedView",
+        "type": "object"
+      },
       "PlaneStatus": {
         "additionalProperties": false,
         "description": "One module's reachability, tagged with the service role that owns it.\n\n`role` + `label` exist so the operator surfaces can group modules the way XORCISE is\nactually built (control / runner / headscale / collector) instead of listing bare\nplane keys. They are the SAME role keys `xorcise serve --role <key>` takes, which is\nwhat makes a future multi-host deployment legible: when a module moves to another\nbox only `location` changes. `name` stays the raw key \u2014 the CLI, the JSON contract\nand the existing tests key off it.",
@@ -2552,11 +3035,165 @@
         "title": "PlaneStatus",
         "type": "object"
       },
+      "PruneCandidateView": {
+        "properties": {
+          "image_id": {
+            "title": "Image Id",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          }
+        },
+        "required": [
+          "image_id",
+          "tags",
+          "slug",
+          "size_bytes",
+          "reason"
+        ],
+        "title": "PruneCandidateView",
+        "type": "object"
+      },
+      "PruneFailureView": {
+        "properties": {
+          "error": {
+            "title": "Error",
+            "type": "string"
+          },
+          "image_id": {
+            "title": "Image Id",
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          }
+        },
+        "required": [
+          "image_id",
+          "tags",
+          "error"
+        ],
+        "title": "PruneFailureView",
+        "type": "object"
+      },
+      "PruneReport": {
+        "description": "What prune found (candidates) and, when applied, what it removed or could not.",
+        "properties": {
+          "applied": {
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/PruneCandidateView"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "failed": {
+            "items": {
+              "$ref": "#/components/schemas/PruneFailureView"
+            },
+            "title": "Failed",
+            "type": "array"
+          },
+          "reclaimable_bytes": {
+            "title": "Reclaimable Bytes",
+            "type": "integer"
+          },
+          "removed": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Removed",
+            "type": "array"
+          },
+          "skipped": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Skipped",
+            "type": "array"
+          }
+        },
+        "required": [
+          "applied",
+          "candidates",
+          "removed",
+          "failed",
+          "reclaimable_bytes"
+        ],
+        "title": "PruneReport",
+        "type": "object"
+      },
+      "PruneRequest": {
+        "properties": {
+          "apply": {
+            "default": false,
+            "title": "Apply",
+            "type": "boolean"
+          },
+          "image_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Ids"
+          }
+        },
+        "title": "PruneRequest",
+        "type": "object"
+      },
+      "PullJobRequest": {
+        "properties": {
+          "refresh": {
+            "default": false,
+            "title": "Refresh",
+            "type": "boolean"
+          }
+        },
+        "title": "PullJobRequest",
+        "type": "object"
+      },
       "PullJobStarted": {
         "properties": {
           "job_id": {
             "title": "Job Id",
             "type": "string"
+          },
+          "joined": {
+            "default": false,
+            "title": "Joined",
+            "type": "boolean"
           }
         },
         "required": [
@@ -2695,6 +3332,36 @@
           "span_id"
         ],
         "title": "RawTraceRef",
+        "type": "object"
+      },
+      "ReleaseBacklogView": {
+        "additionalProperties": false,
+        "description": "Finished runs whose environment a teardown failed to release (#173): their container or\ntailnet nodes are still up, and the release sweeper keeps retrying. Runs merely waiting for\ntheir grade to finish are not counted \u2014 that is normal, not something to act on.",
+        "properties": {
+          "oldest_ended_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Ended At"
+          },
+          "oldest_error": {
+            "default": "",
+            "title": "Oldest Error",
+            "type": "string"
+          },
+          "pending": {
+            "default": 0,
+            "title": "Pending",
+            "type": "integer"
+          }
+        },
+        "title": "ReleaseBacklogView",
         "type": "object"
       },
       "ResolvedTerrainV2": {
@@ -3102,6 +3769,25 @@
             "title": "Name",
             "type": "string"
           },
+          "outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "completed",
+                  "partial",
+                  "infra_failed",
+                  "not_started"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How this run counts in every aggregate (`run_outcome`), derived from terminal_trigger on\nevery read and never persisted. Clients read this instead of re-deriving it (#159).",
+            "readOnly": true,
+            "title": "Outcome"
+          },
           "platform": {
             "anyOf": [
               {
@@ -3148,9 +3834,60 @@
             "title": "Source Agent",
             "type": "string"
           },
+          "start_trigger": {
+            "anyOf": [
+              {
+                "enum": [
+                  "telemetry",
+                  "run_control",
+                  "tailnet_key"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Trigger"
+          },
+          "start_trigger_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How `start_trigger` reads beside `started_at` (START_TRIGGER_LABELS), so the GUI, the\nCLI and the report word it identically. None when the run has not started.",
+            "readOnly": true,
+            "title": "Start Trigger Label"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
           "state": {
+            "enum": [
+              "created",
+              "xorcising",
+              "terminal"
+            ],
             "title": "State",
             "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus",
+            "description": "How this run is shown (`run_status`): label, tone and why it ended. Clients render this\ninstead of mapping the trigger themselves, so the CLI and the GUI agree (#165).",
+            "readOnly": true
           },
           "terminal_detail": {
             "anyOf": [
@@ -3166,6 +3903,15 @@
           "terminal_trigger": {
             "anyOf": [
               {
+                "enum": [
+                  "done",
+                  "timeout",
+                  "operator",
+                  "cancelled",
+                  "never_started",
+                  "deploy_failed",
+                  "crashed"
+                ],
                 "type": "string"
               },
               {
@@ -3181,7 +3927,10 @@
           "mission",
           "state",
           "created_at",
-          "run_control_key"
+          "run_control_key",
+          "outcome",
+          "start_trigger_label",
+          "status"
         ],
         "title": "RunCreatedEntry",
         "type": "object"
@@ -3306,6 +4055,25 @@
             "title": "Name",
             "type": "string"
           },
+          "outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "completed",
+                  "partial",
+                  "infra_failed",
+                  "not_started"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How this run counts in every aggregate (`run_outcome`), derived from terminal_trigger on\nevery read and never persisted. Clients read this instead of re-deriving it (#159).",
+            "readOnly": true,
+            "title": "Outcome"
+          },
           "platform": {
             "anyOf": [
               {
@@ -3348,9 +4116,60 @@
             "title": "Source Agent",
             "type": "string"
           },
+          "start_trigger": {
+            "anyOf": [
+              {
+                "enum": [
+                  "telemetry",
+                  "run_control",
+                  "tailnet_key"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Trigger"
+          },
+          "start_trigger_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How `start_trigger` reads beside `started_at` (START_TRIGGER_LABELS), so the GUI, the\nCLI and the report word it identically. None when the run has not started.",
+            "readOnly": true,
+            "title": "Start Trigger Label"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
           "state": {
+            "enum": [
+              "created",
+              "xorcising",
+              "terminal"
+            ],
             "title": "State",
             "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus",
+            "description": "How this run is shown (`run_status`): label, tone and why it ended. Clients render this\ninstead of mapping the trigger themselves, so the CLI and the GUI agree (#165).",
+            "readOnly": true
           },
           "terminal_detail": {
             "anyOf": [
@@ -3366,6 +4185,15 @@
           "terminal_trigger": {
             "anyOf": [
               {
+                "enum": [
+                  "done",
+                  "timeout",
+                  "operator",
+                  "cancelled",
+                  "never_started",
+                  "deploy_failed",
+                  "crashed"
+                ],
                 "type": "string"
               },
               {
@@ -3380,13 +4208,16 @@
           "agent_id",
           "mission",
           "state",
-          "created_at"
+          "created_at",
+          "outcome",
+          "start_trigger_label",
+          "status"
         ],
         "title": "RunEntry",
         "type": "object"
       },
       "RunEnvironmentView": {
-        "description": "The live state of a run's mission ENVIRONMENT, for the run page's Environment chip.\n\nPreviously the UI inferred this from `sandbox_ref` alone, which could only ever say \"Starting\"\nor \"Ready\" and was wrong twice over: a static mission (no image \u21d2 no sandbox_ref) read as a\nperpetual \"Starting\", and an environment that had DIED still read as \"Ready\". These states are\nobserved from the runner + fence instead:\n\n  none      static (attachment-only) run \u2014 there is no environment, and never will be\n  starting  deployed; the mission services / subnet router are still coming up\n  ready     every inner service is running and the run's router is on the tailnet\n  failed    the environment exited or never came up (the run is closed out as deploy_failed)\n  released  terminal run \u2014 the environment has been torn down",
+        "description": "The live state of a run's mission ENVIRONMENT, for the run page's Environment chip.\n\nPreviously the UI inferred this from `sandbox_ref` alone, which could only ever say \"Starting\"\nor \"Ready\" and was wrong twice over: a static mission (no image \u21d2 no sandbox_ref) read as a\nperpetual \"Starting\", and an environment that had DIED still read as \"Ready\". These states are\nobserved from the runner + fence instead:\n\n  none      static (attachment-only) run \u2014 there is no environment, and never will be\n  starting  deployed; the mission services / subnet router are still coming up\n  ready     every inner service is running and the run's router is on the tailnet\n  failed    the environment exited or never came up (the run is closed out as deploy_failed)\n  releasing terminal run \u2014 the container or tailnet nodes are not torn down yet: grading has\n            not finished, or a teardown failed and is being retried (#173)\n  released  terminal run \u2014 the environment has been torn down",
         "properties": {
           "detail": {
             "default": "",
@@ -3398,6 +4229,11 @@
             "title": "Ready",
             "type": "boolean"
           },
+          "release_attempts": {
+            "default": 0,
+            "title": "Release Attempts",
+            "type": "integer"
+          },
           "run_id": {
             "title": "Run Id",
             "type": "string"
@@ -3408,6 +4244,7 @@
               "starting",
               "ready",
               "failed",
+              "releasing",
               "released"
             ],
             "title": "State",
@@ -3490,11 +4327,71 @@
       "RunResultView": {
         "description": "Recorded result + disclosed conditions + partial state.",
         "properties": {
+          "agent_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Model"
+          },
           "conditions": {
             "$ref": "#/components/schemas/ResultConditions"
           },
+          "evidence_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Digest"
+          },
+          "evidence_status": {
+            "default": "none",
+            "enum": [
+              "none",
+              "recorded",
+              "verified",
+              "mismatch",
+              "unverifiable",
+              "unavailable",
+              "unreadable"
+            ],
+            "title": "Evidence Status",
+            "type": "string"
+          },
+          "evidence_verified": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Verified"
+          },
           "grade": {
             "$ref": "#/components/schemas/GradeResult"
+          },
+          "models_reported": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Models Reported",
+            "type": "array"
+          },
+          "models_reported_truncated": {
+            "default": 0,
+            "title": "Models Reported Truncated",
+            "type": "integer"
           },
           "partial": {
             "default": false,
@@ -3511,6 +4408,17 @@
               }
             ],
             "title": "Partial Trigger"
+          },
+          "telemetry_window": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telemetry Window"
           }
         },
         "required": [
@@ -3518,6 +4426,185 @@
           "conditions"
         ],
         "title": "RunResultView",
+        "type": "object"
+      },
+      "RunScore": {
+        "description": "One finished run, as the performance views draw it.",
+        "properties": {
+          "agent_id": {
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "bucket": {
+            "enum": [
+              "scored",
+              "no_judge",
+              "stopped",
+              "grading_failed",
+              "infra_failed",
+              "grading"
+            ],
+            "title": "Bucket",
+            "type": "string"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_version": {
+            "title": "Current Version",
+            "type": "boolean"
+          },
+          "deterministic": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deterministic"
+          },
+          "intel_disclosed": {
+            "default": 0,
+            "title": "Intel Disclosed",
+            "type": "integer"
+          },
+          "judge": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge"
+          },
+          "judge_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge Model"
+          },
+          "judge_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ok",
+                  "partial",
+                  "model-not-configured",
+                  "unavailable"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge Status"
+          },
+          "judge_upper": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge Upper"
+          },
+          "mission": {
+            "title": "Mission",
+            "type": "string"
+          },
+          "mission_version": {
+            "title": "Mission Version",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "completed",
+              "partial",
+              "infra_failed"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "overall": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overall"
+          },
+          "overall_upper": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overall Upper"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "terminal_trigger": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Trigger"
+          },
+          "timed_out": {
+            "default": false,
+            "title": "Timed Out",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "run_id",
+          "agent_id",
+          "mission",
+          "mission_version",
+          "current_version",
+          "created_at",
+          "outcome",
+          "bucket"
+        ],
+        "title": "RunScore",
         "type": "object"
       },
       "RunStats": {
@@ -3544,6 +4631,19 @@
               "model_calls": 0,
               "tool_calls": 0
             }
+          },
+          "models": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "models_truncated": {
+            "default": 0,
+            "title": "Models Truncated",
+            "type": "integer"
           },
           "projection": {
             "anyOf": [
@@ -3573,6 +4673,42 @@
           }
         },
         "title": "RunStats",
+        "type": "object"
+      },
+      "RunStatus": {
+        "description": "How a run is SHOWN \u2014 the one wording the CLI, the GUI and the report all render, so the two\nsurfaces cannot describe the same run differently (#165).",
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "tone": {
+            "enum": [
+              "ok",
+              "active",
+              "err",
+              "muted"
+            ],
+            "title": "Tone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "tone"
+        ],
+        "title": "RunStatus",
         "type": "object"
       },
       "RunTelemetryView": {
@@ -3642,6 +4778,231 @@
         "title": "ScoreBreakdown",
         "type": "object"
       },
+      "ScoreSummary": {
+        "description": "A group of finished runs (every run, one agent, one mission version, or one agent on one\nmission version), summarised by the rules in `ScoreBucket`.",
+        "properties": {
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "agent_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Name"
+          },
+          "assisted": {
+            "default": 0,
+            "title": "Assisted",
+            "type": "integer"
+          },
+          "best": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Best"
+          },
+          "completed": {
+            "default": 0,
+            "title": "Completed",
+            "type": "integer"
+          },
+          "current_version": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Version"
+          },
+          "grading": {
+            "default": 0,
+            "title": "Grading",
+            "type": "integer"
+          },
+          "grading_failed": {
+            "default": 0,
+            "title": "Grading Failed",
+            "type": "integer"
+          },
+          "infra_failed": {
+            "default": 0,
+            "title": "Infra Failed",
+            "type": "integer"
+          },
+          "judge_gap": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge Gap"
+          },
+          "judge_models": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Judge Models",
+            "type": "array"
+          },
+          "last_run": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Run"
+          },
+          "mean": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean"
+          },
+          "mean_deterministic": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Deterministic"
+          },
+          "mean_judge": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Judge"
+          },
+          "median": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median"
+          },
+          "mission": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mission"
+          },
+          "mission_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mission Version"
+          },
+          "no_judge": {
+            "default": 0,
+            "title": "No Judge",
+            "type": "integer"
+          },
+          "partial_judge": {
+            "default": 0,
+            "title": "Partial Judge",
+            "type": "integer"
+          },
+          "q1": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Q1"
+          },
+          "q3": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Q3"
+          },
+          "runs": {
+            "default": 0,
+            "title": "Runs",
+            "type": "integer"
+          },
+          "scored": {
+            "default": 0,
+            "title": "Scored",
+            "type": "integer"
+          },
+          "stopped": {
+            "default": 0,
+            "title": "Stopped",
+            "type": "integer"
+          },
+          "timed_out": {
+            "default": 0,
+            "title": "Timed Out",
+            "type": "integer"
+          }
+        },
+        "title": "ScoreSummary",
+        "type": "object"
+      },
       "SubmitArtifactRequest": {
         "properties": {
           "content": {
@@ -3682,6 +5043,16 @@
         "additionalProperties": false,
         "description": "Read-only Reflect view powering the GUI System / Modules / Catalog cards.",
         "properties": {
+          "boot_reconcile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BootReconcileView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "catalog": {
             "$ref": "#/components/schemas/CatalogStatusView"
           },
@@ -3743,6 +5114,16 @@
             },
             "title": "Planes",
             "type": "array"
+          },
+          "releases": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReleaseBacklogView"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "remotes": {
             "default": [],
@@ -4275,6 +5656,18 @@
             ],
             "title": "First Event Ts"
           },
+          "last_event_end_ts": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Event End Ts"
+          },
           "last_event_ts": {
             "anyOf": [
               {
@@ -4428,7 +5821,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AgentEntry"
+                  "$ref": "#/components/schemas/AgentSaveView"
                 }
               }
             },
@@ -4453,7 +5846,7 @@
     },
     "/api/agents/{name}": {
       "delete": {
-        "description": "Remove an agent and cascade-delete its runs + results.",
+        "description": "Remove an agent and everything recorded for its runs.\n\nThe runs' rows are the release sweeper's only handle on their environments (#173), so the\ncascade is refused (409) while any of the agent's runs is still running or being graded, and\nwhen a finished run's environment cannot be released. `force=true` overrides only the last,\naccepting that a container or tailnet nodes may be left running. The 409 body carries\n`reason`, `run_ids` and `forceable` beside `detail`.",
         "operationId": "remove_agent_api_agents__name__delete",
         "parameters": [
           {
@@ -4464,11 +5857,31 @@
               "title": "Name",
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Force",
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteRefusal"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "422": {
             "content": {
@@ -4515,7 +5928,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AgentEntry"
+                  "$ref": "#/components/schemas/AgentSaveView"
                 }
               }
             },
@@ -4558,7 +5971,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/AgentHistoryEntry"
+                    "$ref": "#/components/schemas/AgentHistoryView"
                   },
                   "title": "Response Agent History Api Agents  Name  History Get",
                   "type": "array"
@@ -4581,6 +5994,28 @@
         "summary": "Agent History",
         "tags": [
           "agents"
+        ]
+      }
+    },
+    "/api/announcements": {
+      "get": {
+        "description": "Active announcements for this install; an empty list whenever there are none.",
+        "operationId": "active_api_announcements_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnnouncementsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Active",
+        "tags": [
+          "announcements"
         ]
       }
     },
@@ -5086,6 +6521,55 @@
         ]
       }
     },
+    "/api/missions/prune": {
+      "post": {
+        "description": "Find (and with apply=true, remove) the local mission images nothing uses any more.\n\nA candidate is an image XORCISE owns \u2014 mission-base lineage AND only mission-repository\ntags \u2014 that no install record, live run, container or in-flight pull uses. Removal is never\nforced; an image that turns out to be in use is reported under `failed` and the rest still\ngo. `image_ids` limits the removal to images the operator confirmed: one that is no longer\na candidate is reported under `skipped` and kept. 409 when an install record cannot be read\n(its image is unknown, so nothing is removed) or when this server does not manage Docker\nimages at all.",
+        "operationId": "prune_images_api_missions_prune_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PruneRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PruneReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prune Images",
+        "tags": [
+          "missions"
+        ]
+      }
+    },
     "/api/missions/pull-jobs": {
       "get": {
         "description": "The active ('pulling') job for a mission, or null \u2014 lets a reloaded GUI resume its\nprogress bar and keeps a second view's Pull button disabled.",
@@ -5225,7 +6709,7 @@
     },
     "/api/missions/{mission_id}": {
       "delete": {
-        "description": "Uninstall an installed mission \u2014 local (your_own) or pulled (library).\n\nRemoves the local install directory so the mission leaves Your Own / drops back to\nnot-installed in the library. 404 if nothing is installed under that id. Routes the write\nthrough the server's install root (single writer, parity with ingest/pull). The fused image is\nintentionally left in the local store; pruning it is a separate concern.",
+        "description": "Uninstall an installed mission \u2014 local (your_own) or pulled (library).\n\nRemoves the local install directory so the mission leaves Your Own / drops back to\nnot-installed in the library. 404 if nothing is installed under that id. Routes the write\nthrough the server's install root (single writer, parity with ingest/pull).\n\nWithout `purge` the image stays in the local store and the answer is a bare 204 (POST\n/missions/prune reclaims it later). With `purge=true` the image is removed too, under\nprune's rules: it stays when it is not a XORCISE mission image or another install, an\nactive run or a container still uses it. The uninstall stands either way; the 200 body\nsays what became of the image.",
         "operationId": "delete_mission_api_missions__mission_id__delete",
         "parameters": [
           {
@@ -5236,9 +6720,29 @@
               "title": "Mission Id",
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "purge",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Purge",
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MissionDeleteOut"
+                }
+              }
+            },
+            "description": "Uninstalled, with purge=true"
+          },
           "204": {
             "description": "Successful Response"
           },
@@ -5347,7 +6851,7 @@
     },
     "/api/missions/{mission_id}/pull-jobs": {
       "post": {
-        "description": "Start (or join) a background pull for a library mission (202 + job_id, idempotent).\n\nThe image download can take minutes \u2014 far past what a browser will hold one request open\nfor \u2014 so it runs on a background task; poll GET /missions/pull-jobs/{job_id}. A POST\nwhile a pull for this mission is active returns the SAME job_id without starting a\nsecond worker (server-side double-pull guard).",
+        "description": "Start (or join) a background pull for a library mission (202 + job_id, idempotent).\n\nThe image download can take minutes \u2014 far past what a browser will hold one request open\nfor \u2014 so it runs on a background task; poll GET /missions/pull-jobs/{job_id}. A POST\nwhile a pull for this mission is active returns the SAME job_id without starting a\nsecond worker (server-side double-pull guard).\n\nThe body is optional. `refresh: true` pulls again even when the mission is installed and\nits image is local. A refresh that arrives while a pull is already active joins that pull\nas-is: the running job does not turn into a refresh.",
         "operationId": "start_pull_job_api_missions__mission_id__pull_jobs_post",
         "parameters": [
           {
@@ -5360,6 +6864,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PullJobRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
         "responses": {
           "202": {
             "content": {
@@ -5474,6 +6995,162 @@
         ]
       }
     },
+    "/api/results/runs": {
+      "get": {
+        "description": "Every finished run, oldest first, with its scores and how it counts (`bucket`).\n\n`agent` (an agent id) and `mission` (a mission slug) narrow it. A run still in progress is\nnot listed; one still being graded is, as `grading`.",
+        "operationId": "run_scores_api_results_runs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "agent",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agent"
+            }
+          },
+          {
+            "in": "query",
+            "name": "mission",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Mission"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RunScore"
+                  },
+                  "title": "Response Run Scores Api Results Runs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Scores",
+        "tags": [
+          "results"
+        ]
+      }
+    },
+    "/api/results/summary": {
+      "get": {
+        "description": "Finished runs summarised as one group (`all`), per agent, per mission version (`mission`),\nor per agent on each mission version (`mission_agent`).\n\nThe median is over runs graded with a judge, a partly-judged run counting at its lower bound.\nA run that timed out is in it, at the score it earned. Runs with no judge, runs an operator\nstopped, runs whose grading crashed, environment failures and runs still grading are counted\nseparately and never in it. `mean` is over the same runs as the median.\n\nGroups with an agent come back ranked (best median first) and named (`agent_name`), so every\nclient shows one order under one set of names.",
+        "operationId": "score_summary_api_results_summary_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "by",
+            "required": false,
+            "schema": {
+              "default": "agent",
+              "enum": [
+                "all",
+                "agent",
+                "mission",
+                "mission_agent"
+              ],
+              "title": "By",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agent",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agent"
+            }
+          },
+          {
+            "in": "query",
+            "name": "mission",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Mission"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ScoreSummary"
+                  },
+                  "title": "Response Score Summary Api Results Summary Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Score Summary",
+        "tags": [
+          "results"
+        ]
+      }
+    },
     "/api/runs": {
       "get": {
         "description": "List runs, each stamped with `last_telemetry_at` \u2014 the newest OTLP receipt across the\ntrace + log signals. A cross-module join the delivery layer owns (like /result's intel count):\nthe runs module stays telemetry-blind, and the RAW stores stay canonical. Lazy import keeps\nthe otel plane off the module-import path (plane-isolation invariant).",
@@ -5500,7 +7177,7 @@
         ]
       },
       "post": {
-        "description": "Create a 1:1:1 run: gated on a registered agent + installed mission.\n\nEvery failure maps to a clean JSON error (never a raw text/plain 500 that the CLI can't\ndecode): the deps build + spine run share one try so the fail-loud\nRuntimeError (Docker/Headscale unreachable) surfaces as a 503 with its remediation.\n\nThe 201 response is RunCreatedEntry \u2014 a RunEntry superset that adds run_control_key so the\nagent can authenticate run-control calls. The key is NEVER returned by\nGET /api/runs (list) or GET /api/runs/{id} (get) \u2014 only this once, like an API token.",
+        "description": "Create a 1:1:1 run: gated on a registered agent + installed mission.\n\nEvery failure maps to a clean JSON error (never a raw text/plain 500 that the CLI can't\ndecode): the deps build + spine run share one try so the fail-loud\nRuntimeError (Docker/Headscale unreachable) surfaces as a 503 with its remediation. So does\na server with no runner (RunnerUnavailableError, #168): the deps build refuses before a\nmission is pulled or a run row written, where a stub used to answer 201 for a run that then\nsat at `created` forever.\n\nThe 201 response is RunCreatedEntry \u2014 a RunEntry superset that adds run_control_key so the\nagent can authenticate run-control calls. The key is NEVER returned by\nGET /api/runs (list) or GET /api/runs/{id} (get) \u2014 only this once, like an API token.",
         "operationId": "create_run_api_runs_post",
         "requestBody": {
           "content": {
@@ -5542,7 +7219,7 @@
     },
     "/api/runs/{run_id}": {
       "delete": {
-        "description": "Operator-initiated delete of a single run's result + record.\n\nThe narrow, per-run counterpart to the agent-scoped cascade (DELETE /agents/{name}): removes\nthe recorded result and the run row so the run leaves the runs list, the agent history, and the\nresults view. 404 if the run is unknown; 409 if it has not reached a terminal state \u2014 it must be\nterminated first (deleting it would strand its container/tailnet env). Idempotent on the result\n(delete of an ungraded terminal run still removes the record).",
+        "description": "Operator-initiated delete of a single run and everything recorded for it.\n\nThe per-run counterpart to the agent-scoped cascade (DELETE /agents/{name}): removes the run's\ntelemetry, submissions and row, then its result and run directory (rest.run_purge), so the run\nleaves the runs list, the agent history and the results view. 404 if the run is unknown. A\ndelete that fails before the row goes leaves the run and its result, so repeating it finishes;\nanything a later failure leaves is cleared by the next boot.\n\n409 (contracts.run.DeleteRefusal) while the run has not finished, while its grade is in\nflight, or when its environment, released here first, cannot be torn down (#173). Only the\nlast is overridable: `force=true` accepts that the container or tailnet nodes may be left\nrunning.",
         "operationId": "delete_run_api_runs__run_id__delete",
         "parameters": [
           {
@@ -5552,6 +7229,78 @@
             "schema": {
               "title": "Run Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Force",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteRefusal"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Run",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/alive": {
+      "get": {
+        "description": "Liveness probe for the join script's self-reaper: 204 while the run is live, 409 once it\nhas ended (the same run-over gate every other endpoint applies), 401 otherwise.\n\nAuthenticated by the run's watch token, NOT the run-control bearer \u2014 the reaper must hold a\ncredential where a local user can read it (BusyBox ``wget`` in the sidecar can only take a\nheader on argv), so it gets one that discloses a single bit. The bearer is refused here, so a\nleaked watch token and the bearer are never interchangeable in either direction. Polling here\nrather than ``/mission`` also keeps the reaper from recording that the agent read its brief.\n\nA run that no longer exists (deleted) is over too, so it answers 409, not 401: the token is\nderived from the run's row, so a 401 there would be permanent, and both reapers stop only on\n409 \u2014 they would otherwise hold tailscaled and poll until their hard cap. This tells a caller\nno more than that a 128-bit random run id is not live.",
+        "operationId": "get_alive_api_runs__run_id__alive_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
             }
           }
         ],
@@ -5570,9 +7319,9 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Delete Run",
+        "summary": "Get Alive",
         "tags": [
-          "runs"
+          "run-control"
         ]
       }
     },
@@ -6204,7 +7953,7 @@
     },
     "/api/runs/{run_id}/join.sh": {
       "get": {
-        "description": "Serve the runnable one-shot tailnet join script (join ergonomics). Same bundle as GET\n/connect (by-IP login server, per-run key, control-plane CA), rendered into a self-contained\nscript the agent runs with ``curl -fsS -H 'Authorization: Bearer <key>' <base>/join.sh | sh``.\nCollapses the reconstruct-the-join-by-hand friction into one command; works non-root. The\nscript is handed the same base + bearer so it can pull the pinned client from /tailscale.tgz\n(air-gapped) before falling back to the public CDN.",
+        "description": "Serve the runnable one-shot tailnet join script (join ergonomics). Same bundle as GET\n/connect (by-IP login server, per-run key, control-plane CA), rendered into a self-contained\nscript the agent pipes to ``sh``, fetching it with the bearer on curl's stdin (``-K -``), as the\nprompt's recipe shows.\nCollapses the reconstruct-the-join-by-hand friction into one command; works non-root. The\nscript is handed the same base + bearer so it can pull the pinned client from /tailscale.tgz\n(air-gapped) before falling back to the public CDN.",
         "operationId": "get_join_script_api_runs__run_id__join_sh_get",
         "parameters": [
           {
@@ -6415,7 +8164,7 @@
     },
     "/api/runs/{run_id}/prompt": {
       "get": {
-        "description": "The agent-facing mission prompt for a run. *launch_mode* rebases the run-control\nBase URL \u2014 and the container-only --add-host note \u2014 to where the agent actually runs: ``host``\n(the server's loopback bind, a terminal CLI) vs ``container`` (host.docker.internal, resolvable\nonly inside a container). Defaults to ``container`` so a non-GUI caller keeps the baked host;\nthe GUI passes the launch-mode toggle so the whole hand-off \u2014 not just the telemetry env \u2014\nfollows the operator's choice.",
+        "description": "The agent-facing mission prompt for a run. *launch_mode* rebases the run-control\nBase URL \u2014 and the container-only --add-host note \u2014 to where the agent actually runs: ``host``\n(the server's loopback bind, a terminal CLI) vs ``container`` (host.docker.internal, resolvable\nonly inside a container). Defaults to ``container`` so a non-GUI caller keeps the baked host;\nthe GUI passes the launch-mode toggle so the whole hand-off \u2014 not just the telemetry env \u2014\nfollows the operator's choice.\n\nThe stored prompt refers to $XORCISE_RUN_BEARER rather than carrying the run-control token\n(#172), and only the launch command (/launch-profile) is built from that form, beside the\nexport that sets it. This endpoint is the \"give this to your agent\" hand-off \u2014 the GUI's copy\nbutton, ``xorcise run prompt`` \u2014 and an agent started from it has no such export, so the token\nis always inlined here.",
         "operationId": "run_prompt_api_runs__run_id__prompt_get",
         "parameters": [
           {
@@ -6472,7 +8221,7 @@
     },
     "/api/runs/{run_id}/regrade": {
       "post": {
-        "description": "Re-evaluate a terminal run: re-grade its already-SEALED evidence (the deterministic checks +\nthe LLM judge) against the CURRENT settings, without re-running the agent.\n\nThe motivating case: a run the agent actually solved (deterministic checks pass) whose JUDGE\nhalf failed on a config limit \u2014 the transcript was larger than the judge's token budget, or the\nkey was rejected. The operator raises the transcript budget / fixes the key in Settings, then\nre-evaluates, and the judge half runs over the same preserved evidence.\n\nDrops the recorded result and schedules a fresh grade off the request thread (the judge can be\nslow); the new result surfaces via the SAME `202 grading \u2192 grade` poll the initial grade uses,\nso the client needs no new state machine. De-duplicated, so a double click grades once. 404 if\nthe run is unknown; 409 if it has not reached a terminal state (nothing is sealed to grade yet).",
+        "description": "Re-evaluate a terminal run: re-grade its already-SEALED evidence (the deterministic checks +\nthe LLM judge) against the CURRENT settings, without re-running the agent.\n\nThe motivating case: a run the agent actually solved (deterministic checks pass) whose JUDGE\nhalf failed on a config limit \u2014 the transcript was larger than the judge's token budget, or the\nkey was rejected. The operator raises the transcript budget / fixes the key in Settings, then\nre-evaluates, and the judge half runs over the same preserved evidence.\n\nDrops the recorded result and schedules a fresh grade off the request thread (the judge can be\nslow); the new result surfaces via the SAME `202 grading \u2192 grade` poll the initial grade uses,\nso the client needs no new state machine. De-duplicated, so a double click grades once. 404 if\nthe run is unknown; 409 if it has not reached a terminal state (nothing is sealed to grade yet),\nor if it is never graded: it ended on an environment failure (`deploy_failed` / `crashed`), or\nbefore the agent started (`cancelled` / `never_started`).",
         "operationId": "regrade_run_api_runs__run_id__regrade_post",
         "parameters": [
           {
@@ -6513,7 +8262,7 @@
     },
     "/api/runs/{run_id}/report": {
       "get": {
-        "description": "The run's full result as a downloadable Markdown or HTML document (run report).\n\nThe Results page is the interactive view; this is the shareable one \u2014 the same metadata,\nscores, check table, rubric, evidence, artifacts, telemetry and conditions, rendered offline\ninto a single self-contained file (the HTML carries its own dark styling; no external asset).\n\nMirrors /result's state ladder exactly, so a caller polling for a report sees the same\ntransitions it already handles: unknown run \u2192 404; terminal-but-ungraded \u2192 202\n{\"status\": \"grading\"}; still-active run \u2192 409. An unsupported `format` \u2192 422.\nContent-Disposition is `attachment`, so a browser downloads rather than renders it.",
+        "description": "The run's full result as a downloadable Markdown or HTML document (run report).\n\nThe Results page is the interactive view; this is the shareable one \u2014 the same metadata,\nscores, check table, rubric, evidence, artifacts, telemetry and conditions, rendered offline\ninto a single self-contained file (the HTML carries its own dark styling; no external asset).\n\nMirrors /result's state ladder exactly, so a caller polling for a report sees the same\ntransitions it already handles: unknown run \u2192 404; terminal-but-ungraded \u2192 202\n{\"status\": \"grading\"}; ended on an environment failure \u2192 200 {\"status\": \"not_graded\"};\nunfinished run \u2192 409. An unsupported `format` \u2192 422.\nContent-Disposition is `attachment`, so a browser downloads rather than renders it.",
         "operationId": "run_report_api_runs__run_id__report_get",
         "parameters": [
           {
@@ -6540,10 +8289,30 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/NotGradedView"
+                }
+              },
+              "text/html": {},
+              "text/markdown": {}
+            },
+            "description": "The report as `text/markdown` or `text/html` \u2014 or, for a run cut short by an environment failure, the not-graded answer as JSON."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GradingView"
+                }
               }
             },
-            "description": "Successful Response"
+            "description": "Terminal, grade not recorded yet \u2014 poll again."
+          },
+          "404": {
+            "description": "No such run."
+          },
+          "409": {
+            "description": "The run has not ended yet \u2014 there is nothing to read."
           },
           "422": {
             "content": {
@@ -6564,7 +8333,7 @@
     },
     "/api/runs/{run_id}/result": {
       "get": {
-        "description": "Recorded 50/50 explainable result + disclosed conditions for a run.\n\nWhen no result is recorded yet, distinguish three cases instead of a blanket 404:\ngrading runs asynchronously after /complete, so a terminal-but-ungraded run is a normal\ntransient state, NOT a failure. Unknown run \u2192 404; terminal-but-ungraded \u2192 202\n{\"status\": \"grading\"}; still-active run \u2192 409 (no result to read yet).\n\nA terminal-ungraded run also RE-DRIVES grading here (ensure_graded_async): if the grade was\nlost to a server restart or a hung judge call, polling the result heals it rather than spinning\nat \"grading\" forever (de-duplicated, so the poll loop triggers one grade, not one per poll).",
+        "description": "Recorded 50/50 explainable result + disclosed conditions for a run.\n\n`verify=1` re-hashes the run's evidence and answers `evidence_verified`. It is OPT-IN because\nthree first-party consumers fetch this endpoint once per run in a loop \u2014 `run list`, the\nleaderboard roll-up and the results table \u2014 and none of them shows a verdict: re-hashing on\nevery read put a whole run's evidence through SHA-256 per row, which measured at 3.3 ms per MB,\nso a 124-run dataset at 3 MB a run spent over a second of a list command on it. Unasked, the\nresponse still carries the digest (it is one indexed row read) with `evidence_status`\n\"recorded\", and `GET /report` \u2014 one run, deliberately fetched, and the surface whose whole\npoint is the mismatch banner \u2014 keeps verifying unconditionally.\n\nWhen no result is recorded yet, distinguish three cases instead of a blanket 404:\ngrading runs asynchronously after /complete, so a terminal-but-ungraded run is a normal\ntransient state, NOT a failure. Unknown run \u2192 404; terminal-but-ungraded \u2192 202\n{\"status\": \"grading\"}; unfinished run \u2192 409 (no result to read yet).\n\nA run cut short by an environment failure (`deploy_failed` / `crashed`) is never graded \u2014 the\nfailure is not the agent's \u2014 so it answers a FINAL 200 {\"status\": \"not_graded\",\n\"terminal_trigger\", \"run_status\", \"detail\"} instead of a \"grading\" that would never resolve.\n`run_status` is the run's status wording (label, tone, why it ended).\n\nA terminal-ungraded run also RE-DRIVES grading here (ensure_graded_async): if the grade was\nlost to a server restart or a hung judge call, polling the result heals it rather than spinning\nat \"grading\" forever (de-duplicated, so the poll loop triggers one grade, not one per poll).",
         "operationId": "run_result_api_runs__run_id__result_get",
         "parameters": [
           {
@@ -6575,6 +8344,16 @@
               "title": "Run Id",
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "verify",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Verify",
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -6582,11 +8361,35 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RunResultView"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/RunResultView"
+                    },
+                    {
+                      "$ref": "#/components/schemas/NotGradedView"
+                    }
+                  ],
+                  "title": "Response Run Result Api Runs  Run Id  Result Get"
                 }
               }
             },
             "description": "Successful Response"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GradingView"
+                }
+              }
+            },
+            "description": "Terminal, grade not recorded yet \u2014 poll again."
+          },
+          "404": {
+            "description": "No such run."
+          },
+          "409": {
+            "description": "The run has not ended yet \u2014 there is nothing to read."
           },
           "422": {
             "content": {
@@ -6607,7 +8410,7 @@
     },
     "/api/runs/{run_id}/stats": {
       "get": {
-        "description": "Per-run telemetry snapshot (tokens / counts / timing) for the run report.\n\nServes the snapshot recorded at grade time when it was folded under the run's CURRENT event\nprojection. When it predates the renderer (a classifier changed since the run was graded), or\nwas never recorded (a run graded before the snapshot column existed), the projection is folded\nlive and the refreshed snapshot persisted \u2014 the derived stats column only, never the grade \u2014 so\nthis page, the report and the replay agree (report_assembly.current_run_stats). Mirrors\n/result's states otherwise: unknown run \u2192 404; terminal-but-ungraded \u2192 202\n{\"status\": \"grading\"}; still-active run \u2192 409.",
+        "description": "Per-run telemetry snapshot (tokens / counts / timing) for the run report.\n\nServes the snapshot recorded at grade time when it was folded under the run's CURRENT event\nprojection. When it predates the renderer (a classifier changed since the run was graded), or\nwas never recorded (a run graded before the snapshot column existed), the projection is folded\nlive and the refreshed snapshot persisted \u2014 the derived stats column only, never the grade \u2014 so\nthis page, the report and the replay agree (report_assembly.current_run_stats). Mirrors\n/result's states otherwise: unknown run \u2192 404; terminal-but-ungraded \u2192 202\n{\"status\": \"grading\"}; unfinished run \u2192 409.",
         "operationId": "run_stats_api_runs__run_id__stats_get",
         "parameters": [
           {
@@ -6625,11 +8428,35 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RunStats"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/RunStats"
+                    },
+                    {
+                      "$ref": "#/components/schemas/NotGradedView"
+                    }
+                  ],
+                  "title": "Response Run Stats Api Runs  Run Id  Stats Get"
                 }
               }
             },
             "description": "Successful Response"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GradingView"
+                }
+              }
+            },
+            "description": "Terminal, grade not recorded yet \u2014 poll again."
+          },
+          "404": {
+            "description": "No such run."
+          },
+          "409": {
+            "description": "The run has not ended yet \u2014 there is nothing to read."
           },
           "422": {
             "content": {
@@ -6760,7 +8587,7 @@
     },
     "/api/runs/{run_id}/terminate": {
       "post": {
-        "description": "Operator-initiated termination: abort an active run from GUI/CLI.\n\n404 if the run is unknown; 409 if it is already terminal. Closes run-control synchronously and\nreturns the terminal entry immediately; the background finalizer drains telemetry, seals, and\ngrades without blocking the caller. Result surfaces via `run status` (202 grading \u2192 grade).",
+        "description": "Operator-initiated termination: stop an unfinished run from GUI/CLI.\n\n404 if the run is unknown; 409 if it is already terminal. Closes run-control synchronously and\nreturns the terminal entry immediately; the background finalizer drains telemetry, seals, and\ngrades without blocking the caller. Result surfaces via `run status` (202 grading \u2192 grade).\nA run the agent never started (still `created`) ends `cancelled` and is never graded, so its\nresult is the final `not_graded` answer instead (#187).",
         "operationId": "terminate_run_api_runs__run_id__terminate_post",
         "parameters": [
           {
@@ -6915,6 +8742,28 @@
           }
         },
         "summary": "Get System",
+        "tags": [
+          "system"
+        ]
+      }
+    },
+    "/api/system/nested-support/refresh": {
+      "post": {
+        "description": "Re-probe nested containers in THIS process, where run creation reads its verdicts (#195).\n\n`doctor` calls this after the operator fixes the host (enables Rosetta, say), so the refusal\nthe server cached clears without a restart. A sync route: the probe starts a privileged\ncontainer and can take a minute, so it runs on the threadpool, not the event loop.",
+        "operationId": "refresh_nested_support_api_system_nested_support_refresh_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NestedSupportView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Refresh Nested Support",
         "tags": [
           "system"
         ]

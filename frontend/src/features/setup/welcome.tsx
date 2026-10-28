@@ -118,7 +118,7 @@ export function Welcome() {
           {serverDown ? "Backend unreachable" : "Backend running"}
         </span>
         <h1 className="text-lead text-heading">Get started with XORCISE.AI</h1>
-        {/* `prose-block` IS the 68ch measure (globals.css) — it was being re-typed here. */}
+        {/* `prose-block` is the prose leading (globals.css) — it was being re-typed here. */}
         <p className="prose-block text-body text-text-secondary">
           Evaluate how well cyber AI agents perform on real cybersecurity missions — declare
           an agent, pull a mission, and watch it work end to end.
