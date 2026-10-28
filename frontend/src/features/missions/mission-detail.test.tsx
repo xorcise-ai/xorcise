@@ -1,17 +1,22 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { server } from "@/test/msw/server";
 import { renderWithProviders } from "@/test/render";
+import { ToastHost } from "@/components/ui/toast";
+import { useToastStore } from "@/stores/toasts";
 import { MissionDetail } from "./mission-detail";
 import type { CatalogEntry } from "@/lib/api/types";
 
-// The detail page routes back to the catalog after a delete — stub the app router.
-vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+// The detail page routes back to the catalog after a delete; record where it goes.
+const { push } = vi.hoisted(() => ({ push: vi.fn() }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
 
 // The detail page resolves the active pull job for its mission (reload-resume);
 // default to "no active job".
 beforeEach(() => {
+  push.mockReset();
+  useToastStore.setState({ toasts: [] });
   server.use(
     http.get("*/api/missions/pull-jobs", () => HttpResponse.json(null)),
   );
@@ -28,25 +33,130 @@ const INSTALLED: CatalogEntry = {
   platforms: [],
 };
 
+const LAB: CatalogEntry = {
+  ...INSTALLED,
+  type: "lab",
+  image: "xorcise/mis-idor:1",
+  image_size_bytes: 722_600_000,
+};
+
+/** Serve `entry` as the only mission, record the DELETE's query string, and answer it as the
+ *  server does: a bare 204 without purge, the purge body with it. */
+function serveDelete(entry: CatalogEntry, purgeBody?: object) {
+  const sent: { query: string | null } = { query: null };
+  server.use(
+    http.get("*/api/missions", () => HttpResponse.json([entry])),
+    http.delete("*/api/missions/idor", ({ request }) => {
+      sent.query = new URL(request.url).search;
+      return purgeBody && sent.query === "?purge=true"
+        ? HttpResponse.json(purgeBody)
+        : new HttpResponse(null, { status: 204 });
+    }),
+  );
+  return sent;
+}
+
+/** Render the page with a toast host, wait for it, and press the header's Delete. */
+async function openDialog() {
+  renderWithProviders(
+    <>
+      <MissionDetail id="idor" />
+      <ToastHost />
+    </>,
+  );
+  await waitFor(() =>
+    expect(screen.getByRole("heading", { name: "IDOR" })).toBeInTheDocument(),
+  );
+  fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+  return screen.getByRole("dialog", { name: "Delete IDOR?" });
+}
+
 describe("MissionDetail delete", () => {
-  it("confirms, then DELETEs an installed mission", async () => {
-    let deleted = "";
-    server.use(
-      http.get("*/api/missions", () => HttpResponse.json([INSTALLED])),
-      http.delete("*/api/missions/idor", () => {
-        deleted = "idor";
-        return new HttpResponse(null, { status: 204 });
-      }),
-    );
-    renderWithProviders(<MissionDetail id="idor" />);
-    await waitFor(() =>
-      expect(screen.getByRole("heading", { name: "IDOR" })).toBeInTheDocument(),
-    );
-    // First click reveals a confirm; only the confirm actually deletes.
+  it("confirms in a dialog that keeps the image by default, then uninstalls", async () => {
+    const sent = serveDelete(LAB);
+    const dialog = await openDialog();
+    expect(sent.query).toBeNull();
+    const box = within(dialog).getByRole("checkbox", {
+      name: "Also remove its image (722.6 MB)",
+    });
+    expect(box).not.toBeChecked();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete mission" }));
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/missions"));
+    expect(sent.query).toBe("");
+    expect(useToastStore.getState().toasts).toEqual([]);
+  });
+
+  it("starts unchecked again each time the dialog opens", async () => {
+    serveDelete(LAB);
+    const dialog = await openDialog();
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: /also remove its image/i }));
+    expect(within(dialog).getByRole("checkbox", { name: /also remove its image/i })).toBeChecked();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
-    expect(deleted).toBe("");
-    fireEvent.click(screen.getByRole("button", { name: /yes, delete/i }));
-    await waitFor(() => expect(deleted).toBe("idor"));
+    expect(
+      within(screen.getByRole("dialog", { name: "Delete IDOR?" })).getByRole("checkbox", {
+        name: /also remove its image/i,
+      }),
+    ).not.toBeChecked();
+  });
+
+  it.each([
+    ["removed", "removed xorcise/mis-idor:1", "Removed its image"],
+    ["kept", "kept xorcise/mis-idor:1: used by an active run", "Kept its image"],
+    ["none", "xorcise/mis-idor:1 is not in the local image store", "No image removed"],
+    ["failed", "conflict: image is in use", "Uninstalled, but could not remove its image"],
+  ])("ticked, purges and reports a %s image", async (outcome, detail, title) => {
+    const sent = serveDelete(LAB, {
+      mission_id: "idor",
+      image: "xorcise/mis-idor:1",
+      image_outcome: outcome,
+      detail,
+    });
+    const dialog = await openDialog();
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: /also remove its image/i }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete mission" }));
+    await waitFor(() => expect(screen.getByText(title)).toBeInTheDocument());
+    expect(sent.query).toBe("?purge=true");
+    expect(screen.getByText(detail)).toBeInTheDocument();
+    expect(push).toHaveBeenCalledWith("/missions");
+  });
+
+  it("omits the size when the entry does not carry one", async () => {
+    serveDelete({ ...LAB, image_size_bytes: null });
+    const dialog = await openDialog();
+    expect(
+      within(dialog).getByRole("checkbox", { name: "Also remove its image" }),
+    ).not.toBeChecked();
+  });
+
+  it("offers no image removal for a static mission, which has no image", async () => {
+    const sent = serveDelete({ ...INSTALLED, type: "static", image: "" });
+    const dialog = await openDialog();
+    expect(within(dialog).getByText(/recorded runs and results are kept/i)).toBeInTheDocument();
+    expect(within(dialog).queryByRole("checkbox")).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete mission" }));
+    await waitFor(() => expect(sent.query).toBe(""));
+  });
+
+  it("shows a refusal inline in the server's words and stays open", async () => {
+    server.use(
+      http.get("*/api/missions", () => HttpResponse.json([LAB])),
+      http.delete("*/api/missions/idor", () =>
+        HttpResponse.json(
+          { detail: "mission 'idor' has an active run; terminate it first" },
+          { status: 409 },
+        ),
+      ),
+    );
+    const dialog = await openDialog();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete mission" }));
+    expect(
+      await within(dialog).findByText("mission 'idor' has an active run; terminate it first"),
+    ).toBeInTheDocument();
+    // Past the dialog's 150ms exit, so a dialog that closed would be gone by now.
+    await act(() => new Promise((r) => setTimeout(r, 200)));
+    expect(screen.getByRole("dialog", { name: "Delete IDOR?" })).toBeInTheDocument();
+    expect(push).not.toHaveBeenCalled();
   });
 
   it("shows no Delete button for a not-installed library mission", async () => {

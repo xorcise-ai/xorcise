@@ -222,11 +222,6 @@ class SqliteAgentEventStore:
             for ordinal, event in enumerate(view.events):
                 s.add(_event_to_row(event, ordinal))
 
-    def drop(self, run_id: str) -> None:
-        with session_scope() as s:
-            s.execute(delete(AgentEventRow).where(AgentEventRow.run_id == run_id))
-            s.execute(delete(AgentEventRunRow).where(AgentEventRunRow.run_id == run_id))
-
     def clear(self) -> None:
         with session_scope() as s:
             s.execute(delete(AgentEventRow))

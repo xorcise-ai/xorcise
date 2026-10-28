@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import signal
 import socket
+import threading
 from dataclasses import dataclass, field
 from enum import StrEnum
 
 import typer
 
+from xorcise.core import db
 from xorcise.core.cli._preflight import (
     IPV6_LOOPBACK,
     address_unavailable,
@@ -59,9 +62,9 @@ _EXPERIMENTAL_ROLES = frozenset({"control", "runner", "headscale", "collector"})
 # Ordered worst-surprise-first inside each message.
 _ROLE_CAVEATS: dict[str, tuple[str, ...]] = {
     "control": (
-        "Run execution is SILENTLY STUBBED on this role: POST /runs answers 201 and returns a "
-        "run id and image ref, but no container is ever launched and the run stays 'created'.",
-        "Only 'all' and 'runner' own the Docker/Headscale planes (rest/run_create.py).",
+        "This role cannot launch runs or pull or build missions (those requests answer 503), "
+        "nor release a run's environment.",
+        "Only 'all' and 'runner' own the Docker/Headscale planes (rest/runner_wiring.py).",
     ),
     "runner": (
         "This role serves only GET /healthz — the real runner control-service is not built yet, "
@@ -193,8 +196,23 @@ async def serve_bound(bound: list[BoundSpec]) -> list[BaseException]:
     A failure is an exception that escaped a Server OR a Server that never started: when an
     app's lifespan startup fails, uvicorn logs it, skips the main loop and returns normally
     (`Server.serve()` → None, `started` False), so without the second check `serve` would exit
-    0 having served nothing — and `up` would report only "did not become healthy"."""
+    0 having served nothing — and `up` would report only "did not become healthy".
+
+    uvicorn >= 0.53 calls sys.exit(3) on that same failure instead of returning (#122). A task
+    that raises SystemExit is not captured by gather: asyncio re-raises it straight out of
+    asyncio.run, past the failure report below, and `serve` exits 3 with no message. So each
+    server runs inside `_serve_one`, which swallows uvicorn's exit and returns, as older uvicorn
+    does — leaving the `not server.started` check below to report it, the same way for both."""
     import uvicorn
+
+    async def _serve_one(server: uvicorn.Server, b: BoundSpec) -> None:
+        try:
+            await server.serve(sockets=b.sockets)
+        except SystemExit:
+            # Only uvicorn's own startup exit is turned back into a return. A SystemExit from a
+            # server that had started is someone else's, and keeps propagating as it always has.
+            if server.started:
+                raise
 
     servers = [
         # Config's host/port are inert on this path — the listeners are the sockets handed to
@@ -202,7 +220,7 @@ async def serve_bound(bound: list[BoundSpec]) -> list[BaseException]:
         (uvicorn.Server(uvicorn.Config(b.spec.app, log_level=b.spec.log_level)), b)
         for b in bound
     ]
-    tasks = [asyncio.create_task(server.serve(sockets=b.sockets)) for server, b in servers]
+    tasks = [asyncio.create_task(_serve_one(server, b)) for server, b in servers]
     await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     for server, _ in servers:
         server.should_exit = True
@@ -263,6 +281,7 @@ def serve(
     init_home()
     scaffold_config(xorcise_home())
     lifecycle._ensure_db_ready()
+    lifecycle._refuse_loopback_only_distributed()
     # Resolve ports BEFORE activate(): role_<x>.apps() captures get_settings() ports at
     # build time, so the resolved values must already be stamped when specs are built.
     resolved = lifecycle._resolve_role_ports(role_name, {"rest": port, "otlp": otlp_port})
@@ -285,14 +304,26 @@ def serve(
     console.print(lifecycle._serve_banner(role_name, specs))
     for line in listener_lines(bound):
         err_console.print(f"[dim]{line}[/dim]", highlight=False)  # stderr: lands in serve.log
+    # `down` stops us with SIGTERM. uvicorn shuts the servers down on it, then re-raises it into
+    # the handler that was installed before it; left at the default, that kills the process
+    # inside asyncio.run and the finally below never runs. Routed to the Ctrl-C handler instead,
+    # it ends as the KeyboardInterrupt caught below, after a graceful shutdown.
+    in_main_thread = threading.current_thread() is threading.main_thread()
+    if in_main_thread:
+        previous_sigterm = signal.signal(signal.SIGTERM, signal.default_int_handler)
     try:
         failures = asyncio.run(serve_bound(bound))
     except KeyboardInterrupt:
         console.print("shutting down")
         return
     finally:
+        if in_main_thread:
+            signal.signal(signal.SIGTERM, previous_sigterm)
         for b in bound:
             b.close()  # uvicorn closes what it adopted; this covers a bind that never got there
+        # After EVERY server has stopped, not in a lifespan hook: a hook runs once per uvicorn
+        # Server, and the planes share one app, so it would checkpoint while another still writes.
+        db.close_engine()
     if failures:
         # A crashed server plane must not exit 0 — surface the first failure.
         err_console.print(f"[err]error[/err]: server exited — {failures[0]}")

@@ -10,6 +10,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge, type BadgeProps } from "@/components/ui/badge";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { pct, shortTime } from "@/lib/api/format";
+import { NoJudge } from "@/features/results/no-judge";
+import { judgeDegraded } from "@/features/results/run-glyph";
 import {
   runPresentation,
   type RunPresentation,
@@ -32,6 +34,7 @@ export interface AgentRunRow {
   overall: number | null;
   deterministic: number | null;
   judge: number | null;
+  noJudge: boolean; // the judge never ran: `judge` is a 0 it never scored (#143)
   partial: boolean;
   when: string; // ISO created_at
 }
@@ -62,12 +65,15 @@ export function buildAgentRunRows(
     .map((h): AgentRunRow => {
       const run = runById.get(h.run_id);
       const cat = run ? catById.get(run.mission) : undefined;
+      // A history row whose run has since been deleted still carries the run's status (the
+      // server joins it), so it reads exactly as the run did — no invented trigger (#165).
       const status = run
-        ? runPresentation(run.state, run.terminal_trigger)
-        : runPresentation(
-            "terminal",
-            h.partial ? (h.partial_trigger ?? "budget") : "done",
-          );
+        ? runPresentation(run)
+        : runPresentation({
+            state: "terminal",
+            status: h.status,
+            outcome: h.partial ? "partial" : "completed",
+          });
       return {
         runId: h.run_id,
         missionName: cat?.name ?? run?.mission ?? "Unknown mission",
@@ -77,6 +83,7 @@ export function buildAgentRunRows(
         overall: h.overall,
         deterministic: h.deterministic,
         judge: h.judge,
+        noJudge: judgeDegraded(h.judge_status),
         partial: h.partial,
         when: h.created_at,
       };
@@ -170,7 +177,7 @@ export function AgentRunHistory({
                   {pct(r.deterministic)}
                 </td>
                 <td className="px-4 py-2.5 text-right tabular-nums text-text-secondary">
-                  {pct(r.judge)}
+                  {r.noJudge ? <NoJudge /> : pct(r.judge)}
                 </td>
                 <td className="px-4 py-2.5 text-caption text-text-tertiary">
                   {shortTime(r.when)}
@@ -204,7 +211,7 @@ export function AgentRunHistory({
                     </span>
                   </span>
                   <span>Det {pct(r.deterministic)}</span>
-                  <span>Judge {pct(r.judge)}</span>
+                  <span>Judge {r.noJudge ? <NoJudge /> : pct(r.judge)}</span>
                   <span className="text-text-tertiary">{shortTime(r.when)}</span>
                 </div>
               </Link>

@@ -58,3 +58,55 @@ def test_delete_agent_cascades_runs_and_results(migrated_home):
     # agent gone, history endpoint 404s, and no runs/results linger
     assert c.get("/api/agents/alpha/history").status_code == 404
     assert c.get("/api/runs").json() == []
+
+
+def test_history_entries_carry_the_grades_judge_status(migrated_home):
+    """The agent page averages these entries, so each must say whether its judge ran (#143)."""
+    from xorcise.core import agents, reporting
+    from xorcise.core.contracts.grading import GradeResult, JudgeStatus, ScoreBreakdown
+
+    agent = agents.register("gamma", endpoint="http://g")
+    cases: tuple[tuple[str, JudgeStatus], ...] = (
+        ("r-ok", "ok"),
+        ("r-none", "unavailable"),
+        ("r-part", "partial"),
+    )
+    for run_id, status in cases:
+        reporting.record_result(
+            run_id=run_id,
+            agent_id=agent.id,
+            result=GradeResult(
+                run_id=run_id,
+                overall=0.5,
+                breakdown=ScoreBreakdown(deterministic=1.0, judge=0.0),
+                judge_status=status,
+            ),
+        )
+    hist = _client().get("/api/agents/gamma/history").json()
+    assert {h["run_id"]: h["judge_status"] for h in hist} == {
+        "r-ok": "ok",
+        "r-none": "unavailable",
+        "r-part": "partial",
+    }
+
+
+def test_a_stored_grade_that_cannot_be_read_back_has_no_judge_status(migrated_home):
+    from sqlalchemy import update
+
+    from xorcise.core import agents, reporting
+    from xorcise.core.contracts.grading import GradeResult, ScoreBreakdown
+    from xorcise.core.db import session_scope
+    from xorcise.core.reporting.models import ResultRow
+
+    agent = agents.register("delta", endpoint="http://d")
+    reporting.record_result(
+        run_id="r-bad",
+        agent_id=agent.id,
+        result=GradeResult(
+            run_id="r-bad", overall=0.5, breakdown=ScoreBreakdown(deterministic=0.5, judge=0.5)
+        ),
+    )
+    with session_scope() as s:
+        s.execute(update(ResultRow).where(ResultRow.run_id == "r-bad").values(detail_json="{"))
+    (entry,) = _client().get("/api/agents/delta/history").json()
+    assert entry["judge_status"] is None

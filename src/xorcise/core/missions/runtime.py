@@ -215,8 +215,9 @@ def delete_installed(slug: str, install_root: Path) -> bool:
 
     Uninstalls the local copy — the same for a locally-ingested "your_own" mission and a pulled
     "library" one (a pulled mission has no remote state to reach beyond its local install). The
-    fused image is intentionally left in the local store; pruning it is a separate concern. Guarded
-    on the INSTALLED_FILE marker so it never removes an unrelated directory, and on
+    image stays in the local store: this island never touches Docker, so removing it is the
+    delivery layer's job (`mission delete --purge`, `mission prune`). Guarded on the
+    INSTALLED_FILE marker so it never removes an unrelated directory, and on
     resolve_install_dir so a path-shaped slug can never aim the rmtree outside the root.
     """
     root = resolve_install_dir(slug, install_root)

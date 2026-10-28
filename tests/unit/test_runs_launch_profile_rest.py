@@ -126,3 +126,97 @@ def test_agent_container_launch_mode_controls_profile_and_prompt_addresses(
 
     prompt = client.get(f"/api/runs/{run['run_id']}/prompt?launch_mode=host").json()["prompt"]
     assert "host.docker.internal" in prompt
+
+
+# --- #172: the run-control bearer rides the launch block, not the prompt ----------------------
+
+
+def test_the_launch_block_exports_the_bearer_and_its_command_carries_none(migrated_home: Path):
+    # The command puts the prompt on the agent's argv (`claude -p '<prompt>'`), readable by any
+    # local user, so the prompt names $XORCISE_RUN_BEARER and the block exports the token.
+    _install_mission(migrated_home, "c172")
+    client = _client()
+    client.post("/api/agents", json={"name": "cc172", "kind": "claude-code"})
+    run = client.post("/api/runs", json={"agent": "cc172", "mission": "c172"}).json()
+    key = run["run_control_key"]
+    body = client.get(f"/api/runs/{run['run_id']}/launch-profile?launch_mode=host").json()
+    assert f"export XORCISE_RUN_BEARER={key}" in body["shell_block"].splitlines()
+    assert key not in body["command"]  # the prompt on the command line never holds the token
+    assert "$XORCISE_RUN_BEARER" in body["command"]
+    # Only the block carries it: `env` is what `xorcise run launch-profile` prints as a dotenv
+    # file an operator may save anywhere, so it stays the telemetry env.
+    assert "XORCISE_RUN_BEARER" not in body["env"]
+    # And the operator is told a command that starts the agent elsewhere must pass it through.
+    assert any("docker run -e XORCISE_RUN_BEARER" in note for note in body["notes"])
+    # The block exports the token before the command that needs it.
+    block = body["shell_block"]
+    assert block.endswith(body["command"])
+    assert block.index("export XORCISE_RUN_BEARER=") < block.index(body["command"])
+
+
+def test_the_prompt_handed_to_an_agent_inlines_the_bearer_even_beside_a_launch_block(
+    migrated_home: Path,
+):
+    # /prompt is the "give this to your agent" hand-off (GUI copy, `xorcise run prompt`). An agent
+    # started from it has no launch block, so nothing exports the variable: the token is inlined.
+    # Only the launch command itself is built from the variable form.
+    _install_mission(migrated_home, "c173")
+    client = _client()
+    client.post("/api/agents", json={"name": "cc173", "kind": "claude-code"})
+    run = client.post("/api/runs", json={"agent": "cc173", "mission": "c173"}).json()
+    prompt = client.get(f"/api/runs/{run['run_id']}/prompt?launch_mode=host").json()["prompt"]
+    assert f"Authorization: Bearer {run['run_control_key']}" in prompt
+    assert "$XORCISE_RUN_BEARER" not in prompt
+
+
+def test_a_prompt_only_harness_is_served_the_bearer_inline(migrated_home: Path):
+    # No launch command means no launch block, so nothing would set XORCISE_RUN_BEARER: the
+    # prompt the operator pastes by hand has to carry the token itself.
+    _install_mission(migrated_home, "c174")
+    client = _client()
+    client.post("/api/agents", json={"name": "gen174", "kind": "generic"})
+    run = client.post("/api/runs", json={"agent": "gen174", "mission": "c174"}).json()
+    key = run["run_control_key"]
+    prompt = client.get(f"/api/runs/{run['run_id']}/prompt").json()["prompt"]
+    assert f"Authorization: Bearer {key}" in prompt
+    assert "$XORCISE_RUN_BEARER" not in prompt
+    profile = client.get(f"/api/runs/{run['run_id']}/launch-profile").json()
+    assert profile["command"] is None
+    assert "XORCISE_RUN_BEARER" not in profile["shell_block"]
+    assert "XORCISE_RUN_BEARER" not in profile["env"]
+
+
+def test_a_registered_launch_command_gets_the_bearer_export_too(migrated_home: Path):
+    # An operator's own template is a launch block like any other: the export is added, and the
+    # prompt stays free of the token.
+    _install_mission(migrated_home, "c175")
+    client = _client()
+    client.post(
+        "/api/agents",
+        json={"name": "wrap175", "kind": "generic", "launch_command_template": "wrap {mission}"},
+    )
+    run = client.post("/api/runs", json={"agent": "wrap175", "mission": "c175"}).json()
+    key = run["run_control_key"]
+    body = client.get(f"/api/runs/{run['run_id']}/launch-profile").json()
+    assert f"export XORCISE_RUN_BEARER={key}" in body["shell_block"]
+    assert key not in body["command"]
+    assert "$XORCISE_RUN_BEARER" in body["command"]
+
+
+def test_an_agent_that_cleared_its_launch_command_is_treated_as_prompt_only(migrated_home: Path):
+    # An empty template clears the provider's command. Both sides must agree it is prompt-only:
+    # no export (there is no command to run after it) and the token inlined in the prompt —
+    # otherwise the agent is told to read a variable nothing sets.
+    _install_mission(migrated_home, "c176")
+    client = _client()
+    client.post(
+        "/api/agents",
+        json={"name": "cc176", "kind": "claude-code", "launch_command_template": ""},
+    )
+    run = client.post("/api/runs", json={"agent": "cc176", "mission": "c176"}).json()
+    key = run["run_control_key"]
+    body = client.get(f"/api/runs/{run['run_id']}/launch-profile").json()
+    assert body["command"] is None
+    assert "XORCISE_RUN_BEARER" not in body["shell_block"]
+    prompt = client.get(f"/api/runs/{run['run_id']}/prompt").json()["prompt"]
+    assert f"Authorization: Bearer {key}" in prompt

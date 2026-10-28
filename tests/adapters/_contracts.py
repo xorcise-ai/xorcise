@@ -106,6 +106,23 @@ class TraceStoreContract:
     def test_read_unknown_run_is_empty(self, store: TraceStore) -> None:
         assert store.read("nope") == []
 
+    def test_append_next_numbers_each_run_from_zero(self, store: TraceStore) -> None:
+        assert [store.append_next("r1", p) for p in ("a", "b", "c")] == [0, 1, 2]
+        assert store.append_next("r2", "z") == 0
+        assert [(r.seq, r.payload) for r in store.read("r1")] == [(0, "a"), (1, "b"), (2, "c")]
+
+    def test_append_next_continues_after_appended_records(self, store: TraceStore) -> None:
+        store.append(TraceRecord(run_id="r1", seq=0, payload="a"))
+        store.append(TraceRecord(run_id="r1", seq=1, payload="b"))
+        assert store.append_next("r1", "c") == 2
+
+    def test_append_next_follows_the_highest_seq_not_the_last_appended(
+        self, store: TraceStore
+    ) -> None:
+        store.append(TraceRecord(run_id="r1", seq=5, payload="a"))
+        store.append(TraceRecord(run_id="r1", seq=2, payload="b"))
+        assert store.append_next("r1", "c") == 6
+
 
 class DockerDriverContract:
     """Behavioral contract every DockerDriver adapter must satisfy."""
@@ -146,3 +163,8 @@ class DockerDriverContract:
         assert driver.image_exists("xorcise/definitely-absent:0") is False
         driver.pull("ghcr.io/xorcise/mission-1:1")
         assert driver.image_exists("ghcr.io/xorcise/mission-1:1") is True
+
+    def test_remove_absent_image_converges(self, driver: DockerDriver) -> None:
+        # removal is idempotent: an image that is already gone is the end state asked for
+        driver.remove_image("xorcise/definitely-absent:0")
+        assert driver.image_exists("xorcise/definitely-absent:0") is False

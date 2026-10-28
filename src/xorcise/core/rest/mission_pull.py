@@ -1,7 +1,7 @@
 """Mission pull spine (delivery/rest layer).
 
-Acquires a free-library mission as a prebuilt fused image: local-store-first
-(`driver.image_exists`) → `driver.pull` → record the catalog manifest + image ref via
+Acquires a free-library mission as a prebuilt fused image: `driver.pull` (always; docker
+skips the layers it already has) → record the catalog manifest + image ref via
 `missions.install_pulled` (no builder; the library path is NOT the Your-Own ingest
 path). Coordinates three part-islands (catalog + runner + missions) from
 the delivery layer, the same reasoning as `rest/run_create.py` / `rest/catalog_view.py`.
@@ -34,6 +34,7 @@ from xorcise.core.contracts.errors import (
     PullCancelled,
     PullError,
 )
+from xorcise.core.rest.runner_wiring import RUNNER_ROLES, require_runner
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +60,7 @@ __all__ = [
     "PullError",
     "PullProgressSink",
     "build_pull_deps",
+    "image_store_driver",
     "pull_mission",
     "update_mission",
 ]
@@ -115,7 +117,7 @@ class PullDeps:
 
 def _use_real_docker(settings: Settings) -> bool:
     """Real Docker iff this process owns the Docker plane and stubs aren't forced."""
-    return not settings.use_stubs and settings.role in {"all", "runner"}
+    return not settings.use_stubs and settings.role in RUNNER_ROLES
 
 
 def _real_docker_driver() -> DockerDriver:
@@ -140,18 +142,30 @@ def _real_docker_driver() -> DockerDriver:
         return DockerSdkDriver(platform=get_settings().docker_platform)
     except Exception as exc:  # daemon unreachable / docker.from_env failure
         raise RuntimeError(
-            "Docker daemon is not reachable — start Docker or set XORCISE_USE_STUBS=1"
+            # The real fix only: stub mode is for testing, not a remedy (see _probe_headscale).
+            "Docker daemon is not reachable — start Docker"
         ) from exc
+
+
+def image_store_driver(settings: Settings) -> DockerDriver | None:
+    """The driver that sees and removes this host's images, or None when this server does not
+    manage Docker (role control, or stubs forced). Image cleanup needs the difference: a stub's
+    empty store would otherwise read as a clean disk."""
+    return _real_docker_driver() if _use_real_docker(settings) else None
 
 
 def build_pull_deps(settings: Settings, *, use_docker: bool | None = None) -> PullDeps:
     """Wire the pull deps. The catalog source is the real HTTP client when `catalog_url` is set,
     else the offline stub — no silent stub fallback when a remote is configured. The
     driver defaults to REAL on a Docker-owning role: `use_docker=None` derives from
-    settings (role + use_stubs); pass an explicit bool to override (tests inject False)."""
+    settings (role + use_stubs); pass an explicit bool to override (tests inject False).
+    Raises RunnerUnavailableError on a server with no runner: its stub driver would record a
+    mission as installed with no image ever pulled (#168)."""
     from xorcise.core.rest.catalog_view import build_catalog_source
     from xorcise.core.runner.docker import StubDockerDriver
 
+    if use_docker is None:
+        require_runner(settings, "pull missions")
     real = _use_real_docker(settings) if use_docker is None else use_docker
     driver = _real_docker_driver() if real else StubDockerDriver()
     return PullDeps(
@@ -169,8 +183,14 @@ def pull_mission(
     progress: PullProgressSink | None = None,
     should_cancel: Callable[[], bool] | None = None,
     precheck: Callable[[str | None], None] | None = None,
+    refresh: bool = False,
 ) -> InstalledMission:
     """Acquire + install a library mission. Idempotent; failure leaves it not-installed.
+
+    `refresh` (keyword-only, default False) repairs a mission that is already installed, which
+    is otherwise left as it is: it removes the local image, never forced, then downloads and
+    reinstalls it (see _remove_for_repair). A newer catalog artifact is the update path's job.
+    A your_own install of the id still collides — refresh never replaces your own mission.
 
     `progress` (keyword-only, default None ⇒ backward-compatible for run-create's auto-pull)
     receives (phase, bytes_current, bytes_total) as the pull advances.
@@ -200,11 +220,97 @@ def pull_mission(
                 f"mission_id '{mission_id}' is already installed as your own mission; "
                 f"pulling the library version would collide. Remove your local copy first."
             )
-        return existing  # already pulled (docker-pull on a present image is a no-op)
+        if not refresh:
+            return existing  # already pulled (docker-pull on a present image is a no-op)
 
-    return _acquire_and_install(
-        mission_id, deps, progress=progress, should_cancel=should_cancel, precheck=precheck
+    # A refresh is a repair. `docker pull` skips every layer already in the store, so a damaged
+    # layer would survive a plain re-pull: the image goes first, then downloads whole.
+    removed = (
+        refresh
+        and existing is not None
+        and _remove_for_repair(mission_id, existing.mission_ref.image, deps)
     )
+    try:
+        return _acquire_and_install(
+            mission_id,
+            deps,
+            progress=progress,
+            should_cancel=should_cancel,
+            precheck=precheck,
+        )
+    except PullCancelled:
+        raise
+    except Exception as exc:
+        if not removed:
+            raise
+        raise PullError(
+            f"{exc}. The local image was already removed for the repair, so this mission has "
+            "no image until a repair succeeds. Repair it again with Re-pull, or with "
+            f"`xorcise mission pull {mission_id} --refresh`."
+        ) from exc
+
+
+def _remove_for_repair(mission_id: str, ref: str, deps: PullDeps) -> bool:
+    """Remove an installed mission's image so the repair's pull downloads it whole. True when
+    removed; False when there is nothing local to remove (the pull downloads it anyway).
+
+    Never forced. Refused with nothing removed when removing would not free the image's layers
+    (another tag names the same image), when the registry does not answer for the image the
+    repair will pull (an offline repair would trade a working image for none), or when a
+    container, running or stopped, still uses the image."""
+    from xorcise.core.contracts.errors import ImageInUseError
+
+    if not ref:
+        return False  # a static mission has no image
+    image_id = deps.driver.image_id(ref)
+    if image_id is None:
+        return False
+    record = next((r for r in deps.driver.list_images() if r.id == image_id), None)
+    others = sorted(t for t in (record.tags if record is not None else ()) if t != ref)
+    if others:
+        raise PullError(
+            f"cannot repair {ref}: the same image is also tagged {', '.join(others)}, so "
+            f"removing {ref} would keep its layers. Remove those tags first. Nothing was removed."
+        )
+    # The repair pulls the library's CURRENT image, a newer release when the library moved on,
+    # so that is the one the registry must answer for.
+    target = _image_for(deps.source, mission_id) or ref
+    token = deps.source.pull_token(mission_id)
+    try:
+        deps.driver.check_registry(
+            target, auth=(token.username, token.password) if token is not None else None
+        )
+    except Exception as exc:
+        raise PullError(
+            f"cannot repair {ref}: the registry did not answer for {target} ({exc}). "
+            "Nothing was removed."
+        ) from exc
+    try:
+        deps.driver.remove_image(ref)
+    except ImageInUseError as exc:
+        raise PullError(
+            f"cannot repair {ref}: a container still uses it, running or stopped "
+            f"(docker ps -a --filter ancestor={ref}). Nothing was removed."
+        ) from exc
+    except Exception as exc:
+        raise PullError(f"cannot repair {ref}: {exc}. Nothing was removed.") from exc
+    return True
+
+
+def _record_unchanged(before: InstalledMission, deps: PullDeps) -> bool:
+    from xorcise.core.missions import get_installed
+
+    now = get_installed(before.slug, deps.install_root)
+    return now is not None and now.install_revision == before.install_revision
+
+
+def _retag(driver: DockerDriver, image_id: str, ref: str) -> None:
+    """Point `ref` back at `image_id` after an install that did not finish. Best effort: the
+    install's own error is the one to report, so a failure here is logged, not raised."""
+    try:
+        driver.tag_image(image_id, ref)
+    except Exception:  # noqa: BLE001 — never mask the error that stopped the install
+        log.warning("could not point %s back at %s after a failed install", ref, image_id)
 
 
 def update_mission(
@@ -221,8 +327,8 @@ def update_mission(
     user-facing operation is this same re-pull. Returns (record, updated): updated=False means
     the install already matches the catalog's current artifact — digest comparison first (§34's
     strongest signal), immutable release ref as the pre-contract fallback — and nothing was
-    touched. The replaced image's old tag stays in the local docker store; pruning is a separate
-    concern, the same stance mission delete takes.
+    touched. The replaced image's old tag stays in the local docker store, where
+    `mission prune` reports it as superseded.
 
     Raises NotFoundError when the id is not installed (nothing to update — pull it instead),
     MissionCollisionError for a your_own install (a local bundle updates by re-ingesting), and
@@ -309,11 +415,55 @@ def _acquire_and_install(
     precheck: Callable[[str | None], None] | None,
     resolved: tuple[MissionDetail, str | None] | None = None,
 ) -> InstalledMission:
+    """_pull_and_install, putting back any installed tag the pull moved if it does not finish.
+
+    The pull can move a tag an install record already names: a refresh pulls the same tag, and
+    an update pulls it again when the catalog re-pushed a release under it. Docker moves the tag
+    the moment the pull lands, before the platform check, the bundle check, the cancel
+    checkpoints and the install. If any of those stops the install, the record would describe
+    one image while its tag named another, and the image it describes would turn into a prune
+    candidate. Both callers come through here, so neither path can leave that behind."""
+    from xorcise.core.missions import get_installed
+
+    existing = get_installed(mission_id, deps.install_root)
+    pinned = existing.mission_ref.image if existing is not None else ""
+    previous = deps.driver.image_id(pinned) if pinned else None
+    try:
+        return _pull_and_install(
+            mission_id,
+            deps,
+            progress=progress,
+            should_cancel=should_cancel,
+            precheck=precheck,
+            resolved=resolved,
+        )
+    except BaseException:  # cancels and Ctrl-C too: each leaves the tag moved
+        # Only while the record still describes the previous image: an install that committed
+        # and then failed (cleaning up its backup) already describes the new one.
+        if previous is not None and existing is not None and _record_unchanged(existing, deps):
+            _retag(deps.driver, previous, pinned)
+        raise
+
+
+def _pull_and_install(
+    mission_id: str,
+    deps: PullDeps,
+    *,
+    progress: PullProgressSink | None,
+    should_cancel: Callable[[], bool] | None,
+    precheck: Callable[[str | None], None] | None,
+    resolved: tuple[MissionDetail, str | None] | None,
+) -> InstalledMission:
     """The shared acquire spine: resolve → (precheck) → pull → bundle → atomic install.
 
     Backs pull_mission (fresh install) and update_mission (in-place re-install; it passes the
     (detail, image) it already fetched for its no-op check via `resolved`, so the catalog is
-    not asked twice)."""
+    not asked twice).
+
+    The image is always pulled, even when its tag is already local. A tag can outlive its
+    install (an uninstall without --purge keeps the image), and reusing that copy would install
+    whatever the tag named then rather than what the catalog serves now. Docker skips layers it
+    already has, so an unchanged image costs one registry round trip."""
     from xorcise.core.missions import install_pulled
 
     def report(phase: str, current: int = 0, total: int = 0) -> None:
@@ -341,7 +491,7 @@ def _acquire_and_install(
         image = _image_for(deps.source, mission_id)
     manifest = detail.manifest
     ref = MissionRef(mission_id=mission_id, image=image or "")
-    if image is not None and not deps.driver.image_exists(image):
+    if image is not None:
         # Native-first platform selection (AS1–AS5), decided BEFORE any byte moves so an
         # impossible host/mission pairing costs one error message, not a download. None ⇒ no
         # selection was possible (pre-contract catalog / operator made none): the driver's

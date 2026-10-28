@@ -38,6 +38,7 @@ _EXAMPLES = {
     "xorcise mission update": "xorcise mission update aviary-access",
     "xorcise mission delete": "xorcise mission delete aviary-access",
     "xorcise mission rm": "xorcise mission rm aviary-access",
+    "xorcise mission prune": "xorcise mission prune --yes",
     "xorcise mission ingest": "xorcise mission ingest ./my-mission-bundle",
     "xorcise run create": "xorcise run create --agent my-agent --mission aviary-access",
     "xorcise run status": "xorcise run status <run-id>",
@@ -50,7 +51,7 @@ _EXAMPLES = {
     "xorcise run launch-profile": "xorcise run launch-profile <run-id>",
     "xorcise run events export": "xorcise run events export <run-id>",
     "xorcise run events": "xorcise run events export <run-id>",
-    "xorcise config set-model": "xorcise config set-model --name gpt-4o-mini --key sk-…",
+    "xorcise config set-model": "xorcise config set-model --name gpt-4o-mini --key-stdin",
 }
 
 # Commands whose required inputs should be explained TOGETHER (not first-missing-only).

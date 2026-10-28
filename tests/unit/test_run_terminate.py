@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -91,6 +92,46 @@ def test_operator_termination_recorded_partial(migrated_home) -> None:
     r = runs.create_run(agent_id="a1", mission="c", budget_seconds=600)
     assert terminate_run(r.run_id, "operator", _now()) == "operator"
     assert reporting.result_partial(r.run_id) == (True, "operator")
+
+
+@pytest.mark.parametrize(
+    ("trigger", "outcome"),
+    [
+        ("done", "completed"),
+        ("timeout", "partial"),
+        ("operator", "partial"),
+        ("deploy_failed", "infra_failed"),
+        ("crashed", "infra_failed"),
+    ],
+)
+@pytest.mark.parametrize("started", [True, False])
+def test_run_outcome_agrees_with_what_grading_recorded(
+    migrated_home, trigger, outcome, started
+) -> None:
+    """`RunEntry.outcome` is the one classification every client reads, so it must say exactly
+    what grading did with the run: `partial` iff the result is recorded partial, `infra_failed` iff
+    nothing was graded. Clients used to prefer the result's partial flag and fall back to their own
+    copy of the trigger rule (#159); they no longer need either."""
+    from xorcise.core.rest.run_terminate import terminate_run
+
+    r = runs.create_run(agent_id="a1", mission="c", budget_seconds=600)
+    assert r.outcome is None  # not ended yet
+    if started:
+        runs.mark_started(r.run_id, "telemetry", _now())
+    elif trigger == "timeout":
+        # A budget that ran out before the agent started is no attempt to time out (#187).
+        trigger, outcome = "never_started", "not_started"
+    recorded = terminate_run(r.run_id, "timeout" if trigger == "never_started" else trigger, _now())
+    assert recorded == trigger
+
+    run = runs.get(r.run_id)
+    assert run is not None
+    assert run.outcome == outcome
+    assert run.model_dump(mode="json")["outcome"] == outcome  # on the wire, not only in Python
+    graded = reporting.get_result(r.run_id) is not None
+    assert graded == (outcome not in ("infra_failed", "not_started"))
+    if graded:
+        assert reporting.result_partial(r.run_id)[0] == (outcome == "partial")
 
 
 def test_agent_self_completion_not_partial(migrated_home) -> None:
@@ -275,6 +316,8 @@ def test_make_gate_budget_backstop_terminates_then_raises(migrated_home) -> None
     entry = runs.get(r.run_id)
     assert entry is not None
     created = entry.created_at
+    # The gate guards run-control, and a run-control call starts the run (#209).
+    runs.mark_started(r.run_id, "run_control", created)
     gate = make_gate(lambda: created + timedelta(seconds=11))  # past deadline
     with pytest.raises(MissionOverError):
         gate(r.run_id)
@@ -303,3 +346,115 @@ def test_terminate_run_absent_run_returns_empty_no_seal_no_record(migrated_home)
     assert result == ""
     assert SqliteSealStore().is_sealed("ghost-run") is False
     assert len(reporting.agent_history("a1")) == baseline
+
+
+def test_deploy_failure_is_finalised_but_never_graded(migrated_home, monkeypatch) -> None:
+    """#109: a run cut short by an environment failure is not graded — its score could not count
+    in any aggregate, so the judge call buys nothing. Only the grade is skipped: the evidence is
+    sealed, the environment released and the events artifact exported, exactly as for a graded
+    run. Driven the way production drives it: the readiness gate calls terminate_run."""
+    import xorcise.core.rest.events_export as events_export
+    import xorcise.core.rest.run_teardown as run_teardown
+    from xorcise.core.otel.store import SqliteSealStore
+    from xorcise.core.rest.run_terminate import terminate_run
+
+    torn: list[str] = []
+    exported: list[str] = []
+    monkeypatch.setattr(run_teardown, "teardown_run", lambda rid: torn.append(rid))
+    monkeypatch.setattr(events_export, "export_run_events", exported.append)
+
+    r = runs.create_run(agent_id="a1", mission="c", budget_seconds=600)
+    assert terminate_run(r.run_id, "deploy_failed", _now()) == "deploy_failed"
+    assert reporting.get_result(r.run_id) is None
+    assert reporting.agent_history("a1") == []
+    assert SqliteSealStore().is_sealed(r.run_id) is True
+    assert torn == [r.run_id]
+    assert exported == [r.run_id]
+
+
+def _fake_export(calls: list[str]) -> Callable[[str], None]:
+    """export_run_events stand-in that records the call and leaves the file a real one would."""
+    from xorcise.core.rest.events_export import default_export_path
+
+    def export(run_id: str) -> None:
+        calls.append(run_id)
+        path = default_export_path(run_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("")
+
+    return export
+
+
+def test_boot_sweep_finalises_a_crashed_run_once_without_grading_it(
+    migrated_home, monkeypatch
+) -> None:
+    """#109, the boot path production actually takes: reconcile marks an unrecoverable run
+    `crashed` with a bare mark_terminal — no seal — and the orphaned-grade sweep runs next.
+
+    The sweep used to read "terminal, no result" as a lost grade and record a 0.00 against the
+    agent. It must not grade — but it is also the ONLY thing that ever seals a crashed run, so
+    skipping the run outright left it unsealed: late OTLP kept landing in a terminal run's record
+    and no evidence digest was taken. It finalises the run, once."""
+    import xorcise.core.rest.events_export as events_export
+    import xorcise.core.rest.run_teardown as run_teardown
+    from xorcise.core.otel.store import SqliteSealStore
+    from xorcise.core.rest.run_terminate import regrade_orphaned_terminal_runs
+
+    torn: list[str] = []
+    exported: list[str] = []
+    monkeypatch.setattr(run_teardown, "teardown_run", lambda rid: torn.append(rid))
+    monkeypatch.setattr(events_export, "export_run_events", _fake_export(exported))
+
+    r = runs.create_run(agent_id="a1", mission="c", budget_seconds=600)
+    runs.mark_terminal(r.run_id, "crashed", _now())  # what reconcile._reconcile_one does
+    assert regrade_orphaned_terminal_runs() == 0  # nothing GRADED
+    assert reporting.get_result(r.run_id) is None
+    assert SqliteSealStore().is_sealed(r.run_id) is True
+    assert exported == [r.run_id]
+
+    regrade_orphaned_terminal_runs()  # the next boot: already finalised, left alone
+    assert torn == [r.run_id]
+    assert exported == [r.run_id]
+
+
+@pytest.mark.parametrize("trigger", ["deploy_failed", "crashed"])
+def test_boot_sweep_releases_an_ungraded_run_a_stop_left_sealed_but_not_torn_down(
+    migrated_home, monkeypatch, trigger
+) -> None:
+    """The seal is the FIRST step of finalisation, not the last. A server stopped after it but
+    before the teardown left a sealed run the sweep then skipped forever — its tailnet nodes never
+    released (boot reaps containers, not nodes). The sweep keys on the events export, which only
+    happens after the teardown, so such a run is finalised on the next boot — and only once."""
+    import xorcise.core.rest.events_export as events_export
+    import xorcise.core.rest.run_teardown as run_teardown
+    from xorcise.core.rest.evidence_seal import seal_with_digest
+    from xorcise.core.rest.run_terminate import regrade_orphaned_terminal_runs
+
+    torn: list[str] = []
+    exported: list[str] = []
+    monkeypatch.setattr(run_teardown, "teardown_run", lambda rid: torn.append(rid))
+    monkeypatch.setattr(events_export, "export_run_events", _fake_export(exported))
+
+    r = runs.create_run(agent_id="a1", mission="c", budget_seconds=600)
+    runs.mark_terminal(r.run_id, trigger, _now())
+    seal_with_digest(r.run_id)  # ... and the server stopped here, before the teardown
+
+    regrade_orphaned_terminal_runs()
+    assert torn == [r.run_id]
+    assert exported == [r.run_id]
+    assert reporting.get_result(r.run_id) is None  # released, still never graded
+
+    regrade_orphaned_terminal_runs()  # the boot after: finalised, left alone
+    assert torn == [r.run_id]
+
+
+@pytest.mark.parametrize("trigger", ["deploy_failed", "crashed"])
+def test_ensure_graded_async_does_not_redrive_an_ungraded_run(migrated_home, trigger) -> None:
+    """The read-path self-heal must not grade what the terminal path deliberately did not."""
+    from xorcise.core.rest.run_terminate import ensure_graded_async
+
+    r = runs.create_run(agent_id="a1", mission="c", budget_seconds=600)
+    runs.mark_terminal(r.run_id, trigger, _now())
+    scheduled: list[object] = []
+    assert ensure_graded_async(r.run_id, scheduled.append) is False
+    assert scheduled == []

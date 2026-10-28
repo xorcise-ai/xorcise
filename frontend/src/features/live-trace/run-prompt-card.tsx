@@ -58,7 +58,7 @@ function ModeToggle({
 function CorrelationNote({ correlation }: { correlation?: string }) {
   if (correlation === "resource-attr") {
     return (
-      <p className="flex max-w-[68ch] items-start gap-1.5 text-body text-primary">
+      <p className="flex items-start gap-1.5 text-body text-primary">
         <Check className="mt-1 size-3.5 shrink-0" aria-hidden />
         <span>
           This harness&rsquo;s traces will correlate to <em>this</em> run —{" "}
@@ -69,7 +69,7 @@ function CorrelationNote({ correlation }: { correlation?: string }) {
     );
   }
   return (
-    <p className="max-w-[68ch] text-body text-text-secondary">
+    <p className="text-body text-text-secondary">
       Best-effort correlation via the prompt marker only — some trace batches may not attach
       to this run.
     </p>
@@ -111,6 +111,7 @@ export function RunPromptCard({
   runId,
   fill = false,
   awaitingEnvironment = false,
+  agentStarted = false,
 }: {
   runId: string;
   fill?: boolean;
@@ -119,6 +120,10 @@ export function RunPromptCard({
    *  invites launching into an environment whose targets do not exist yet, which is how an agent
    *  ends up joined to the tailnet with nothing to reach. */
   awaitingEnvironment?: boolean;
+  /** The agent has started (the run is xorcising, #209) but no trace has arrived. The payload stays
+   *  for reference, but "Action required — start your agent" would invite launching a second
+   *  agent on the same run. */
+  agentStarted?: boolean;
 }) {
   // Default "host": most operators paste this into a terminal (`claude -p`), where the collector
   // is localhost — host.docker.internal (the container address) does NOT resolve on the host.
@@ -188,9 +193,11 @@ export function RunPromptCard({
           <div className="flex min-w-0 items-center gap-2">
             <Terminal className="size-4 shrink-0 text-primary" />
             <h2 className="text-body font-semibold text-primary">
-              {awaitingEnvironment
-                ? "Preparing environment — launch once it is ready"
-                : "Action required — start your agent"}
+              {agentStarted
+                ? "Your agent has started — awaiting its first trace"
+                : awaitingEnvironment
+                  ? "Preparing environment — launch once it is ready"
+                  : "Action required — start your agent"}
             </h2>
           </div>
           {primaryText && (
@@ -221,9 +228,10 @@ export function RunPromptCard({
             <>
               <ModeToggle modes={launchModes} active={launchMode} onSelect={setLaunchMode} />
               <CorrelationNote correlation={correlation} />
-              <p className="max-w-[68ch] text-body text-text-secondary">
-                Run this single block — it exports the telemetry env and starts the harness with
-                this run’s prompt embedded, so it reports back to <em>this</em> run.
+              <p className="text-body text-text-secondary">
+                Run this single block — it exports the telemetry env and this run’s token, then
+                starts the harness with this run’s prompt embedded, so it reports back to{" "}
+                <em>this</em> run.
               </p>
               <div className="flex items-center gap-1.5">
                 <Radio className="size-3.5 text-primary" />
@@ -295,7 +303,7 @@ export function RunPromptCard({
           ) : (
             /* ── Prompt-only harness: copyable prompt + (optional) telemetry-env block ── */
             <>
-              <p className="max-w-[68ch] text-body text-text-secondary">
+              <p className="text-body text-text-secondary">
                 Copy this prompt and paste it into your agent to begin the run. It carries the run
                 id, so your agent reports back to <em>this</em> run.
               </p>
@@ -320,7 +328,7 @@ export function RunPromptCard({
                   </div>
                   <ModeToggle modes={launchModes} active={launchMode} onSelect={setLaunchMode} />
                   <CorrelationNote correlation={correlation} />
-                  <p className="max-w-[68ch] text-body text-text-secondary">
+                  <p className="text-body text-text-secondary">
                     Export these before launching your agent (the reference <code>demo.py</code>,
                     or <code>set -a; source launch.env; set +a</code>) so it ships traces to this
                     run’s collector. Not needed for prompt-only agents.

@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from xorcise.core.contracts.control import MissionRef
 from xorcise.core.contracts.mission import EnvironmentSpec, MissionManifest, MissionMetadata
+from xorcise.core.contracts.run import TerminalTrigger, run_status
 from xorcise.core.missions.runtime import INSTALLED_FILE, InstalledMission
 from xorcise.core.roles.boot.role_all import build_rest_app
 
@@ -497,6 +498,15 @@ def test_delete_run_active_is_409(migrated_home):
     )
     r = _client().delete(f"/api/runs/{run.run_id}")
     assert r.status_code == 409
+    # Review of #185: the same body DELETE /agents returns (contracts.run.DeleteRefusal), naming
+    # the state rather than calling a never-started run "running".
+    body = r.json()
+    assert (body["reason"], body["run_ids"], body["forceable"]) == (
+        "running",
+        ["run-del-active"],
+        False,
+    )
+    assert "run run-del-active (state: created) has not finished" in body["detail"]
     assert runs.get(run.run_id) is not None  # not deleted
 
 
@@ -730,3 +740,406 @@ def test_run_report_active_run_is_409(migrated_home):
     r = _client().get(f"/api/runs/{run.run_id}/report")
     assert r.status_code == 409
     assert "not terminal yet" in r.json()["detail"]
+
+
+def _environment_failed_run(home: Path, name: str, trigger: TerminalTrigger) -> str:
+    from datetime import UTC, datetime
+
+    from xorcise.core import agents, runs
+
+    if not (home / "missions" / "c1").exists():
+        _install_mission(home, "c1")
+    agent = agents.register(name, endpoint="http://env")
+    run = runs.create_run(
+        agent_id=agent.id, mission="c1", run_id=f"run-{name}", run_control_key="K"
+    )
+    runs.mark_terminal(run.run_id, trigger, datetime.now(UTC), "environment never came up")
+    return run.run_id
+
+
+def test_openapi_declares_every_answer_the_result_reads_give(migrated_home) -> None:
+    """/result, /report and /stats answer 202 "grading" and 200 "not_graded" as raw JSON bodies,
+    which the schema generator cannot see: a client generated from the OpenAPI document expected
+    only the graded body and failed on either. Both are declared now, as real models."""
+    spec = _client().get("/openapi.json").json()
+
+    def refs(node: object) -> set[str]:
+        found: set[str] = set()
+        if isinstance(node, dict):
+            if isinstance(node.get("$ref"), str):
+                found.add(node["$ref"].rsplit("/", 1)[-1])
+            for value in node.values():
+                found |= refs(value)
+        elif isinstance(node, list):
+            for value in node:
+                found |= refs(value)
+        return found
+
+    for path, graded in (("result", "RunResultView"), ("stats", "RunStats"), ("report", None)):
+        responses = spec["paths"][f"/api/runs/{{run_id}}/{path}"]["get"]["responses"]
+        ok = refs(responses["200"])
+        assert "NotGradedView" in ok, path
+        if graded:
+            assert graded in ok, path
+        assert refs(responses["202"]) == {"GradingView"}, path
+        assert {"404", "409"} <= set(responses), path
+
+
+def test_the_not_graded_and_grading_bodies_are_the_declared_models(migrated_home) -> None:
+    """What the routes send must parse as what the schema declares — the models are the contract,
+    not documentation beside a hand-built dict."""
+    from datetime import UTC, datetime
+
+    from xorcise.core import agents, runs
+    from xorcise.core.contracts.run import GradingView, NotGradedView
+
+    run_id = _environment_failed_run(migrated_home, "declared", "crashed")
+    body = _client().get(f"/api/runs/{run_id}/result").json()
+    assert NotGradedView.model_validate(body).model_dump(mode="json") == body
+
+    agent = agents.get("declared")
+    assert agent is not None
+    graded_later = runs.create_run(agent_id=agent.id, mission="c1", run_control_key="K")
+    runs.mark_terminal(graded_later.run_id, "done", datetime.now(UTC))
+    import xorcise.core.rest.run_terminate as rt
+
+    rt._grading_in_flight.add(graded_later.run_id)  # a grade in flight: the read answers 202
+    try:
+        r = _client().get(f"/api/runs/{graded_later.run_id}/result")
+    finally:
+        rt._grading_in_flight.discard(graded_later.run_id)
+    assert r.status_code == 202
+    assert GradingView.model_validate(r.json()).model_dump(mode="json") == r.json()
+
+
+def test_environment_failure_answers_not_graded_on_every_read(migrated_home, monkeypatch):
+    """#109: a deploy_failed / crashed run is never graded, so /result, /report and /stats must
+    give a FINAL answer naming why — not the 202 "grading" a poll loop would wait on forever —
+    and must not re-drive the grade the terminal path deliberately skipped."""
+    import xorcise.core.rest.run_terminate as rt
+
+    redriven: list[str] = []
+    monkeypatch.setattr(rt, "grade_and_record", redriven.append)
+    for trigger in ("deploy_failed", "crashed"):
+        run_id = _environment_failed_run(migrated_home, f"envfail-{trigger}", trigger)
+        expected = {
+            "run_id": run_id,
+            "status": "not_graded",
+            "terminal_trigger": trigger,
+            "run_status": run_status("terminal", trigger).model_dump(),
+            "detail": "environment never came up",
+        }
+        for path in ("result", "report", "stats"):
+            r = _client().get(f"/api/runs/{run_id}/{path}")
+            assert r.status_code == 200, (trigger, path)
+            assert r.json() == expected, (trigger, path)
+    assert redriven == []
+
+
+def test_regrade_refuses_an_environment_failure(migrated_home):
+    """Re-grading would record exactly the phantom 0.00 the terminal path declined to."""
+    from xorcise.core import reporting
+
+    run_id = _environment_failed_run(migrated_home, "envfail-regrade", "deploy_failed")
+    r = _client().post(f"/api/runs/{run_id}/regrade")
+    assert r.status_code == 409
+    assert "deploy_failed" in r.json()["detail"]
+    assert reporting.get_result(run_id) is None
+
+
+# --- #173: a delete must not drop a run whose environment is still up -------------------------
+
+
+def _finished_lab_run(run_id: str, agent_id: str = "a1") -> None:
+    from datetime import UTC, datetime
+
+    from xorcise.core import runs
+
+    runs.reserve_run(run_id, agent_id, "c1", network_cidr="10.200.9.0/24", entry_cidrs="")
+    runs.finalize_run(run_id, budget_seconds=300, prompt="P")
+    runs.mark_terminal(run_id, "done", datetime.now(UTC))
+
+
+def _stub_release(monkeypatch, *, released: bool) -> list[str]:
+    from xorcise.core.rest import run_teardown
+
+    called: list[str] = []
+
+    def teardown(run_id: str) -> run_teardown.ReleaseOutcome:
+        called.append(run_id)
+        return run_teardown.ReleaseOutcome(
+            released=released, error="" if released else "tailnet: Headscale is not reachable"
+        )
+
+    monkeypatch.setattr(run_teardown, "teardown_run", teardown)
+    return called
+
+
+def test_delete_releases_an_unreleased_environment_first(migrated_home, monkeypatch):
+    from xorcise.core import runs
+
+    _finished_lab_run("run-del-rel")
+    called = _stub_release(monkeypatch, released=True)
+    assert _client().delete("/api/runs/run-del-rel").status_code == 204
+    assert called == ["run-del-rel"]
+    assert runs.get("run-del-rel") is None
+
+
+def test_delete_refuses_while_the_environment_cannot_be_released(migrated_home, monkeypatch):
+    # The row is the release sweeper's only handle on the run: deleting it would leak the
+    # container until the next boot and the tailnet nodes forever.
+    from xorcise.core import runs
+
+    _finished_lab_run("run-del-stuck")
+    _stub_release(monkeypatch, released=False)
+    c = _client()
+    r = c.delete("/api/runs/run-del-stuck")
+    assert r.status_code == 409
+    body = r.json()
+    assert "run-del-stuck" in body["detail"]
+    assert "Headscale is not reachable" in body["detail"]
+    assert (body["reason"], body["run_ids"], body["forceable"]) == (
+        "unreleased",
+        ["run-del-stuck"],
+        True,
+    )
+    assert runs.get("run-del-stuck") is not None
+    # force accepts the leak
+    assert c.delete("/api/runs/run-del-stuck?force=true").status_code == 204
+    assert runs.get("run-del-stuck") is None
+
+
+def test_delete_refuses_while_the_run_is_being_graded(migrated_home, monkeypatch):
+    # Grading may still need the environment; tearing it down mid-grade is what the sweeper's
+    # settled check exists to prevent. Not forceable: it settles on its own.
+    from xorcise.core import runs
+    from xorcise.core.rest import run_terminate
+
+    _finished_lab_run("run-del-grading")
+    called = _stub_release(monkeypatch, released=True)
+    monkeypatch.setattr(run_terminate, "_grading_in_flight", {"run-del-grading"})
+    r = _client().delete("/api/runs/run-del-grading?force=true")
+    assert r.status_code == 409
+    assert (r.json()["reason"], r.json()["forceable"]) == ("grading", False)
+    assert called == []
+    assert runs.get("run-del-grading") is not None
+
+
+def _grade_during_release(monkeypatch, run_id: str, *, released: bool) -> list[str]:
+    """Stub the release so that, while it runs, a grade and a result poll's re-drive both try to
+    start for the run (#188). Returns the grades that actually ran."""
+    from xorcise.core.rest import run_teardown, run_terminate
+
+    graded: list[str] = []
+    scheduled: list[object] = []
+    monkeypatch.setattr(run_terminate, "_grade_run", graded.append)
+
+    def teardown(rid: str) -> run_teardown.ReleaseOutcome:
+        run_terminate.grade_and_record(run_id)  # the boot regrade, or a re-drive's task
+        assert run_terminate.ensure_graded_async(run_id, scheduled.append) is False
+        return run_teardown.ReleaseOutcome(
+            released=released, error="" if released else "tailnet: Headscale is not reachable"
+        )
+
+    monkeypatch.setattr(run_teardown, "teardown_run", teardown)
+    assert scheduled == []
+    return graded
+
+
+def test_a_grade_cannot_start_while_its_run_is_being_deleted(migrated_home, monkeypatch):
+    """The delete holds the run's grading slot from its checks to the end of the purge, so a
+    grade that starts while the environment is released no-ops instead of writing a result for a
+    run about to be deleted (#188)."""
+    from xorcise.core import reporting, runs
+    from xorcise.core.rest import run_terminate
+
+    _finished_lab_run("run-del-race")
+    graded = _grade_during_release(monkeypatch, "run-del-race", released=True)
+    assert _client().delete("/api/runs/run-del-race").status_code == 204
+    assert graded == []
+    assert runs.get("run-del-race") is None
+    assert reporting.get_result("run-del-race") is None
+    assert not run_terminate.is_grading("run-del-race")  # the slot is not left behind
+
+
+def test_a_refused_delete_regrades_what_it_turned_away(migrated_home, monkeypatch):
+    """A grade turned away by a delete that then does not happen is re-scheduled when the hold
+    lets go: nothing else would revisit the run — the watchdog skips a terminal run, and the
+    release sweeper waits for a result before it releases one (#188 review)."""
+    from xorcise.core import runs
+    from xorcise.core.rest import run_terminate
+
+    _finished_lab_run("run-del-refused")
+    graded = _grade_during_release(monkeypatch, "run-del-refused", released=False)
+    later: list[str] = []
+    monkeypatch.setattr(run_terminate, "_regrade_later", later.append)
+    assert _client().delete("/api/runs/run-del-refused").status_code == 409
+    assert graded == []
+    assert later == ["run-del-refused"]
+    assert runs.get("run-del-refused") is not None
+    assert not run_terminate.is_grading("run-del-refused")
+    assert run_terminate._held == set() and run_terminate._deferred == set()
+
+
+def test_a_completed_delete_regrades_nothing(migrated_home, monkeypatch):
+    from xorcise.core.rest import run_terminate
+
+    _finished_lab_run("run-del-gone")
+    _grade_during_release(monkeypatch, "run-del-gone", released=True)
+    later: list[str] = []
+    monkeypatch.setattr(run_terminate, "_regrade_later", later.append)
+    assert _client().delete("/api/runs/run-del-gone").status_code == 204
+    assert later == []  # the run is gone: nothing to grade
+
+
+def test_a_delete_refused_as_running_holds_no_grade(migrated_home, monkeypatch):
+    """An unfinished run is refused before anything is held, so the grade its own ending
+    schedules (a /complete, the watchdog) can never meet a hold (#188 review)."""
+    from datetime import UTC, datetime
+
+    from xorcise.core import runs
+    from xorcise.core.rest import run_terminate
+
+    r = runs.create_run(agent_id="a1", mission="c", budget_seconds=600)
+    held: list[object] = []
+    real = run_terminate.grades_held
+
+    def recording(ids):
+        held.append(ids)
+        return real(ids)
+
+    monkeypatch.setattr(run_terminate, "grades_held", recording)
+    resp = _client().delete(f"/api/runs/{r.run_id}")
+    assert (resp.status_code, resp.json()["reason"]) == (409, "running")
+    assert held == []
+    runs.mark_terminal(r.run_id, "done", datetime.now(UTC))
+    assert not run_terminate.is_grading(r.run_id)
+
+
+def test_removing_an_agent_holds_the_grades_of_all_its_runs(migrated_home, monkeypatch):
+    from xorcise.core import agents, runs
+
+    c = _client()
+    agent = c.post("/api/agents", json={"name": "alpha"}).json()
+    _finished_lab_run("run-agent-race", agent_id=agent["id"])
+    graded = _grade_during_release(monkeypatch, "run-agent-race", released=True)
+    assert c.delete("/api/agents/alpha").status_code == 204
+    assert graded == []
+    assert runs.get("run-agent-race") is None
+    assert agents.get("alpha") is None
+
+
+def test_delete_of_a_released_run_does_not_tear_down_again(migrated_home, monkeypatch):
+    from datetime import UTC, datetime
+
+    from xorcise.core import runs
+
+    _finished_lab_run("run-del-done")
+    runs.mark_released("run-del-done", datetime.now(UTC))
+    called = _stub_release(monkeypatch, released=False)
+    assert _client().delete("/api/runs/run-del-done").status_code == 204
+    assert called == []
+
+
+def test_both_deletes_declare_their_409_body(migrated_home):
+    """Review of #185: the refusal body is a contract now, so the spec (and the generated
+    frontend types) must say so for both endpoints."""
+    spec = _client().get("/openapi.json").json()
+    for path in ("/api/runs/{run_id}", "/api/agents/{name}"):
+        conflict = spec["paths"][path]["delete"]["responses"]["409"]
+        ref = conflict["content"]["application/json"]["schema"]["$ref"]
+        assert ref.endswith("/DeleteRefusal"), (path, ref)
+    fields = spec["components"]["schemas"]["DeleteRefusal"]["properties"]
+    assert set(fields) == {"detail", "reason", "run_ids", "forceable"}
+
+
+def _run_with_result(run_id: str, stats=None, model: str | None = None):
+    """A finished run with a recorded result and, optionally, a telemetry snapshot."""
+    from datetime import timedelta
+
+    from xorcise.core import agents, reporting, runs
+    from xorcise.core.contracts.grading import GradeResult, ScoreBreakdown
+    from xorcise.core.contracts.reporting import ResultConditions
+
+    agent = agents.register(f"agent-{run_id}", endpoint="http://b")
+    run = runs.create_run(agent_id=agent.id, mission="c1", run_id=run_id, run_control_key="K")
+    runs.mark_terminal(run_id, "done", run.created_at + timedelta(minutes=30))
+    reporting.record_result(
+        run_id=run_id,
+        agent_id=agent.id,
+        result=GradeResult(
+            run_id=run_id,
+            overall=0.5,
+            breakdown=ScoreBreakdown(deterministic=0.5, judge=0.5),
+            trace_ref=run_id,
+        ),
+        conditions=ResultConditions(model=model),
+        stats=stats(run.created_at) if stats else None,
+    )
+    finished = runs.get(run_id)
+    assert finished is not None
+    return finished
+
+
+def _timing(first_s: float, last_s: float, models: tuple[str, ...] = ()):
+    from datetime import timedelta
+
+    from xorcise.core.contracts.reporting import RunStats, TimingStats
+
+    def build(created):
+        return RunStats(
+            models=models,
+            timing=TimingStats(
+                elapsed_seconds=1800.0,
+                first_event_ts=created + timedelta(seconds=first_s),
+                last_event_ts=created + timedelta(seconds=last_s),
+            ),
+        )
+
+    return build
+
+
+def test_run_result_carries_the_reports_model_and_telemetry_window_cells(migrated_home):
+    """The results page renders these strings rather than re-deriving them (#146), so they are
+    the report's own cells, harness-reported qualifier included."""
+    from xorcise.core import reporting
+
+    _install_mission(migrated_home, "c1")
+    run = _run_with_result("run-cells-1", stats=_timing(1, 61, models=("gpt-x",)))
+    body = _client().get(f"/api/runs/{run.run_id}/result").json()
+    assert body["agent_model"] == "gpt-x (reported by the harness)"
+    assert body["telemetry_window"] == "1m 0s (reported by the harness)"
+
+    grade, conditions = reporting.get_result(run.run_id), reporting.result_conditions(run.run_id)
+    assert grade is not None and conditions is not None
+    md = reporting.render_markdown(
+        reporting.RunReportContext(
+            run=run,
+            agent_name="a",
+            grade=grade,
+            conditions=conditions,
+            stats=reporting.get_stats(run.run_id),
+        )
+    )
+    assert f"| Agent model | {body['agent_model']} |" in md
+    assert f"| Telemetry window | {body['telemetry_window']} |" in md
+
+
+def test_run_result_says_why_a_window_is_withheld(migrated_home):
+    _install_mission(migrated_home, "c1")
+    # An hour of telemetry in a run that lasted thirty minutes: the harness's clock, not the work.
+    run = _run_with_result("run-cells-2", stats=_timing(1, 3601), model="declared-m")
+    body = _client().get(f"/api/runs/{run.run_id}/result").json()
+    assert body["telemetry_window"] == (
+        "withheld — the harness reported more telemetry than the run has lasted"
+    )
+    assert body["agent_model"] == "declared-m (disclosed)"
+
+
+def test_run_result_without_telemetry_has_no_window_and_no_model(migrated_home):
+    _install_mission(migrated_home, "c1")
+    run = _run_with_result("run-cells-3")
+    body = _client().get(f"/api/runs/{run.run_id}/result").json()
+    assert body["telemetry_window"] is None
+    # The report says "not disclosed"; the page leaves the empty row out.
+    assert body["agent_model"] is None

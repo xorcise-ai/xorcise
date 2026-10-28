@@ -76,13 +76,46 @@ def test_reports_a_dead_environment_as_failed(client):
     assert body["detail"]
 
 
-def test_terminal_run_reports_released_regardless_of_the_last_observation(client):
+def test_terminal_run_reports_released_once_its_teardown_landed(client):
+    _lab()
+    run_readiness._OBSERVED["lab"] = ("ready", "")
+    runs.mark_terminal("lab", "done", datetime.now(UTC))
+    runs.mark_released("lab", datetime.now(UTC))
+    body = client.get("/api/runs/lab/environment").json()
+    assert body["state"] == "released"
+    assert body["ready"] is False
+
+
+def test_terminal_run_reports_releasing_until_its_teardown_lands(client):
+    # #173: every terminal run used to report "released", even one whose teardown had failed and
+    # left the container and tailnet nodes up. Until the release lands, it says so.
     _lab()
     run_readiness._OBSERVED["lab"] = ("ready", "")
     runs.mark_terminal("lab", "done", datetime.now(UTC))
     body = client.get("/api/runs/lab/environment").json()
-    assert body["state"] == "released"
+    assert body["state"] == "releasing"
     assert body["ready"] is False
+    assert body["release_attempts"] == 0
+    assert "grading" in body["detail"]
+
+
+def test_a_failed_teardown_reports_its_attempts_and_error(client):
+    _lab()
+    runs.mark_terminal("lab", "done", datetime.now(UTC))
+    runs.record_release_failure("lab", "tailnet: Headscale control plane is not reachable")
+    runs.record_release_failure("lab", "tailnet: Headscale control plane is not reachable")
+    body = client.get("/api/runs/lab/environment").json()
+    assert body["state"] == "releasing"
+    assert body["release_attempts"] == 2
+    assert "failed 2 time(s)" in body["detail"]
+    assert "Headscale control plane is not reachable" in body["detail"]
+
+
+def test_a_finished_static_run_still_reports_no_environment(client):
+    # A static run owns nothing to release, so it never reads "releasing".
+    _static()
+    runs.mark_terminal("stat", "done", datetime.now(UTC))
+    assert client.get("/api/runs/stat/environment").json()["state"] == "none"
 
 
 def test_unknown_run_is_404(client):

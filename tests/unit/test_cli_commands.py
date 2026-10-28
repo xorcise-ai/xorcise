@@ -1,5 +1,6 @@
 import errno
 import os
+import re
 import subprocess
 from collections.abc import Mapping
 
@@ -106,14 +107,14 @@ def test_agent_list_renders(monkeypatch):
         "get",
         lambda self, path: [
             {"id": "beta-uuid-1", "name": "beta", "kind": "claude-code", "version": 2},
-            {"id": "alpha-uuid-2", "name": "alpha"},
+            {"id": "alpha-uuid-2", "name": "alpha", "kind": "generic"},
         ],
     )
     result = runner.invoke(app, ["agent", "list"])
     assert result.exit_code == 0
     assert "alpha" in result.stdout and "beta" in result.stdout
     assert "Claude Code" in result.stdout  # kind slug → readable label
-    assert "Custom" in result.stdout  # missing kind reads as Custom
+    assert "Generic" in result.stdout and "Custom" not in result.stdout  # #141: no "Custom"
     assert "v1" in result.stdout and "v2" in result.stdout
     # internal ids stay hidden by default (only --verbose/--json expose them)
     assert "uuid" not in result.stdout
@@ -550,6 +551,33 @@ def test_serve_fails_fast_on_port_conflict(monkeypatch, tmp_path):
     assert "in use" in result.output
 
 
+@pytest.mark.parametrize("ending", ["clean", "ctrl-c", "failure"])
+def test_serve_checkpoints_the_database_once_every_server_has_stopped(
+    monkeypatch, tmp_path, ending
+):
+    """#107 review: under WAL a stopped server must leave one self-contained xorcise.db, however
+    serve ends. Once, after serve_bound returns, never per server lifespan."""
+    from xorcise.core.cli.commands import serve as serve_mod
+
+    monkeypatch.setenv("XORCISE_HOME", str(tmp_path))  # serve bootstraps home+db now
+    monkeypatch.setattr(lifecycle, "resolve_ports", lambda host, wanted: dict(wanted))
+    monkeypatch.setattr(serve_mod, "activate", lambda role: [AppSpec(app=object(), port=REST_PORT)])
+    monkeypatch.setattr(serve_mod, "bind_specs", lambda specs, host: [])
+    events: list[str] = []
+
+    async def fake_serve_bound(bound):
+        events.append("served")
+        if ending == "ctrl-c":
+            raise KeyboardInterrupt
+        return [RuntimeError("plane crashed")] if ending == "failure" else []
+
+    monkeypatch.setattr(serve_mod, "serve_bound", fake_serve_bound)
+    monkeypatch.setattr("xorcise.core.db.close_engine", lambda: events.append("closed"))
+    result = runner.invoke(app, ["serve"])
+    assert events == ["served", "closed"]
+    assert result.exit_code == (1 if ending == "failure" else 0)
+
+
 def test_version_flag_prints_version():
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
@@ -776,6 +804,46 @@ def test_down_purge_non_interactive_needs_yes(monkeypatch, tmp_path):
     assert result.exit_code == 2
     assert home.exists()
     assert "--yes" in result.stderr
+
+
+def test_down_purge_with_a_closed_stdin_still_fails_closed(monkeypatch, tmp_path):
+    """`xorcise down --purge <&-` must hit the same exit-2 gate, not crash (#125 review).
+
+    fd 0 closed leaves sys.stdin as None, and the bare `.isatty()` behind this guard raised an
+    AttributeError the user read as 'unexpected error' — turning a deliberate fail-closed gate
+    into a crash. The gate is the whole reason a scripted --purge cannot proceed unattended."""
+    from tests._helpers import invoke_cli_with_stdin
+
+    home = tmp_path / ".xorcise"
+    home.mkdir()
+    (home / "config.toml").write_text("k=1")
+    monkeypatch.setenv("XORCISE_HOME", str(home))
+
+    assert invoke_cli_with_stdin(["down", "--purge"], None) == 2
+    assert home.exists()
+
+
+def test_a_closed_stdin_lets_a_destructive_confirm_proceed_unprompted(monkeypatch):
+    """`xorcise agent rm alpha <&-` now DELETES instead of crashing (#125 review).
+
+    The other half of the closed-fd-0 fix, and a behaviour change in its own right: the bare
+    `.isatty()` behind `confirm_or_abort` raised on the `None` CPython leaves there, so the
+    command died one line short of the DELETE. No stream is not a terminal, so the prompt is
+    skipped exactly as `</dev/null` has always skipped it, and every caller of that seam moved
+    together — `mission uninstall`, `run terminate`, `run regrade`, `run delete`, `agent rm`.
+    `down --purge` above is the deliberate exception: its gate fails closed instead."""
+    from tests._helpers import invoke_cli_with_stdin
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(RestClient, "get", lambda self, path: [{"name": "alpha"}])
+    monkeypatch.setattr(
+        RestClient,
+        "delete",
+        lambda self, path, timeout=None: captured.setdefault("path", path),
+    )
+
+    assert invoke_cli_with_stdin(["agent", "rm", "alpha"], None) == 0
+    assert captured["path"] == "/agents/alpha"
 
 
 def test_down_keep_data_and_purge_is_error(monkeypatch, tmp_path):
@@ -1009,10 +1077,16 @@ def test_agent_rm_calls_delete(monkeypatch):
     # rm resolves the name against the live list first; CliRunner stdin is
     # non-interactive, so the TTY confirm never prompts.
     monkeypatch.setattr(RestClient, "get", lambda self, path: [{"name": "alpha"}])
-    monkeypatch.setattr(RestClient, "delete", lambda self, path: captured.setdefault("path", path))
+
+    def fake_delete(self, path, timeout=None):  # noqa: ANN001, ANN202 — test stub
+        captured.update(path=path, timeout=timeout)
+
+    monkeypatch.setattr(RestClient, "delete", fake_delete)
     result = runner.invoke(app, ["agent", "rm", "alpha"])
     assert result.exit_code == 0
     assert captured["path"] == "/agents/alpha"
+    # The server may tear down each finished run's environment first (#173): not a 5 s request.
+    assert captured["timeout"] == 600.0
     assert "removed agent 'alpha'" in result.stdout
 
 
@@ -1442,8 +1516,8 @@ def test_register_unrecognised_kind_warns_and_asks_interactively_default_no(monk
     )
     assert result.exit_code == 1
     assert "'Custom' is not a registered harness" in result.stderr
-    assert "known: claude-code, codex, openhands" in result.stderr
-    assert "generic renderer" in result.stderr
+    assert "known: claude-code, codex, generic, openhands" in result.stderr
+    assert "may replay with the generic adapter" in " ".join(result.stderr.split())
     assert "aborted" in result.stdout
     assert posted == []  # nothing written on the default (No)
 
@@ -1494,6 +1568,25 @@ def test_register_known_or_blank_kind_never_prompts(monkeypatch):
     assert [p["kind"] for p in posted] == ["openhands", None]
 
 
+def test_register_generic_kind_never_prompts(monkeypatch):
+    # `generic` is always registered, whether or not the server's harness list names it.
+    posted = _stub_register(monkeypatch, interactive=False)
+    result = runner.invoke(app, ["agent", "register", "--name", "g", "--kind", "generic"])
+    assert result.exit_code == 0, result.stderr
+    assert result.stderr == ""
+    assert posted[0]["kind"] == "generic"
+
+
+def test_register_gate_prints_the_same_warning_the_server_returns(monkeypatch):
+    from xorcise.core.contracts.agent import kind_warning
+
+    _stub_register(monkeypatch, interactive=False)
+    result = runner.invoke(app, ["agent", "register", "--name", "re", "--kind", "openhand"])
+    expected = kind_warning("openhand", [h["kind"] for h in _HARNESSES])
+    assert expected is not None
+    assert f"warning: {expected}" in " ".join(result.stderr.split())
+
+
 def test_register_gate_stays_out_of_the_way_when_the_server_has_no_harness_list(monkeypatch):
     # An older server without /harnesses: the CLI cannot judge, so it must not block on a guess.
     posted = _stub_register(monkeypatch, interactive=False, harnesses=None)
@@ -1524,3 +1617,311 @@ def test_update_gates_only_a_changed_unrecognised_kind(monkeypatch):
         == 0
     )
     assert [p["kind"] for p in puts] == ["Custom", "openhands"]
+
+
+# mission prune / delete --purge / pull --refresh ---------------------------------------------
+
+_PRUNE_CANDIDATES = [
+    {
+        "image_id": "sha256:old",
+        "tags": ["xorcise/mis-vault:1"],
+        "slug": "vault",
+        "size_bytes": 1_500_000_000,
+        "reason": "superseded",
+    },
+    {
+        "image_id": "sha256:gone",
+        "tags": ["xorcise/mission-gone:local"],
+        "slug": "gone",
+        "size_bytes": 500_000_000,
+        "reason": "not installed",
+    },
+]
+
+
+def _fake_prune(monkeypatch, report: dict[str, object]) -> list[dict[str, object]]:
+    """Answer POST /missions/prune with *report*; returns the request bodies sent."""
+    bodies: list[dict[str, object]] = []
+
+    def fake_post(self, path, json, timeout=None):
+        assert path == "/missions/prune"
+        bodies.append(json)
+        return report
+
+    monkeypatch.setattr(RestClient, "post", fake_post)
+    return bodies
+
+
+def _report(applied: bool, removed=(), failed=()) -> dict[str, object]:
+    return {
+        "applied": applied,
+        "candidates": _PRUNE_CANDIDATES,
+        "removed": list(removed),
+        "failed": list(failed),
+        "reclaimable_bytes": 2_000_000_000,
+    }
+
+
+def test_mission_prune_defaults_to_a_dry_run(monkeypatch):
+    bodies = _fake_prune(monkeypatch, _report(applied=False))
+    result = runner.invoke(app, ["mission", "prune"])
+    assert result.exit_code == 0
+    assert bodies == [{"apply": False}]
+    out = result.stdout
+    assert "xorcise/mis-vault:1" in out and "superseded" in out and "1.5 GB" in out
+    assert "xorcise/mission-gone:local" in out and "not installed" in out
+    assert "would remove 2 images, reclaiming up to 2.0 GB" in out
+    assert "xorcise mission prune --yes" in out
+
+
+def test_mission_prune_yes_removes_and_summarises(monkeypatch):
+    bodies = _fake_prune(monkeypatch, _report(True, removed=["sha256:old", "sha256:gone"]))
+    result = runner.invoke(app, ["mission", "prune", "--yes"])
+    assert result.exit_code == 0
+    assert bodies == [{"apply": True}]
+    assert "removed xorcise/mis-vault:1" in result.stdout
+    assert "removed 2 images, reclaiming up to 2.0 GB" in result.stdout
+
+
+def test_mission_prune_partial_failure_exits_1(monkeypatch):
+    failed = [
+        {"image_id": "sha256:gone", "tags": ["xorcise/mission-gone:local"], "error": "in use"}
+    ]
+    _fake_prune(monkeypatch, _report(True, removed=["sha256:old"], failed=failed))
+    result = runner.invoke(app, ["mission", "prune", "-y"])
+    assert result.exit_code == 1
+    assert "removed xorcise/mis-vault:1" in result.stdout
+    assert "could not remove xorcise/mission-gone:local: in use" in result.output
+
+
+_UNTAGGED = {
+    "image_id": "sha256:abcdef1234567890",
+    "tags": [],
+    "slug": "vault",
+    "size_bytes": 1_000_000_000,
+    "reason": "superseded",
+}
+
+
+def test_mission_prune_names_an_untagged_image_by_short_id_and_mission(monkeypatch):
+    report = {**_report(applied=False), "candidates": [_UNTAGGED]}
+    _fake_prune(monkeypatch, report)
+    result = runner.invoke(app, ["mission", "prune"])
+    assert result.exit_code == 0
+    assert "<untagged> abcdef123456 (vault)" in result.stdout
+
+
+def test_mission_prune_yes_reports_untagged_removals_and_failures(monkeypatch):
+    other = {**_UNTAGGED, "image_id": "sha256:0123456789abcdef", "slug": "sqli"}
+    failed = [{"image_id": "sha256:0123456789abcdef", "tags": [], "error": "in use"}]
+    report = {
+        **_report(True, removed=["sha256:abcdef1234567890"], failed=failed),
+        "candidates": [_UNTAGGED, other],
+    }
+    _fake_prune(monkeypatch, report)
+    result = runner.invoke(app, ["mission", "prune", "--yes"])
+    assert result.exit_code == 1
+    assert "removed <untagged> abcdef123456 (vault)" in result.stdout
+    assert "could not remove <untagged> 0123456789ab (sqli): in use" in result.output
+
+
+def test_mission_prune_json_emits_the_raw_report(monkeypatch):
+    import json
+
+    report = _report(applied=False)
+    _fake_prune(monkeypatch, report)
+    result = runner.invoke(app, ["mission", "prune", "--json"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == report
+
+
+def test_mission_prune_with_nothing_to_remove(monkeypatch):
+    _fake_prune(
+        monkeypatch,
+        {"applied": False, "candidates": [], "removed": [], "failed": [], "reclaimable_bytes": 0},
+    )
+    result = runner.invoke(app, ["mission", "prune"])
+    assert result.exit_code == 0
+    assert "no unused mission images to remove" in result.stdout
+
+
+def test_mission_prune_help_documents_the_flags():
+    result = runner.invoke(app, ["mission", "prune", "--help"])
+    assert result.exit_code == 0
+    assert "--yes" in result.output and "--json" in result.output
+
+
+def test_mission_show_prune_points_at_the_command(monkeypatch):
+    monkeypatch.setattr(RestClient, "get", lambda self, path: [{"mission_id": "vault"}])
+    result = runner.invoke(app, ["mission", "show", "prune"])
+    assert result.exit_code == 1
+    assert "'prune' is a command, not a mission" in result.output
+    assert "xorcise mission prune" in result.output
+
+
+def _fake_delete(monkeypatch, answer: object, timeouts: list[object] | None = None) -> list[str]:
+    paths: list[str] = []
+    monkeypatch.setattr(
+        RestClient,
+        "get",
+        lambda self, path: [{"mission_id": "vault", "name": "Vault", "installed": True}],
+    )
+
+    def fake_delete(self, path, timeout=None):
+        paths.append(path)
+        if timeouts is not None:
+            timeouts.append(timeout)
+        return answer
+
+    monkeypatch.setattr(RestClient, "delete", fake_delete)
+    return paths
+
+
+def test_mission_delete_purge_removes_the_image(monkeypatch):
+    paths = _fake_delete(
+        monkeypatch,
+        {
+            "mission_id": "vault",
+            "image": "xorcise/mission-vault:0",
+            "image_outcome": "removed",
+            "detail": "removed xorcise/mission-vault:0",
+        },
+    )
+    result = runner.invoke(app, ["mission", "delete", "vault", "--purge"])
+    assert result.exit_code == 0
+    assert paths == ["/missions/vault?purge=true"]
+    assert "deleted mission 'vault'" in result.stdout
+    assert "removed xorcise/mission-vault:0" in result.stdout
+
+
+def test_mission_delete_purge_waits_long_enough_to_remove_a_large_image(monkeypatch):
+    timeouts: list[object] = []
+    _fake_delete(
+        monkeypatch,
+        {"mission_id": "vault", "image": None, "image_outcome": "none", "detail": "static"},
+        timeouts,
+    )
+    result = runner.invoke(app, ["mission", "delete", "vault", "--purge", "--yes"])
+    assert result.exit_code == 0
+    assert timeouts == [600.0]
+
+
+def test_mission_delete_purge_kept_image_is_success_with_a_note(monkeypatch):
+    _fake_delete(
+        monkeypatch,
+        {
+            "mission_id": "vault",
+            "image": "xorcise/mission-vault:0",
+            "image_outcome": "kept",
+            "detail": "kept xorcise/mission-vault:0: used by an active run",
+        },
+    )
+    result = runner.invoke(app, ["mission", "delete", "vault", "--purge", "--yes"])
+    assert result.exit_code == 0
+    assert "kept xorcise/mission-vault:0: used by an active run" in result.stdout
+
+
+def test_mission_delete_purge_failed_removal_exits_1_after_uninstalling(monkeypatch):
+    _fake_delete(
+        monkeypatch,
+        {
+            "mission_id": "vault",
+            "image": "xorcise/mission-vault:0",
+            "image_outcome": "failed",
+            "detail": "in use",
+        },
+    )
+    result = runner.invoke(app, ["mission", "delete", "vault", "--purge"])
+    assert result.exit_code == 1
+    assert "deleted mission 'vault'" in result.stdout
+    assert "uninstalled, but could not remove image xorcise/mission-vault:0: in use" in (
+        result.output
+    )
+
+
+def test_mission_delete_without_purge_keeps_the_plain_path(monkeypatch):
+    paths = _fake_delete(monkeypatch, None)
+    result = runner.invoke(app, ["mission", "delete", "vault"])
+    assert result.exit_code == 0
+    assert paths == ["/missions/vault"]
+    assert result.stdout.strip().endswith("deleted mission 'vault'")
+
+
+def test_mission_delete_help_documents_purge():
+    result = runner.invoke(app, ["mission", "delete", "--help"])
+    assert result.exit_code == 0
+    assert "--purge" in result.output
+    assert "image stays in the local store" not in result.output
+
+
+def _fake_pull(
+    monkeypatch, installed: bool, joined: bool = False, status: str = "installed"
+) -> list[tuple[str, object]]:
+    posts: list[tuple[str, object]] = []
+
+    def fake_post(self, path, json=None, timeout=None):
+        posts.append((path, json))
+        return {"job_id": "j1", "joined": joined}
+
+    def fake_get(self, path):
+        if path == "/missions":
+            return [{"mission_id": "sqli", "name": "SQLi", "installed": installed}]
+        assert path == "/missions/pull-jobs/j1"
+        return {"status": status, "phase": "done", "entry": {"name": "SQLi"}}
+
+    monkeypatch.setattr(RestClient, "post", fake_post)
+    monkeypatch.setattr(RestClient, "get", fake_get)
+    return posts
+
+
+def test_mission_pull_refresh_repulls_an_installed_mission(monkeypatch):
+    posts = _fake_pull(monkeypatch, installed=True)
+    result = runner.invoke(app, ["mission", "pull", "sqli", "--refresh"])
+    assert result.exit_code == 0
+    assert posts == [("/missions/sqli/pull-jobs", {"refresh": True})]
+    assert "repaired 'SQLi' (sqli): its image was downloaded again" in result.stdout
+
+
+def test_mission_pull_refresh_cancelled_says_to_run_the_repair_again(monkeypatch):
+    # The repair removes the local image before it downloads, so a cancel can leave the mission
+    # installed without one. "was not installed" would be wrong on both counts.
+    _fake_pull(monkeypatch, installed=True, status="cancelled")
+    result = runner.invoke(app, ["mission", "pull", "sqli", "--refresh"])
+    assert result.exit_code == 0
+    assert "was not installed" not in result.stderr
+    assert "xorcise mission pull sqli --refresh" in " ".join(result.stderr.split())
+
+
+def test_mission_pull_refresh_says_when_it_only_joined_a_running_pull(monkeypatch):
+    _fake_pull(monkeypatch, installed=True, joined=True)
+    result = runner.invoke(app, ["mission", "pull", "sqli", "--refresh"])
+    assert result.exit_code == 0
+    assert "a pull of 'sqli' was already running" in result.stderr
+    assert "instead of starting a refresh" in result.stderr
+
+
+def test_mission_pull_refresh_is_quiet_when_it_starts_the_pull(monkeypatch):
+    _fake_pull(monkeypatch, installed=True, joined=False)
+    result = runner.invoke(app, ["mission", "pull", "sqli", "--refresh"])
+    assert result.exit_code == 0
+    assert "already running" not in result.stderr
+
+
+def test_mission_pull_without_refresh_posts_the_plain_body(monkeypatch):
+    posts = _fake_pull(monkeypatch, installed=False)
+    result = runner.invoke(app, ["mission", "pull", "sqli"])
+    assert result.exit_code == 0
+    assert posts == [("/missions/sqli/pull-jobs", {})]
+
+
+def test_mission_pull_help_documents_refresh():
+    result = runner.invoke(app, ["mission", "pull", "--help"])
+    assert result.exit_code == 0
+    assert "--refresh" in result.output
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    help_text = " ".join(plain.replace("│", " ").split())
+    # A plain re-pull skips layers already in the store, so the help must say what refresh
+    # does that makes it a repair, and must not promise more.
+    assert "Removes its local image" in help_text
+    assert "never forced" in help_text
+    assert "repairs a damaged local image;" not in help_text

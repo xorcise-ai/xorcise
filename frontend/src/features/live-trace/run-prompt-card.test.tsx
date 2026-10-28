@@ -284,3 +284,13 @@ describe("RunPromptCard while the environment is still starting", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("RunPromptCard once the agent has started", () => {
+  it("does not ask the operator to start an agent that already has (#209)", async () => {
+    // A xorcising run with no trace yet: the agent fetched its brief or tailnet key. "Action
+    // required — start your agent" would invite launching a second agent on the same run.
+    renderWithProviders(<RunPromptCard runId="r1" agentStarted />);
+    expect(await screen.findByText(/Your agent has started/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Action required/i)).toBeNull();
+  });
+});

@@ -70,6 +70,18 @@ def test_reserve_run_makes_cidr_active_before_finalize(migrated_home):
     assert dict(runs.active_run_networks())["rr1"] == ("10.200.5.0/24",)
 
 
+def test_a_reservation_protects_its_image_before_finalize(migrated_home):
+    runs.reserve_run(
+        "rr1",
+        "ag",
+        "sqli",
+        network_cidr="10.200.5.0/24",
+        entry_cidrs="10.200.5.0/24",
+        sandbox_ref="xorcise/mission-sqli:0",
+    )
+    assert runs.active_sandbox_refs() == {"xorcise/mission-sqli:0"}
+
+
 def test_reserve_run_rejects_a_duplicate_live_cidr(migrated_home):
     # the partial unique index makes a concurrent same-subnet reservation fail atomically.
     from sqlalchemy.exc import IntegrityError
@@ -209,15 +221,6 @@ def test_create_run_versions_default_one(migrated_home):
     entry = runs.create_run(agent_id="ag2", mission="c2")
     assert entry.agent_version == 1
     assert entry.install_revision == 1
-
-
-def test_delete_for_agent_removes_only_that_agent(migrated_home):
-    runs.create_run(agent_id="a1", mission="c1")
-    runs.create_run(agent_id="a2", mission="c2")
-    assert runs.delete_for_agent("a1") == 1
-    remaining = runs.list_runs()
-    assert all(r.agent_id == "a2" for r in remaining)
-    assert len(remaining) == 1
 
 
 def test_create_run_persists_join_key_and_narrow_getter_reads_it(migrated_home):

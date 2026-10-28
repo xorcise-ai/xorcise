@@ -39,7 +39,13 @@ export interface paths {
         post?: never;
         /**
          * Remove Agent
-         * @description Remove an agent and cascade-delete its runs + results.
+         * @description Remove an agent and everything recorded for its runs.
+         *
+         *     The runs' rows are the release sweeper's only handle on their environments (#173), so the
+         *     cascade is refused (409) while any of the agent's runs is still running or being graded, and
+         *     when a finished run's environment cannot be released. `force=true` overrides only the last,
+         *     accepting that a container or tailnet nodes may be left running. The 409 body carries
+         *     `reason`, `run_ids` and `forceable` beside `detail`.
          */
         delete: operations["remove_agent_api_agents__name__delete"];
         options?: never;
@@ -56,6 +62,26 @@ export interface paths {
         };
         /** Agent History */
         get: operations["agent_history_api_agents__name__history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/announcements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Active
+         * @description Active announcements for this install; an empty list whenever there are none.
+         */
+        get: operations["active_api_announcements_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -373,6 +399,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/missions/prune": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Prune Images
+         * @description Find (and with apply=true, remove) the local mission images nothing uses any more.
+         *
+         *     A candidate is an image XORCISE owns — mission-base lineage AND only mission-repository
+         *     tags — that no install record, live run, container or in-flight pull uses. Removal is never
+         *     forced; an image that turns out to be in use is reported under `failed` and the rest still
+         *     go. `image_ids` limits the removal to images the operator confirmed: one that is no longer
+         *     a candidate is reported under `skipped` and kept. 409 when an install record cannot be read
+         *     (its image is unknown, so nothing is removed) or when this server does not manage Docker
+         *     images at all.
+         */
+        post: operations["prune_images_api_missions_prune_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/missions/pull-jobs": {
         parameters: {
             query?: never;
@@ -455,8 +509,13 @@ export interface paths {
          *
          *     Removes the local install directory so the mission leaves Your Own / drops back to
          *     not-installed in the library. 404 if nothing is installed under that id. Routes the write
-         *     through the server's install root (single writer, parity with ingest/pull). The fused image is
-         *     intentionally left in the local store; pruning it is a separate concern.
+         *     through the server's install root (single writer, parity with ingest/pull).
+         *
+         *     Without `purge` the image stays in the local store and the answer is a bare 204 (POST
+         *     /missions/prune reclaims it later). With `purge=true` the image is removed too, under
+         *     prune's rules: it stays when it is not a XORCISE mission image or another install, an
+         *     active run or a container still uses it. The uninstall stands either way; the 200 body
+         *     says what became of the image.
          */
         delete: operations["delete_mission_api_missions__mission_id__delete"];
         options?: never;
@@ -521,6 +580,10 @@ export interface paths {
          *     for — so it runs on a background task; poll GET /missions/pull-jobs/{job_id}. A POST
          *     while a pull for this mission is active returns the SAME job_id without starting a
          *     second worker (server-side double-pull guard).
+         *
+         *     The body is optional. `refresh: true` pulls again even when the mission is installed and
+         *     its image is local. A refresh that arrives while a pull is already active joins that pull
+         *     as-is: the running job does not turn into a refresh.
          */
         post: operations["start_pull_job_api_missions__mission_id__pull_jobs_post"];
         delete?: never;
@@ -580,6 +643,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/results/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Run Scores
+         * @description Every finished run, oldest first, with its scores and how it counts (`bucket`).
+         *
+         *     `agent` (an agent id) and `mission` (a mission slug) narrow it. A run still in progress is
+         *     not listed; one still being graded is, as `grading`.
+         */
+        get: operations["run_scores_api_results_runs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/results/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Score Summary
+         * @description Finished runs summarised as one group (`all`), per agent, per mission version (`mission`),
+         *     or per agent on each mission version (`mission_agent`).
+         *
+         *     The median is over runs graded with a judge, a partly-judged run counting at its lower bound.
+         *     A run that timed out is in it, at the score it earned. Runs with no judge, runs an operator
+         *     stopped, runs whose grading crashed, environment failures and runs still grading are counted
+         *     separately and never in it. `mean` is over the same runs as the median.
+         *
+         *     Groups with an agent come back ranked (best median first) and named (`agent_name`), so every
+         *     client shows one order under one set of names.
+         */
+        get: operations["score_summary_api_results_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs": {
         parameters: {
             query?: never;
@@ -602,7 +717,10 @@ export interface paths {
          *
          *     Every failure maps to a clean JSON error (never a raw text/plain 500 that the CLI can't
          *     decode): the deps build + spine run share one try so the fail-loud
-         *     RuntimeError (Docker/Headscale unreachable) surfaces as a 503 with its remediation.
+         *     RuntimeError (Docker/Headscale unreachable) surfaces as a 503 with its remediation. So does
+         *     a server with no runner (RunnerUnavailableError, #168): the deps build refuses before a
+         *     mission is pulled or a run row written, where a stub used to answer 201 for a run that then
+         *     sat at `created` forever.
          *
          *     The 201 response is RunCreatedEntry — a RunEntry superset that adds run_control_key so the
          *     agent can authenticate run-control calls. The key is NEVER returned by
@@ -627,15 +745,52 @@ export interface paths {
         post?: never;
         /**
          * Delete Run
-         * @description Operator-initiated delete of a single run's result + record.
+         * @description Operator-initiated delete of a single run and everything recorded for it.
          *
-         *     The narrow, per-run counterpart to the agent-scoped cascade (DELETE /agents/{name}): removes
-         *     the recorded result and the run row so the run leaves the runs list, the agent history, and the
-         *     results view. 404 if the run is unknown; 409 if it has not reached a terminal state — it must be
-         *     terminated first (deleting it would strand its container/tailnet env). Idempotent on the result
-         *     (delete of an ungraded terminal run still removes the record).
+         *     The per-run counterpart to the agent-scoped cascade (DELETE /agents/{name}): removes the run's
+         *     telemetry, submissions and row, then its result and run directory (rest.run_purge), so the run
+         *     leaves the runs list, the agent history and the results view. 404 if the run is unknown. A
+         *     delete that fails before the row goes leaves the run and its result, so repeating it finishes;
+         *     anything a later failure leaves is cleared by the next boot.
+         *
+         *     409 (contracts.run.DeleteRefusal) while the run has not finished, while its grade is in
+         *     flight, or when its environment, released here first, cannot be torn down (#173). Only the
+         *     last is overridable: `force=true` accepts that the container or tailnet nodes may be left
+         *     running.
          */
         delete: operations["delete_run_api_runs__run_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/alive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Alive
+         * @description Liveness probe for the join script's self-reaper: 204 while the run is live, 409 once it
+         *     has ended (the same run-over gate every other endpoint applies), 401 otherwise.
+         *
+         *     Authenticated by the run's watch token, NOT the run-control bearer — the reaper must hold a
+         *     credential where a local user can read it (BusyBox ``wget`` in the sidecar can only take a
+         *     header on argv), so it gets one that discloses a single bit. The bearer is refused here, so a
+         *     leaked watch token and the bearer are never interchangeable in either direction. Polling here
+         *     rather than ``/mission`` also keeps the reaper from recording that the agent read its brief.
+         *
+         *     A run that no longer exists (deleted) is over too, so it answers 409, not 401: the token is
+         *     derived from the run's row, so a 401 there would be permanent, and both reapers stop only on
+         *     409 — they would otherwise hold tailscaled and poll until their hard cap. This tells a caller
+         *     no more than that a 128-bit random run id is not live.
+         */
+        get: operations["get_alive_api_runs__run_id__alive_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -850,7 +1005,8 @@ export interface paths {
          * Get Join Script
          * @description Serve the runnable one-shot tailnet join script (join ergonomics). Same bundle as GET
          *     /connect (by-IP login server, per-run key, control-plane CA), rendered into a self-contained
-         *     script the agent runs with ``curl -fsS -H 'Authorization: Bearer <key>' <base>/join.sh | sh``.
+         *     script the agent pipes to ``sh``, fetching it with the bearer on curl's stdin (``-K -``), as the
+         *     prompt's recipe shows.
          *     Collapses the reconstruct-the-join-by-hand friction into one command; works non-root. The
          *     script is handed the same base + bearer so it can pull the pinned client from /tailscale.tgz
          *     (air-gapped) before falling back to the public CDN.
@@ -953,6 +1109,12 @@ export interface paths {
          *     only inside a container). Defaults to ``container`` so a non-GUI caller keeps the baked host;
          *     the GUI passes the launch-mode toggle so the whole hand-off — not just the telemetry env —
          *     follows the operator's choice.
+         *
+         *     The stored prompt refers to $XORCISE_RUN_BEARER rather than carrying the run-control token
+         *     (#172), and only the launch command (/launch-profile) is built from that form, beside the
+         *     export that sets it. This endpoint is the "give this to your agent" hand-off — the GUI's copy
+         *     button, ``xorcise run prompt`` — and an agent started from it has no such export, so the token
+         *     is always inlined here.
          */
         get: operations["run_prompt_api_runs__run_id__prompt_get"];
         put?: never;
@@ -985,7 +1147,9 @@ export interface paths {
          *     Drops the recorded result and schedules a fresh grade off the request thread (the judge can be
          *     slow); the new result surfaces via the SAME `202 grading → grade` poll the initial grade uses,
          *     so the client needs no new state machine. De-duplicated, so a double click grades once. 404 if
-         *     the run is unknown; 409 if it has not reached a terminal state (nothing is sealed to grade yet).
+         *     the run is unknown; 409 if it has not reached a terminal state (nothing is sealed to grade yet),
+         *     or if it is never graded: it ended on an environment failure (`deploy_failed` / `crashed`), or
+         *     before the agent started (`cancelled` / `never_started`).
          */
         post: operations["regrade_run_api_runs__run_id__regrade_post"];
         delete?: never;
@@ -1011,7 +1175,8 @@ export interface paths {
          *
          *     Mirrors /result's state ladder exactly, so a caller polling for a report sees the same
          *     transitions it already handles: unknown run → 404; terminal-but-ungraded → 202
-         *     {"status": "grading"}; still-active run → 409. An unsupported `format` → 422.
+         *     {"status": "grading"}; ended on an environment failure → 200 {"status": "not_graded"};
+         *     unfinished run → 409. An unsupported `format` → 422.
          *     Content-Disposition is `attachment`, so a browser downloads rather than renders it.
          */
         get: operations["run_report_api_runs__run_id__report_get"];
@@ -1034,10 +1199,24 @@ export interface paths {
          * Run Result
          * @description Recorded 50/50 explainable result + disclosed conditions for a run.
          *
+         *     `verify=1` re-hashes the run's evidence and answers `evidence_verified`. It is OPT-IN because
+         *     three first-party consumers fetch this endpoint once per run in a loop — `run list`, the
+         *     leaderboard roll-up and the results table — and none of them shows a verdict: re-hashing on
+         *     every read put a whole run's evidence through SHA-256 per row, which measured at 3.3 ms per MB,
+         *     so a 124-run dataset at 3 MB a run spent over a second of a list command on it. Unasked, the
+         *     response still carries the digest (it is one indexed row read) with `evidence_status`
+         *     "recorded", and `GET /report` — one run, deliberately fetched, and the surface whose whole
+         *     point is the mismatch banner — keeps verifying unconditionally.
+         *
          *     When no result is recorded yet, distinguish three cases instead of a blanket 404:
          *     grading runs asynchronously after /complete, so a terminal-but-ungraded run is a normal
          *     transient state, NOT a failure. Unknown run → 404; terminal-but-ungraded → 202
-         *     {"status": "grading"}; still-active run → 409 (no result to read yet).
+         *     {"status": "grading"}; unfinished run → 409 (no result to read yet).
+         *
+         *     A run cut short by an environment failure (`deploy_failed` / `crashed`) is never graded — the
+         *     failure is not the agent's — so it answers a FINAL 200 {"status": "not_graded",
+         *     "terminal_trigger", "run_status", "detail"} instead of a "grading" that would never resolve.
+         *     `run_status` is the run's status wording (label, tone, why it ended).
          *
          *     A terminal-ungraded run also RE-DRIVES grading here (ensure_graded_async): if the grade was
          *     lost to a server restart or a hung judge call, polling the result heals it rather than spinning
@@ -1069,7 +1248,7 @@ export interface paths {
          *     live and the refreshed snapshot persisted — the derived stats column only, never the grade — so
          *     this page, the report and the replay agree (report_assembly.current_run_stats). Mirrors
          *     /result's states otherwise: unknown run → 404; terminal-but-ungraded → 202
-         *     {"status": "grading"}; still-active run → 409.
+         *     {"status": "grading"}; unfinished run → 409.
          */
         get: operations["run_stats_api_runs__run_id__stats_get"];
         put?: never;
@@ -1137,11 +1316,13 @@ export interface paths {
         put?: never;
         /**
          * Terminate Run
-         * @description Operator-initiated termination: abort an active run from GUI/CLI.
+         * @description Operator-initiated termination: stop an unfinished run from GUI/CLI.
          *
          *     404 if the run is unknown; 409 if it is already terminal. Closes run-control synchronously and
          *     returns the terminal entry immediately; the background finalizer drains telemetry, seals, and
          *     grades without blocking the caller. Result surfaces via `run status` (202 grading → grade).
+         *     A run the agent never started (still `created`) ends `cancelled` and is never graded, so its
+         *     result is the final `not_graded` answer instead (#187).
          */
         post: operations["terminate_run_api_runs__run_id__terminate_post"];
         delete?: never;
@@ -1225,6 +1406,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/system/nested-support/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refresh Nested Support
+         * @description Re-probe nested containers in THIS process, where run creation reads its verdicts (#195).
+         *
+         *     `doctor` calls this after the operator fixes the host (enables Rosetta, say), so the refusal
+         *     the server cached clears without a restart. A sync route: the probe starts a privileged
+         *     container and can take a minute, so it runs on the threadpool, not the event loop.
+         */
+        post: operations["refresh_nested_support_api_system_nested_support_refresh_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1285,7 +1490,7 @@ export interface components {
             /** Id */
             id: string;
             /** Kind */
-            kind?: string | null;
+            kind: string;
             /** Launch Command Template */
             launch_command_template?: string | null;
             /** Launch Mode */
@@ -1376,10 +1581,12 @@ export interface components {
          */
         AgentEventKind: "message" | "thinking" | "terminal_command" | "terminal_output" | "file_edit" | "file_read" | "browser_action" | "browser_observation" | "tool_call" | "tool_result" | "mcp_call" | "mcp_result" | "finding" | "flag" | "error" | "status" | "metric" | "unclassified" | "unknown";
         /**
-         * AgentHistoryEntry
-         * @description One recorded result in an agent's track record (the 50/50 breakdown).
+         * AgentHistoryView
+         * @description A history row plus the run's status wording (contracts.run.run_status), joined here because
+         *     contracts never import one another. A row whose run has since been deleted still reads exactly
+         *     as the run did — the GUI used to invent a "budget" trigger for it instead (#165).
          */
-        AgentHistoryEntry: {
+        AgentHistoryView: {
             /** Agent Id */
             agent_id: string;
             /**
@@ -1400,6 +1607,8 @@ export interface components {
             deterministic: number;
             /** Judge */
             judge: number;
+            /** Judge Status */
+            judge_status?: ("ok" | "partial" | "model-not-configured" | "unavailable") | null;
             /** Overall */
             overall: number;
             /**
@@ -1411,8 +1620,89 @@ export interface components {
             partial_trigger?: string | null;
             /** Run Id */
             run_id: string;
+            status: components["schemas"]["RunStatus"];
             /** Trace Ref */
             trace_ref?: string | null;
+        };
+        /**
+         * AgentSaveView
+         * @description A register/update result plus anything the operator should know about what was saved.
+         *     The save itself is never refused for these: a kind no harness answers to is the sanctioned
+         *     way to label your own CLI, so it is disclosed here rather than rejected (#141).
+         */
+        AgentSaveView: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Endpoint */
+            endpoint?: string | null;
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Launch Command Template */
+            launch_command_template?: string | null;
+            /** Launch Mode */
+            launch_mode?: ("host" | "container") | null;
+            /** Launch Tips */
+            launch_tips?: string[] | null;
+            /** Mission Preamble */
+            mission_preamble?: string[] | null;
+            /** Model */
+            model?: string | null;
+            /** Name */
+            name: string;
+            /** Otel */
+            otel?: string | null;
+            /**
+             * Version
+             * @default 1
+             */
+            version: number;
+            /**
+             * Warnings
+             * @default []
+             */
+            warnings: string[];
+        };
+        /**
+         * Announcement
+         * @description One active banner. `revision` increments when a published announcement is edited,
+         *     so the browser can re-show a banner the reader had already dismissed.
+         */
+        Announcement: {
+            /** Body Md */
+            body_md: string;
+            /** Dismissible */
+            dismissible: boolean;
+            /** Id */
+            id: string;
+            /**
+             * Placement
+             * @enum {string}
+             */
+            placement: "application" | "catalog";
+            /** Revision */
+            revision: number;
+            /**
+             * Tone
+             * @enum {string}
+             */
+            tone: "information" | "maintenance" | "incident" | "resolved";
+        };
+        /**
+         * AnnouncementsResponse
+         * @description GET /api/announcements. Empty is the normal answer — nothing published, the remote
+         *     catalog switched off, an older deployment that 404s, or any failure at all.
+         */
+        AnnouncementsResponse: {
+            /**
+             * Announcements
+             * @default []
+             */
+            announcements: components["schemas"]["Announcement"][];
         };
         /**
          * ArtifactSpec
@@ -1477,6 +1767,62 @@ export interface components {
              * @default false
              */
             running: boolean;
+        };
+        /**
+         * BootReconcileView
+         * @description What this server's start-up reconcile did, so the CLI can say it (#173).
+         *
+         *     At boot the server converges the live Docker/Headscale world to the persisted runs: a run whose
+         *     container survived the restart is adopted, one whose container is gone is closed out
+         *     (`crashed`), and a reservation whose deploy never finished is released. Before this, the only
+         *     record was a line in serve.log, and a reconcile that failed outright said nothing at all.
+         *
+         *       pending  the reconcile has not started yet
+         *       running  it is converging now (it runs in the background, after the server answers)
+         *       done     finished; the counts say what it did
+         *       failed   a whole step failed (`error`); the steps after it still ran, and the next start
+         *                retries. Single runs that could not be converged are listed in `failed`
+         *                whatever the state.
+         */
+        BootReconcileView: {
+            /**
+             * Aborted
+             * @default 0
+             */
+            aborted: number;
+            /**
+             * Adopted
+             * @default 0
+             */
+            adopted: number;
+            /**
+             * Error
+             * @default
+             */
+            error: string;
+            /**
+             * Failed
+             * @default []
+             */
+            failed: string[];
+            /** Finished At */
+            finished_at?: string | null;
+            /**
+             * Release Pending
+             * @default []
+             */
+            release_pending: string[];
+            /**
+             * Released
+             * @default 0
+             */
+            released: number;
+            /**
+             * State
+             * @default pending
+             * @enum {string}
+             */
+            state: "pending" | "running" | "done" | "failed";
         };
         /**
          * CatalogConfigUpdate
@@ -1764,6 +2110,31 @@ export interface components {
             weight: number;
         };
         /**
+         * DeleteRefusal
+         * @description The 409 body of DELETE /runs/{id} and DELETE /agents/{name} (#173).
+         *
+         *     A run's row is the only handle anything has on its environment, so a delete is refused while
+         *     that environment may still be up:
+         *       running     a run has not finished (any state but terminal). Terminate it first.
+         *       grading     its grade is in flight, and grading may still need the environment.
+         *       unreleased  a finished run's environment could not be torn down (Docker or Headscale down).
+         *     Only `unreleased` is `forceable`: `force=true` deletes anyway, accepting that a container or
+         *     tailnet nodes may be left running.
+         */
+        DeleteRefusal: {
+            /** Detail */
+            detail: string;
+            /** Forceable */
+            forceable: boolean;
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "running" | "grading" | "unreleased";
+            /** Run Ids */
+            run_ids: string[];
+        };
+        /**
          * EnvironmentSpec
          * @description Authored container/network SOURCE. Ingestion fuses this into the run-ready
          *     image (MissionRef.image). No file reading here — pure shape.
@@ -1856,6 +2227,11 @@ export interface components {
              */
             check_breakdown: components["schemas"]["CheckVerdict"][];
             /**
+             * Grading Failed
+             * @default false
+             */
+            grading_failed: boolean;
+            /**
              * Hard Fails
              * @default []
              */
@@ -1904,6 +2280,21 @@ export interface components {
             trace_ref?: string | null;
             /** Transcript Items */
             transcript_items?: number | null;
+        };
+        /**
+         * GradingView
+         * @description The 202 /result, /report and /stats give while a terminal run's grade is still being
+         *     recorded — transient progress, not a failure: poll again.
+         */
+        GradingView: {
+            /** Run Id */
+            run_id: string;
+            /**
+             * Status
+             * @default grading
+             * @constant
+             */
+            status: "grading";
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -2103,6 +2494,20 @@ export interface components {
             required_major: number;
         };
         /**
+         * MissionDeleteOut
+         * @description DELETE /{id}?purge=true result. The mission is uninstalled whatever image_outcome says.
+         */
+        MissionDeleteOut: {
+            /** Detail */
+            detail?: string | null;
+            /** Image */
+            image: string | null;
+            /** Image Outcome */
+            image_outcome: string;
+            /** Mission Id */
+            mission_id: string;
+        };
+        /**
          * MissionInfo
          * @description What `GET /runs/{id}/mission` returns: the run's single mission, unlocked.
          */
@@ -2232,6 +2637,40 @@ export interface components {
             transcript_max_tokens?: number | null;
         };
         /**
+         * NestedSupportView
+         * @description What the running server answers after re-probing nested containers (#195).
+         *
+         *     `native` is the daemon's own platform; `foreign` holds every other platform a run has asked
+         *     the server about (e.g. linux/amd64 on Apple Silicon), re-probed in the same call. These are
+         *     the verdicts run creation reads, so they are what `doctor` shows.
+         */
+        NestedSupportView: {
+            /**
+             * Foreign
+             * @default []
+             */
+            foreign: components["schemas"]["NestedVerdictView"][];
+            native: components["schemas"]["NestedVerdictView"];
+        };
+        /**
+         * NestedVerdictView
+         * @description One nested-container verdict the server holds. `platform` is "" for the daemon's native
+         *     platform; `remediation` is "" when there is nothing to fix.
+         */
+        NestedVerdictView: {
+            /** Detail */
+            detail: string;
+            /** Ok */
+            ok: boolean;
+            /** Platform */
+            platform: string;
+            /**
+             * Remediation
+             * @default
+             */
+            remediation: string;
+        };
+        /**
          * NetworkConfigUpdate
          * @description Partial update to the distributed network addresses. None = leave; "" = unset to default.
          */
@@ -2253,6 +2692,32 @@ export interface components {
             advertise_host?: string | null;
             /** Headscale Url */
             headscale_url?: string | null;
+        };
+        /**
+         * NotGradedView
+         * @description The FINAL answer /result, /report and /stats give for a run that is never graded: one cut
+         *     short by an environment failure (`deploy_failed` / `crashed`, #109), or one an operator stopped
+         *     before the agent started (`cancelled`), or one whose budget ran out before it did
+         *     (`never_started`, #187). A 200, not a 202 —
+         *     an answer, not progress — so a poll loop stops on it.
+         */
+        NotGradedView: {
+            /** Detail */
+            detail?: string | null;
+            /** Run Id */
+            run_id: string;
+            run_status: components["schemas"]["RunStatus"];
+            /**
+             * Status
+             * @default not_graded
+             * @constant
+             */
+            status: "not_graded";
+            /**
+             * Terminal Trigger
+             * @enum {string}
+             */
+            terminal_trigger: "done" | "timeout" | "operator" | "cancelled" | "never_started" | "deploy_failed" | "crashed";
         };
         /**
          * PlaneStatus
@@ -2294,10 +2759,76 @@ export interface components {
              */
             state: "ok" | "down" | "not_deployed";
         };
+        /** PruneCandidateView */
+        PruneCandidateView: {
+            /** Image Id */
+            image_id: string;
+            /** Reason */
+            reason: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Slug */
+            slug: string;
+            /** Tags */
+            tags: string[];
+        };
+        /** PruneFailureView */
+        PruneFailureView: {
+            /** Error */
+            error: string;
+            /** Image Id */
+            image_id: string;
+            /** Tags */
+            tags: string[];
+        };
+        /**
+         * PruneReport
+         * @description What prune found (candidates) and, when applied, what it removed or could not.
+         */
+        PruneReport: {
+            /** Applied */
+            applied: boolean;
+            /** Candidates */
+            candidates: components["schemas"]["PruneCandidateView"][];
+            /** Failed */
+            failed: components["schemas"]["PruneFailureView"][];
+            /** Reclaimable Bytes */
+            reclaimable_bytes: number;
+            /** Removed */
+            removed: string[];
+            /**
+             * Skipped
+             * @default []
+             */
+            skipped: string[];
+        };
+        /** PruneRequest */
+        PruneRequest: {
+            /**
+             * Apply
+             * @default false
+             */
+            apply: boolean;
+            /** Image Ids */
+            image_ids?: string[] | null;
+        };
+        /** PullJobRequest */
+        PullJobRequest: {
+            /**
+             * Refresh
+             * @default false
+             */
+            refresh: boolean;
+        };
         /** PullJobStarted */
         PullJobStarted: {
             /** Job Id */
             job_id: string;
+            /**
+             * Joined
+             * @default false
+             */
+            joined: boolean;
         };
         /**
          * PullJobView
@@ -2350,6 +2881,26 @@ export interface components {
             span_id: string;
             /** Trace Id */
             trace_id?: string | null;
+        };
+        /**
+         * ReleaseBacklogView
+         * @description Finished runs whose environment a teardown failed to release (#173): their container or
+         *     tailnet nodes are still up, and the release sweeper keeps retrying. Runs merely waiting for
+         *     their grade to finish are not counted — that is normal, not something to act on.
+         */
+        ReleaseBacklogView: {
+            /** Oldest Ended At */
+            oldest_ended_at?: string | null;
+            /**
+             * Oldest Error
+             * @default
+             */
+            oldest_error: string;
+            /**
+             * Pending
+             * @default 0
+             */
+            pending: number;
         };
         /**
          * ResolvedTerrainV2
@@ -2514,6 +3065,12 @@ export interface components {
              * @default
              */
             name: string;
+            /**
+             * Outcome
+             * @description How this run counts in every aggregate (`run_outcome`), derived from terminal_trigger on
+             *     every read and never persisted. Clients read this instead of re-deriving it (#159).
+             */
+            readonly outcome: ("completed" | "partial" | "infra_failed" | "not_started") | null;
             /** Platform */
             platform?: string | null;
             /** Platform Digest */
@@ -2529,12 +3086,30 @@ export interface components {
              * @default generic
              */
             source_agent: string;
-            /** State */
-            state: string;
+            /** Start Trigger */
+            start_trigger?: ("telemetry" | "run_control" | "tailnet_key") | null;
+            /**
+             * Start Trigger Label
+             * @description How `start_trigger` reads beside `started_at` (START_TRIGGER_LABELS), so the GUI, the
+             *     CLI and the report word it identically. None when the run has not started.
+             */
+            readonly start_trigger_label: string | null;
+            /** Started At */
+            started_at?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "created" | "xorcising" | "terminal";
+            /**
+             * @description How this run is shown (`run_status`): label, tone and why it ended. Clients render this
+             *     instead of mapping the trigger themselves, so the CLI and the GUI agree (#165).
+             */
+            readonly status: components["schemas"]["RunStatus"];
             /** Terminal Detail */
             terminal_detail?: string | null;
             /** Terminal Trigger */
-            terminal_trigger?: string | null;
+            terminal_trigger?: ("done" | "timeout" | "operator" | "cancelled" | "never_started" | "deploy_failed" | "crashed") | null;
         };
         /**
          * RunEntry
@@ -2589,6 +3164,12 @@ export interface components {
              * @default
              */
             name: string;
+            /**
+             * Outcome
+             * @description How this run counts in every aggregate (`run_outcome`), derived from terminal_trigger on
+             *     every read and never persisted. Clients read this instead of re-deriving it (#159).
+             */
+            readonly outcome: ("completed" | "partial" | "infra_failed" | "not_started") | null;
             /** Platform */
             platform?: string | null;
             /** Platform Digest */
@@ -2602,12 +3183,30 @@ export interface components {
              * @default generic
              */
             source_agent: string;
-            /** State */
-            state: string;
+            /** Start Trigger */
+            start_trigger?: ("telemetry" | "run_control" | "tailnet_key") | null;
+            /**
+             * Start Trigger Label
+             * @description How `start_trigger` reads beside `started_at` (START_TRIGGER_LABELS), so the GUI, the
+             *     CLI and the report word it identically. None when the run has not started.
+             */
+            readonly start_trigger_label: string | null;
+            /** Started At */
+            started_at?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "created" | "xorcising" | "terminal";
+            /**
+             * @description How this run is shown (`run_status`): label, tone and why it ended. Clients render this
+             *     instead of mapping the trigger themselves, so the CLI and the GUI agree (#165).
+             */
+            readonly status: components["schemas"]["RunStatus"];
             /** Terminal Detail */
             terminal_detail?: string | null;
             /** Terminal Trigger */
-            terminal_trigger?: string | null;
+            terminal_trigger?: ("done" | "timeout" | "operator" | "cancelled" | "never_started" | "deploy_failed" | "crashed") | null;
         };
         /**
          * RunEnvironmentView
@@ -2622,6 +3221,8 @@ export interface components {
          *       starting  deployed; the mission services / subnet router are still coming up
          *       ready     every inner service is running and the run's router is on the tailnet
          *       failed    the environment exited or never came up (the run is closed out as deploy_failed)
+         *       releasing terminal run — the container or tailnet nodes are not torn down yet: grading has
+         *                 not finished, or a teardown failed and is being retried (#173)
          *       released  terminal run — the environment has been torn down
          */
         RunEnvironmentView: {
@@ -2635,13 +3236,18 @@ export interface components {
              * @default false
              */
             ready: boolean;
+            /**
+             * Release Attempts
+             * @default 0
+             */
+            release_attempts: number;
             /** Run Id */
             run_id: string;
             /**
              * State
              * @enum {string}
              */
-            state: "none" | "starting" | "ready" | "failed" | "released";
+            state: "none" | "starting" | "ready" | "failed" | "releasing" | "released";
         };
         /**
          * RunEventsView
@@ -2681,8 +3287,30 @@ export interface components {
          * @description Recorded result + disclosed conditions + partial state.
          */
         RunResultView: {
+            /** Agent Model */
+            agent_model?: string | null;
             conditions: components["schemas"]["ResultConditions"];
+            /** Evidence Digest */
+            evidence_digest?: string | null;
+            /**
+             * Evidence Status
+             * @default none
+             * @enum {string}
+             */
+            evidence_status: "none" | "recorded" | "verified" | "mismatch" | "unverifiable" | "unavailable" | "unreadable";
+            /** Evidence Verified */
+            evidence_verified?: boolean | null;
             grade: components["schemas"]["GradeResult"];
+            /**
+             * Models Reported
+             * @default []
+             */
+            models_reported: string[];
+            /**
+             * Models Reported Truncated
+             * @default 0
+             */
+            models_reported_truncated: number;
             /**
              * Partial
              * @default false
@@ -2690,6 +3318,67 @@ export interface components {
             partial: boolean;
             /** Partial Trigger */
             partial_trigger?: string | null;
+            /** Telemetry Window */
+            telemetry_window?: string | null;
+        };
+        /**
+         * RunScore
+         * @description One finished run, as the performance views draw it.
+         */
+        RunScore: {
+            /** Agent Id */
+            agent_id: string;
+            /**
+             * Bucket
+             * @enum {string}
+             */
+            bucket: "scored" | "no_judge" | "stopped" | "grading_failed" | "infra_failed" | "grading";
+            /** Completed At */
+            completed_at?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Current Version */
+            current_version: boolean;
+            /** Deterministic */
+            deterministic?: number | null;
+            /**
+             * Intel Disclosed
+             * @default 0
+             */
+            intel_disclosed: number;
+            /** Judge */
+            judge?: number | null;
+            /** Judge Model */
+            judge_model?: string | null;
+            /** Judge Status */
+            judge_status?: ("ok" | "partial" | "model-not-configured" | "unavailable") | null;
+            /** Judge Upper */
+            judge_upper?: number | null;
+            /** Mission */
+            mission: string;
+            /** Mission Version */
+            mission_version: string;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "completed" | "partial" | "infra_failed";
+            /** Overall */
+            overall?: number | null;
+            /** Overall Upper */
+            overall_upper?: number | null;
+            /** Run Id */
+            run_id: string;
+            /** Terminal Trigger */
+            terminal_trigger?: string | null;
+            /**
+             * Timed Out
+             * @default false
+             */
+            timed_out: boolean;
         };
         /**
          * RunStats
@@ -2710,6 +3399,16 @@ export interface components {
              *     }
              */
             counts: components["schemas"]["CountStats"];
+            /**
+             * Models
+             * @default []
+             */
+            models: string[];
+            /**
+             * Models Truncated
+             * @default 0
+             */
+            models_truncated: number;
             /** Projection */
             projection?: string | null;
             /** @default {} */
@@ -2725,6 +3424,22 @@ export interface components {
              *     }
              */
             tokens: components["schemas"]["TokenStats"];
+        };
+        /**
+         * RunStatus
+         * @description How a run is SHOWN — the one wording the CLI, the GUI and the report all render, so the two
+         *     surfaces cannot describe the same run differently (#165).
+         */
+        RunStatus: {
+            /** Detail */
+            detail?: string | null;
+            /** Label */
+            label: string;
+            /**
+             * Tone
+             * @enum {string}
+             */
+            tone: "ok" | "active" | "err" | "muted";
         };
         /**
          * RunTelemetryView
@@ -2769,6 +3484,101 @@ export interface components {
              */
             judge: number;
         };
+        /**
+         * ScoreSummary
+         * @description A group of finished runs (every run, one agent, one mission version, or one agent on one
+         *     mission version), summarised by the rules in `ScoreBucket`.
+         */
+        ScoreSummary: {
+            /** Agent Id */
+            agent_id?: string | null;
+            /** Agent Name */
+            agent_name?: string | null;
+            /**
+             * Assisted
+             * @default 0
+             */
+            assisted: number;
+            /** Best */
+            best?: number | null;
+            /**
+             * Completed
+             * @default 0
+             */
+            completed: number;
+            /** Current Version */
+            current_version?: boolean | null;
+            /**
+             * Grading
+             * @default 0
+             */
+            grading: number;
+            /**
+             * Grading Failed
+             * @default 0
+             */
+            grading_failed: number;
+            /**
+             * Infra Failed
+             * @default 0
+             */
+            infra_failed: number;
+            /** Judge Gap */
+            judge_gap?: number | null;
+            /**
+             * Judge Models
+             * @default []
+             */
+            judge_models: string[];
+            /** Last Run */
+            last_run?: string | null;
+            /** Mean */
+            mean?: number | null;
+            /** Mean Deterministic */
+            mean_deterministic?: number | null;
+            /** Mean Judge */
+            mean_judge?: number | null;
+            /** Median */
+            median?: number | null;
+            /** Mission */
+            mission?: string | null;
+            /** Mission Version */
+            mission_version?: string | null;
+            /**
+             * No Judge
+             * @default 0
+             */
+            no_judge: number;
+            /**
+             * Partial Judge
+             * @default 0
+             */
+            partial_judge: number;
+            /** Q1 */
+            q1?: number | null;
+            /** Q3 */
+            q3?: number | null;
+            /**
+             * Runs
+             * @default 0
+             */
+            runs: number;
+            /**
+             * Scored
+             * @default 0
+             */
+            scored: number;
+            /**
+             * Stopped
+             * @default 0
+             */
+            stopped: number;
+            /**
+             * Timed Out
+             * @default 0
+             */
+            timed_out: number;
+        };
         /** SubmitArtifactRequest */
         SubmitArtifactRequest: {
             /** Content */
@@ -2791,6 +3601,7 @@ export interface components {
          * @description Read-only Reflect view powering the GUI System / Modules / Catalog cards.
          */
         SystemInfo: {
+            boot_reconcile?: components["schemas"]["BootReconcileView"] | null;
             catalog: components["schemas"]["CatalogStatusView"];
             /**
              * Db Schema
@@ -2814,6 +3625,7 @@ export interface components {
             pid?: number | null;
             /** Planes */
             planes: components["schemas"]["PlaneStatus"][];
+            releases?: components["schemas"]["ReleaseBacklogView"] | null;
             /**
              * Remotes
              * @default []
@@ -3040,6 +3852,8 @@ export interface components {
             elapsed_seconds?: number | null;
             /** First Event Ts */
             first_event_ts?: string | null;
+            /** Last Event End Ts */
+            last_event_end_ts?: string | null;
             /** Last Event Ts */
             last_event_ts?: string | null;
             /** Longest Tool Ms */
@@ -3143,7 +3957,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AgentEntry"];
+                    "application/json": components["schemas"]["AgentSaveView"];
                 };
             };
             /** @description Validation Error */
@@ -3178,7 +3992,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AgentEntry"];
+                    "application/json": components["schemas"]["AgentSaveView"];
                 };
             };
             /** @description Validation Error */
@@ -3194,7 +4008,9 @@ export interface operations {
     };
     remove_agent_api_agents__name__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                force?: boolean;
+            };
             header?: never;
             path: {
                 name: string;
@@ -3209,6 +4025,15 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteRefusal"];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -3238,7 +4063,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AgentHistoryEntry"][];
+                    "application/json": components["schemas"]["AgentHistoryView"][];
                 };
             };
             /** @description Validation Error */
@@ -3248,6 +4073,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    active_api_announcements_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnnouncementsResponse"];
                 };
             };
         };
@@ -3643,6 +4488,39 @@ export interface operations {
             };
         };
     };
+    prune_images_api_missions_prune_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PruneRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PruneReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     active_pull_job_api_missions_pull_jobs_get: {
         parameters: {
             query: {
@@ -3738,7 +4616,9 @@ export interface operations {
     };
     delete_mission_api_missions__mission_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                purge?: boolean;
+            };
             header?: never;
             path: {
                 mission_id: string;
@@ -3747,6 +4627,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Uninstalled, with purge=true */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MissionDeleteOut"];
+                };
+            };
             /** @description Successful Response */
             204: {
                 headers: {
@@ -3836,7 +4725,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PullJobRequest"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             202: {
@@ -3920,6 +4813,71 @@ export interface operations {
             };
         };
     };
+    run_scores_api_results_runs_get: {
+        parameters: {
+            query?: {
+                agent?: string | null;
+                mission?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunScore"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    score_summary_api_results_summary_get: {
+        parameters: {
+            query?: {
+                by?: "all" | "agent" | "mission" | "mission_agent";
+                agent?: string | null;
+                mission?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScoreSummary"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_runs_api_runs_get: {
         parameters: {
             query?: never;
@@ -3975,8 +4933,50 @@ export interface operations {
     };
     delete_run_api_runs__run_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                force?: boolean;
+            };
             header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteRefusal"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_alive_api_runs__run_id__alive_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
             path: {
                 run_id: string;
             };
@@ -4549,14 +5549,39 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description The report as `text/markdown` or `text/html` — or, for a run cut short by an environment failure, the not-graded answer as JSON. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["NotGradedView"];
+                    "text/html": unknown;
+                    "text/markdown": unknown;
                 };
+            };
+            /** @description Terminal, grade not recorded yet — poll again. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GradingView"];
+                };
+            };
+            /** @description No such run. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The run has not ended yet — there is nothing to read. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -4571,7 +5596,9 @@ export interface operations {
     };
     run_result_api_runs__run_id__result_get: {
         parameters: {
-            query?: never;
+            query?: {
+                verify?: boolean;
+            };
             header?: never;
             path: {
                 run_id: string;
@@ -4586,8 +5613,31 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RunResultView"];
+                    "application/json": components["schemas"]["RunResultView"] | components["schemas"]["NotGradedView"];
                 };
+            };
+            /** @description Terminal, grade not recorded yet — poll again. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GradingView"];
+                };
+            };
+            /** @description No such run. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The run has not ended yet — there is nothing to read. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -4617,8 +5667,31 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RunStats"];
+                    "application/json": components["schemas"]["RunStats"] | components["schemas"]["NotGradedView"];
                 };
+            };
+            /** @description Terminal, grade not recorded yet — poll again. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GradingView"];
+                };
+            };
+            /** @description No such run. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The run has not ended yet — there is nothing to read. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -4810,6 +5883,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SystemInfo"];
+                };
+            };
+        };
+    };
+    refresh_nested_support_api_system_nested_support_refresh_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NestedSupportView"];
                 };
             };
         };

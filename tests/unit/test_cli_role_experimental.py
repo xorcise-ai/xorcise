@@ -3,8 +3,9 @@
 Only role `all` is a complete install. The others boot — which is precisely the hazard, since a
 thing that starts looks like a thing that works. The role work shipped the ACTIVATION machinery
 and said so explicitly ("not any role's real behaviour"), but nothing carried that to the
-operator. Worst case, measured: `serve --role control` answers POST /runs with 201 and a real
-image ref while launching no container at all, and the run sits at `created` forever.
+operator. Worst case, measured: `serve --role control` answered POST /runs with 201 and a real
+image ref while launching no container at all, and the run sat at `created` forever. It now
+refuses with a 503 (#168), and the boot warning says so.
 """
 
 from __future__ import annotations
@@ -59,13 +60,13 @@ def test_boot_warning_names_the_role_as_experimental(role, capsys) -> None:
     assert "EXPERIMENTAL" in err
 
 
-def test_boot_warning_says_control_does_not_actually_run_anything(capsys) -> None:
-    # The single most important sentence in this change: on role `control` a run is accepted and
-    # never executed. An operator must learn that at boot, not from a run that never starts.
+def test_boot_warning_says_control_cannot_launch_runs(capsys) -> None:
+    # The single most important sentence for role `control`: it cannot run anything. An operator
+    # must learn that at boot, not from the first refused run (#168).
     _warn_experimental_role("control")
     err = capsys.readouterr().err
-    assert "STUB" in err.upper()
-    assert "201" in err
+    assert "cannot launch runs" in err
+    assert "503" in err
 
 
 def test_default_role_boots_without_a_warning(capsys) -> None:

@@ -14,6 +14,7 @@ function grade(over: Partial<GradeResult> = {}): GradeResult {
     major_deductions: [],
     hard_fails: [],
     judge_status: "ok",
+    grading_failed: false,
     judge_detail: null,
     judge_prompt: null,
     judge_breakdown: [],
@@ -25,6 +26,8 @@ function grade(over: Partial<GradeResult> = {}): GradeResult {
 
 function stats(over: Partial<RunStats> = {}): RunStats {
   return {
+    models: [],
+    models_truncated: 0,
     tokens: {
       input: 12000,
       output: 1300,

@@ -83,6 +83,9 @@ def _seed_run_with_evidence(home: Path) -> str:
     SqliteObservedFactsStore().record(
         ObservedFact(run_id=rid, kind="run-control", name="flag-submitted", value="True")
     )
+    # Seeded straight into the stores, so nothing marked the agent as started, as the receiver and
+    # run-control would have (#209); a timeout on a run that never started is not graded (#187).
+    runs.mark_started(rid, "telemetry", datetime.now(UTC))
     # NOTE: do NOT pre-seal — terminate_run seals as part of its own flow
     return rid
 

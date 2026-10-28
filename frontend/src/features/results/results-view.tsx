@@ -13,7 +13,12 @@ import { Card, CardContent } from "@/components/ui/card";
 import { StatTile, StatTileRow } from "@/components/ui/stat-tile";
 import { ApiError } from "@/lib/api/client";
 import { fullTime, formatDuration } from "@/lib/api/format";
-import type { GradeResult, RunEntry } from "@/lib/api/types";
+import {
+  isNotGraded,
+  type GradeResult,
+  type NotGradedView,
+  type RunEntry,
+} from "@/lib/api/types";
 import { useRun } from "@/features/runs/queries";
 import { useAgents } from "@/features/agents/queries";
 import { DeleteRunButton } from "@/features/runs/delete-run-dialog";
@@ -81,6 +86,17 @@ export function ResultsView({ runId }: { runId: string | null }) {
   // run completes, so the endpoint returns 202 {status:"grading"},
   // which api.get surfaces as a gradeless body. Treat `grade` as possibly absent
   // and render a graceful state instead of crashing on r.overall.
+  // A run whose environment failed (deploy_failed / crashed), or that was stopped before its agent
+  // started (cancelled / never_started), is never graded — a final answer,
+  // not a wait, so it gets its own state rather than a "Grading in progress" that never ends.
+  if (isNotGraded(view))
+    return (
+      <NotGradedState
+        view={view}
+        name={run.data?.name}
+        onDeleted={() => router.push("/runs")}
+      />
+    );
   const r = view.grade as GradeResult | undefined;
   const conditions = view.conditions;
 
@@ -148,6 +164,7 @@ export function ResultsView({ runId }: { runId: string | null }) {
                 agents.data?.find((a) => a.id === run.data!.agent_id)?.name ??
                 run.data.agent_id.slice(0, 8)
               }
+              telemetryWindow={view.telemetry_window}
             />
           )}
 
@@ -166,25 +183,14 @@ export function ResultsView({ runId }: { runId: string | null }) {
                   className="mt-0.5 size-4 shrink-0 text-primary"
                 />
                 <div>
+                  {/* The run's status wording (RunEntry.status) — the heading and sentence the
+                      run page and `xorcise run status` show for the same run (#165). */}
                   <p className="text-body font-medium text-foreground">
-                    {view.partial_trigger === "operator"
-                      ? "Partial — stopped early"
-                      : "Partial — timed out"}
+                    Partial — {run.data?.status.label ?? "did not finish"}
                   </p>
-                  <p className="mt-2 max-w-[70ch] text-body text-text-secondary">
-                    {view.partial_trigger === "operator"
-                      ? "This run was terminated by the operator before it finished."
-                      : "This run did not finish before its deadline."}
-                    {view.partial_trigger ? (
-                      <>
-                        {" "}
-                        (
-                        <span className="font-mono text-text-tertiary">
-                          {view.partial_trigger}
-                        </span>
-                        )
-                      </>
-                    ) : null}{" "}
+                  <p className="mt-2 text-body text-text-secondary">
+                    {run.data?.status.detail ??
+                      "This run did not finish on the agent's own terms."}{" "}
                     Scores below reflect only what was completed.
                   </p>
                 </div>
@@ -214,7 +220,7 @@ export function ResultsView({ runId }: { runId: string | null }) {
           <ArtifactsSection runId={r.run_id} />
 
           {/* ═══ CONDITIONS — what this result was produced under ═══ */}
-          <ConditionsCard conditions={conditions} />
+          <ConditionsCard conditions={conditions} agentModel={view.agent_model} />
 
           {/* ═══ FOOTER — trace ref + deep-link + delete ═══ */}
           {/* The live view hosts the trace; static export routes by ?id= (no /runs/[id] segment). */}
@@ -243,24 +249,51 @@ export function ResultsView({ runId }: { runId: string | null }) {
 }
 
 /**
- * The run's identity metadata, one canonical set shared with the live run header and the HTML/MD
- * exports: Mission and Agent (each carrying its pinned version in the name), the Harness that ran
- * it, when it Started and how long it ran (Duration). A compact labelled grid so the reader knows
- * exactly which run this is before reading the scores it produced.
+ * The run's identity metadata: Mission and Agent (each carrying its pinned version in the name),
+ * the Harness that ran it, when it was Created, when the agent Started and what showed it (#209),
+ * and the wall clock it occupied (Duration, from creation — what the run COST, not how long the
+ * agent worked). A compact labelled grid so the reader knows exactly which
+ * run this is before reading the scores it produced.
+ *
+ * Beside Duration sits the report's Telemetry window (how long the harness's own telemetry spans),
+ * so the pair the report puts side by side reads side by side here too: they agree on a healthy
+ * run and diverge loudly on a crashed one. The cell is the server's text, its "reported by the
+ * harness" qualifier or its reason for withholding the span included (#146); absent when the
+ * report omits the row too.
  */
-function RunMetaBar({ run, agentName }: { run: RunEntry; agentName: string }) {
+function RunMetaBar({
+  run,
+  agentName,
+  telemetryWindow,
+}: {
+  run: RunEntry;
+  agentName: string;
+  telemetryWindow?: string | null;
+}) {
   const elapsed = run.completed_at
     ? (new Date(run.completed_at).getTime() - new Date(run.created_at).getTime()) / 1000
     : null;
-  const items: { label: string; value: string; mono?: boolean }[] = [
+  // `wide` cells span the whole row and wrap: the telemetry window's text is a sentence when the
+  // span is withheld, and truncating it cut off exactly the reason, or the "reported by the
+  // harness" qualifier, that keeps a self-report from reading as a platform fact.
+  // `sub` is a second, quieter line under the value: what showed the agent had started (#209).
+  const items: { label: string; value: string; sub?: string; mono?: boolean; wide?: boolean }[] = [
     { label: "Mission", value: `${run.mission} v${run.mission_version ?? run.install_revision}` },
     { label: "Agent", value: `${agentName} v${run.agent_version}` },
     { label: "Harness", value: run.source_agent },
     // The architecture the run executed on (§43-UX8) — omitted for a pre-contract run so its
     // bar is unchanged, mono because it is a machine token (linux/arm64).
     ...(run.platform ? [{ label: "Platform", value: run.platform, mono: true }] : []),
-    { label: "Started", value: fullTime(run.created_at), mono: true },
+    { label: "Created", value: fullTime(run.created_at), mono: true },
+    // When the agent started, and what showed it (#209) on the line beneath.
+    {
+      label: "Started",
+      value: run.started_at ? fullTime(run.started_at) : "—",
+      sub: run.start_trigger_label ?? undefined,
+      mono: true,
+    },
     { label: "Duration", value: formatDuration(elapsed), mono: true },
+    ...(telemetryWindow ? [{ label: "Telemetry window", value: telemetryWindow, wide: true }] : []),
   ];
   return (
     <Card className="bg-raised">
@@ -274,17 +307,94 @@ function RunMetaBar({ run, agentName }: { run: RunEntry; agentName: string }) {
               key={it.label}
               label={it.label}
               value={
-                <span className={cn("block truncate", it.mono && "font-mono")}>
-                  {it.value}
-                </span>
+                <>
+                  <span
+                    className={cn(
+                      "block",
+                      it.wide ? "break-words" : "truncate",
+                      it.mono && "font-mono",
+                    )}
+                  >
+                    {it.value}
+                  </span>
+                  {it.sub && (
+                    <span className="block truncate text-caption font-normal text-text-tertiary">
+                      {it.sub}
+                    </span>
+                  )}
+                </>
               }
               small
-              title={it.value}
+              title={it.sub ? `${it.value} · ${it.sub}` : it.value}
+              className={cn(it.wide && "col-span-full")}
             />
           ))}
         </StatTileRow>
       </CardContent>
     </Card>
+  );
+}
+
+// A run cut short by an environment failure — the readiness gate's deploy_failed or the boot
+// reconcile's crashed — or ended before its agent started (cancelled / never_started, #187). The
+// server never grades it, so there is no scorecard to show: say why instead, with the reason recorded when it ended. role="status", not
+// "alert" — the run is over and nothing here needs acting on.
+function NotGradedState({
+  view,
+  name,
+  onDeleted,
+}: {
+  view: NotGradedView;
+  name?: string;
+  onDeleted: () => void;
+}) {
+  // The page chrome stays: the trace download and Delete matter MOST here — the traces are the
+  // evidence of what failed, and a run that will never be scored is the likeliest to be cleared
+  // away. Re-evaluate and the report download are left out: the server refuses the first (409)
+  // and has no report to serve for the second.
+  return (
+    <Page className="gap-3">
+      <PageHead>
+        <PageTitle
+          eyebrow="Run Result"
+          subtitle={
+            <span className="font-mono text-text-tertiary">{view.run_id}</span>
+          }
+        >
+          {name ?? "Result"}
+        </PageTitle>
+        <div className="flex flex-wrap items-center gap-2">
+          <DownloadTraces runId={view.run_id} />
+          <DeleteRunButton runId={view.run_id} onDeleted={onDeleted} />
+        </div>
+      </PageHead>
+      <PageBody>
+        <div
+          role="status"
+          className="mx-auto flex w-full max-w-4xl flex-col items-center gap-3 p-4 text-center"
+        >
+          <AlertTriangle className="size-8 text-text-tertiary" />
+          <p className="text-body font-bold text-heading">
+            Not graded — {view.run_status.label}
+          </p>
+          {/* The server's sentence (run_status.detail) — what `xorcise run status` prints. */}
+          <p className="max-w-md text-body text-text-secondary">
+            {view.run_status.detail}
+          </p>
+          {view.detail && (
+            <pre className="max-h-72 w-full max-w-2xl overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-deepest p-3 text-left font-mono text-dense text-foreground">
+              {view.detail}
+            </pre>
+          )}
+          <Link
+            href={`/runs/live?id=${encodeURIComponent(view.run_id)}`}
+            className="font-medium text-primary underline underline-offset-2"
+          >
+            View trace →
+          </Link>
+        </div>
+      </PageBody>
+    </Page>
   );
 }
 

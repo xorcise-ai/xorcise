@@ -100,14 +100,15 @@ export function useRunLaunchProfile(runId: string, launchMode: LaunchMode = "hos
   });
 }
 
-// Delete a run's result + record. 409 if the run is still active (terminate first);
+// Delete a run and everything recorded for it. 409 if the run is still active (terminate first);
 // surfaces as an ApiError the caller can show. Invalidates the runs list and agent history so the
 // deleted run leaves every view.
 export function useDeleteRun() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (runId: string) =>
-      api.del(`/runs/${encodeURIComponent(runId)}`),
+    // `force` overrides only a failed environment teardown (see isForceableRefusal).
+    mutationFn: ({ runId, force = false }: { runId: string; force?: boolean }) =>
+      api.del(`/runs/${encodeURIComponent(runId)}${force ? "?force=true" : ""}`),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["runs"] });
       qc.invalidateQueries({ queryKey: ["agents"] });
@@ -133,17 +134,35 @@ export function useTerminateRun() {
   });
 }
 
-/** The run's mission-environment state (GET /runs/{id}/environment) — Starting / Ready / Failed /
- *  Released / None. Polls while the run is live so the Environment chip reflects the environment
- *  actually coming up (or dying) without a manual refresh; stops once the run is terminal, where
- *  the state is a fixed "Released". Served from the readiness gate's last observation, so polling
- *  it is cheap (no Docker probe per request). */
+/** A finished run's teardown is retried with a backoff of 30 s and up, so polling its
+ *  "releasing" state faster than this would only re-read the same answer. */
+const RELEASE_POLL_MS = 10_000;
+
+/** How often to re-read a run's environment. While the run is live, at the run poll rate. Once it
+ *  has finished, keep going until the server says the environment is gone (`released`, or `none`
+ *  for a static mission): the last state read while live is still `ready`, and stopping on it
+ *  froze the chip at Ready for a finished run (#173). `releasing` is re-read at the slower rate
+ *  that matches the teardown's retry backoff. */
+export function environmentPollInterval(
+  active: boolean,
+  env: RunEnvironment | undefined,
+): number | false {
+  if (active) return RUN_POLL_MS;
+  if (env === undefined || env.state === "released" || env.state === "none") return false;
+  return env.state === "releasing" ? RELEASE_POLL_MS : RUN_POLL_MS;
+}
+
+/** The run's mission-environment state (GET /runs/{id}/environment): Starting / Ready / Failed /
+ *  Releasing / Released / None. Polls while the run is live so the Environment chip reflects the
+ *  environment actually coming up (or dying) without a manual refresh, and after it finishes until
+ *  the environment is torn down (see environmentPollInterval). Served from the readiness gate's
+ *  last observation and the run row, so polling it is cheap (no Docker probe per request). */
 export function useRunEnvironment(runId: string, active: boolean) {
   return useQuery({
     queryKey: ["run-environment", runId],
     queryFn: () =>
       api.get<RunEnvironment>(`/runs/${encodeURIComponent(runId)}/environment`),
     enabled: !!runId,
-    refetchInterval: active ? RUN_POLL_MS : false,
+    refetchInterval: (q) => environmentPollInterval(active, q.state.data),
   });
 }

@@ -111,15 +111,43 @@ def reconcile_telemetry(run_id: str, *, has_telemetry: bool, store: ObservedFact
     )
 
 
-def _has_telemetry(run_id: str) -> bool:
+def has_telemetry(run_id: str) -> bool:
     """True iff the run has exported ≥1 raw span. Lazy import keeps the OTel store off this
     module's import path (plane isolation); never raises."""
     try:
         from xorcise.core.otel.store import SqliteTraceStore
 
-        return bool(SqliteTraceStore().read(run_id))
+        return SqliteTraceStore().has_records(run_id)
     except Exception:
         return False
+
+
+def _poll_connections(
+    run_id: str, *, cli: HeadscaleCli | None, agent_user: str | None, store: ObservedFactsStore
+) -> None:
+    """The reconciler thread's body, synchronous so it can be tested without the thread.
+
+    Polls until each connection is recorded (or unreconcilable), the run is sealed, or the window
+    elapses. A sealed run's facts are sealed evidence: the store refuses any more (#194), so
+    polling Headscale for one is wasted."""
+    from xorcise.core.otel.store import SqliteSealStore
+
+    seals = SqliteSealStore()
+    for attempt in range(_POLL_ATTEMPTS):
+        if seals.is_sealed(run_id):
+            return
+        current = store.list_for_run(run_id)
+        if cli is not None and agent_user is not None and not _is_confirmed(current):
+            reconcile_join(run_id, headscale=cli, agent_user=agent_user, store=store)
+        if not _is_telemetry_confirmed(current):
+            reconcile_telemetry(run_id, has_telemetry=has_telemetry(run_id), store=store)
+        final = store.list_for_run(run_id)
+        # Join is "settled" when confirmed OR we have no client to ever confirm it with.
+        join_settled = _is_confirmed(final) or cli is None
+        if join_settled and _is_telemetry_confirmed(final):
+            return
+        if attempt < _POLL_ATTEMPTS - 1:
+            time.sleep(_POLL_INTERVAL_SECONDS)
 
 
 def maybe_reconcile_join(run_id: str) -> None:
@@ -163,20 +191,7 @@ def maybe_reconcile_join(run_id: str) -> None:
                     cli = _real_headscale_cli(get_settings())
                 except Exception:
                     cli = None
-            # Poll until each connection is recorded (or unreconcilable), or the window elapses.
-            for attempt in range(_POLL_ATTEMPTS):
-                current = store.list_for_run(run_id)
-                if cli is not None and agent_user is not None and not _is_confirmed(current):
-                    reconcile_join(run_id, headscale=cli, agent_user=agent_user, store=store)
-                if not _is_telemetry_confirmed(current):
-                    reconcile_telemetry(run_id, has_telemetry=_has_telemetry(run_id), store=store)
-                final = store.list_for_run(run_id)
-                # Join is "settled" when confirmed OR we have no client to ever confirm it with.
-                join_settled = _is_confirmed(final) or cli is None
-                if join_settled and _is_telemetry_confirmed(final):
-                    return
-                if attempt < _POLL_ATTEMPTS - 1:
-                    time.sleep(_POLL_INTERVAL_SECONDS)
+            _poll_connections(run_id, cli=cli, agent_user=agent_user, store=store)
         finally:
             with _lock:
                 _inflight.discard(run_id)

@@ -195,7 +195,7 @@ export function TimelineWaterfall({
                 aria-label={tip}
                 onClick={() => onSelectEvent?.(m.id)}
                 className={cn(
-                  "absolute top-1/2 size-2 -translate-x-1/2 -translate-y-1/2 rotate-45 cursor-pointer rounded-[1px] border bg-card transition hover:scale-125 focus-visible:outline-none",
+                  "absolute top-1/2 size-2 -translate-x-1/2 -translate-y-1/2 rotate-45 cursor-pointer rounded-[1px] border bg-card transition hover:scale-125 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                   selected
                     ? "z-10 border-primary ring-2 ring-primary"
                     : "border-text-tertiary",
@@ -220,7 +220,7 @@ export function TimelineWaterfall({
                 aria-label={tip}
                 onClick={() => onSelectEvent?.(m.id)}
                 className={cn(
-                  "absolute top-1/2 h-3 -translate-y-1/2 cursor-pointer rounded-sm opacity-90 transition hover:opacity-100 focus-visible:outline-none",
+                  "absolute top-1/2 h-3 -translate-y-1/2 cursor-pointer rounded-sm opacity-90 transition hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                   selected ? "z-10 opacity-100 ring-2 ring-primary" : "ring-1 ring-card/40",
                   m.dotClass,
                 )}
@@ -243,7 +243,7 @@ export function TimelineWaterfall({
               aria-label={tip}
               onClick={() => onSelectEvent?.(m.id)}
               className={cn(
-                "absolute w-[3px] -translate-x-1/2 cursor-pointer rounded-full opacity-90 transition-all hover:h-4 hover:opacity-100 focus-visible:outline-none",
+                "absolute w-[3px] -translate-x-1/2 cursor-pointer rounded-full opacity-90 transition-all hover:h-4 hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 m.up ? "bottom-1/2" : "top-1/2",
                 selected ? "z-10 h-4 opacity-100 ring-2 ring-primary" : "h-3.5",
                 m.dotClass,

@@ -12,6 +12,8 @@ import { useRuns } from "@/features/runs/queries";
 import { isTerminal, runPresentation, type RunTone } from "@/features/runs/run-state";
 import { useAgents } from "@/features/agents/queries";
 import { useRunResults } from "./queries";
+import { NoJudge } from "./no-judge";
+import { judgeDegraded } from "./run-glyph";
 
 /** §10 status tone → the Badge variant carrying the same colour (mirrors the Run History cards). */
 const toneBadge: Record<RunTone, NonNullable<BadgeProps["variant"]>> = {
@@ -34,6 +36,7 @@ interface LedgerRow {
   judge: number | null;
   judgeUpper: number | null;
   judgePartial: boolean;
+  noJudge: boolean; // the judge never ran: `judge` is a 0 it never scored (#143)
   when: string;
 }
 
@@ -69,7 +72,7 @@ export function ResultsAllRuns() {
     .map((r) => {
       const view = viewById.get(r.run_id);
       const grade = view?.grade;
-      const status = runPresentation(r.state, r.terminal_trigger);
+      const status = runPresentation(r);
       return {
         runId: r.run_id,
         agentName: agentName(r.agent_id),
@@ -86,6 +89,7 @@ export function ResultsAllRuns() {
         judge: grade ? grade.breakdown.judge : null,
         judgeUpper: grade?.judge_upper ?? null,
         judgePartial: grade?.judge_status === "partial",
+        noJudge: judgeDegraded(grade?.judge_status),
         when: r.created_at,
       };
     });
@@ -149,7 +153,7 @@ export function ResultsAllRuns() {
                         {pct(r.deterministic)}
                       </td>
                       <td className="px-4 py-2.5 text-right tabular-nums text-text-secondary">
-                        {scoreRange(r.judge, r.judgeUpper)}
+                        {r.noJudge ? <NoJudge /> : scoreRange(r.judge, r.judgeUpper)}
                         {r.judgePartial && (
                           <span className="ml-1 text-primary" title="Partial judge result">
                             *
@@ -197,7 +201,8 @@ export function ResultsAllRuns() {
                         </span>
                         <span>Det {pct(r.deterministic)}</span>
                         <span>
-                          Judge {scoreRange(r.judge, r.judgeUpper)}
+                          Judge{" "}
+                          {r.noJudge ? <NoJudge /> : scoreRange(r.judge, r.judgeUpper)}
                           {r.judgePartial ? " (partial)" : ""}
                         </span>
                         <span className="text-text-tertiary">

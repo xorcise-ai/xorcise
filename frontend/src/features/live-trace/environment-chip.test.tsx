@@ -7,6 +7,7 @@ const env = (over: Partial<RunEnvironment>): RunEnvironment => ({
   state: "starting",
   ready: false,
   detail: "",
+  release_attempts: 0,
   ...over,
 });
 
@@ -48,6 +49,29 @@ describe("environmentChip", () => {
     const chip = environmentChip(env({ state: "released" }));
     expect(chip.value).toBe("Released");
     expect(chip.tone).toBe("muted");
+  });
+
+  it("reports a finished run still being torn down as Releasing", () => {
+    // Every finished run used to read "Released", even one whose environment was still up.
+    const chip = environmentChip(
+      env({ state: "releasing", detail: "the environment is torn down once grading finishes" }),
+    );
+    expect(chip.value).toBe("Releasing");
+    expect(chip.tone).toBe("amber");
+    expect(chip.title).toContain("grading");
+  });
+
+  it("reports a failed teardown in red, with the error as the tooltip", () => {
+    const chip = environmentChip(
+      env({
+        state: "releasing",
+        release_attempts: 3,
+        detail: "teardown failed 3 time(s), retrying automatically: tailnet: unreachable",
+      }),
+    );
+    expect(chip.value).toBe("Teardown failed");
+    expect(chip.tone).toBe("red");
+    expect(chip.title).toContain("unreachable");
   });
 
   it("falls back to Starting while the state is still loading", () => {

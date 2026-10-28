@@ -10,16 +10,25 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Iterator
+from contextlib import contextmanager
 from datetime import datetime
+from typing import Literal
 
 from xorcise.core import reporting, runs
+from xorcise.core.contracts.run import (
+    PARTIAL_TRIGGERS,
+    UNGRADED_TRIGGERS,
+    RunEntry,
+    TerminalTrigger,
+)
 from xorcise.core.runcontrol.errors import MissionOverError
 
 log = logging.getLogger(__name__)
 
 __all__ = [
     "terminate_run",
+    "stop_run",
     "seal_terminal",
     "grade_and_record",
     "ensure_graded_async",
@@ -36,9 +45,39 @@ __all__ = [
 # run that is STILL ungraded can be re-driven by a later poll.
 _grading_lock = threading.Lock()
 _grading_in_flight: set[str] = set()
+# The slots above that a run delete holds (`grades_held`, #188), and the runs whose grade arrived
+# while one was held. A grade turned away by a delete that then does NOT happen must not be lost:
+# the watchdog never revisits a terminal run, and the release sweeper waits for a result before it
+# releases one, so it would sit ungraded with its environment up until a poll or a restart.
+_held: set[str] = set()
+_deferred: set[str] = set()
+
+# Runs THIS process sealed and has not yet graded. At XORCISE_TELEMETRY_DRAIN_SECONDS=0 —
+# the whole test suite, and a documented operator mode — seal_terminal seals synchronously, so the
+# grade that follows a moment later finds the run already sealed and cannot tell "something else
+# sealed this" (a regrade, or a grade re-driven after a restart: the case the seal exists for) from
+# "I sealed this myself". It assumed the former, and so re-hashed the whole run to check a seal it
+# had taken moments earlier, on every zero-drain finalisation.
+#
+# It also logged "the evidence no longer matches" whenever a straggler landed in the window —
+# `seal()` narrows the admission race but does not close it. Note what that line is NOT: it is not
+# a false accusation. If a straggler lands, the graded evidence really has moved past the recorded
+# digest, permanently. What it was is INCONSISTENT — at any non-zero drain (the 5.0s default) the
+# first grade seals the run itself, `_drain_and_seal_telemetry` returns False, and that same
+# straggler has never been logged. Dropping it here makes the two drain settings agree, and costs
+# no disclosure: /report renders the MISMATCH banner and /result?verify=1 answers false, for as
+# long as the run exists rather than once into a log.
+#
+# Consumed by the first grade that follows the seal, so a later regrade of the same run in the same
+# process is verified normally. Its own lock: this is unrelated to the de-dup slot above, and
+# sharing one mutex between two sets would only invite a reader to assume they are.
+_sealed_here_lock = threading.Lock()
+_sealed_here: set[str] = set()
 
 
-def seal_terminal(run_id: str, trigger: str, now: datetime, detail: str | None = None) -> str:
+def seal_terminal(
+    run_id: str, trigger: TerminalTrigger, now: datetime, detail: str | None = None
+) -> str:
     """Fast sync phase: transition immediately and begin the telemetry drain window.
 
     The control plane closes immediately, while OTLP remains admissible until grade_and_record
@@ -62,25 +101,97 @@ def seal_terminal(run_id: str, trigger: str, now: datetime, detail: str | None =
     return recorded
 
 
+def stop_run(run_id: str, now: datetime) -> str:
+    """An operator's stop: the fast sync phase of `POST /runs/{id}/terminate`. Returns the trigger.
+
+    A run the agent never started ends `cancelled`: there is no attempt to grade, and grading one
+    recorded a 0.00 against the agent (#187). One it did start ends `operator` and is graded as
+    partial. `runs.end_unstarted` decides which in one conditional write, so an agent's first
+    signal landing at the same moment either starts the run first, and the stop is `operator`, or
+    finds it already ended. The caller schedules `grade_and_record` either way: for a cancelled
+    run it grades nothing, but it still seals the run, releases its environment and exports its
+    events, as for any run that is never graded."""
+    if _end_unstarted(run_id, "cancelled", now):
+        return "cancelled"
+    return seal_terminal(run_id, "operator", now)
+
+
+def _end_unstarted(
+    run_id: str, trigger: Literal["cancelled", "never_started"], now: datetime
+) -> bool:
+    """End *run_id* as *trigger* if its agent never started, sealing it as seal_terminal would.
+    False, touching nothing, when the agent started first (or the run already ended)."""
+    if not runs.end_unstarted(run_id, trigger, now):
+        return False
+    from xorcise.core.config import get_settings
+
+    if get_settings().telemetry_drain_seconds == 0:
+        _seal_telemetry(run_id)
+    return True
+
+
 def _seal_telemetry(run_id: str) -> None:
-    """Idempotently freeze the RAW OTLP record, keeping the OTel import lazy."""
-    from xorcise.core.otel.store import SqliteSealStore
+    """Idempotently freeze the RAW OTLP record, keeping the OTel import lazy.
 
-    SqliteSealStore().seal(run_id)
+    Both seal paths (zero-drain and post-drain) funnel through here, so recording the evidence
+    digest — and the mark saying this process is the one that took it — happens in one place for
+    both. Sealing must happen even if hashing does not — see evidence_seal.seal_with_digest.
+    """
+    from xorcise.core.rest.evidence_seal import seal_with_digest
+
+    seal_with_digest(run_id)
+    with _sealed_here_lock:
+        _sealed_here.add(run_id)
 
 
-def _drain_and_seal_telemetry(run_id: str) -> None:
-    """Wait one configurable grace period, unless another finalizer already sealed the run."""
+def _claim_sealed_here(run_id: str) -> bool:
+    """Did this process seal this run with no grade since? Clears the mark either way.
+
+    Clearing is the load-bearing half: a mark left behind would suppress the verification on the
+    next regrade of that run in this process, which is exactly the pass the seal exists for.
+    """
+    with _sealed_here_lock:
+        if run_id not in _sealed_here:
+            return False
+        _sealed_here.discard(run_id)
+        return True
+
+
+def _forget_sealed_here(run_id: str) -> None:
+    """Drop the mark, claimed or not. Belt to `_claim_sealed_here`'s braces: that consumer sits
+    inside `_grade_run`'s try, so every way out of `_grade_run` that never reaches it — an absent
+    or non-terminal run, an already-recorded result, a "database is locked" on the way in — would
+    otherwise leave the mark behind to silence the NEXT regrade of that run. A run sealed and then
+    never graded at all (deleted first) still keeps its mark for the life of the process; that one
+    is a dead id nothing will ask about again, not a suppressed verification.
+    """
+    with _sealed_here_lock:
+        _sealed_here.discard(run_id)
+
+
+def _drain_and_seal_telemetry(run_id: str) -> bool:
+    """Wait one configurable grace period, unless another finalizer already sealed the run.
+
+    Returns True when the run was sealed by SOMETHING OTHER than this finalisation — a regrade, or
+    a grade re-driven after a restart — which is the one case where re-verifying the seal can tell
+    us anything. A run this process sealed itself a moment earlier cannot have moved since, so
+    asking buys nothing and costs a second hash of the whole run (see `_sealed_here`): "already
+    sealed on arrival" alone could not tell the two apart at a zero drain interval, where
+    seal_terminal seals before the grade is even scheduled.
+    """
     from xorcise.core.config import get_settings
     from xorcise.core.otel.store import SqliteSealStore
 
-    seals = SqliteSealStore()
-    if seals.is_sealed(run_id):
-        return
-    delay = get_settings().telemetry_drain_seconds
-    if delay > 0:
-        time.sleep(delay)
-    _seal_telemetry(run_id)
+    already_sealed = SqliteSealStore().is_sealed(run_id)
+    if not already_sealed:
+        delay = get_settings().telemetry_drain_seconds
+        if delay > 0:
+            time.sleep(delay)
+        _seal_telemetry(run_id)
+    # Claimed on BOTH paths: the mark the line above just left is ours too, and leaving it behind
+    # would silence the verification on the next regrade of this run.
+    sealed_by_us = _claim_sealed_here(run_id)
+    return already_sealed and not sealed_by_us
 
 
 def grade_and_record(run_id: str) -> None:
@@ -90,9 +201,12 @@ def grade_and_record(run_id: str) -> None:
     background thread (endpoints) AND be reached synchronously by the watchdog; record_result is
     itself idempotent on run_id as a second guard against the two racing on the same run. Claims
     the in-flight de-dup slot itself (a concurrent duplicate no-ops instead of double-paying the
-    judge) and always releases it, however grading ends."""
+    judge) and always releases it — along with any "sealed here" mark for this run — however
+    grading ends."""
     with _grading_lock:
         if run_id in _grading_in_flight:
+            if run_id in _held:
+                _deferred.add(run_id)  # a delete holds it: grade once it lets go, if still here
             return  # a grade for this run is already in flight — the drain-window duplicate
         _grading_in_flight.add(run_id)
     try:
@@ -100,6 +214,53 @@ def grade_and_record(run_id: str) -> None:
     finally:
         with _grading_lock:
             _grading_in_flight.discard(run_id)
+        _forget_sealed_here(run_id)
+
+
+def is_grading(run_id: str) -> bool:
+    """True while this process has a grade for the run in flight. The release sweeper uses it to
+    leave a run's environment alone until its grade, and the teardown in its `finally`, is done."""
+    with _grading_lock:
+        return run_id in _grading_in_flight
+
+
+@contextmanager
+def grades_held(run_ids: Collection[str]) -> Iterator[tuple[str, ...]]:
+    """Hold the grading slot of every run in *run_ids* for the body of the `with` (#188).
+
+    Yields the runs that already have a grade in flight. When there are any, nothing is claimed,
+    and the caller refuses. When there are none, every slot is claimed in one step under the lock,
+    and a grade that starts while they are held — a result poll's re-drive, the boot regrade —
+    no-ops, as a duplicate grade already does. A run delete holds them from its checks to the end
+    of its purge: it releases the environment in between, which takes seconds, and a grade that
+    started in that window wrote a result for a run whose row was about to go. Released however
+    the body ends. A grade turned away meanwhile is re-scheduled on release for every run that
+    still exists — a refused delete — so the hold never costs a run its grade."""
+    ids = tuple(dict.fromkeys(run_ids))
+    with _grading_lock:
+        busy = tuple(r for r in ids if r in _grading_in_flight)
+        claimed = () if busy else ids
+        _grading_in_flight.update(claimed)
+        _held.update(claimed)
+    try:
+        yield busy
+    finally:
+        with _grading_lock:
+            _grading_in_flight.difference_update(claimed)
+            _held.difference_update(claimed)
+            turned_away = _deferred.intersection(claimed)
+            _deferred.difference_update(claimed)
+        for run_id in turned_away:
+            if runs.get(run_id) is not None:  # deleted: nothing left to grade
+                _regrade_later(run_id)
+
+
+def _regrade_later(run_id: str) -> None:
+    """Grade *run_id* on a thread of its own: the caller is a request handler, and a grade waits
+    out the telemetry drain and the judge. grade_and_record is idempotent and de-duplicated."""
+    threading.Thread(
+        target=grade_and_record, args=(run_id,), name=f"regrade-{run_id[:8]}", daemon=True
+    ).start()
 
 
 def ensure_graded_async(run_id: str, schedule: Callable[[Callable[[], None]], None]) -> bool:
@@ -116,10 +277,11 @@ def ensure_graded_async(run_id: str, schedule: Callable[[Callable[[], None]], No
     dependency and unit tests can drive it synchronously."""
     if runs.get(run_id) is None:
         return False
-    if not runs.terminal_state(run_id)[0]:
-        return False
-    if reporting.get_result(run_id) is not None:
-        return False
+    is_term, trigger, _ = runs.terminal_state(run_id)
+    if not is_term or trigger in UNGRADED_TRIGGERS:
+        return False  # nothing to grade yet — or, for a run that is never graded, ever
+    if reporting.has_result(run_id):
+        return False  # graded, even if that grade no longer reads back
     # Read-only fast path: the slot itself is claimed by grade_and_record (so EVERY scheduling
     # path de-dups, not just this one). A racing poll that slips past this check schedules a
     # task that no-ops on the slot — one judge call either way.
@@ -135,16 +297,144 @@ def regrade_orphaned_terminal_runs() -> int:
     stopped between seal and the background grade_and_record completing. Run once on boot (nothing
     else revisits a terminal run), so a run wedged at "grading" heals on the next start without an
     operator touching it. Idempotent + self-defending (grade_and_record records a zero fallback on
-    a grading crash). Returns the count re-graded, for the boot log + tests."""
+    a grading crash). Returns the count re-graded, for the boot log + tests.
+
+    A run that is never graded (an environment failure, or a stop before the agent started) is
+    finalised here if it never was (a `crashed` run, which reconcile closes out without
+    finalising, or any such run whose finalisation a stop cut short) — sealed, released, events
+    exported — but not counted, since nothing was graded."""
+    from xorcise.core.rest.events_export import default_export_path
+
     healed = 0
     for run in runs.list_runs():
-        if runs.terminal_state(run.run_id)[0] and reporting.get_result(run.run_id) is None:
+        is_term, trigger, _ = runs.terminal_state(run.run_id)
+        if not is_term:
+            continue
+        if trigger in UNGRADED_TRIGGERS:
+            # A run like this is ungraded BY DESIGN, not by a lost grade (#109, #187) — but it
+            # still needs the rest of finalisation. Reconcile marks a run `crashed` with a bare
+            # mark_terminal, so this sweep is the only thing that ever seals one: without it late
+            # OTLP keeps landing in a terminal run's record and no evidence digest is taken.
+            #
+            # "Finalised" is the LAST step having happened: the events export, which runs after
+            # the teardown. NOT the seal — that is the first step, and a stop between it and the
+            # teardown (digest hashing, the docker/headscale release) would leave a sealed run
+            # whose tailnet nodes nothing ever releases. Re-finalising a sealed run is cheap: the
+            # seal is not re-taken (no drain), and the teardown is idempotent.
+            if not default_export_path(run.run_id).exists():
+                log.info("regrade: finalising %s (ended %s; not graded)", run.run_id, trigger)
+                grade_and_record(run.run_id)
+            continue
+        if reporting.get_result(run.run_id) is None:
             log.info("regrade: %s is terminal but ungraded (grade lost to a stop)", run.run_id)
             grade_and_record(run.run_id)
             healed += 1
     if healed:
         log.info("regrade: healed %d orphaned terminal-ungraded run(s)", healed)
     return healed
+
+
+def _warn_if_evidence_moved(run_id: str) -> None:
+    """Say so, loudly, before deriving a grade from evidence that no longer matches its seal.
+
+    Reached only for a grade over PREVIOUSLY-sealed evidence (`POST /runs/{id}/regrade` drops the
+    result and comes back through here; so does the boot sweep for a grade lost to a restart) —
+    which is the moment the seal exists for. If the bytes moved between the seal and this pass, the
+    new score is derived from something other than what was sealed. The report discloses that, but
+    only to whoever opens it: an operator re-grading from the CLI would otherwise see a fresh,
+    clean-looking score and nothing else.
+
+    Read-only and best-effort: verification is a disclosure, never a gate. Refusing to grade edited
+    evidence would leave the run wedged at "grading" forever with nothing to re-drive it, which is
+    strictly worse than grading it and saying so. `verify_evidence` is itself guarded, so a lock
+    here costs a warning we cannot make, not a grade. The lazy import keeps the otel plane off this
+    module's import path."""
+    from xorcise.core.rest.evidence_seal import verify_evidence
+
+    if verify_evidence(run_id) is False:
+        log.warning(
+            "grading %s from evidence that no longer matches the digest taken when it was sealed",
+            run_id,
+        )
+
+
+def _record_grade(run_id: str, run: RunEntry, recorded: str | None) -> None:
+    """Grade a sealed run and record the result. Raises on a store failure — the caller's
+    `finally` is what guarantees the environment is released either way."""
+    # Lazy: grade_assembly keeps otel off the import path (plane-isolation invariant).
+    # model=None → build_eval_judge reads the BYOM key from settings; returns None when
+    # unconfigured so the judge half degrades cleanly.
+    from xorcise.core.rest import grade_assembly
+
+    try:
+        judge = grade_assembly.build_eval_judge()
+        result = judge.grade(grade_assembly.grade_request_for(run_id))
+    except Exception as exc:
+        # Defensive: a grading crash (e.g. a legacy installed manifest whose check op predates
+        # ingest validation) must STILL record a result — otherwise /result 202s "grading"
+        # forever (nothing ever re-schedules this) and the environment leaks. Mirror the judge
+        # half's degrade: zero score, status + reason disclosed on the result.
+        log.exception("grading failed for %s; recording a zero fallback result", run_id)
+        from xorcise.core.contracts.grading import GradeResult, ScoreBreakdown
+
+        result = GradeResult(
+            run_id=run_id,
+            overall=0.0,
+            breakdown=ScoreBreakdown(),
+            trace_ref=run_id,
+            judge_status="unavailable",
+            judge_detail=f"grading failed: {exc}",
+            grading_failed=True,
+        )
+    from xorcise.core.config import get_settings
+    from xorcise.core.contracts.reporting import ResultConditions
+
+    _s = get_settings()
+    conditions = ResultConditions(
+        model=run.model,
+        judge_model=_s.model_name if _s.model_configured() else None,
+        budget_seconds=run.budget_seconds,
+        sandbox_ref=run.sandbox_ref,
+        agent_version=run.agent_version,
+        install_revision=run.install_revision,
+        mission_version=run.mission_version,
+        mission_base_version=run.mission_base_version,
+        platform=run.platform,
+    )
+    # a run that did not end on the agent's own terms is "partial" and must not count
+    # as a genuine result against the agent — a budget "timeout" or an operator's manual kill.
+    # Only the agent's own "done" completion is a full result.
+    partial = recorded in PARTIAL_TRIGGERS
+    # Per-run telemetry snapshot (run-report): fold the event projection once here and
+    # persist it beside the grade. Agent-self-reported display data — never an observed fact,
+    # never a grading input. Best-effort: a fold/projection failure must never break
+    # finalization, so it logs and records the result with no snapshot (lazy imports keep the
+    # otel display plane off this module's import path — plane-isolation invariant).
+    stats = None
+    try:
+        from xorcise.core.otel.run_stats import fold_run_stats, projection_key
+        from xorcise.core.rest import events_view
+
+        view = events_view._full_view(run_id)
+        stats = fold_run_stats(
+            view.events,
+            created_at=run.created_at,
+            completed_at=run.completed_at,
+            # Which adapter + normalizer rendered these events: a later classifier change
+            # makes this snapshot stale, and current_run_stats re-folds it on read.
+            projection=projection_key(view.adapter_name, view.adapter_version),
+        )
+    except Exception:  # best-effort — a telemetry snapshot must never break finalization
+        log.warning("run-stats fold failed for %s", run_id, exc_info=True)
+    reporting.record_result(
+        run_id,
+        run.agent_id,
+        result,
+        conditions,
+        partial=partial,
+        partial_trigger=(recorded if partial else None),
+        stats=stats,
+    )
 
 
 def _grade_run(run_id: str) -> None:
@@ -167,80 +457,16 @@ def _grade_run(run_id: str) -> None:
     try:
         # The agent's /complete call can emit its tool result only after the HTTP response returns.
         # Keep OTLP open for a bounded grace period, then freeze the exact input the grader sees.
-        _drain_and_seal_telemetry(run_id)
-        # Lazy: grade_assembly keeps otel off the import path (plane-isolation invariant).
-        # model=None → build_eval_judge reads the BYOM key from settings; returns None when
-        # unconfigured so the judge half degrades cleanly.
-        from xorcise.core.rest import grade_assembly
-
-        try:
-            judge = grade_assembly.build_eval_judge()
-            result = judge.grade(grade_assembly.grade_request_for(run_id))
-        except Exception as exc:
-            # Defensive: a grading crash (e.g. a legacy installed manifest whose check op predates
-            # ingest validation) must STILL record a result — otherwise /result 202s "grading"
-            # forever (nothing ever re-schedules this) and the environment leaks. Mirror the judge
-            # half's degrade: zero score, status + reason disclosed on the result.
-            log.exception("grading failed for %s; recording a zero fallback result", run_id)
-            from xorcise.core.contracts.grading import GradeResult, ScoreBreakdown
-
-            result = GradeResult(
-                run_id=run_id,
-                overall=0.0,
-                breakdown=ScoreBreakdown(),
-                trace_ref=run_id,
-                judge_status="unavailable",
-                judge_detail=f"grading failed: {exc}",
-            )
-        from xorcise.core.config import get_settings
-        from xorcise.core.contracts.reporting import ResultConditions
-
-        _s = get_settings()
-        conditions = ResultConditions(
-            model=run.model,
-            judge_model=_s.model_name if _s.model_configured() else None,
-            budget_seconds=run.budget_seconds,
-            sandbox_ref=run.sandbox_ref,
-            agent_version=run.agent_version,
-            install_revision=run.install_revision,
-            mission_version=run.mission_version,
-            mission_base_version=run.mission_base_version,
-            platform=run.platform,
-        )
-        # a run that did not end on the agent's own terms is "partial" and must not count
-        # as a genuine result against the agent — a budget "timeout" or an operator's manual kill.
-        # Only the agent's own "done" completion is a full result.
-        partial = recorded in ("timeout", "operator")
-        # Per-run telemetry snapshot (run-report): fold the event projection once here and
-        # persist it beside the grade. Agent-self-reported display data — never an observed fact,
-        # never a grading input. Best-effort: a fold/projection failure must never break
-        # finalization, so it logs and records the result with no snapshot (lazy imports keep the
-        # otel display plane off this module's import path — plane-isolation invariant).
-        stats = None
-        try:
-            from xorcise.core.otel.run_stats import fold_run_stats, projection_key
-            from xorcise.core.rest import events_view
-
-            view = events_view._full_view(run_id)
-            stats = fold_run_stats(
-                view.events,
-                created_at=run.created_at,
-                completed_at=run.completed_at,
-                # Which adapter + normalizer rendered these events: a later classifier change
-                # makes this snapshot stale, and current_run_stats re-folds it on read.
-                projection=projection_key(view.adapter_name, view.adapter_version),
-            )
-        except Exception:  # best-effort — a telemetry snapshot must never break finalization
-            log.warning("run-stats fold failed for %s", run_id, exc_info=True)
-        reporting.record_result(
-            run_id,
-            run.agent_id,
-            result,
-            conditions,
-            partial=partial,
-            partial_trigger=(recorded if partial else None),
-            stats=stats,
-        )
+        if _drain_and_seal_telemetry(run_id):
+            _warn_if_evidence_moved(run_id)
+        if recorded in UNGRADED_TRIGGERS:
+            # Cut short by an environment failure (#109), or stopped before the agent started
+            # (#187): no score from it could count in any aggregate, so the judge call it costs
+            # buys nothing. Only the grade is skipped — the seal above, the teardown below and the
+            # events export after it run as for any other terminal run; those are what explain it.
+            log.info("not grading %s: it ended %s", run_id, recorded)
+        else:
+            _record_grade(run_id, run, recorded)
     finally:
         # release the run's environment (container + tailnet nodes) once graded — in a finally
         # so neither a result-store failure nor anything before it can leak it. Idempotent and
@@ -279,7 +505,9 @@ def _grade_run(run_id: str) -> None:
         log.warning("terrain attribution kickoff failed for %s", run_id, exc_info=True)
 
 
-def terminate_run(run_id: str, trigger: str, now: datetime, detail: str | None = None) -> str:
+def terminate_run(
+    run_id: str, trigger: TerminalTrigger, now: datetime, detail: str | None = None
+) -> str:
     """Synchronous composite: seal_terminal then grade_and_record. Returns the recorded trigger.
 
     Kept synchronous for the budget watchdog and the readiness gate (each runs in its own thread;
@@ -287,10 +515,16 @@ def terminate_run(run_id: str, trigger: str, now: datetime, detail: str | None =
     and schedule grade_and_record on a BackgroundTask so the caller is not blocked by the judge.
     grade_and_record is also where the run's environment is released (run_teardown, in a
     `finally`) — the ONE teardown every terminal path shares, so callers must not release it
-    themselves first."""
+    themselves first.
+
+    A budget timeout on a run whose agent never started ends `never_started` instead (#187): not
+    graded, and left out of every performance view, since there was no attempt to time out."""
     is_term, existing, _ = runs.terminal_state(run_id)
     if is_term:
         return existing if existing is not None else trigger
+    if trigger == "timeout" and _end_unstarted(run_id, "never_started", now):
+        grade_and_record(run_id)  # grades nothing; seals, releases and exports
+        return "never_started"
     recorded = seal_terminal(run_id, trigger, now, detail)
     if recorded:
         grade_and_record(run_id)

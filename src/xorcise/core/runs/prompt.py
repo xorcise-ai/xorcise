@@ -72,6 +72,35 @@ def build_launch_profile(otlp_endpoint: str = "") -> LaunchProfile:
     )
 
 
+# The run-control bearer never appears in the stored prompt (#172). The launch block XORCISE hands
+# the operator exports it under this name, and the prompt refers to the variable, so the token
+# stays off every command line the agent's harness builds — `claude -p '<prompt>'`, a harness that
+# runs each tool call as `sh -c '<command>'` — and out of any telemetry that records the prompt.
+# The name avoids KEY/SECRET/TOKEN: a Codex shell_environment_policy with its default excludes
+# switched on drops every variable whose name contains one of those.
+RUN_BEARER_ENV = "XORCISE_RUN_BEARER"
+_BEARER_REF = "$" + RUN_BEARER_ENV
+# How each recommended call carries a header: as curl config on stdin, from the `printf` builtin,
+# so the expanded token never lands on curl's argv either (`-H "...$XORCISE_RUN_BEARER"` would).
+_BEARER_CONFIG = f'printf \'header = "Authorization: Bearer %s"\\n\' "{_BEARER_REF}"'
+# The sentence that says where the token lives. inline_run_bearer swaps it, so it is one constant.
+_BEARER_FROM_ENV = (
+    f"   The token is in your environment as {_BEARER_REF} (your launch command set it)."
+)
+_BEARER_INLINE = "   Your token is the value shown in the Header line below."
+
+
+def inline_run_bearer(prompt: str, run_control_key: str) -> str:
+    """Put the literal run-control bearer back into a stored prompt, for an agent with no launch
+    block to set XORCISE_RUN_BEARER — a prompt pasted into a harness by hand. Such an agent can only
+    learn the token from the prompt; the recipes keep their stdin form, so curl's own argv stays
+    clean even then. A no-op on a prompt that never referred to the variable (runs created before
+    the token left the prompt), and when there is no key to inline."""
+    if not run_control_key or _BEARER_REF not in prompt:
+        return prompt
+    return prompt.replace(_BEARER_FROM_ENV, _BEARER_INLINE).replace(_BEARER_REF, run_control_key)
+
+
 # The container-only reachability note: appended verbatim whenever the run-control URL
 # points at host.docker.internal. A module constant so render_prompt_text (which emits it) and
 # rebase_run_control_host (which drops/keeps it when the GUI flips launch mode) can never drift.
@@ -117,8 +146,9 @@ def _join_lines(mission: MissionPrompt) -> list[str]:
     own DNS) now live inside that one script. The air-gapped bundle (CA, one-time
     key, by-IP login server) rides the authenticated call, never the stored prompt text.
 
-    Phrased relative to the run-control base URL + Bearer (both shown once, in the run-control
-    step) so the key appears exactly once and a prompt-only parser still finds the base path there.
+    Phrased relative to the run-control base URL (shown once, in the run-control step) so a
+    prompt-only parser still finds the base path there. The bearer is passed as curl config on
+    stdin from $XORCISE_RUN_BEARER — never as a ``-H`` argument (#172).
     Steps are numbered off a counter rather than written as literals: the callback paragraph is
     conditional, so a literal "2." here collided with the run-control step's own "2." and sent an
     agent looking for the base URL to a paragraph that does not contain it.
@@ -128,9 +158,8 @@ def _join_lines(mission: MissionPrompt) -> list[str]:
         "1. Join the run's tailnet in ONE command — fetch your join script from run-control and "
         "pipe it to a shell. It installs a userspace tailscale client if missing, joins, waits for "
         "an IP, and prints how to reach the targets. No root required:",
-        '     curl -fsS -H "$BEARER" "$BASE/join.sh" | sh',
-        f"   ($BASE and $BEARER are the run-control base URL and bearer header shown in step "
-        f"{steps['runcontrol']}.) In "
+        f'     {_BEARER_CONFIG} | curl -fsS -K - "$BASE/join.sh" | sh',
+        f"   ($BASE is the run-control base URL shown in step {steps['runcontrol']}.) In "
         "userspace/Docker-sidecar mode the host has NO direct route to target IPs: every target "
         "connection must use the SOCKS5 address printed by the script. For HTTP use "
         "`curl --socks5-hostname <host:port> http://<target-ip>:<port>/`; for raw TCP on macOS use "
@@ -211,16 +240,22 @@ def _artifact_lines(mission: MissionPrompt) -> list[str]:
 def _attachment_lines(mission: MissionPrompt) -> list[str]:
     """List the mission companion files. Bytes never ride run-control: GET
     /attachments/<name> (Bearer) returns a short-lived signed url; the agent fetches that url
-    with its per-run key as the X-Run-Key header. Empty when the mission ships no files."""
+    with its per-run key as the X-Run-Key header — on stdin, like every other call. Empty when the
+    mission ships no files."""
     if not mission.attachments:
         return []
     out = [
         "   Companion files — GET /attachments/<name> returns a short-lived signed url; fetch "
-        "it with your run key as the X-Run-Key header:",
+        "it with your run token as the X-Run-Key header:",
     ]
     for a in mission.attachments:
         mt = f" ({a.media_type})" if a.media_type else ""
         out.append(f"     - {a.name}{mt}")
+    out += [
+        "   Pass that header on stdin like the others:",
+        f'     printf \'header = "X-Run-Key: %s"\\n\' "{_BEARER_REF}" | '
+        'curl -fsS -K - -o <name> "<signed-url>"',
+    ]
     return out
 
 
@@ -252,8 +287,14 @@ def render_prompt_text(mission: MissionPrompt, *, preamble: tuple[str, ...] = ()
         *([*_join_lines(mission), ""] if mission.join_key else []),
         f"{_step_numbers(mission)['runcontrol']}. Run-control (REST) — authenticate EVERY call "
         "with the per-run bearer token:",
+        _BEARER_FROM_ENV,
         f"   Base URL:  {mission.run_control_url}",
-        f"   Header:    Authorization: Bearer {mission.run_control_key}",
+        f"   Header:    Authorization: Bearer {_BEARER_REF}",
+        "   Keep the token off command lines — other users on this host can read them. Pass the "
+        "header to curl as config on stdin, never with -H; for example:",
+        f'     {_BEARER_CONFIG} | curl -fsS -K - -X POST "<Base URL>/complete"',
+        f"     {_BEARER_CONFIG} | curl -fsS -K - -H 'Content-Type: application/json' "
+        '-d \'{"name": "flag", "content": "<value>"}\' "<Base URL>/artifacts"',
         "   Endpoints (paths are relative to the Base URL above):",
         '     POST /artifacts   submit a finding — JSON {"name": "<name>", "content": "<value>"}',
         "     POST /complete    end the run (grading runs at completion — call when finished)",

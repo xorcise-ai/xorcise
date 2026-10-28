@@ -10,6 +10,7 @@ import {
   Network,
   Plug,
   HardDrive,
+  HardDriveDownload,
   Map,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -51,6 +52,7 @@ import {
   type RoleGroup,
 } from "./module-groups";
 import { TokenLimitSlider } from "./token-limit-slider";
+import { PruneImagesPanel } from "@/features/missions/prune-images";
 
 /** A settings card. The shape (radius, border, header rule, padding) comes from the design
  *  system's Card/CardHeader/CardTitle/CardContent — this wrapper only keeps what is specific
@@ -564,6 +566,20 @@ function EnvironmentCard() {
   );
 }
 
+/** Reclaim disk from mission images nothing uses (CLI: `mission prune`). Full width: the dry-run
+ *  report is a table. */
+function MissionImagesCard() {
+  return (
+    <SettingsCard
+      title="Mission images"
+      icon={<HardDriveDownload className="size-4" />}
+      className="lg:col-span-2"
+    >
+      <PruneImagesPanel />
+    </SettingsCard>
+  );
+}
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-3">
@@ -751,12 +767,10 @@ function DistributedCard() {
         a single tailnet automatically, so a mission runs wherever the capacity is.
       </ComingSoonPanel>
 
-      {/* Deliberately UNCAPPED, unlike the panel's prose. A 68ch cap here stacked one
+      {/* Uncapped, like all left-aligned text in the console. A 68ch cap here stacked one
           sentence into three short lines against a 1300px card, which read as a truncated
-          column rather than a footnote. A single closing line under a full-width card is the
-          exception the measure rule is built to allow: it is one sentence the eye crosses
-          once, not a paragraph it has to navigate. `dense` over `caption` for the same
-          reason — 12px/500 rather than 11px/400 — still quieter than the panel's body. */}
+          column rather than a footnote. `dense` over `caption`: 12px/500 rather than
+          11px/400, still quieter than the panel's body. */}
       <p className="mt-4 break-words text-dense text-text-tertiary">
         Today every module runs on this host — Modules shows each one. The addresses are
         reachable from{" "}
@@ -985,6 +999,7 @@ export function SettingsView() {
       <SettingsGroup title="Mission Library & Runtime" caption="catalog & environment">
         <CatalogCard />
         <EnvironmentCard />
+        <MissionImagesCard />
       </SettingsGroup>
 
       {/* Interface — this browser's operator preferences (client-side, localStorage). */}

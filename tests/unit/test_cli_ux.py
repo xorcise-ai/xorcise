@@ -4,9 +4,13 @@
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
+import typer
 from typer.testing import CliRunner
 
 import xorcise.core.cli.app as cli_app  # noqa: F401 — registers commands on shared app
@@ -16,6 +20,7 @@ from xorcise.core.cli._shared import app
 from xorcise.core.cli.commands import lifecycle
 
 runner = CliRunner()
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 # --- banner gating -----------------------------------------------------------
@@ -131,6 +136,7 @@ def test_db_upgrade_history_mismatch_is_a_targeted_error(monkeypatch, tmp_path):
     result = runner.invoke(app, ["db", "upgrade"])
     assert result.exit_code == 1
     assert "migration history mismatch" in result.stderr
+    assert "xorcise.db-wal" in result.stderr  # a copy of xorcise.db alone can miss writes (#107)
     assert "9999_other_build" in result.stderr
     assert "different build" in result.stderr
 
@@ -441,17 +447,21 @@ def test_humanize_when_today_yesterday_and_older():
     assert humanize_when(None, now=now) == "—"
 
 
-def test_run_state_labels_mirror_the_gui_vocabulary():
-    from xorcise.core.cli._ux import run_state_label
+def test_run_status_markup_renders_the_server_status_and_nothing_else():
+    """The CLI shows the label and tone the server sent (RunEntry.status) — it holds no trigger
+    table of its own, so it cannot drift from the GUI (#165)."""
+    from xorcise.core.cli._ux import run_status_markup
 
-    assert run_state_label("terminal", "done") == "Completed"
-    assert run_state_label("terminal", "timeout") == "Timed out"
-    assert run_state_label("terminal", "crashed") == "Crashed"
-    assert run_state_label("terminal", "operator") == "Terminated"
-    assert run_state_label("terminal", "budget") == "Partial"
-    assert run_state_label("terminal", "error") == "Failed"
-    assert run_state_label("active") == "Running"
-    assert run_state_label("created") == "Created"
+    crashed: dict[str, Any] = {
+        "state": "terminal",
+        "status": {"label": "Crashed", "tone": "err", "detail": "gone"},
+    }
+    assert run_status_markup(crashed) == "[err]Crashed[/err]"
+    assert run_status_markup({"status": {"label": "Xorcising", "tone": "active"}}) == (
+        "[accent]Xorcising[/accent]"
+    )
+    # A run from a server that sends no status still renders its state, dimmed.
+    assert run_status_markup({"state": "terminal"}) == "[dim]terminal[/dim]"
 
 
 def test_kind_labels_read_as_products():
@@ -459,7 +469,10 @@ def test_kind_labels_read_as_products():
 
     assert kind_label("claude-code") == "Claude Code"
     assert kind_label("codex") == "Codex"
-    assert kind_label(None) == "Custom"
+    # #141: every agent has a kind and the default is generic, so a blank one reads the same.
+    assert kind_label("generic") == "Generic"
+    assert kind_label(None) == kind_label("") == "Generic"
+    assert kind_label("my-agent-cli") == "My Agent Cli"
 
 
 # --- short run-id prefixes ----------------------------------------------------
@@ -813,7 +826,7 @@ def test_run_status_scores_are_two_decimals(monkeypatch):
         },
         "conditions": {"budget_seconds": 60},
     }
-    monkeypatch.setattr(RestClient, "get_run_result", lambda self, rid: envelope)
+    monkeypatch.setattr(RestClient, "get_run_result", lambda self, rid, verify=False: envelope)
     result = runner.invoke(app, ["run", "status", "r" * 32])
     assert result.exit_code == 0
     assert "overall=0.41" in result.stdout
@@ -860,29 +873,46 @@ def test_hidden_alias_help_names_both_forms():
 # --- round-4 verification fixes ----------------------------------------------
 
 
-def test_run_status_on_active_run_reads_as_progress_not_a_409(monkeypatch):
-    """The golden-path hint after `run create` sends you to `run status`; on a
-    still-active run that must read as progress (exit 3), never a raw red 409."""
+@pytest.mark.parametrize(
+    ("state", "phrase"), [("xorcising", "is still xorcising"), ("created", "has not started")]
+)
+def test_run_status_on_unfinished_run_reads_as_progress_not_a_409(monkeypatch, state, phrase):
+    """The golden-path hint after `run create` sends you to `run status`; on an
+    unfinished run that must read as progress (exit 3), never a raw red 409."""
     from xorcise.core.cli.rest_client import RestClient
 
-    monkeypatch.setattr(RestClient, "get_run_result", lambda self, rid: {"status": "active"})
+    monkeypatch.setattr(
+        RestClient, "get_run_result", lambda self, rid, verify=False: {"status": state}
+    )
     result = runner.invoke(app, ["run", "status", "a" * 32])
     assert result.exit_code == 3  # in progress, not failure — a poll loop keeps waiting
-    assert "still running" in result.stdout
+    assert phrase in result.stdout
     assert "409" not in result.output
 
 
-def test_run_status_active_json_is_parseable(monkeypatch):
+def test_run_status_unfinished_json_is_parseable(monkeypatch):
     from xorcise.core.cli.rest_client import RestClient
 
-    monkeypatch.setattr(RestClient, "get_run_result", lambda self, rid: {"status": "active"})
+    monkeypatch.setattr(
+        RestClient, "get_run_result", lambda self, rid, verify=False: {"status": "xorcising"}
+    )
     result = runner.invoke(app, ["run", "status", "a" * 32, "--json"])
     assert result.exit_code == 0  # --json always exits 0; the envelope carries the status
-    assert json.loads(result.stdout) == {"status": "active"}
+    assert json.loads(result.stdout) == {"status": "xorcising"}
 
 
-def test_get_run_result_translates_the_not_terminal_409(monkeypatch, tmp_path):
-    """A still-active run's server 409 becomes a soft {'status': 'active'}."""
+@pytest.mark.parametrize(
+    ("run_body", "expected"),
+    [
+        ({"state": "created", "started_at": None}, "created"),
+        ({"state": "xorcising", "started_at": "2026-10-23T01:00:00Z"}, "xorcising"),
+        ({"state": "active", "started_at": None}, "xorcising"),  # no server writes it: live
+        ({"state": "created"}, "xorcising"),  # older than #209: `created` meant any live run
+        (None, "xorcising"),  # the run read failed
+    ],
+)
+def test_get_run_result_translates_the_not_terminal_409(monkeypatch, tmp_path, run_body, expected):
+    """An unfinished run's server 409 becomes a soft {'status': <the run's state>} (#209)."""
     import httpx as _httpx
 
     from xorcise.core.cli.rest_client import RestClient
@@ -891,10 +921,17 @@ def test_get_run_result_translates_the_not_terminal_409(monkeypatch, tmp_path):
 
     def fake_get(url, timeout=None, **kwargs):
         req = _httpx.Request("GET", url)
-        return _httpx.Response(409, request=req, json={"detail": "run 'x' is not terminal yet"})
+        if url.endswith("/result"):
+            return _httpx.Response(409, request=req, json={"detail": "run 'x' is not terminal yet"})
+        assert url.endswith("/api/runs"), url  # the server has no single-run read
+        if run_body is None:
+            return _httpx.Response(500, request=req, json={"detail": "boom"})
+        return _httpx.Response(
+            200, request=req, json=[{"run_id": "other"}, {"run_id": "x", **run_body}]
+        )
 
     monkeypatch.setattr(httpx, "get", fake_get)
-    assert RestClient(base_url="http://x/api").get_run_result("x") == {"status": "active"}
+    assert RestClient(base_url="http://x/api").get_run_result("x") == {"status": expected}
 
 
 def test_empty_agent_name_is_rejected(monkeypatch):
@@ -956,7 +993,7 @@ def test_golden_path_is_one_canonical_list():
     from xorcise.core.cli._shared import GOLDEN_PATH, golden_path_steps
 
     commands = [cmd for _label, cmd in GOLDEN_PATH]
-    assert "xorcise config set-model --name <model> --key <key>" in commands
+    assert "xorcise config set-model --name <model> --key-stdin" in commands
     root = "\n".join(golden_path_steps())
     after_up = "\n".join(golden_path_steps(skip_first=True))
     for cmd in commands:
@@ -965,6 +1002,146 @@ def test_golden_path_is_one_canonical_list():
             assert cmd in after_up
     assert "xorcise up" not in after_up
     assert lifecycle.next_steps_block("http://x/ui").endswith(after_up)
+
+
+def test_no_in_product_pointer_teaches_the_key_on_argv(monkeypatch):
+    """Every surface that tells a user how to set the judge key names `--key-stdin` (#125).
+
+    A flag that keeps the credential off argv is worthless if `set-model --help` is the only
+    place it appears: a user arriving from the root epilog, `up`'s banner, `config show` or a
+    missing-input error copies the example in front of them, and that example put the key in
+    ~/.zsh_history and in /proc/<pid>/cmdline. `--key ''` is deliberately still allowed — it
+    clears the key rather than setting one, and no secret travels with it.
+
+    The rendered surfaces are a fixed LIST, and the next example will be written somewhere the
+    list does not reach — so the `--help` screens are rendered here too, the CLI source is read
+    with its `#` comments dropped, and README.md and CONTRIBUTING.md whole. That catches a
+    `--key sk-…` added to an option help string, an epilog, a docstring `--help` renders, or
+    the quickstart, without anyone remembering to come back and extend this test (#125 review).
+
+    What it does NOT catch is anything the two patterns miss: `--key $KEY` and `--key MYKEY`
+    pass on every surface here. This is a guard against the example people actually write — a
+    placeholder or a key-shaped literal — not proof that the flag is unmentionable."""
+    from xorcise.core.cli._errors import _EXAMPLES
+    from xorcise.core.cli._shared import GOLDEN_PATH
+    from xorcise.core.cli.rest_client import RestClient
+
+    def _flatten(text: str) -> str:
+        """Rendered output with Rich's layout taken back out of it.
+
+        A `--help` screen lays options out in a box, so the value can land on the next line from
+        its flag with a `\u2502` and padding in between — and a substring search finds nothing in
+        a screen that visibly reads `--key <your-key>`. The reviewer caught exactly that: an
+        injected example was found by the source grep and NOT by the screen it rendered on, which
+        made the rendered half of this test decorative (#125 review).
+        """
+        return re.sub(r"[\s\u2500-\u257f]+", " ", text)
+
+    def _sets_a_key_on_argv(text: str) -> bool:
+        """An EXAMPLE that puts a key value on argv, as opposed to naming the flag.
+
+        Bare `--key` in a list of flag names is a name, `--key ''` is the deliberate clear, and
+        `--key <str>` is Typer's own type metavar in the Options table — generated from the
+        parameter's type, sitting beside help text that says to prefer `--key-stdin`, and not
+        something anyone wrote as an instruction. Everything else with a placeholder value after
+        `--key` is teaching the argv path.
+        """
+        flat = _flatten(text)
+        return bool(re.search(r"--key <(?!str>)", flat)) or "--key sk-" in flat
+
+    monkeypatch.setattr(
+        RestClient,
+        "get",
+        lambda self, path: {"judge": {"configured": False}, "default_budget_seconds": 60},
+    )
+    monkeypatch.setattr(
+        RestClient,
+        "post",
+        lambda self, path, json, timeout=None: {"ok": False, "status": "not_configured"},
+    )
+
+    pointers = {
+        "golden path": "\n".join(cmd for _label, cmd in GOLDEN_PATH),
+        "up ready banner": lifecycle.next_steps_block("http://x/ui"),
+        "missing-input examples": "\n".join(_EXAMPLES.values()),
+        "config show": runner.invoke(app, ["config", "show"]).output,
+        "config test": runner.invoke(app, ["config", "test"]).output,
+        "set-model nothing to set": runner.invoke(app, ["config", "set-model"]).output,
+        "set-terrain-model nothing to set": runner.invoke(
+            app, ["config", "set-terrain-model"]
+        ).output,
+    }
+    # The help screens the list above never rendered — where an option's own help text, and the
+    # command docstring beside it, are the first thing a user reads.
+    for screen in (["--help"], ["config", "--help"]):
+        pointers[f"xorcise {' '.join(screen)}"] = runner.invoke(app, screen).output
+    for setter in ("set-model", "set-terrain-model"):
+        pointers[f"{setter} --help"] = runner.invoke(app, ["config", setter, "--help"]).output
+    # And the text itself, so a pointer added on a surface nobody listed here is still caught.
+    # `#` comment lines are dropped from the source first: a comment is never rendered to a
+    # user, so a sentence ABOUT the hazard is not a pointer to it, and this very fix had to
+    # write several. The cost is a string literal whose own line starts with `#`, which goes
+    # with them; the four `--help` screens above still cover the setters' own text.
+    for path in sorted((_REPO_ROOT / "src" / "xorcise").rglob("*.py")):
+        pointers[str(path.relative_to(_REPO_ROOT))] = "\n".join(
+            line
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if not line.lstrip().startswith("#")
+        )
+    for prose in ("README.md", "CONTRIBUTING.md"):
+        pointers[prose] = (_REPO_ROOT / prose).read_text(encoding="utf-8")
+
+    offenders = sorted(where for where, text in pointers.items() if _sets_a_key_on_argv(text))
+    assert not offenders, f"these still teach the key on argv: {offenders}"
+
+
+def test_stdin_interactivity_survives_a_closed_fd_zero():
+    """`xorcise … <&-` leaves `sys.stdin` as None, and the seam must read that as 'not a
+    terminal' (#125).
+
+    CPython sets sys.stdin to None when fd 0 is closed, so the bare `.isatty()` raised an
+    AttributeError that surfaced as 'unexpected error: NoneType object has no attribute
+    isatty'. Every confirmation gate routes through this one helper, so the crash was one
+    closed fd away from `down --purge` too."""
+    import sys as _sys
+
+    from xorcise.core.cli import _ux
+
+    real = _sys.stdin
+    _sys.stdin = None
+    try:
+        assert _ux._stdin_is_interactive() is False
+    finally:
+        _sys.stdin = real
+
+
+def test_the_hard_gate_still_fails_closed_when_fd_zero_is_closed(capsys):
+    """`xorcise agent register --kind <typo> <&-` refuses with exit 2, not "unexpected error".
+
+    The second seam the closed-fd-0 fix moved, named here because the commit that made it only
+    counted the first (#125 review). The REFUSAL is not new — this gate has always stopped a
+    script that cannot answer — but it was reached through the bare `.isatty()`, so a missing
+    stream raised an AttributeError that `app.py` rendered as "unexpected error" and exit 1.
+    Driven at the seam, like the test above it: CliRunner cannot hand a command a None stdin."""
+    import sys as _sys
+
+    from xorcise.core.cli import _ux
+
+    real = _sys.stdin
+    _sys.stdin = None
+    try:
+        with pytest.raises(typer.Exit) as exited:
+            _ux.confirm_gate(
+                "Register 'a' with kind 'bogus' anyway?",
+                assume_yes=False,
+                what="register with an unrecognised --kind",
+                example="xorcise agent register --name a --kind bogus --yes",
+            )
+    finally:
+        _sys.stdin = real
+
+    assert exited.value.exit_code == 2
+    assert "unrecognised --kind" in capsys.readouterr().err
 
 
 def test_documented_filter_value_with_no_matches_is_an_empty_result(monkeypatch):
@@ -1090,9 +1267,8 @@ def _no_nested_probe(monkeypatch) -> None:
     """Off stub mode, doctor boots a privileged DinD to probe nesting (~10 s, and a real daemon
     call). These tests are about the control plane; keep the probe out of them."""
     monkeypatch.setattr(
-        lifecycle, "nested_containers", lambda: Check("nested containers", True, "stubbed")
+        lifecycle, "nested_container_checks", lambda: [Check("nested containers", True, "stubbed")]
     )
-    monkeypatch.setattr(lifecycle, "nested_containers_foreign", lambda: [])
 
 
 def _up_with_managed_plane(tmp_path, monkeypatch, url: str) -> None:
@@ -1523,3 +1699,116 @@ def test_bracketed_tokens_render_literally_in_usage_errors():
     result = runner.invoke(app, ["run", "events", "[abc]"])
     assert result.exit_code == 2
     assert "xorcise run events export [abc]" in result.stderr
+
+
+# --- #173: a refused delete names the one next step ---------------------------------------------
+
+
+def _refuse_delete(monkeypatch, tmp_path, body: dict[str, object]) -> list[str]:
+    import httpx as _httpx
+
+    monkeypatch.setenv("XORCISE_HOME", str(tmp_path))
+    paths: list[str] = []
+
+    def fake_delete(url, timeout=None, **kwargs):
+        paths.append(url)
+        if "force=true" in url and body.get("forceable"):
+            return _httpx.Response(204, request=_httpx.Request("DELETE", url))
+        return _httpx.Response(409, request=_httpx.Request("DELETE", url), json=body)
+
+    monkeypatch.setattr(httpx, "delete", fake_delete)
+    monkeypatch.setattr("xorcise.core.cli.commands.run._resolve_id", lambda client, given: given)
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.agent.resolve_agent_name", lambda client, name: name
+    )
+    return paths
+
+
+def test_a_failed_teardown_refusal_points_at_force(monkeypatch, tmp_path):
+    rid = "a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6"
+    paths = _refuse_delete(
+        monkeypatch,
+        tmp_path,
+        {
+            "detail": f"the environment of run {rid} could not be torn down (tailnet: down).",
+            "reason": "unreleased",
+            "run_ids": [rid],
+            "forceable": True,
+        },
+    )
+    result = runner.invoke(app, ["run", "delete", rid, "--yes"])
+    assert result.exit_code == 1
+    assert "could not be torn down" in result.stderr
+    assert "re-run with --force" in result.stderr
+    assert not paths[0].endswith("force=true")
+
+    result = runner.invoke(app, ["run", "delete", rid, "--yes", "--force"])
+    assert result.exit_code == 0
+    assert paths[-1].endswith(f"/runs/{rid}?force=true")
+
+
+def test_a_running_run_refusal_names_the_terminate_command(monkeypatch, tmp_path):
+    live = "f" * 32
+    _refuse_delete(
+        monkeypatch,
+        tmp_path,
+        {
+            "detail": f"cannot remove agent 'alpha': run {live} is still running. Terminate it "
+            "first.",
+            "reason": "running",
+            "run_ids": [live],
+            "forceable": False,
+        },
+    )
+    result = runner.invoke(app, ["agent", "rm", "alpha", "--yes", "--force"])
+    assert result.exit_code == 1
+    assert "cannot remove agent 'alpha'" in result.stderr
+    assert "xorcise run terminate ffffffff" in result.stderr
+    assert "--force" not in result.stderr  # forcing cannot help here, so it is not offered
+
+
+def test_up_reports_what_the_boot_reconcile_recovered(monkeypatch):
+    """#173: `up` says what the server recovered at start, once the reconcile has finished."""
+    import httpx as _httpx
+
+    answers = iter(
+        [
+            {"boot_reconcile": {"state": "running"}},
+            {"boot_reconcile": {"state": "done", "aborted": 2}},
+        ]
+    )
+
+    def fake_get(url, timeout=None, **kwargs):
+        return _httpx.Response(200, request=_httpx.Request("GET", url), json=next(answers))
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr("xorcise.core.cli.commands.lifecycle.time.sleep", lambda s: None)
+    printed: list[str] = []
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.lifecycle.console.print",
+        lambda *a, **k: printed.append(str(a[0])),
+    )
+    lifecycle._report_boot_reconcile("http://x/api/system")
+    assert printed == ["boot reconcile: 2 closed out as crashed (not graded)"]
+
+
+def test_up_does_not_wait_forever_for_the_boot_reconcile(monkeypatch):
+    import httpx as _httpx
+
+    def fake_get(url, timeout=None, **kwargs):
+        body = {"boot_reconcile": {"state": "running"}}
+        return _httpx.Response(200, request=_httpx.Request("GET", url), json=body)
+
+    clock = iter(range(0, 100))
+    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.lifecycle.time.monotonic", lambda: float(next(clock))
+    )
+    monkeypatch.setattr("xorcise.core.cli.commands.lifecycle.time.sleep", lambda s: None)
+    printed: list[str] = []
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.lifecycle.console.print",
+        lambda *a, **k: printed.append(str(a[0])),
+    )
+    lifecycle._report_boot_reconcile("http://x/api/system")
+    assert len(printed) == 1 and "still checking" in printed[0]

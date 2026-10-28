@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import threading
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from itertools import count
@@ -128,16 +129,20 @@ class DropRecorder:
 
     counters: DropCounters = field(default_factory=DropCounters)
     spool: DropSpool | None = None
+    # The receiver records from its ingest worker threads, and the counters' read-add-write and the
+    # spool's write-then-evict are not atomic: unguarded, two late flushes lose an increment.
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def record(self, *, signal: Signal, reason: Reason, n: int, run_id: str, payload: str) -> None:
-        self.counters.add(signal, reason, n)
-        spooled = (
-            self.spool.write(signal=signal, reason=reason, run_id=run_id, payload=payload)
-            if self.spool is not None
-            else None
-        )
-        if spooled is not None:
-            self.counters.spooled_batches += 1
+        with self._lock:
+            self.counters.add(signal, reason, n)
+            spooled = (
+                self.spool.write(signal=signal, reason=reason, run_id=run_id, payload=payload)
+                if self.spool is not None
+                else None
+            )
+            if spooled is not None:
+                self.counters.spooled_batches += 1
         log.warning(
             "otlp drop: signal=%s reason=%s %s=%d run_id=%s spooled=%s",
             signal,

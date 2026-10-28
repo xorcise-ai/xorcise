@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from xorcise.core.db import session_scope
 from xorcise.core.runcontrol.models import RunSubmissionRow
@@ -101,3 +102,27 @@ def disclosed_intel_count(run_id: str) -> int:
     the delivery layer can surface it on ResultConditions.intel_disclosed without a results-table
     migration (the rows already exist)."""
     return SqliteSubmissionStore().count(run_id, "intel")
+
+
+def disclosed_intel_counts() -> dict[str, int]:
+    """`disclosed_intel_count` for every run that was given any intel, in one query. A run that
+    was given none is absent."""
+    with session_scope() as s:
+        rows = s.execute(
+            select(RunSubmissionRow.run_id, func.count())
+            .where(RunSubmissionRow.kind == "intel")
+            .group_by(RunSubmissionRow.run_id)
+        )
+        return {run_id: int(n) for run_id, n in rows}
+
+
+def held_run_ids() -> set[str]:
+    """Every run id that has a submission recorded."""
+    with session_scope() as s:
+        return set(s.scalars(select(RunSubmissionRow.run_id).distinct()))
+
+
+def delete_for_runs(run_ids: Collection[str]) -> None:
+    """Delete these runs' submissions (the run-delete cascade)."""
+    with session_scope() as s:
+        s.execute(delete(RunSubmissionRow).where(RunSubmissionRow.run_id.in_(run_ids)))

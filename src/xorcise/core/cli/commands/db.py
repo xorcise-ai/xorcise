@@ -66,7 +66,9 @@ def db_upgrade(force: bool = _FORCE_OPTION) -> None:
         err_console.print(
             f"[err]error[/err]: migration history mismatch — {exc}. "
             "This database was created by a different build of xorcise. "
-            "Back up ~/.xorcise/xorcise.db first; then run the build that created it, "
+            "Back up ~/.xorcise/xorcise.db first, together with any xorcise.db-wal beside it "
+            "(recent writes can live there, so a copy of xorcise.db alone can miss them); "
+            "then run the build that created it, "
             "or re-initialise with [value]xorcise down --purge[/value] (destroys local data)."
         )
         raise typer.Exit(1) from exc

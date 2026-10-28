@@ -3,7 +3,7 @@ import { cn } from "@/components/ui/cn";
 
 // Inline SVG marks — static-export/CSP safe (no external image loads), which is also why no
 // icon here may be a fetched third-party asset. OpenHands, Claude Code and Codex use their
-// official vendor marks; CustomMark is ours and follows the brand system's line-icon rules
+// official vendor marks; GenericMark is ours and follows the brand system's line-icon rules
 // (§7.3). Data-driven: adding a harness = one HARNESSES entry (its adapter ships in the
 // future adapters Story).
 
@@ -52,7 +52,7 @@ function CodexMark(): ReactNode {
   );
 }
 
-function CustomMark(): ReactNode {
+function GenericMark(): ReactNode {
   // The three marks above are real vendor logos; this one stands for "a CLI agent you brought
   // that we have no logo for". A prompt-in-a-frame says exactly that — every harness XORCISE
   // drives is a command-line agent, so the shell prompt is the honest generic, and the frame
@@ -118,14 +118,25 @@ export const HARNESSES: Harness[] = [
 ];
 
 export const DEFAULT_KIND = "openhands";
-export const CUSTOM_LABEL = "Custom";
-export { CustomMark };
+/** The kind of an agent that names no harness (contracts.agent.GENERIC_KIND): its runs replay
+ *  with the generic adapter. A blank kind is saved as this. */
+export const GENERIC_KIND = "generic";
+export const GENERIC_LABEL = "Generic";
+export { GenericMark };
+
+/** How an agent's `kind` reads: a built-in harness by its name, `generic` (or blank, which is
+ *  saved as `generic`) as Generic, and your own label as you typed it. */
+export function harnessLabel(kind: string | null | undefined): string {
+  const typed = kind?.trim() ?? "";
+  if (!typed || typed === GENERIC_KIND) return GENERIC_LABEL;
+  return HARNESSES.find((h) => h.kind === typed)?.name ?? typed;
+}
 
 /**
  * The harness mark for a `kind` (Codex/OpenAI, Claude Code, OpenHands, …) as a compact identity
  * glyph for dense lists — the Results agent cards and the Run-History cards. `muted` desaturates
  * the brand colours to grey so the mark reads as a subtle identifier rather than a focal point.
- * An unknown / blank kind falls back to the neutral custom mark. Size it from the caller via
+ * Generic, your own label, or a blank kind falls back to the neutral generic mark. Size it via
  * `className` (e.g. `[&_svg]:!size-4`); otherwise the mark keeps its native size.
  */
 export function HarnessGlyph({
@@ -138,7 +149,7 @@ export function HarnessGlyph({
   className?: string;
 }) {
   const Logo =
-    (kind ? HARNESSES.find((h) => h.kind === kind)?.Logo : undefined) ?? CustomMark;
+    (kind ? HARNESSES.find((h) => h.kind === kind)?.Logo : undefined) ?? GenericMark;
   return (
     <span
       className={cn("inline-flex shrink-0", muted && "opacity-70 grayscale", className)}

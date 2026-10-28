@@ -3,14 +3,24 @@
 from __future__ import annotations
 
 import hmac
+from collections.abc import Collection
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select, update
 
-from xorcise.core.contracts.run import RunEntry
+from xorcise.core.contracts.run import (
+    RunEntry,
+    StartTrigger,
+    TerminalTrigger,
+    as_run_state,
+    as_start_trigger,
+    as_terminal_trigger,
+)
 from xorcise.core.db import session_scope
-from xorcise.core.runs.models import RunRow
+from xorcise.core.runs.models import RunObservedFactRow, RunRow, TerrainUpdateRow
 
 
 def _utc(dt: datetime | None) -> datetime | None:
@@ -31,10 +41,12 @@ def _to_entry(row: RunRow) -> RunEntry:
         # Legacy rows predate the name column — fall back to the mission so a run always has a
         # readable label.
         name=row.name or row.mission,
-        state=row.state,
+        state=as_run_state(row.state),
         created_at=_utc_required(row.created_at),
+        started_at=_utc(row.started_at),
+        start_trigger=as_start_trigger(row.start_trigger),
         budget_seconds=row.budget_seconds,
-        terminal_trigger=row.terminal_trigger,
+        terminal_trigger=as_terminal_trigger(row.terminal_trigger),
         terminal_detail=row.terminal_detail,
         completed_at=_utc(row.completed_at),
         model=row.model,
@@ -117,6 +129,7 @@ def reserve_run(
     entry_cidrs: str = "",
     name: str | None = None,
     intel_policy: str = "all",
+    sandbox_ref: str | None = None,
 ) -> RunEntry:
     """Insert a minimal 'created' run row with its allocated subnet, BEFORE deploy.
 
@@ -134,6 +147,7 @@ def reserve_run(
             network_cidr=network_cidr,
             entry_cidrs=entry_cidrs,
             intel_policy=intel_policy,
+            sandbox_ref=sandbox_ref,
         )
         s.add(row)
         s.flush()  # surfaces the unique-index collision here (rolled back by session_scope)
@@ -230,6 +244,16 @@ def active_cidrs() -> set[str]:
         return {r.network_cidr for r in rows if r.network_cidr}
 
 
+def active_sandbox_refs() -> set[str]:
+    """The mission image of every non-terminal run: the images that must not be removed.
+
+    Run create records the image on the reservation, before deploy, so the image is protected
+    from the moment the run is reserved, not only once finalize_run runs."""
+    with session_scope() as s:
+        rows = s.scalars(select(RunRow).where(RunRow.state != "terminal")).all()
+        return {r.sandbox_ref for r in rows if r.sandbox_ref}
+
+
 def active_run_networks() -> list[tuple[str, tuple[str, ...]]]:
     """(run_id, entry_cidrs) for every non-terminal run with non-empty entry_cidrs.
 
@@ -285,13 +309,23 @@ def get(run_id: str) -> RunEntry | None:
         return _to_entry(row) if row is not None else None
 
 
-def delete_for_agent(agent_id: str) -> int:
-    """Delete all runs for an agent (the agent-delete cascade). Returns the count."""
+def held_run_ids() -> set[str]:
+    """Every run id that has a run row, an observed fact or a terrain update."""
     with session_scope() as s:
-        rows = s.scalars(select(RunRow).where(RunRow.agent_id == agent_id)).all()
-        for r in rows:
-            s.delete(r)
-        return len(rows)
+        return (
+            set(s.scalars(select(RunRow.id)))
+            | set(s.scalars(select(RunObservedFactRow.run_id).distinct()))
+            | set(s.scalars(select(TerrainUpdateRow.run_id).distinct()))
+        )
+
+
+def delete_for_runs(run_ids: Collection[str]) -> None:
+    """Delete these runs' observed facts and terrain updates, then their rows, in one
+    transaction (the run-delete cascade)."""
+    with session_scope() as s:
+        s.execute(delete(RunObservedFactRow).where(RunObservedFactRow.run_id.in_(run_ids)))
+        s.execute(delete(TerrainUpdateRow).where(TerrainUpdateRow.run_id.in_(run_ids)))
+        s.execute(delete(RunRow).where(RunRow.id.in_(run_ids)))
 
 
 def authenticate(run_id: str, key: str) -> bool:
@@ -307,6 +341,47 @@ def authenticate(run_id: str, key: str) -> bool:
         return hmac.compare_digest(row.run_control_key, key)
 
 
+# Domain-separation label for the watch token. Bump the version to invalidate every token at once.
+_WATCH_TOKEN_LABEL = "xorcise-reaper-v1:"
+
+
+def derive_watch_token(run_control_key: str, run_id: str) -> str:
+    """The watch token for a bearer already in hand — no lookup. Pure."""
+    return hmac.new(
+        run_control_key.encode(), (_WATCH_TOKEN_LABEL + run_id).encode(), "sha256"
+    ).hexdigest()
+
+
+def watch_token(run_id: str) -> str | None:
+    """The run's liveness-only watch token, or None if the run is absent or has no bearer.
+
+    Derived from the run-control bearer (HMAC, domain-separated), so it needs no column and dies
+    with the run. It authenticates ONLY the liveness probe — the join script's self-reaper polls
+    with it — so it can sit somewhere the bearer must not (BusyBox ``wget`` has no way to read a
+    header except from argv) and leaking it discloses only whether the run is still going."""
+    with session_scope() as s:
+        row = s.scalar(select(RunRow).where(RunRow.id == run_id))
+        if row is None or not row.run_control_key:
+            return None
+        return derive_watch_token(row.run_control_key, run_id)
+
+
+def authenticate_watch(run_id: str, token: str) -> bool:
+    """True iff `token` is `run_id`'s watch token. Constant-time; the bearer itself is refused."""
+    expected = watch_token(run_id) if token else None
+    return expected is not None and hmac.compare_digest(expected, token)
+
+
+def get_run_control_key(run_id: str) -> str | None:
+    """The per-run run-control bearer (secret), or None if the run is absent.
+
+    Narrow getter, like get_join_key: the bearer never rides RunEntry. The launch block exports it
+    as XORCISE_RUN_BEARER, and a prompt served to a harness with no launch block gets it inlined."""
+    with session_scope() as s:
+        row = s.scalar(select(RunRow).where(RunRow.id == run_id))
+        return row.run_control_key if row is not None else None
+
+
 def get_join_key(run_id: str) -> str | None:
     """The per-run tailnet join key (secret), or None if the run is absent.
 
@@ -317,24 +392,70 @@ def get_join_key(run_id: str) -> str | None:
         return row.join_key if row is not None else None
 
 
-def mark_terminal(run_id: str, trigger: str, at: datetime, detail: str | None = None) -> str:
+def mark_terminal(
+    run_id: str, trigger: TerminalTrigger, at: datetime, detail: str | None = None
+) -> str:
     """Transition a run to terminal, first-wins + idempotent. Returns the recorded trigger.
 
     The first call stamps state='terminal', terminal_trigger, completed_at and (when given) the
     terminal_detail — why the run ended, for triggers whose name alone does not say. Later calls
     (any trigger, any detail) are no-ops and return the trigger that already stuck.
-    Returns the recorded trigger, or '' if the run does not exist."""
+    Returns the recorded trigger, or '' if the run does not exist.
+
+    One conditional UPDATE, then a read of what stuck: a read and then a write let a racing
+    `end_unstarted` commit in between and be overwritten, so a run the API had answered
+    "Cancelled" was graded as a timeout after all."""
     with session_scope() as s:
-        row = s.scalar(select(RunRow).where(RunRow.id == run_id))
-        if row is None:
+        ended = s.execute(
+            update(RunRow)
+            .where(RunRow.id == run_id, RunRow.state != "terminal")
+            .values(
+                state="terminal",
+                terminal_trigger=trigger,
+                completed_at=at,
+                terminal_detail=detail or None,
+            )
+        )
+        if getattr(ended, "rowcount", 0):
+            return trigger
+        recorded = s.execute(
+            select(RunRow.terminal_trigger).where(RunRow.id == run_id)
+        ).one_or_none()
+        if recorded is None:
             return ""  # absent run: explicit empty-sentinel; nothing was recorded
-        if row.state == "terminal":
-            return row.terminal_trigger if row.terminal_trigger is not None else trigger
-        row.state = "terminal"
-        row.terminal_trigger = trigger
-        row.completed_at = at
-        row.terminal_detail = detail or None
-        return trigger
+        return recorded[0] if recorded[0] is not None else trigger
+
+
+def mark_started(run_id: str, trigger: StartTrigger, at: datetime) -> bool:
+    """Move a `created` run to `xorcising`, recording when and what showed it (#209). First-wins:
+    one conditional UPDATE, so a run that has started, ended or gone is left alone, and two first
+    signals racing each other record one. True when this call moved it."""
+    with session_scope() as s:
+        moved = s.execute(
+            update(RunRow)
+            .where(RunRow.id == run_id, RunRow.state == "created")
+            .values(state="xorcising", started_at=at, start_trigger=trigger)
+        )
+        return bool(getattr(moved, "rowcount", 0))
+
+
+def end_unstarted(
+    run_id: str, trigger: Literal["cancelled", "never_started"], at: datetime
+) -> bool:
+    """End a run the agent never started, as *trigger* (#187). True when this call ended it.
+
+    One conditional UPDATE on `state = 'created'`, never a read then a write: the agent's first
+    signal (`mark_started`) and any other ending (`mark_terminal`, also conditional) race for the
+    same row, and exactly one of them wins. A run that started first is not touched, so the
+    caller stops it as `operator` and it is graded.
+    """
+    with session_scope() as s:
+        ended = s.execute(
+            update(RunRow)
+            .where(RunRow.id == run_id, RunRow.state == "created")
+            .values(state="terminal", terminal_trigger=trigger, completed_at=at)
+        )
+        return bool(getattr(ended, "rowcount", 0))
 
 
 def terminal_state(run_id: str) -> tuple[bool, str | None, datetime | None]:
@@ -343,6 +464,111 @@ def terminal_state(run_id: str) -> tuple[bool, str | None, datetime | None]:
         if row is None or row.state != "terminal":
             return (False, None, None)
         return (True, row.terminal_trigger, _utc(row.completed_at))
+
+
+@dataclass(frozen=True)
+class ReleaseState:
+    """Where a run's environment release stands (#173). `released_at` None means not yet."""
+
+    released_at: datetime | None
+    attempts: int
+    error: str | None
+
+
+# A traceback-free error line is what the run page shows; a runaway message must not bloat the row.
+_RELEASE_ERROR_MAX = 500
+
+
+def release_state(run_id: str) -> ReleaseState | None:
+    """The run's release state, or None if the run does not exist."""
+    with session_scope() as s:
+        row = s.scalar(select(RunRow).where(RunRow.id == run_id))
+        if row is None:
+            return None
+        return ReleaseState(_utc(row.released_at), row.release_attempts, row.release_error)
+
+
+def mark_released(run_id: str, at: datetime) -> None:
+    """Record that the run's container and tailnet nodes are gone. First-wins and idempotent: a
+    second release (the sweeper racing the grade's own teardown) keeps the first timestamp."""
+    with session_scope() as s:
+        row = s.scalar(select(RunRow).where(RunRow.id == run_id))
+        if row is None or row.released_at is not None:
+            return
+        row.released_at = at
+        row.release_error = None
+
+
+def record_release_failure(run_id: str, error: str) -> int:
+    """Count a failed release attempt and keep its error. Returns the attempts so far (0 when the
+    run is gone or was released meanwhile, so the caller does not report a stale failure)."""
+    with session_scope() as s:
+        row = s.scalar(select(RunRow).where(RunRow.id == run_id))
+        if row is None or row.released_at is not None:
+            return 0
+        row.release_attempts = (row.release_attempts or 0) + 1
+        row.release_error = error[:_RELEASE_ERROR_MAX]
+        return row.release_attempts
+
+
+@dataclass(frozen=True)
+class AwaitingRelease:
+    """A terminal run whose environment is not released yet (#173)."""
+
+    run_id: str
+    trigger: str | None
+    completed_at: datetime | None
+    attempts: int
+    error: str | None
+
+
+def terminal_runs_awaiting_release() -> list[AwaitingRelease]:
+    """Every terminal run whose environment is not released yet, oldest first. STATIC runs are
+    excluded: they own no container and no tailnet nodes (empty network_cidr), so there is nothing
+    to release."""
+    with session_scope() as s:
+        rows = s.scalars(
+            select(RunRow)
+            .where(
+                RunRow.state == "terminal",
+                RunRow.released_at.is_(None),
+                RunRow.network_cidr != "",
+            )
+            .order_by(RunRow.completed_at)
+        ).all()
+        return [
+            AwaitingRelease(
+                r.id, r.terminal_trigger, _utc(r.completed_at), r.release_attempts, r.release_error
+            )
+            for r in rows
+        ]
+
+
+@dataclass(frozen=True)
+class ReleaseBacklog:
+    """Finished runs whose teardown FAILED and is still being retried (#173)."""
+
+    pending: int
+    oldest_ended_at: datetime | None
+    oldest_error: str | None
+
+
+def release_backlog() -> ReleaseBacklog:
+    """A count and the oldest of them, for /system. Two small queries rather than loading every
+    unreleased row: the GUI polls /system, and right after an upgrade the backlog can be long.
+    Runs merely waiting for their grade (no failed attempt yet) are not counted."""
+    failed = (
+        RunRow.state == "terminal",
+        RunRow.released_at.is_(None),
+        RunRow.network_cidr != "",
+        RunRow.release_attempts > 0,
+    )
+    with session_scope() as s:
+        pending = s.scalar(select(func.count()).select_from(RunRow).where(*failed)) or 0
+        oldest = s.scalar(select(RunRow).where(*failed).order_by(RunRow.completed_at).limit(1))
+        if oldest is None:
+            return ReleaseBacklog(pending, None, None)
+        return ReleaseBacklog(pending, _utc(oldest.completed_at), oldest.release_error)
 
 
 def is_budget_expired(run_id: str, now: datetime) -> bool:

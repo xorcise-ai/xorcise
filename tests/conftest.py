@@ -8,6 +8,8 @@ always cover all tests in that lane — no per-file marker maintenance.
 from __future__ import annotations
 
 import os
+import shutil
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -29,6 +31,27 @@ import pytest
 os.environ.setdefault("_TYPER_FORCE_DISABLE_TERMINAL", "1")
 
 _LANES = {"unit", "adapters", "topology", "integration", "e2e"}
+
+_throwaway_home: str | None = None
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Point XORCISE_HOME at a throwaway directory for the session, unless the caller set one.
+
+    `migrated_home` and friends set it per test, but a test that undoes its monkeypatch, or writes
+    before setting it, otherwise lands in the developer's real ~/.xorcise: each unit-lane run once
+    left a `runs/<id>/` there. xdist workers inherit the controller's value, so the controller
+    alone creates and removes the directory.
+    """
+    global _throwaway_home
+    if "XORCISE_HOME" not in os.environ:
+        _throwaway_home = tempfile.mkdtemp(prefix="xorcise-test-home-")
+        os.environ["XORCISE_HOME"] = _throwaway_home
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    if _throwaway_home is not None:
+        shutil.rmtree(_throwaway_home, ignore_errors=True)
 
 
 @pytest.fixture
@@ -112,6 +135,27 @@ def _force_stubs(monkeypatch):
     # Production deliberately drains late OTLP for a few seconds before sealing. The broad test
     # suite uses the explicit zero-delay mode; targeted lifecycle tests exercise the wait itself.
     monkeypatch.setenv("XORCISE_TELEMETRY_DRAIN_SECONDS", "0")
+
+
+@pytest.fixture(autouse=True)
+def _no_announcement_memo():
+    """Drop the memoised announcements response between tests.
+
+    `rest.announcements_view` caches the remote answer for a couple of minutes, keyed by catalog
+    URL, so one install costs one fetch per window rather than one per browser document load.
+    Process-wide state outlives a test: two tests pointing at the SAME catalog URL with different
+    stubbed sources would see the first one's banners, and the failure reads as the stub not
+    being applied rather than as a stale memo. Two existing tests failed exactly that way when
+    the cache was added.
+
+    Here rather than in one test module's helper: any test that changes catalog settings inherits
+    the hazard, not only the ones that know about it.
+    """
+    from xorcise.core.rest.announcements_view import reset_announcements_cache
+
+    reset_announcements_cache()
+    yield
+    reset_announcements_cache()
 
 
 @pytest.fixture(autouse=True)
@@ -200,8 +244,6 @@ def migrated_home(tmp_path, monkeypatch, _migrated_db_template):
     The schema is copied from the session-migrated template DB (`_migrated_db_template`) rather than
     re-run per test — see that fixture for why. End state is identical to `db.upgrade()`: an empty
     DB at head (alembic_version stamped), so a test that calls `db.upgrade()` again is a no-op."""
-    import shutil
-
     from xorcise.core import config, db
 
     monkeypatch.setenv("XORCISE_HOME", str(tmp_path))

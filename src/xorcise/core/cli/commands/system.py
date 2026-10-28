@@ -11,10 +11,68 @@ from __future__ import annotations
 from typing import Any
 
 import typer
+from rich.markup import escape
 
 from xorcise.core.cli._shared import app, console, emit_json
-from xorcise.core.cli._ux import DASH, print_table, service_label, ux_table
+from xorcise.core.cli._ux import (
+    DASH,
+    humanize_when,
+    print_table,
+    service_label,
+    short_id,
+    ux_table,
+)
 from xorcise.core.cli.rest_client import RestClient
+
+
+def boot_reconcile_lines(view: dict[str, Any] | None, *, verbose: bool = False) -> list[str]:
+    """What the server's start-up reconcile did, as console lines (#173). Shared by `system` and
+    `up`. Quiet when there is nothing to act on, unless `verbose`: a clean start needs no line."""
+    if not view:
+        return []
+    state = view.get("state")
+    if state in {"pending", "running"}:
+        return (
+            ["[dim]boot reconcile: checking the runs that were live before this start…[/dim]"]
+            if verbose
+            else []
+        )
+    if state == "failed":
+        return [
+            "[err]boot reconcile failed[/err]: "
+            + escape(str(view.get("error") or "unknown error")),
+            "  runs that were live before this start may not have been checked. It runs again on "
+            "the next start, once Docker and Headscale are up "
+            "([value]xorcise down && xorcise up[/value]).",
+        ]
+    parts = []
+    if view.get("adopted"):
+        parts.append(f"{view['adopted']} still running (picked back up)")
+    if view.get("aborted"):
+        parts.append(f"{view['aborted']} closed out as crashed (not graded)")
+    if view.get("released"):
+        parts.append(f"{view['released']} unfinished deploy(s) cleaned up")
+    lines = []
+    if parts:
+        lines.append("boot reconcile: " + "; ".join(parts))
+    if view.get("error"):  # done, but something was deliberately not checked
+        lines.append("[warn]boot reconcile[/warn]: " + escape(str(view["error"])))
+    elif not parts and verbose:
+        lines.append("boot reconcile: nothing to recover")
+    pending = [str(r) for r in view.get("release_pending") or ()]
+    if pending:
+        lines.append(
+            f"[warn]boot reconcile: {len(pending)} unfinished deploy(s) could not be torn down"
+            "[/warn] — closed as deploy failed (not graded); the teardown is retried "
+            "automatically: " + ", ".join(short_id(r) for r in pending)
+        )
+    failed = [str(r) for r in view.get("failed") or ()]
+    if failed:
+        lines.append(
+            f"[warn]boot reconcile: {len(failed)} run(s) could not be checked[/warn] and are "
+            "retried on the next start: " + ", ".join(short_id(r) for r in failed)
+        )
+    return lines
 
 
 @app.command("system", rich_help_panel="Configuration")
@@ -65,6 +123,21 @@ def system(
         console.print("mission library: enabled (live status: xorcise catalog status)")
     remotes = info.get("remotes") or ()
     console.print(f"remotes:   {', '.join(remotes) if remotes else '— (none registered)'}")
+    # Environments still up after a failed teardown (#173). Shown only when there are any: the
+    # line exists to say something needs attention, usually a plane that is down.
+    for line in boot_reconcile_lines(info.get("boot_reconcile"), verbose=verbose is True):
+        console.print(line)
+    releases = info.get("releases") or {}
+    if releases.get("pending"):
+        console.print(
+            f"[warn]releases:  {releases['pending']} finished run(s) still hold their container or "
+            f"tailnet nodes[/warn] (oldest ended {humanize_when(releases.get('oldest_ended_at'))}) "
+            "— retried automatically"
+        )
+        if releases.get("oldest_error"):
+            console.print(
+                f"           [dim]oldest run's error: {escape(str(releases['oldest_error']))}[/dim]"
+            )
     if verbose is True:
         # Name the role's maturity here too: `role list` says it, so the deployment readout
         # must not quietly present an experimental role as an ordinary configuration value.

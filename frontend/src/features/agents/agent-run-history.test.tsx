@@ -5,7 +5,7 @@ import type {
   CatalogEntry,
   RunEntry,
 } from "@/lib/api/types";
-import { runFixture, missionFixture } from "@/test/fixtures";
+import { runFixture, missionFixture, serverView } from "@/test/fixtures";
 
 vi.mock("next/link", () => ({
   default: ({
@@ -25,7 +25,12 @@ vi.mock("next/link", () => ({
 import { AgentRunHistory, buildAgentRunRows } from "./agent-run-history";
 
 function historyEntry(over: Partial<AgentHistoryEntry> = {}): AgentHistoryEntry {
+  // The server joins the run's status onto each row: a recorded result is either the agent's own
+  // completion or partial under its trigger.
+  const partial = over.partial ?? false;
+  const trigger = partial ? (over.partial_trigger ?? "timeout") : "done";
   return {
+    status: serverView("terminal", trigger as RunEntry["terminal_trigger"]).status,
     agent_id: "agent-1",
     run_id: "run-xyz-123",
     created_at: "2026-06-29T10:00:00Z",
@@ -76,7 +81,9 @@ describe("buildAgentRunRows", () => {
       historyEntry({ partial: true, partial_trigger: "timeout" }),
     ]);
     expect(row.missionName).toBe("Unknown mission");
-    expect(row.status.label).toBe("Timeout");
+    // The server's word for the run, carried on the history row — not a GUI-invented one.
+    expect(row.status.label).toBe("Timed out");
+    expect(row.status.action).toEqual({ label: "View partial result", target: "result" });
   });
 
   it("orders rows newest run first", () => {
@@ -126,5 +133,20 @@ describe("AgentRunHistory", () => {
     expect(within(table).getByText("80%")).toBeInTheDocument();
     expect(within(table).getByText("90%")).toBeInTheDocument();
     expect(within(table).getByText("70%")).toBeInTheDocument();
+  });
+});
+
+describe("AgentRunHistory no-judge runs (#143)", () => {
+  it("shows 'No judge' instead of a judge score the judge never gave", () => {
+    const rows = buildAgentRunRows([
+      historyEntry({ run_id: "r-none", judge: 0, judge_status: "unavailable" }),
+      historyEntry({ run_id: "r-ok", judge: 0, judge_status: "ok" }),
+    ]);
+    expect(rows.map((r) => r.noJudge)).toEqual([true, false]);
+    render(<AgentRunHistory rows={rows} />);
+    // Wide table and narrow list both render; each says it once.
+    expect(screen.getAllByText("No judge")).toHaveLength(2);
+    // The judged run's genuine 0% still reads as a score.
+    expect(screen.getAllByText("0%").length).toBeGreaterThan(0);
   });
 });

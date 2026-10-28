@@ -16,7 +16,6 @@ from typer.testing import CliRunner
 
 import xorcise.core.cli.app  # noqa: F401 — registers commands/callback on the shared app
 from xorcise.core.cli._shared import app
-from xorcise.core.cli.commands.results import summarize_by_agent
 from xorcise.core.cli.rest_client import RestClient
 
 pytestmark = pytest.mark.unit
@@ -335,6 +334,80 @@ def test_system_renders_planes_table_and_environment(monkeypatch):
         assert internal not in out
 
 
+def test_system_warns_about_environments_a_teardown_left_up(monkeypatch):
+    """#173: finished runs whose container or tailnet nodes are still up after a failed teardown
+    are counted, so a plane that is down gets noticed. Nothing is printed when there are none."""
+    info = {
+        **_SYSTEM_INFO,
+        "releases": {
+            "pending": 2,
+            "oldest_ended_at": "2026-10-14T12:00:00Z",
+            "oldest_error": "tailnet: Headscale control plane 'headscale' is not reachable",
+        },
+    }
+    monkeypatch.setattr(RestClient, "get", lambda self, path: info)
+    out = runner.invoke(app, ["system"]).stdout
+    assert "2 finished run(s) still hold their container or tailnet nodes" in out
+    assert "retried automatically" in out
+    assert "Headscale control plane 'headscale' is not reachable" in out
+
+    for quiet in ({**_SYSTEM_INFO, "releases": {"pending": 0}}, _SYSTEM_INFO):
+        monkeypatch.setattr(RestClient, "get", lambda self, path, quiet=quiet: quiet)
+        assert "releases:" not in runner.invoke(app, ["system"]).stdout
+
+
+@pytest.mark.parametrize(
+    ("view", "expected", "absent"),
+    [
+        (
+            {"state": "failed", "error": "runs: Headscale control plane is not reachable"},
+            ["boot reconcile failed", "Headscale control plane is not reachable", "next start"],
+            [],
+        ),
+        (
+            {
+                "state": "done",
+                "adopted": 1,
+                "aborted": 2,
+                "released": 1,
+                "release_pending": ["d" * 32],
+                "failed": ["e" * 32],
+            },
+            [
+                "1 still running (picked back up)",
+                "2 closed out as crashed (not graded)",
+                "1 unfinished deploy(s) cleaned up",
+                "1 unfinished deploy(s) could not be torn down",
+                "closed as deploy failed (not graded); the teardown is retried automatically",
+                "dddddddd",
+                "1 run(s) could not be checked",
+                "eeeeeeee",
+            ],
+            [],
+        ),
+        # A clean start, or one still in progress, is not worth a line in the default view.
+        ({"state": "done"}, [], ["boot reconcile"]),
+        ({"state": "running"}, [], ["boot reconcile"]),
+    ],
+)
+def test_system_reports_what_the_boot_reconcile_did(monkeypatch, view, expected, absent):
+    """#173: what the server recovered at start used to be a line in serve.log, and a reconcile
+    that failed outright said nothing at all."""
+    info = {**_SYSTEM_INFO, "boot_reconcile": view}
+    monkeypatch.setattr(RestClient, "get", lambda self, path: info)
+    out = " ".join(runner.invoke(app, ["system"]).stdout.split())
+    for text in expected:
+        assert text in out
+    for text in absent:
+        assert text not in out
+
+
+def test_system_verbose_says_when_the_boot_reconcile_had_nothing_to_do(monkeypatch):
+    info = {**_SYSTEM_INFO, "boot_reconcile": {"state": "done"}}
+    monkeypatch.setattr(RestClient, "get", lambda self, path: info)
+    assert "boot reconcile: nothing to recover" in runner.invoke(app, ["system", "-v"]).stdout
+
+
 def test_system_verbose_reveals_deployment_internals(monkeypatch):
     monkeypatch.setattr(RestClient, "get", lambda self, path: _SYSTEM_INFO)
     result = runner.invoke(app, ["system", "--verbose"])
@@ -417,121 +490,141 @@ def test_mission_show_json_emits_the_raw_manifest(monkeypatch):
 
 
 # ── xorcise leaderboard ───────────────────────────────────────────────────────
+#
+# The leaderboard is the server's summary (GET /results/summary?by=agent, reporting.scores), ranked
+# and named there. How each run counts is decided once, server-side, and tested there
+# (tests/unit/test_results_scores.py); these pin what the CLI does with it.
 
 
-def _run(
-    run_id: str, agent_id: str, trigger: str, when: str = "2026-07-01T10:00:00"
-) -> dict[str, Any]:
-    return {
-        "run_id": run_id,
+def _summary(agent_id: str, **over: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
         "agent_id": agent_id,
-        "mission": "sqli",
-        "state": "terminal",
-        "created_at": when,
-        "completed_at": when,
-        "terminal_trigger": trigger,
+        "agent_name": agent_id[:8],
+        "runs": 1,
+        "completed": 1,
+        "scored": 1,
+        "timed_out": 0,
+        "no_judge": 0,
+        "stopped": 0,
+        "grading_failed": 0,
+        "infra_failed": 0,
+        "grading": 0,
+        "median": 0.5,
+        "mean": 0.5,
+        "best": 0.5,
+        "last_run": "2026-07-01T10:00:00",
     }
+    row.update(over)
+    return row
 
 
-def _wire(
-    monkeypatch,
-    runs: list[dict[str, Any]],
-    results: dict[str, dict[str, Any]],
-    agents: list[dict[str, Any]],
-) -> None:
+def _wire(monkeypatch, summaries: list[dict[str, Any]]) -> list[str]:
+    calls: list[str] = []
+
     def fake_get(self, path):  # noqa: ANN001, ANN202 — test stub
-        if path == "/runs":
-            return runs
-        if path == "/agents":
-            return agents
-        run_id = path.split("/")[2]
-        return results[run_id]
+        calls.append(path)
+        if path == "/results/summary?by=agent":
+            return summaries
+        raise AssertionError(f"unexpected request {path}")
 
     monkeypatch.setattr(RestClient, "get", fake_get)
+    return calls
 
 
-def test_leaderboard_ranks_agents_by_average_overall(monkeypatch):
+def test_leaderboard_reads_the_servers_summary_not_every_runs_result(monkeypatch):
+    calls = _wire(monkeypatch, [_summary("a1", agent_name="alpha")])
+    result = runner.invoke(app, ["leaderboard"])
+    assert result.exit_code == 0
+    # Ranked and named by the server: one request, nothing re-sorted here.
+    assert calls == ["/results/summary?by=agent"]
+
+
+def test_leaderboard_keeps_the_servers_order_and_shows_the_mean(monkeypatch):
     _wire(
         monkeypatch,
-        runs=[
-            _run("r1", "a1", "done", "2026-07-01T10:00:00"),
-            _run("r2", "a1", "done", "2026-07-02T10:00:00"),
-            _run("r3", "a2", "done", "2026-07-03T10:00:00"),
+        [
+            _summary("a2", agent_name="beta", median=0.9, mean=0.7),
+            _summary("a1", agent_name="alpha", median=0.5),
+            _summary("a3", agent_name="gamma", median=None, mean=None),
         ],
-        results={
-            "r1": {"grade": {"overall": 0.4}, "partial": False},
-            "r2": {"grade": {"overall": 0.6}, "partial": False},
-            "r3": {"grade": {"overall": 0.9}, "partial": False},
-        },
-        agents=[{"id": "a1", "name": "alpha"}, {"id": "a2", "name": "beta"}],
     )
     result = runner.invoke(app, ["leaderboard"])
     assert result.exit_code == 0
     out = result.stdout
-    # beta (0.90) outranks alpha (0.50)
-    assert out.index("beta") < out.index("alpha")
-    assert "0.90" in out and "0.50" in out
+    assert out.index("beta") < out.index("alpha") < out.index("gamma")
+    assert "Median" in out and "90%" in out
+    assert "Mean" in out and "70%" in out
 
 
-def test_leaderboard_excludes_partial_runs_from_the_score_but_counts_them(monkeypatch):
+def test_leaderboard_json_is_the_servers_summary_with_the_keys_it_had_before(monkeypatch):
+    """Scripts written against v0.2.0's `--json` read avg_overall, best_overall, the two rates and
+    judge_degraded: they are still there, computed by the median's rule."""
+    import json
+
     _wire(
         monkeypatch,
-        runs=[_run("r1", "a1", "done"), _run("r2", "a1", "timeout")],
-        results={
-            "r1": {"grade": {"overall": 0.8}, "partial": False},
-            "r2": {"grade": {"overall": 0.1}, "partial": True},
-        },
-        agents=[{"id": "a1", "name": "alpha"}],
+        [
+            _summary(
+                "a1",
+                agent_name="alpha",
+                runs=6,
+                completed=3,
+                infra_failed=2,
+                no_judge=1,
+                median=0.8,
+                mean=0.75,
+                best=0.9,
+                timed_out=1,
+            ),
+            _summary("a2deadbeefcafe", median=0.3),
+        ],
     )
     result = runner.invoke(app, ["leaderboard", "--json"])
     assert result.exit_code == 0
-    import json
+    first, second = json.loads(result.stdout)
+    assert (first["agent_name"], first["median"], first["timed_out"]) == ("alpha", 0.8, 1)
+    assert (first["avg_overall"], first["best_overall"], first["judge_degraded"]) == (0.75, 0.9, 1)
+    # Over the 4 attempts: the 2 environment failures are not the agent's.
+    assert (first["completion_rate"], first["partial_rate"]) == (0.75, 0.25)
+    assert second["agent_name"] == "a2deadbe"
 
-    (row,) = json.loads(result.stdout)
-    assert row["runs"] == 2 and row["scored"] == 1
-    assert row["avg_overall"] == 0.8 and row["best_overall"] == 0.8
-    assert row["completion_rate"] == 0.5 and row["partial_rate"] == 0.5
 
-
-def test_leaderboard_tolerates_a_terminal_but_ungraded_run(monkeypatch):
-    # GET /runs/{id}/result 202s with {"status": "grading"} while grading is async.
+def test_leaderboard_says_which_runs_are_in_the_median_and_which_are_not(monkeypatch):
     _wire(
         monkeypatch,
-        runs=[_run("r1", "a1", "done")],
-        results={"r1": {"run_id": "r1", "status": "grading"}},
-        agents=[{"id": "a1", "name": "alpha"}],
+        [_summary("a1", timed_out=1, no_judge=2, stopped=1, grading_failed=1, infra_failed=1)],
     )
+    out = " ".join(runner.invoke(app, ["leaderboard"]).stdout.split())
+    assert "'Timed out' runs ran out of their budget. They ARE in Median/Mean/Best" in out
+    assert "'No judge' counts runs graded with the judge half unavailable" in out
+    assert "left out of Median/Mean/Best" in out
+    assert "'Grading failed' counts runs whose grading crashed" in out
+    assert "'Stopped' counts runs an operator ended" in out
+    assert "'Infra failed' counts runs cut short by an environment failure" in out
+
+
+def test_leaderboard_reads_a_server_older_than_the_mean(monkeypatch):
+    """A server from before `mean` and `grading_failed` still gets a table, not a KeyError."""
+    old = _summary("a1", agent_name="alpha")
+    del old["mean"], old["grading_failed"]
+    _wire(monkeypatch, [old])
     result = runner.invoke(app, ["leaderboard"])
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     assert "alpha" in result.stdout
 
 
-def test_leaderboard_skips_non_terminal_runs(monkeypatch):
-    active = {**_run("r1", "a1", "done"), "state": "active"}
-    _wire(monkeypatch, runs=[active], results={}, agents=[])
+def test_leaderboard_with_no_finished_runs(monkeypatch):
+    _wire(monkeypatch, [])
     result = runner.invoke(app, ["leaderboard"])
     assert result.exit_code == 0
     assert "no finished runs yet" in result.stdout
+    assert runner.invoke(app, ["leaderboard", "--json"]).stdout.strip() == "[]"
 
 
-def test_summarize_by_agent_sinks_unscored_agents_and_falls_back_to_the_id():
-    rows: list[dict[str, Any]] = [
-        {
-            "agent_id": "a1",
-            "overall": None,
-            "partial": True,
-            "completed": False,
-            "when": "2026-07-01T10:00:00",
-        },
-        {
-            "agent_id": "a2deadbeefcafe",
-            "overall": 0.3,
-            "partial": False,
-            "completed": True,
-            "when": "2026-07-02T10:00:00",
-        },
-    ]
-    scored, unscored = summarize_by_agent(rows, {"a1": "alpha"})
-    assert scored["agent_name"] == "a2deadbe"  # no registered name → short id (GUI parity)
-    assert scored["avg_overall"] == 0.3
-    assert unscored["agent_name"] == "alpha" and unscored["avg_overall"] is None
+def test_leaderboard_prints_a_score_as_the_gui_does():
+    """0.815 is stored just under 0.815: `.2f` printed 0.81 where the page showed 82%."""
+    from xorcise.core.cli.commands.results import _score
+
+    assert _score(0.815) == "82%"
+    assert _score(0.5674999999999999) == "57%"
+    assert _score(None) == "—"

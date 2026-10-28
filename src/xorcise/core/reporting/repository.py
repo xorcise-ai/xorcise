@@ -3,14 +3,31 @@ and are cascade-deleted with it."""
 
 from __future__ import annotations
 
+import json
+import logging
+from collections.abc import Collection
+from typing import cast, get_args
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
-from xorcise.core.contracts.grading import GradeResult
+from xorcise.core.contracts.grading import GradeResult, JudgeStatus
 from xorcise.core.contracts.reporting import AgentHistoryEntry, ResultConditions, RunStats
 from xorcise.core.db import session_scope
 from xorcise.core.reporting.models import ResultRow
+from xorcise.core.reporting.scores import GradeFacts
+
+log = logging.getLogger(__name__)
+
+
+def _judge_status(row: ResultRow) -> JudgeStatus | None:
+    """The stored grade's judge_status. The row keeps the whole GradeResult in `detail_json`, so
+    this needs no column of its own; None when that grade cannot be read back."""
+    try:
+        status = json.loads(row.detail_json).get("judge_status")
+    except (ValueError, AttributeError):
+        return None
+    return cast("JudgeStatus", status) if status in get_args(JudgeStatus) else None
 
 
 def _to_entry(row: ResultRow) -> AgentHistoryEntry:
@@ -35,6 +52,7 @@ def _to_entry(row: ResultRow) -> AgentHistoryEntry:
         ),
         partial=row.partial,
         partial_trigger=row.partial_trigger,
+        judge_status=_judge_status(row),
     )
 
 
@@ -106,6 +124,60 @@ def get_result(run_id: str) -> GradeResult | None:
         return GradeResult.model_validate_json(row.detail_json)
 
 
+def has_result(run_id: str) -> bool:
+    """Whether a result is recorded for the run, without reading it back: True even for one
+    whose stored grade no longer validates, which get_result would raise on."""
+    with session_scope() as s:
+        return (
+            s.scalar(
+                select(ResultRow.id).where(ResultRow.run_id == run_id, ResultRow.detail_json != "")
+            )
+            is not None
+        )
+
+
+def recorded_grades(agent_id: str | None = None) -> dict[str, GradeFacts]:
+    """What the performance views need of every recorded grade, by run id: one query instead of
+    one `/result` read per run. The scores come from the row's columns and the rest from a plain
+    JSON read of the stored grade, never a full validation of it. A grade that cannot be read
+    back counts as a grading failure (GradeFacts.unreadable): left out, its run would read as
+    still grading, and the views would re-drive a grade that already exists."""
+    query = select(
+        ResultRow.run_id,
+        ResultRow.overall,
+        ResultRow.deterministic,
+        ResultRow.judge,
+        ResultRow.judge_model,
+        ResultRow.detail_json,
+    ).where(ResultRow.detail_json != "")
+    if agent_id is not None:
+        query = query.where(ResultRow.agent_id == agent_id)
+    grades: dict[str, GradeFacts] = {}
+    with session_scope() as s:
+        for run_id, overall, deterministic, judge, judge_model, detail_json in s.execute(query):
+            try:
+                detail = json.loads(detail_json)
+                if not isinstance(detail, dict):
+                    raise ValueError("not a JSON object")
+            except ValueError:
+                log.warning("result for run %s cannot be read back; counted as failed", run_id)
+                grades[run_id] = GradeFacts.unreadable(
+                    overall=overall,
+                    deterministic=deterministic,
+                    judge=judge,
+                    judge_model=judge_model,
+                )
+                continue
+            grades[run_id] = GradeFacts.from_detail(
+                detail,
+                overall=overall,
+                deterministic=deterministic,
+                judge=judge,
+                judge_model=judge_model,
+            )
+    return grades
+
+
 def get_stats(run_id: str) -> RunStats | None:
     """The persisted per-run telemetry snapshot, or None if absent/empty."""
     with session_scope() as s:
@@ -162,20 +234,21 @@ def result_partial(run_id: str) -> tuple[bool, str | None]:
         return (row.partial, row.partial_trigger)
 
 
-def delete_for_agent(agent_id: str) -> int:
-    """Delete all results for an agent (the agent-delete cascade). Returns the count."""
+def held_run_ids() -> set[str]:
+    """Every run id that has a result recorded."""
     with session_scope() as s:
-        rows = s.scalars(select(ResultRow).where(ResultRow.agent_id == agent_id)).all()
-        for r in rows:
-            s.delete(r)
-        return len(rows)
+        return set(s.scalars(select(ResultRow.run_id).distinct()))
+
+
+def delete_for_runs(run_ids: Collection[str]) -> None:
+    """Delete these runs' results (the run-delete cascade)."""
+    with session_scope() as s:
+        s.execute(delete(ResultRow).where(ResultRow.run_id.in_(run_ids)))
 
 
 def delete_result(run_id: str) -> bool:
-    """Delete the recorded result for a single run. True if a row was removed.
-
-    Operator-facing per-run delete — the narrow counterpart to the agent-scoped
-    delete_for_agent cascade. A no-op returning False when no result was recorded for the run.
+    """Delete the recorded result for a single run, so a regrade records a fresh one. True if a
+    row was removed; a no-op returning False when no result was recorded for the run.
     """
     with session_scope() as s:
         row = s.scalar(select(ResultRow).where(ResultRow.run_id == run_id))

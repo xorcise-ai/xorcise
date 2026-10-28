@@ -147,9 +147,9 @@ def test_render_lists_attachments_and_download_recipe():
     assert "/attachments/<name>" in text  # the download endpoint
     assert "signed url" in text  # step 1 yields a short-lived signed link
     assert "X-Run-Key" in text  # the download header name (route requires it; not the Bearer)
-    # the per-run key is shown ONCE (the Bearer line) — the attachment recipe references it by
-    # name ("your run key"), it does NOT re-print the secret value.
-    assert text.count("rk-xyz") == 1
+    # The download passes the token on stdin from the environment, like every other call (#172).
+    assert 'printf \'header = "X-Run-Key: %s"\\n\' "$XORCISE_RUN_BEARER" | curl -fsS -K - ' in text
+    assert "rk-xyz" not in text
 
 
 def test_render_omits_attachment_section_when_no_attachments():
@@ -170,15 +170,88 @@ def test_render_join_recipe_is_one_command_and_inlines_no_secret():
     assert "host has NO direct route to target IPs" in text
     assert "nc -X 5 -x <host:port>" in text
     assert "tskey-abc" not in text  # authkey value never inlined
-    assert "Authorization: Bearer rk-xyz" in text  # the (single) bearer, in the run-control step
+    assert "rk-xyz" not in text  # nor the bearer: the agent reads it from its environment (#172)
+    assert "Authorization: Bearer $XORCISE_RUN_BEARER" in text
     assert "10.200.1.2:80" in text
     assert "otlp" not in text.lower()  # no telemetry endpoint in the mission section
 
 
 def test_render_runcontrol_uses_bearer_not_xrunkey():
     text = render_prompt_text(_mission_with_artifacts())
-    assert "Authorization: Bearer rk-xyz" in text
+    assert "Authorization: Bearer $XORCISE_RUN_BEARER" in text
     assert "X-Run-Key" not in text
+
+
+# --- #172: the bearer stays out of the prompt and off every command line -----------------------
+
+
+def test_the_stored_prompt_refers_to_the_bearer_variable_and_never_carries_the_token():
+    # The prompt reaches the agent's argv (`claude -p '<prompt>'`) and telemetry that logs it, so
+    # the token is never in it; the launch block exports XORCISE_RUN_BEARER instead.
+    text = render_prompt_text(_mission_with_attachments())
+    assert "rk-xyz" not in text
+    assert "The token is in your environment as $XORCISE_RUN_BEARER" in text
+
+
+def test_every_recommended_call_passes_the_header_on_stdin_never_with_h():
+    text = render_prompt_text(_mission_with_attachments())
+    recipes = [line.strip() for line in text.splitlines() if '$XORCISE_RUN_BEARER" |' in line]
+    assert len(recipes) == 4  # join.sh, /complete, /artifacts, an attachment download
+    for recipe in recipes:
+        assert recipe.startswith("printf 'header = ")
+        assert "| curl -fsS -K - " in recipe
+    assert '-H "$BEARER"' not in text and '-H "Authorization' not in text
+
+
+def test_the_recommended_recipes_run_and_keep_the_token_off_curl_argv(tmp_path):
+    # Run each recipe as the agent would, with a curl that records its argv and its stdin config:
+    # the header must arrive on stdin, expanded from the environment, and never in argv.
+    import os
+    import subprocess
+    import sys
+
+    from xorcise.core.runs.prompt import RUN_BEARER_ENV
+
+    log = tmp_path / "curl.log"
+    curl = tmp_path / "curl"
+    curl.write_text(
+        f"#!{sys.executable}\nimport sys\n"
+        f"open({str(log)!r}, 'a').write('ARGV ' + ' '.join(sys.argv[1:]) + '\\n'"
+        " + 'STDIN ' + (sys.stdin.read() if '-K' in sys.argv else '') + '\\n')\n"
+    )
+    curl.chmod(0o755)
+    text = render_prompt_text(_mission_with_attachments())
+    recipes = [line.strip() for line in text.splitlines() if '$XORCISE_RUN_BEARER" |' in line]
+    env = {"PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}", RUN_BEARER_ENV: "rk-xyz"}
+    for recipe in recipes:
+        runnable = recipe.replace("| sh", "").replace("<", "").replace(">", "")
+        subprocess.run(["/bin/sh", "-c", runnable], env=env, check=True)
+    recorded = log.read_text()
+    argv = [line for line in recorded.splitlines() if line.startswith("ARGV")]
+    assert len(argv) == len(recipes)
+    assert all("rk-xyz" not in line for line in argv)
+    assert recorded.count('header = "Authorization: Bearer rk-xyz"') == 3
+    assert recorded.count('header = "X-Run-Key: rk-xyz"') == 1
+
+
+def test_a_prompt_for_a_harness_with_no_launch_block_gets_the_token_inlined():
+    # A prompt pasted into a harness by hand has no environment to read the token from.
+    from xorcise.core.runs.prompt import inline_run_bearer
+
+    text = inline_run_bearer(render_prompt_text(_mission()), "rk-xyz")
+    assert "Authorization: Bearer rk-xyz" in text
+    assert "$XORCISE_RUN_BEARER" not in text
+    assert "in your environment" not in text  # no claim about a variable nothing set
+    # The recipes keep their stdin form, so curl's own argv stays clean even then.
+    assert 'printf \'header = "Authorization: Bearer %s"\\n\' "rk-xyz" | curl -fsS -K - ' in text
+
+
+def test_inlining_leaves_a_prompt_from_before_the_variable_untouched():
+    from xorcise.core.runs.prompt import inline_run_bearer
+
+    legacy = "2. Run-control\n   Header:    Authorization: Bearer rk-old\n"
+    assert inline_run_bearer(legacy, "rk-old") == legacy
+    assert inline_run_bearer(render_prompt_text(_mission()), "") == render_prompt_text(_mission())
 
 
 def test_render_runcontrol_gives_full_base_url():
