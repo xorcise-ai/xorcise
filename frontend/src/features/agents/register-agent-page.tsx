@@ -108,7 +108,7 @@ export function RegisterAgentPage({ editName }: { editName: string | null }) {
       <div className="flex h-full min-h-0 flex-col gap-3 p-4">
         <div className="shrink-0">
           <h1 className="text-lead text-heading">Edit agent</h1>
-          <p className="max-w-[68ch] text-dense text-text-secondary">
+          <p className="text-dense text-text-secondary">
             Loading “{editName}”…
           </p>
         </div>
@@ -131,13 +131,13 @@ export function RegisterAgentPage({ editName }: { editName: string | null }) {
         <h1 className="text-lead text-heading">
           {editing ? `Edit “${agent?.name}”` : "Register agent"}
         </h1>
-        <p className="max-w-[68ch] text-dense text-text-secondary">
+        <p className="text-dense text-text-secondary">
           {editing
             ? "Update this agent's declaration. A changed name renames it — its history stays attached."
             : "Name the agent, choose how it is observed and launched, then review the declaration."}
         </p>
         {unknownEdit && !noticeDismissed && (
-          <div className="mt-1 flex max-w-[68ch] items-start justify-between gap-2">
+          <div className="mt-1 flex items-start justify-between gap-2">
             <p className="text-dense text-text-secondary">
               No agent named “{editName}” — registering a new agent instead.
             </p>
@@ -377,7 +377,7 @@ function AgentForm({
                 {editing && (
                   <p
                     className={cn(
-                      "col-start-1 row-start-1 max-w-[68ch] text-dense text-text-tertiary",
+                      "col-start-1 row-start-1 text-dense text-text-tertiary",
                       showNameError && "invisible",
                     )}
                     aria-hidden={showNameError || undefined}
@@ -780,7 +780,7 @@ function Field({
         {children}
       </label>
       {helpText && (
-        <p className="mt-1 max-w-[68ch] text-dense text-text-tertiary">{helpText}</p>
+        <p className="mt-1 text-dense text-text-tertiary">{helpText}</p>
       )}
     </div>
   );

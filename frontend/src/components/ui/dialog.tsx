@@ -2,6 +2,7 @@
 
 import { X } from "lucide-react";
 import { useEffect, useRef, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Button } from "./button";
 import { cn } from "./cn";
 import { useExitTransition } from "./use-exit-transition";
@@ -14,7 +15,15 @@ const SIZE_CLS = {
   lg: "max-w-2xl",
 } as const;
 
-/** Minimal controlled modal (static-export safe — no portal library). */
+/**
+ * Minimal controlled modal (static-export safe — no portal library).
+ *
+ * Rendered into `document.body` through React's own portal. Inline, its `fixed` overlay was
+ * positioned against the nearest ancestor holding a transform, not the viewport: every tab panel
+ * enters with `animate-fade-up`, whose `both` fill keeps a transform applied, so a dialog opened
+ * from inside one was clipped to the panel and its title cut off. Only ever mounted on the client
+ * (it renders nothing until opened), so the static export never sees the portal.
+ */
 export function Dialog({
   open,
   onClose,
@@ -73,7 +82,7 @@ export function Dialog({
   const requestClose = () => {
     if (!closing) onClose();
   };
-  return (
+  return createPortal(
     <div
       role="dialog"
       aria-modal="true"
@@ -109,6 +118,7 @@ export function Dialog({
         </div>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

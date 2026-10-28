@@ -239,7 +239,7 @@ export function MissionDetail({ id }: { id: string | null }) {
           </div>
 
           {pull.joinedInsteadOfRefresh && (
-            <p role="status" className="mt-1 max-w-[68ch] text-body text-warning">
+            <p role="status" className="mt-1 text-body text-warning">
               A pull of this mission was already running, so this shows its progress instead of
               starting a refresh. Re-pull again once it finishes if you still need one.
             </p>

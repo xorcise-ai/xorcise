@@ -48,7 +48,7 @@ def test_a_broken_probe_is_a_warning_not_a_failure(monkeypatch) -> None:
 
     monkeypatch.setattr(dr, "nested_support", _boom)
     check = diag.nested_containers()
-    assert check.ok is True
+    assert check.ok is False  # amber, never a green tick
     assert check.level == "warning"
     assert "undetermined" in check.detail
 
@@ -81,11 +81,11 @@ def test_doctor_runs_the_nested_probe_only_when_docker_is_up(monkeypatch) -> Non
     monkeypatch.setenv("XORCISE_ROLE", "all")
     probed: list[int] = []
 
-    def _record() -> diag.Check:
+    def _record() -> list[diag.Check]:
         probed.append(1)
-        return diag.Check("nested containers", True, "ok")
+        return [diag.Check("nested containers", True, "ok")]
 
-    monkeypatch.setattr(lifecycle, "nested_containers", _record)
+    monkeypatch.setattr(lifecycle, "nested_container_checks", _record)
 
     monkeypatch.setattr(
         lifecycle,
@@ -113,11 +113,11 @@ def test_stub_mode_skips_the_nested_probe(monkeypatch) -> None:
 
     probed: list[int] = []
 
-    def _record() -> diag.Check:
+    def _record() -> list[diag.Check]:
         probed.append(1)
-        return diag.Check("nested containers", True, "ok")
+        return [diag.Check("nested containers", True, "ok")]
 
-    monkeypatch.setattr(lifecycle, "nested_containers", _record)
+    monkeypatch.setattr(lifecycle, "nested_container_checks", _record)
     # docker UP, but stubs are the suite default: the gate's `not s.use_stubs` must still skip.
     monkeypatch.setattr(
         lifecycle, "_environment_checks", lambda: [diag.Check("docker", True, "reachable")]
@@ -133,7 +133,7 @@ def test_up_never_runs_the_nested_probe(monkeypatch) -> None:
 
     monkeypatch.setattr(
         lifecycle,
-        "nested_containers",
+        "nested_container_checks",
         lambda: (_ for _ in ()).throw(AssertionError("`up` must not probe")),
     )
     names = {c.name for c in lifecycle._environment_checks()}
@@ -147,7 +147,8 @@ def test_doctor_lists_foreign_platform_verdicts_as_warnings(monkeypatch) -> None
     monkeypatch.setattr(dr, "memoised_verdicts", lambda: {"linux/amd64": refused})
     checks = diag.nested_containers_foreign()
     assert [c.name for c in checks] == ["nested containers (linux/amd64)"]
-    assert checks[0].ok is True and checks[0].level == "warning"  # native missions still run
+    # Amber with its fix, not a green tick; a warning, so native missions still run.
+    assert checks[0].ok is False and checks[0].level == "warning"
     assert checks[0].remediation == "enable Rosetta …"
     monkeypatch.setattr(dr, "memoised_verdicts", lambda: {"linux/amd64": OK})
     assert diag.nested_containers_foreign()[0].level == "blocker"  # a plain green line

@@ -52,6 +52,8 @@ _PAYLOAD_LIMIT = 20_000
 _VALUE_LIMIT = 240
 
 _DASH = "—"
+# The agent-model line when nothing names a model; `/result` serves it as null.
+_NOT_DISCLOSED = "not disclosed"
 
 
 @dataclass(frozen=True)
@@ -298,21 +300,45 @@ def _verdict_class(passed: bool) -> str:
     return "pass" if passed else "fail"
 
 
+def telemetry_window_cell(ctx: RunReportContext) -> str | None:
+    """The report's Telemetry-window cell — the span, or the disclosure that stands in for it —
+    or None when the report omits the row. Served on `/result` so the results page shows the
+    report's own words rather than a TypeScript copy of the checks above (#146)."""
+    row = _telemetry_window_row(ctx)
+    return row[0][1] if row else None
+
+
+def agent_model_cell(ctx: RunReportContext) -> str | None:
+    """The report's Agent-model cell (see `agent_model_line`), served on `/result` for the same
+    reason as `telemetry_window_cell`, or None when nothing names a model (the report says "not
+    disclosed"). Decided here, by the same rule as the line, so the two cannot disagree."""
+    line = _agent_model(ctx)
+    return None if line == _NOT_DISCLOSED else line
+
+
 def _status_line(ctx: RunReportContext) -> str:
     # The run's status label (contracts.run.run_status) — the word the CLI and the GUI show (#165).
     return ctx.run.status.label
 
 
+def _started(run: RunEntry) -> str:
+    """When the agent started and what showed it ("… · first OTel export"), or a dash for a run
+    it never started, and for one from before #209 that holds no evidence to date it by."""
+    if run.started_at is None:
+        return _DASH
+    label = run.start_trigger_label
+    return f"{_ts(run.started_at)} · {label}" if label else _ts(run.started_at)
+
+
 def _metadata_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
     """The identity metadata table, shared verbatim by the Markdown and HTML renderers: Mission
-    and Agent carry their pinned version in the name, then the Harness, when it Started, and the
-    wall clock the run occupied (Duration — what it COST, not how long the agent worked).
+    and Agent carry their pinned version in the name, then the Harness, when it was Created, when
+    the agent Started and what showed it (#209), and the wall clock the run occupied (Duration,
+    from creation — what it COST, not how long the agent worked).
 
-    It used to claim the results page and the live run header matched it field-for-field. They do
-    not: neither renders Telemetry window, and nothing in `frontend/src` reads
-    `last_event_end_ts` (#134 review). The GUI tile is tracked separately rather than smuggled
-    into a report-rendering change; until it lands, this table is the only place the pair appears
-    together."""
+    The results page shows the same pair: `/result` serves this table's Telemetry-window cell
+    (`telemetry_window_cell`) and the page puts it beside its own Duration (#146). The live run
+    header does not, because an unfinished run has no stats snapshot to bound a window with."""
     agent = ctx.agent_name or ctx.run.agent_id
     return [
         ("Name", ctx.run.name or ctx.run.mission),
@@ -328,7 +354,8 @@ def _metadata_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
         # The architecture the run executed on (§31/§43-UX8) — present only for a run that
         # recorded provenance, so a pre-contract run's table is unchanged.
         *([("Platform", ctx.conditions.platform)] if ctx.conditions.platform else []),
-        ("Started", _ts(ctx.run.created_at)),
+        ("Created", _ts(ctx.run.created_at)),
+        ("Started", _started(ctx.run)),
         ("Duration", _duration(_elapsed_seconds(ctx))),
         # The span when the server's own record of the run corroborates it, the reason it is
         # withheld when that record contradicts it, and absent when there is no span to report —
@@ -379,7 +406,7 @@ def agent_model_line(declared: str, observed: Sequence[str], dropped: int = 0) -
         return f"{declared} (disclosed)"
     if seen:
         return f"{named} (reported by the harness)"
-    return "not disclosed"
+    return _NOT_DISCLOSED
 
 
 def _agent_model(ctx: RunReportContext) -> str:

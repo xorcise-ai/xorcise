@@ -396,6 +396,43 @@ def test_run_terminate_posts_to_terminate_endpoint(monkeypatch):
     assert "Stopped" in res.stdout  # the server's label for an operator stop
 
 
+def test_run_terminate_on_a_run_that_never_started_cancels_it_without_waiting(monkeypatch):
+    """#187: the prompt says the run will not be graded, the server's Cancelled and its reason are
+    printed, and nothing is polled — there is no grade coming."""
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.run_or_none",
+        lambda self, rid: {"run_id": rid, "state": "created", "started_at": None},
+    )
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.post",
+        lambda self, p, json: {
+            "run_id": RID,
+            "state": "terminal",
+            "terminal_trigger": "cancelled",
+            "status": run_status("terminal", "cancelled").model_dump(),
+        },
+    )
+
+    def no_poll(self, path):
+        raise AssertionError(f"polled {path} for a run that is never graded")
+
+    monkeypatch.setattr("xorcise.core.cli.commands.run.RestClient.get", no_poll)
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.confirm_or_abort",
+        lambda message, assume_yes=False: prompts.append(message),
+    )
+    res = runner.invoke(app, ["run", "terminate", RID])
+    assert res.exit_code == 0, res.output
+    assert prompts == [
+        f"Terminate run {RID[:8]}? (its agent has not started, so it will not be graded)"
+    ]
+    out = _plain(res.output)
+    assert "Cancelled" in out
+    assert "before the agent started" in out
+    assert "grading" not in out.lower()
+
+
 def test_run_terminate_waits_and_renders_grade(monkeypatch):
     """Run terminate acks, then polls past the grading window and prints the result."""
     monkeypatch.setattr(
@@ -611,7 +648,7 @@ def _patch_export(monkeypatch, *, active: bool = False, body: str = OTLP_LINES) 
     monkeypatch.setattr("xorcise.core.cli.commands.run.RestClient.get_text", fake_get_text)
     monkeypatch.setattr(
         "xorcise.core.cli.commands.run.RestClient.get_run_result",
-        lambda self, rid: {"status": "active"} if active else {"status": "graded"},
+        lambda self, rid: {"status": "xorcising"} if active else {"status": "graded"},
     )
     return captured
 
@@ -960,7 +997,7 @@ def test_export_selects_only_finished_runs():
     write three misleading files rather than fail honestly."""
     from xorcise.core.cli.commands.run import select_runs_for_export
 
-    rows = [_run_row("r1"), _run_row("r2", state="active", trigger=None)]
+    rows = [_run_row("r1"), _run_row("r2", state="xorcising", trigger=None)]
 
     assert [r["run_id"] for r in select_runs_for_export(rows)] == ["r1"]
 
@@ -1017,18 +1054,30 @@ def test_genuine_only_drops_every_way_the_platform_ends_a_run():
 def test_genuine_only_agrees_with_the_leaderboard_on_every_trigger():
     """Two definitions of "a run the agent finished" is how two surfaces start disagreeing about
     the same run — `run export` shipped a copy of the leaderboard's set under a "Mirrors" comment
-    where an import belonged. Compared through behaviour, trigger by trigger, so the test holds
-    however the shared set is spelled."""
-    from xorcise.core.cli.commands.results import _flatten
-    from xorcise.core.cli.commands.run import select_runs_for_export
+    where an import belonged. The leaderboard's `completed` is now the server's summary
+    (reporting.scores), so the export is compared with that, trigger by trigger."""
+    from datetime import UTC, datetime
 
-    # Every trigger the server writes, plus an absent one.
-    for trigger in ("done", "operator", "timeout", "deploy_failed", "crashed", ""):
+    from xorcise.core.cli.commands.run import select_runs_for_export
+    from xorcise.core.contracts.run import RunEntry
+    from xorcise.core.reporting.scores import score_rows, summarize
+
+    # Every trigger the server writes. (An absent one is a run still going: in neither.)
+    for trigger in ("done", "operator", "timeout", "deploy_failed", "crashed"):
         row = _run_row("r", trigger=trigger)
+        entry = RunEntry(
+            run_id="r",
+            agent_id="a1",
+            mission="m1",
+            state="terminal",
+            created_at=datetime(2026, 7, 1, tzinfo=UTC),
+            terminal_trigger=trigger,
+        )
+        (summary,) = summarize(score_rows([entry], {}, {}), "all")
 
         exported = bool(select_runs_for_export([row], genuine_only=True))
 
-        assert exported == _flatten(row, None)["completed"], trigger
+        assert exported == (summary.completed == 1), trigger
 
 
 def test_genuine_only_help_names_what_it_actually_drops():

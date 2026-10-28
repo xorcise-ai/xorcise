@@ -22,6 +22,7 @@ from xorcise.core.contracts.run import (
     PARTIAL_TRIGGERS,
     UNGRADED_TRIGGERS,
     RunEntry,
+    RunState,
     TerminalTrigger,
     run_outcome,
     run_status,
@@ -33,9 +34,9 @@ GOLDEN = Path(__file__).resolve().parents[2] / "frontend/src/test/run-status.gol
 
 # Every (state, trigger) a run can be in: the two live states, terminal by each trigger, and
 # terminal with no known trigger (a legacy row — see the stored-trigger test below).
-_CASES: list[tuple[str, str | None]] = [
+_CASES: list[tuple[RunState, str | None]] = [
     ("created", None),
-    ("active", None),
+    ("xorcising", None),
     *(("terminal", t) for t in get_args(TerminalTrigger)),
     ("terminal", None),
 ]
@@ -51,7 +52,7 @@ def _golden() -> dict[str, dict[str, object]]:
     }
 
 
-def _entry(state: str, trigger: str | None) -> RunEntry:
+def _entry(state: RunState, trigger: str | None) -> RunEntry:
     return RunEntry(
         run_id="r1",
         agent_id="a1",
@@ -101,6 +102,20 @@ def test_a_stored_trigger_outside_the_vocabulary_reads_as_ended_not_a_failure(st
     assert entry.terminal_trigger is None
     assert entry.outcome is None
     assert entry.status.label == "Ended"
+
+
+@pytest.mark.parametrize("stored", ["active", "running", "ready"])
+def test_a_stored_state_outside_the_vocabulary_reads_as_created_not_a_500(stored: str) -> None:
+    """Like the trigger, the state column is free text, and one odd row must not fail the run
+    list. `created` is what any unfinished run meant before #209."""
+    entry = RunEntry(
+        run_id="r1",
+        agent_id="a1",
+        mission="m",
+        state=stored,  # type: ignore[arg-type]  # deliberately unvalidated input
+        created_at=datetime(2026, 10, 12, tzinfo=UTC),
+    )
+    assert entry.state == "created"
 
 
 def test_the_gui_fixture_golden_file_matches_the_server() -> None:

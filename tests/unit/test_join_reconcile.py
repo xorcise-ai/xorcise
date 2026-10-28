@@ -142,3 +142,41 @@ def test_run_join_confirmed_false_for_unknown_run(monkeypatch):
     monkeypatch.setattr("xorcise.core.rest.join_reconcile.SqliteObservedFactsStore", lambda: store)
 
     assert run_join_confirmed("no-such-run") is False
+
+
+def test_the_reconciler_stops_polling_once_the_run_is_sealed(migrated_home, monkeypatch):
+    """#194: a sealed run's facts are sealed evidence and the store refuses any more, so polling
+    Headscale for its join, a docker exec every five seconds for two minutes, is wasted. Drives the
+    thread's body directly: the suite stubs the kicker that would start the thread."""
+    import xorcise.core.rest.join_reconcile as jr
+    from xorcise.core.otel.store import SqliteSealStore
+    from xorcise.core.runs.observed import SqliteObservedFactsStore
+
+    polled: list[str] = []
+
+    class _Headscale:
+        def node_online(self, user: str) -> bool:
+            polled.append(user)
+            return False
+
+    monkeypatch.setattr(jr, "_POLL_INTERVAL_SECONDS", 0.0)
+    store = SqliteObservedFactsStore()
+
+    jr._poll_connections("live", cli=_Headscale(), agent_user="agent-live", store=store)  # type: ignore[arg-type]
+    assert len(polled) == jr._POLL_ATTEMPTS  # the control: an unsealed run polls the whole window
+
+    polled.clear()
+    SqliteSealStore().seal("sealed")
+    jr._poll_connections("sealed", cli=_Headscale(), agent_user="agent-sealed", store=store)  # type: ignore[arg-type]
+    assert polled == []
+
+
+def test_has_telemetry_answers_without_reading_the_spans(migrated_home):
+    from xorcise.core.contracts.telemetry import TraceRecord
+    from xorcise.core.otel.store import SqliteTraceStore
+    from xorcise.core.rest.join_reconcile import has_telemetry
+
+    assert has_telemetry("r1") is False
+    SqliteTraceStore().append(TraceRecord(run_id="r1", seq=0, payload="{}"))
+    assert has_telemetry("r1") is True
+    assert has_telemetry("r2") is False

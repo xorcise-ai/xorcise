@@ -16,9 +16,7 @@ from typer.testing import CliRunner
 
 import xorcise.core.cli.app  # noqa: F401 — registers commands/callback on the shared app
 from xorcise.core.cli._shared import app
-from xorcise.core.cli.commands.results import summarize_by_agent
 from xorcise.core.cli.rest_client import RestClient
-from xorcise.core.contracts.run import run_outcome
 
 pytestmark = pytest.mark.unit
 
@@ -492,275 +490,141 @@ def test_mission_show_json_emits_the_raw_manifest(monkeypatch):
 
 
 # ── xorcise leaderboard ───────────────────────────────────────────────────────
+#
+# The leaderboard is the server's summary (GET /results/summary?by=agent, reporting.scores), ranked
+# and named there. How each run counts is decided once, server-side, and tested there
+# (tests/unit/test_results_scores.py); these pin what the CLI does with it.
 
 
-def _run(
-    run_id: str, agent_id: str, trigger: str, when: str = "2026-07-01T10:00:00"
-) -> dict[str, Any]:
-    return {
-        "run_id": run_id,
+def _summary(agent_id: str, **over: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
         "agent_id": agent_id,
-        "mission": "sqli",
-        "state": "terminal",
-        "created_at": when,
-        "completed_at": when,
-        "terminal_trigger": trigger,
-        # What the server ships on every run (RunEntry.outcome) — the leaderboard reads it.
-        "outcome": run_outcome(trigger),
+        "agent_name": agent_id[:8],
+        "runs": 1,
+        "completed": 1,
+        "scored": 1,
+        "timed_out": 0,
+        "no_judge": 0,
+        "stopped": 0,
+        "grading_failed": 0,
+        "infra_failed": 0,
+        "grading": 0,
+        "median": 0.5,
+        "mean": 0.5,
+        "best": 0.5,
+        "last_run": "2026-07-01T10:00:00",
     }
+    row.update(over)
+    return row
 
 
-def _wire(
-    monkeypatch,
-    runs: list[dict[str, Any]],
-    results: dict[str, dict[str, Any]],
-    agents: list[dict[str, Any]],
-) -> None:
+def _wire(monkeypatch, summaries: list[dict[str, Any]]) -> list[str]:
+    calls: list[str] = []
+
     def fake_get(self, path):  # noqa: ANN001, ANN202 — test stub
-        if path == "/runs":
-            return runs
-        if path == "/agents":
-            return agents
-        run_id = path.split("/")[2]
-        return results[run_id]
+        calls.append(path)
+        if path == "/results/summary?by=agent":
+            return summaries
+        raise AssertionError(f"unexpected request {path}")
 
     monkeypatch.setattr(RestClient, "get", fake_get)
+    return calls
 
 
-def test_leaderboard_ranks_agents_by_average_overall(monkeypatch):
+def test_leaderboard_reads_the_servers_summary_not_every_runs_result(monkeypatch):
+    calls = _wire(monkeypatch, [_summary("a1", agent_name="alpha")])
+    result = runner.invoke(app, ["leaderboard"])
+    assert result.exit_code == 0
+    # Ranked and named by the server: one request, nothing re-sorted here.
+    assert calls == ["/results/summary?by=agent"]
+
+
+def test_leaderboard_keeps_the_servers_order_and_shows_the_mean(monkeypatch):
     _wire(
         monkeypatch,
-        runs=[
-            _run("r1", "a1", "done", "2026-07-01T10:00:00"),
-            _run("r2", "a1", "done", "2026-07-02T10:00:00"),
-            _run("r3", "a2", "done", "2026-07-03T10:00:00"),
+        [
+            _summary("a2", agent_name="beta", median=0.9, mean=0.7),
+            _summary("a1", agent_name="alpha", median=0.5),
+            _summary("a3", agent_name="gamma", median=None, mean=None),
         ],
-        results={
-            "r1": {"grade": {"overall": 0.4}, "partial": False},
-            "r2": {"grade": {"overall": 0.6}, "partial": False},
-            "r3": {"grade": {"overall": 0.9}, "partial": False},
-        },
-        agents=[{"id": "a1", "name": "alpha"}, {"id": "a2", "name": "beta"}],
     )
     result = runner.invoke(app, ["leaderboard"])
     assert result.exit_code == 0
     out = result.stdout
-    # beta (0.90) outranks alpha (0.50)
-    assert out.index("beta") < out.index("alpha")
-    assert "0.90" in out and "0.50" in out
+    assert out.index("beta") < out.index("alpha") < out.index("gamma")
+    assert "Median" in out and "90%" in out
+    assert "Mean" in out and "70%" in out
 
 
-def test_leaderboard_excludes_partial_runs_from_the_score_but_counts_them(monkeypatch):
+def test_leaderboard_json_is_the_servers_summary_with_the_keys_it_had_before(monkeypatch):
+    """Scripts written against v0.2.0's `--json` read avg_overall, best_overall, the two rates and
+    judge_degraded: they are still there, computed by the median's rule."""
+    import json
+
     _wire(
         monkeypatch,
-        runs=[_run("r1", "a1", "done"), _run("r2", "a1", "timeout")],
-        results={
-            "r1": {"grade": {"overall": 0.8}, "partial": False},
-            "r2": {"grade": {"overall": 0.1}, "partial": True},
-        },
-        agents=[{"id": "a1", "name": "alpha"}],
+        [
+            _summary(
+                "a1",
+                agent_name="alpha",
+                runs=6,
+                completed=3,
+                infra_failed=2,
+                no_judge=1,
+                median=0.8,
+                mean=0.75,
+                best=0.9,
+                timed_out=1,
+            ),
+            _summary("a2deadbeefcafe", median=0.3),
+        ],
     )
     result = runner.invoke(app, ["leaderboard", "--json"])
     assert result.exit_code == 0
-    import json
+    first, second = json.loads(result.stdout)
+    assert (first["agent_name"], first["median"], first["timed_out"]) == ("alpha", 0.8, 1)
+    assert (first["avg_overall"], first["best_overall"], first["judge_degraded"]) == (0.75, 0.9, 1)
+    # Over the 4 attempts: the 2 environment failures are not the agent's.
+    assert (first["completion_rate"], first["partial_rate"]) == (0.75, 0.25)
+    assert second["agent_name"] == "a2deadbe"
 
-    (row,) = json.loads(result.stdout)
-    assert row["runs"] == 2 and row["scored"] == 1
-    assert row["avg_overall"] == 0.8 and row["best_overall"] == 0.8
-    assert row["completion_rate"] == 0.5 and row["partial_rate"] == 0.5
 
-
-def test_leaderboard_tolerates_a_terminal_but_ungraded_run(monkeypatch):
-    # GET /runs/{id}/result 202s with {"status": "grading"} while grading is async.
+def test_leaderboard_says_which_runs_are_in_the_median_and_which_are_not(monkeypatch):
     _wire(
         monkeypatch,
-        runs=[_run("r1", "a1", "done")],
-        results={"r1": {"run_id": "r1", "status": "grading"}},
-        agents=[{"id": "a1", "name": "alpha"}],
+        [_summary("a1", timed_out=1, no_judge=2, stopped=1, grading_failed=1, infra_failed=1)],
     )
+    out = " ".join(runner.invoke(app, ["leaderboard"]).stdout.split())
+    assert "'Timed out' runs ran out of their budget. They ARE in Median/Mean/Best" in out
+    assert "'No judge' counts runs graded with the judge half unavailable" in out
+    assert "left out of Median/Mean/Best" in out
+    assert "'Grading failed' counts runs whose grading crashed" in out
+    assert "'Stopped' counts runs an operator ended" in out
+    assert "'Infra failed' counts runs cut short by an environment failure" in out
+
+
+def test_leaderboard_reads_a_server_older_than_the_mean(monkeypatch):
+    """A server from before `mean` and `grading_failed` still gets a table, not a KeyError."""
+    old = _summary("a1", agent_name="alpha")
+    del old["mean"], old["grading_failed"]
+    _wire(monkeypatch, [old])
     result = runner.invoke(app, ["leaderboard"])
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     assert "alpha" in result.stdout
 
 
-def test_leaderboard_skips_non_terminal_runs(monkeypatch):
-    active = {**_run("r1", "a1", "done"), "state": "active"}
-    _wire(monkeypatch, runs=[active], results={}, agents=[])
+def test_leaderboard_with_no_finished_runs(monkeypatch):
+    _wire(monkeypatch, [])
     result = runner.invoke(app, ["leaderboard"])
     assert result.exit_code == 0
     assert "no finished runs yet" in result.stdout
+    assert runner.invoke(app, ["leaderboard", "--json"]).stdout.strip() == "[]"
 
 
-def test_summarize_by_agent_sinks_unscored_agents_and_falls_back_to_the_id():
-    rows: list[dict[str, Any]] = [
-        {
-            "agent_id": "a1",
-            "overall": None,
-            "partial": True,
-            "completed": False,
-            "when": "2026-07-01T10:00:00",
-        },
-        {
-            "agent_id": "a2deadbeefcafe",
-            "overall": 0.3,
-            "partial": False,
-            "completed": True,
-            "when": "2026-07-02T10:00:00",
-        },
-    ]
-    scored, unscored = summarize_by_agent(rows, {"a1": "alpha"})
-    assert scored["agent_name"] == "a2deadbe"  # no registered name → short id (GUI parity)
-    assert scored["avg_overall"] == 0.3
-    assert unscored["agent_name"] == "alpha" and unscored["avg_overall"] is None
+def test_leaderboard_prints_a_score_as_the_gui_does():
+    """0.815 is stored just under 0.815: `.2f` printed 0.81 where the page showed 82%."""
+    from xorcise.core.cli.commands.results import _score
 
-
-# ── the leaderboard must not pool judge-degraded scores silently (#110) ──────────────────────
-#
-# A judge-degraded run scores `0.5 * deterministic`, which is a real number that averages in as
-# though a judge had graded it. The math is intentional and stays — but an agent whose average is
-# dragged down by runs the judge never reached should say so, or the ranking misleads.
-
-
-def test_flatten_carries_whether_the_judge_actually_ran():
-    from xorcise.core.cli.commands.results import _flatten
-
-    row = _flatten(
-        {"agent_id": "a1", "outcome": "completed", "created_at": "2026-07-01T10:00:00"},
-        {"grade": {"overall": 0.5, "judge_status": "unavailable"}, "partial": False},
-    )
-
-    assert row["judge_degraded"] is True
-
-
-def test_flatten_does_not_call_a_healthy_or_partial_judge_degraded():
-    """`partial` already has its own disclosure (coverage); it is not the same condition."""
-    from xorcise.core.cli.commands.results import _flatten
-
-    base_run = {"agent_id": "a1", "outcome": "completed", "created_at": "2026-07-01T10:00:00"}
-    ok = _flatten(base_run, {"grade": {"overall": 0.9, "judge_status": "ok"}, "partial": False})
-    part = _flatten(
-        base_run, {"grade": {"overall": 0.7, "judge_status": "partial"}, "partial": False}
-    )
-
-    assert ok["judge_degraded"] is False and part["judge_degraded"] is False
-
-
-def test_summarize_counts_the_runs_whose_judge_never_ran():
-    from xorcise.core.cli.commands.results import summarize_by_agent
-
-    rows: list[dict[str, Any]] = [
-        {
-            "agent_id": "a1",
-            "overall": 0.5,
-            "partial": False,
-            "completed": True,
-            "when": "2026-07-01T10:00:00",
-            "judge_degraded": True,
-        },
-        {
-            "agent_id": "a1",
-            "overall": 0.9,
-            "partial": False,
-            "completed": True,
-            "when": "2026-07-02T10:00:00",
-            "judge_degraded": False,
-        },
-    ]
-
-    (summary,) = summarize_by_agent(rows, {"a1": "alpha"})
-
-    assert summary["judge_degraded"] == 1
-    # The average is unchanged: this is a disclosure gap, not a math bug.
-    assert summary["avg_overall"] == pytest.approx(0.7)
-
-
-def test_a_partial_degraded_run_is_not_counted_against_the_aggregates_it_never_entered():
-    """#133 review. `scored` excludes partial runs, but `judge_degraded` counted every row — so a
-    timed-out run with an unavailable judge showed `avg=None, No judge=1` under a footer saying
-    those runs ARE included in Avg/Best. The column now counts the same cohort the footer
-    describes: runs that actually reached the aggregates."""
-    rows: list[dict[str, Any]] = [
-        {
-            "agent_id": "a1",
-            "overall": 0.5,
-            "partial": True,  # excluded from scored/avg/best …
-            "completed": False,
-            "when": "2026-07-01T10:00:00",
-            "judge_degraded": True,  # … so it must not be counted here either
-        },
-    ]
-
-    (summary,) = summarize_by_agent(rows, {"a1": "alpha"})
-
-    assert summary["avg_overall"] is None and summary["scored"] == 0
-    assert summary["judge_degraded"] == 0
-
-
-def test_a_scored_degraded_run_is_still_counted():
-    """The case the column exists for — in the aggregates, and judged by nothing."""
-    rows: list[dict[str, Any]] = [
-        {
-            "agent_id": "a1",
-            "overall": 0.5,
-            "partial": False,
-            "completed": True,
-            "when": "2026-07-01T10:00:00",
-            "judge_degraded": True,
-        },
-    ]
-
-    (summary,) = summarize_by_agent(rows, {"a1": "alpha"})
-
-    assert summary["avg_overall"] == pytest.approx(0.5)
-    assert summary["judge_degraded"] == 1
-
-
-@pytest.mark.parametrize("trigger", ["done", "operator", "timeout", "deploy_failed", "crashed"])
-def test_leaderboard_partial_agrees_with_the_server_for_every_trigger(
-    migrated_home, trigger
-) -> None:
-    """#159: the leaderboard must classify every trigger the server can write exactly as the
-    server's own grading does. A private copy of the rule listed a "budget" trigger nothing writes
-    and missed "operator"; it now reads the run's `outcome`, so this drives the real wire shape."""
-    from datetime import UTC, datetime
-
-    from xorcise.core import reporting, runs
-    from xorcise.core.cli.commands.results import _flatten
-    from xorcise.core.rest.run_terminate import terminate_run
-
-    run = runs.create_run(agent_id="a1", mission="m", budget_seconds=60)
-    terminate_run(run.run_id, trigger, datetime(2026, 10, 8, tzinfo=UTC))
-    recorded = reporting.get_result(run.run_id)
-    server_partial = reporting.result_partial(run.run_id)[0] if recorded is not None else False
-
-    entry = runs.get(run.run_id)
-    assert entry is not None
-    wire = entry.model_dump(mode="json")  # what GET /runs returns
-    cli_partial = _flatten(wire, None)["partial"]
-    assert cli_partial == server_partial
-
-
-def test_leaderboard_counts_an_environment_failure_in_the_totals_only(monkeypatch):
-    """#109: a deploy_failed run is never graded — /result answers "not_graded". It counts in Runs
-    and its own infra_failed count, and nowhere else: not in Avg/Best as a phantom 0.00, and not in
-    the completion or partial rate, which are over the agent's attempts — and it was not one."""
-    _wire(
-        monkeypatch,
-        runs=[_run("r1", "a1", "done"), _run("r2", "a1", "deploy_failed")],
-        results={
-            "r1": {"grade": {"overall": 0.8}, "partial": False},
-            "r2": {"run_id": "r2", "status": "not_graded", "terminal_trigger": "deploy_failed"},
-        },
-        agents=[{"id": "a1", "name": "alpha"}],
-    )
-    result = runner.invoke(app, ["leaderboard", "--json"])
-    assert result.exit_code == 0
-    import json
-
-    (row,) = json.loads(result.stdout)
-    assert row["runs"] == 2 and row["scored"] == 1
-    assert row["avg_overall"] == 0.8
-    assert row["infra_failed"] == 1
-    assert row["completion_rate"] == 1.0 and row["partial_rate"] == 0.0
-    table = runner.invoke(app, ["leaderboard"])
-    assert "Infra failed" in table.stdout
+    assert _score(0.815) == "82%"
+    assert _score(0.5674999999999999) == "57%"
+    assert _score(None) == "—"

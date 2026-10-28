@@ -457,8 +457,8 @@ def test_run_status_markup_renders_the_server_status_and_nothing_else():
         "status": {"label": "Crashed", "tone": "err", "detail": "gone"},
     }
     assert run_status_markup(crashed) == "[err]Crashed[/err]"
-    assert run_status_markup({"status": {"label": "Running", "tone": "active"}}) == (
-        "[accent]Running[/accent]"
+    assert run_status_markup({"status": {"label": "Xorcising", "tone": "active"}}) == (
+        "[accent]Xorcising[/accent]"
     )
     # A run from a server that sends no status still renders its state, dimmed.
     assert run_status_markup({"state": "terminal"}) == "[dim]terminal[/dim]"
@@ -873,33 +873,46 @@ def test_hidden_alias_help_names_both_forms():
 # --- round-4 verification fixes ----------------------------------------------
 
 
-def test_run_status_on_active_run_reads_as_progress_not_a_409(monkeypatch):
-    """The golden-path hint after `run create` sends you to `run status`; on a
-    still-active run that must read as progress (exit 3), never a raw red 409."""
+@pytest.mark.parametrize(
+    ("state", "phrase"), [("xorcising", "is still xorcising"), ("created", "has not started")]
+)
+def test_run_status_on_unfinished_run_reads_as_progress_not_a_409(monkeypatch, state, phrase):
+    """The golden-path hint after `run create` sends you to `run status`; on an
+    unfinished run that must read as progress (exit 3), never a raw red 409."""
     from xorcise.core.cli.rest_client import RestClient
 
     monkeypatch.setattr(
-        RestClient, "get_run_result", lambda self, rid, verify=False: {"status": "active"}
+        RestClient, "get_run_result", lambda self, rid, verify=False: {"status": state}
     )
     result = runner.invoke(app, ["run", "status", "a" * 32])
     assert result.exit_code == 3  # in progress, not failure — a poll loop keeps waiting
-    assert "still running" in result.stdout
+    assert phrase in result.stdout
     assert "409" not in result.output
 
 
-def test_run_status_active_json_is_parseable(monkeypatch):
+def test_run_status_unfinished_json_is_parseable(monkeypatch):
     from xorcise.core.cli.rest_client import RestClient
 
     monkeypatch.setattr(
-        RestClient, "get_run_result", lambda self, rid, verify=False: {"status": "active"}
+        RestClient, "get_run_result", lambda self, rid, verify=False: {"status": "xorcising"}
     )
     result = runner.invoke(app, ["run", "status", "a" * 32, "--json"])
     assert result.exit_code == 0  # --json always exits 0; the envelope carries the status
-    assert json.loads(result.stdout) == {"status": "active"}
+    assert json.loads(result.stdout) == {"status": "xorcising"}
 
 
-def test_get_run_result_translates_the_not_terminal_409(monkeypatch, tmp_path):
-    """A still-active run's server 409 becomes a soft {'status': 'active'}."""
+@pytest.mark.parametrize(
+    ("run_body", "expected"),
+    [
+        ({"state": "created", "started_at": None}, "created"),
+        ({"state": "xorcising", "started_at": "2026-10-23T01:00:00Z"}, "xorcising"),
+        ({"state": "active", "started_at": None}, "xorcising"),  # no server writes it: live
+        ({"state": "created"}, "xorcising"),  # older than #209: `created` meant any live run
+        (None, "xorcising"),  # the run read failed
+    ],
+)
+def test_get_run_result_translates_the_not_terminal_409(monkeypatch, tmp_path, run_body, expected):
+    """An unfinished run's server 409 becomes a soft {'status': <the run's state>} (#209)."""
     import httpx as _httpx
 
     from xorcise.core.cli.rest_client import RestClient
@@ -908,10 +921,17 @@ def test_get_run_result_translates_the_not_terminal_409(monkeypatch, tmp_path):
 
     def fake_get(url, timeout=None, **kwargs):
         req = _httpx.Request("GET", url)
-        return _httpx.Response(409, request=req, json={"detail": "run 'x' is not terminal yet"})
+        if url.endswith("/result"):
+            return _httpx.Response(409, request=req, json={"detail": "run 'x' is not terminal yet"})
+        assert url.endswith("/api/runs"), url  # the server has no single-run read
+        if run_body is None:
+            return _httpx.Response(500, request=req, json={"detail": "boom"})
+        return _httpx.Response(
+            200, request=req, json=[{"run_id": "other"}, {"run_id": "x", **run_body}]
+        )
 
     monkeypatch.setattr(httpx, "get", fake_get)
-    assert RestClient(base_url="http://x/api").get_run_result("x") == {"status": "active"}
+    assert RestClient(base_url="http://x/api").get_run_result("x") == {"status": expected}
 
 
 def test_empty_agent_name_is_rejected(monkeypatch):
@@ -1247,9 +1267,8 @@ def _no_nested_probe(monkeypatch) -> None:
     """Off stub mode, doctor boots a privileged DinD to probe nesting (~10 s, and a real daemon
     call). These tests are about the control plane; keep the probe out of them."""
     monkeypatch.setattr(
-        lifecycle, "nested_containers", lambda: Check("nested containers", True, "stubbed")
+        lifecycle, "nested_container_checks", lambda: [Check("nested containers", True, "stubbed")]
     )
-    monkeypatch.setattr(lifecycle, "nested_containers_foreign", lambda: [])
 
 
 def _up_with_managed_plane(tmp_path, monkeypatch, url: str) -> None:

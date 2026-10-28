@@ -135,3 +135,18 @@ describe("AgentRunHistory", () => {
     expect(within(table).getByText("70%")).toBeInTheDocument();
   });
 });
+
+describe("AgentRunHistory no-judge runs (#143)", () => {
+  it("shows 'No judge' instead of a judge score the judge never gave", () => {
+    const rows = buildAgentRunRows([
+      historyEntry({ run_id: "r-none", judge: 0, judge_status: "unavailable" }),
+      historyEntry({ run_id: "r-ok", judge: 0, judge_status: "ok" }),
+    ]);
+    expect(rows.map((r) => r.noJudge)).toEqual([true, false]);
+    render(<AgentRunHistory rows={rows} />);
+    // Wide table and narrow list both render; each says it once.
+    expect(screen.getAllByText("No judge")).toHaveLength(2);
+    // The judged run's genuine 0% still reads as a score.
+    expect(screen.getAllByText("0%").length).toBeGreaterThan(0);
+  });
+});

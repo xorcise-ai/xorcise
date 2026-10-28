@@ -114,7 +114,12 @@ def create_otel_app(
     seal_store: SealStore | None = None,
     log_store: TraceStore | None = None,
     drops: DropRecorder | None = None,
+    on_admitted: Callable[[str], None] | None = None,
 ) -> FastAPI:
+    """The OTLP receiver. *on_admitted* is called with a run id after a batch for it is admitted
+    to its record — the role that boots this receiver passes what records the run as started
+    (#209), which this part-island may not import. It is called on the ingest worker, once per
+    admitted payload, and must not raise; one that does is logged and the batch still stands."""
     trace_store: TraceStore = store if store is not None else SqliteTraceStore()
     logs_store: TraceStore = log_store if log_store is not None else SqliteLogStore()
     seals: SealStore = seal_store if seal_store is not None else InMemorySealStore()
@@ -145,6 +150,11 @@ def create_otel_app(
                 return _store_unavailable_response(signal, exc)
             if not admitted:
                 late.append((run_id, payload))
+            elif on_admitted is not None:
+                try:
+                    on_admitted(run_id)
+                except Exception:  # the batch is stored; a status note must not undo that
+                    log.warning("on_admitted failed for run %s", run_id, exc_info=True)
         rejected = result.dropped_spans
         for payload, n in result.unrouted:
             recorder.record(signal=signal, reason="unroutable", n=n, run_id="", payload=payload)

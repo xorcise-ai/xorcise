@@ -1,10 +1,9 @@
 "use client";
 
-import { Bot, Boxes, Flag } from "lucide-react";
-import { Chip, ChipRow } from "@/components/ui/chip";
+import { Bot, Boxes } from "lucide-react";
 import type { DotTone } from "@/components/ui/dot";
 import type { RunEntry, RunEnvironment } from "@/lib/api/types";
-import { runPhase, toneColor, type RunPhase } from "./run-phase";
+import { toneColor, type RunPhase } from "./run-phase";
 
 /**
  * The "glowing bulb" — a filled dot whose colour + glow reflect what the backend
@@ -67,16 +66,18 @@ export interface ConnectionChipData {
 }
 
 /**
- * The connection statuses as plain data — shared between the ConnectionPanel chips and the
- * run-page header's compact meta cells.
+ * The connection statuses as plain data, for the run-page header's compact meta cells.
  *
  * Every label here has exactly ONE referent (the run-page header carries `Harness` for the
  * agent's identity, so a chip may never be called "Agent" — the same word for two facts made
  * the header unreadable). The agent's LINK state is not a chip at all: the header's status
- * bulb already renders it as "Awaiting agent" / "Streaming" / "Complete", so restating it here
- * only bought a duplicate cell. `Objective` is terminal-only — while the run is live the
- * status badge already says so, and an always-on "In Progress" cell was the one that orphaned
- * itself onto a half-empty second row.
+ * bulb already renders it as "Awaiting agent" / "Streaming", so restating it here only bought a
+ * duplicate cell.
+ *
+ * There is no `Objective` chip either (#38). It read "Solved" exactly when the run completed and
+ * "Not Solved" otherwise, so it restated the status badge, and it overpromised: the run list
+ * carries no grading verdict, so a run that completed and failed its objective read "Solved".
+ * Whether the objective was met is the result page's to say, from the grade.
  */
 /** Environment lifecycle chip, from the state the SERVER observes (GET /runs/{id}/environment).
  *
@@ -115,24 +116,8 @@ export function environmentChip(env: RunEnvironment | undefined): ConnectionChip
   };
 }
 
-export function connectionChips(
-  run: RunEntry,
-  eventCount: number,
-  environment?: RunEnvironment,
-): ConnectionChipData[] {
-  const phase = runPhase(run, eventCount, environment?.state);
-  const terminal = run.state === "terminal";
-  const chips: ConnectionChipData[] = [environmentChip(environment)];
-  if (terminal) {
-    const solved = phase.key === "solved";
-    chips.push({
-      icon: Flag,
-      label: "Objective",
-      value: solved ? "Solved" : "Not Solved",
-      tone: solved ? "green" : "red",
-    });
-  }
-  return chips;
+export function connectionChips(environment?: RunEnvironment): ConnectionChipData[] {
+  return [environmentChip(environment)];
 }
 
 /** The run-phase tone vocabulary → the design system's dot tones.
@@ -147,32 +132,3 @@ export const CHIP_DOT_TONE: Record<ConnectionChipData["tone"], DotTone> = {
   red: "err",
   muted: "muted",
 };
-
-/** Environment / Objective connection chips derived from the run + trace. Content-sized and
- *  wrapping, so a variable-length chip list can never orphan a cell on a half-empty row. */
-export function ConnectionPanel({
-  run,
-  eventCount,
-  environment,
-}: {
-  run: RunEntry;
-  eventCount: number;
-  environment?: RunEnvironment;
-}) {
-  return (
-    // The design system's Chip (KEY · dot · value). Its leading slot takes an icon OR the dot,
-    // never both, and for these chips the DOT is the payload — it is the only thing that says
-    // Ready vs Failed vs Released — so the decorative Boxes/Flag mark yields to it.
-    <ChipRow>
-      {connectionChips(run, eventCount, environment).map((c) => (
-        <Chip
-          key={c.label}
-          label={c.label}
-          value={c.value}
-          tone={CHIP_DOT_TONE[c.tone]}
-          title={c.title}
-        />
-      ))}
-    </ChipRow>
-  );
-}
