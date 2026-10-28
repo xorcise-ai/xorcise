@@ -30,7 +30,7 @@ describe("RunList", () => {
     server.use(
       http.get("*/api/runs", () =>
         HttpResponse.json([
-          runFixture({ run_id: "r1", mission: "sqli-login", state: "active" }),
+          runFixture({ run_id: "r1", mission: "sqli-login", state: "xorcising" }),
           runFixture({
             run_id: "r2",
             mission: "idor",
@@ -49,7 +49,7 @@ describe("RunList", () => {
       cards.getByRole("link", { name: /sqli-login/i }),
     ).toBeInTheDocument();
     // §10 status vocabulary: capitalised labels, state-appropriate actions.
-    expect(cards.getByText("Running")).toBeInTheDocument();
+    expect(cards.getByText("Xorcising")).toBeInTheDocument();
     expect(cards.getByText("Completed")).toBeInTheDocument();
     expect(cards.getByText("Open live run")).toBeInTheDocument();
     expect(cards.getByText("View result")).toBeInTheDocument();
@@ -59,7 +59,7 @@ describe("RunList", () => {
     server.use(
       http.get("*/api/runs", () =>
         HttpResponse.json([
-          runFixture({ run_id: "r1", mission: "sqli-login", state: "active" }),
+          runFixture({ run_id: "r1", mission: "sqli-login", state: "xorcising" }),
           runFixture({
             run_id: "r2",
             mission: "idor",
@@ -105,7 +105,7 @@ describe("RunList", () => {
     server.use(
       http.get("*/api/runs", () =>
         HttpResponse.json([
-          runFixture({ run_id: "r1", mission: "sqli-login", state: "active" }),
+          runFixture({ run_id: "r1", mission: "sqli-login", state: "xorcising" }),
         ]),
       ),
     );
@@ -129,7 +129,7 @@ describe("RunList", () => {
     server.use(
       http.get("*/api/runs", () =>
         HttpResponse.json([
-          runFixture({ run_id: "r1", mission: "sqli-login", state: "active" }),
+          runFixture({ run_id: "r1", mission: "sqli-login", state: "xorcising" }),
         ]),
       ),
     );

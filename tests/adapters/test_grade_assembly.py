@@ -102,11 +102,11 @@ def _seed_run_with_evidence(home: Path) -> str:
     trace.append(
         TraceRecord(run_id=rid, seq=2, payload=_otlp_span("span-b", **{"gen_ai.prompt": "did-b"}))
     )
-    SqliteSealStore().seal(rid)
-
+    # Before the seal: the store refuses a fact for a sealed run (#194).
     SqliteObservedFactsStore().record(
         ObservedFact(run_id=rid, kind="run-control", name="flag-submitted", value="True")
     )
+    SqliteSealStore().seal(rid)
     return rid
 
 

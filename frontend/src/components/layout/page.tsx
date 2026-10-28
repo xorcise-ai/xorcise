@@ -72,7 +72,7 @@ export function PageTitle({
       )}
       <h1 className="text-lead text-heading">{children}</h1>
       {subtitle && (
-        <p className="mt-2 max-w-[70ch] text-body text-text-secondary">
+        <p className="mt-2 text-body text-text-secondary">
           {subtitle}
         </p>
       )}

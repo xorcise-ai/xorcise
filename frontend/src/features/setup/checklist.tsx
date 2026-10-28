@@ -257,7 +257,7 @@ export function ReadinessChecklist({
 
   return (
     <section className="space-y-3">
-      <p className="max-w-[68ch] text-body text-text-secondary">
+      <p className="text-body text-text-secondary">
         Complete the required steps below to run your first evaluation.
       </p>
       {lists}
@@ -294,7 +294,7 @@ function ChecklistRow({ item }: { item: Item }) {
           </p>
           <Badge variant={status.variant}>{status.label}</Badge>
         </div>
-        <p className="mt-2 max-w-[68ch] text-body text-text-tertiary">
+        <p className="mt-2 text-body text-text-tertiary">
           {item.helpText}
         </p>
       </div>

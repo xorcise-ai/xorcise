@@ -29,6 +29,7 @@ from xorcise.core.contracts.terrain import (
 from xorcise.core.reporting.render import (
     ReportArtifact,
     RunReportContext,
+    _ts,
     render_html,
     render_markdown,
     report_filename,
@@ -767,6 +768,27 @@ def test_the_cli_and_the_report_render_the_model_identically(
     assert _agent_model(ctx) == _agent_model_line({"model": declared}, observed, dropped)
 
 
+@pytest.mark.parametrize(
+    ("declared", "observed", "expected"),
+    [
+        ("", (), None),
+        ("  ", (" ",), None),  # blank names name nothing, as the report's line agrees
+        ("gpt-5.5", (), "gpt-5.5 (disclosed)"),
+        ("", ("gpt-5.5",), "gpt-5.5 (reported by the harness)"),
+    ],
+)
+def test_the_served_model_cell_is_null_exactly_when_the_report_says_not_disclosed(
+    declared: str, observed: tuple[str, ...], expected: str | None
+) -> None:
+    from xorcise.core.reporting.render import agent_model_cell
+
+    ctx = _ctx(
+        conditions=ResultConditions(model=declared or None),
+        stats=RunStats(models=observed),
+    )
+    assert agent_model_cell(ctx) == expected
+
+
 def test_a_capped_model_list_says_how_many_it_is_not_showing() -> None:
     """Without the marker a bounded list reads as the complete one."""
     from xorcise.core.reporting.render import _agent_model
@@ -891,7 +913,7 @@ def test_an_unfinished_run_is_checked_against_the_clock_the_report_is_rendered_o
     open, which is the bound used here (#134 review). One minute open, an hour of telemetry."""
     md = render_markdown(
         _ctx(
-            run=_run(state="active", completed_at=None, terminal_trigger=None),
+            run=_run(state="xorcising", completed_at=None, terminal_trigger=None),
             stats=_timing_window(_at(), _at(hours=1), elapsed=None),
             generated_at=_at(minutes=1),
         )
@@ -910,7 +932,7 @@ def test_an_unfinished_run_still_shows_a_window_its_own_clock_supports() -> None
     already holds that clock — it stamps itself with it."""
     md = render_markdown(
         _ctx(
-            run=_run(state="active", completed_at=None, terminal_trigger=None),
+            run=_run(state="xorcising", completed_at=None, terminal_trigger=None),
             stats=_timing_window(_at(), _at(seconds=1), elapsed=None),
             generated_at=_at(minutes=1),
         )
@@ -982,3 +1004,17 @@ def test_a_declared_name_among_several_observed_ones_does_not_hide_the_rest() ->
     # The telemetry is redundant only when it named the declared name and nothing else; that line
     # stays exactly as it was.
     assert agent_model_line("gpt-5.5", ("gpt-5.5",), 0) == "gpt-5.5 (disclosed)"
+
+
+def test_the_report_says_when_the_agent_started_and_what_showed_it() -> None:
+    """#209: Created is when the run was made; Started is when the agent first acted, with the
+    signal that showed it, worded as the GUI and the CLI word it."""
+    started = _run(started_at=_at(seconds=42), start_trigger="tailnet_key")
+    md = render_markdown(_ctx(run=started))
+    assert f"| Created | {_ts(_CREATED)} |" in md
+    assert f"| Started | {_ts(_at(seconds=42))} · fetched its tailnet key |" in md
+
+
+def test_a_run_the_agent_never_started_shows_a_dash() -> None:
+    md = render_markdown(_ctx(run=_run(started_at=None, start_trigger=None)))
+    assert "| Started | — |" in md

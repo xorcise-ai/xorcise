@@ -6,11 +6,19 @@ import hmac
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 from uuid import uuid4
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 
-from xorcise.core.contracts.run import RunEntry, TerminalTrigger, as_terminal_trigger
+from xorcise.core.contracts.run import (
+    RunEntry,
+    StartTrigger,
+    TerminalTrigger,
+    as_run_state,
+    as_start_trigger,
+    as_terminal_trigger,
+)
 from xorcise.core.db import session_scope
 from xorcise.core.runs.models import RunObservedFactRow, RunRow, TerrainUpdateRow
 
@@ -33,8 +41,10 @@ def _to_entry(row: RunRow) -> RunEntry:
         # Legacy rows predate the name column — fall back to the mission so a run always has a
         # readable label.
         name=row.name or row.mission,
-        state=row.state,
+        state=as_run_state(row.state),
         created_at=_utc_required(row.created_at),
+        started_at=_utc(row.started_at),
+        start_trigger=as_start_trigger(row.start_trigger),
         budget_seconds=row.budget_seconds,
         terminal_trigger=as_terminal_trigger(row.terminal_trigger),
         terminal_detail=row.terminal_detail,
@@ -390,18 +400,62 @@ def mark_terminal(
     The first call stamps state='terminal', terminal_trigger, completed_at and (when given) the
     terminal_detail — why the run ended, for triggers whose name alone does not say. Later calls
     (any trigger, any detail) are no-ops and return the trigger that already stuck.
-    Returns the recorded trigger, or '' if the run does not exist."""
+    Returns the recorded trigger, or '' if the run does not exist.
+
+    One conditional UPDATE, then a read of what stuck: a read and then a write let a racing
+    `end_unstarted` commit in between and be overwritten, so a run the API had answered
+    "Cancelled" was graded as a timeout after all."""
     with session_scope() as s:
-        row = s.scalar(select(RunRow).where(RunRow.id == run_id))
-        if row is None:
+        ended = s.execute(
+            update(RunRow)
+            .where(RunRow.id == run_id, RunRow.state != "terminal")
+            .values(
+                state="terminal",
+                terminal_trigger=trigger,
+                completed_at=at,
+                terminal_detail=detail or None,
+            )
+        )
+        if getattr(ended, "rowcount", 0):
+            return trigger
+        recorded = s.execute(
+            select(RunRow.terminal_trigger).where(RunRow.id == run_id)
+        ).one_or_none()
+        if recorded is None:
             return ""  # absent run: explicit empty-sentinel; nothing was recorded
-        if row.state == "terminal":
-            return row.terminal_trigger if row.terminal_trigger is not None else trigger
-        row.state = "terminal"
-        row.terminal_trigger = trigger
-        row.completed_at = at
-        row.terminal_detail = detail or None
-        return trigger
+        return recorded[0] if recorded[0] is not None else trigger
+
+
+def mark_started(run_id: str, trigger: StartTrigger, at: datetime) -> bool:
+    """Move a `created` run to `xorcising`, recording when and what showed it (#209). First-wins:
+    one conditional UPDATE, so a run that has started, ended or gone is left alone, and two first
+    signals racing each other record one. True when this call moved it."""
+    with session_scope() as s:
+        moved = s.execute(
+            update(RunRow)
+            .where(RunRow.id == run_id, RunRow.state == "created")
+            .values(state="xorcising", started_at=at, start_trigger=trigger)
+        )
+        return bool(getattr(moved, "rowcount", 0))
+
+
+def end_unstarted(
+    run_id: str, trigger: Literal["cancelled", "never_started"], at: datetime
+) -> bool:
+    """End a run the agent never started, as *trigger* (#187). True when this call ended it.
+
+    One conditional UPDATE on `state = 'created'`, never a read then a write: the agent's first
+    signal (`mark_started`) and any other ending (`mark_terminal`, also conditional) race for the
+    same row, and exactly one of them wins. A run that started first is not touched, so the
+    caller stops it as `operator` and it is graded.
+    """
+    with session_scope() as s:
+        ended = s.execute(
+            update(RunRow)
+            .where(RunRow.id == run_id, RunRow.state == "created")
+            .values(state="terminal", terminal_trigger=trigger, completed_at=at)
+        )
+        return bool(getattr(ended, "rowcount", 0))
 
 
 def terminal_state(run_id: str) -> tuple[bool, str | None, datetime | None]:

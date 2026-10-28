@@ -26,6 +26,7 @@ from xorcise.core.rest.routers import (
     harnesses,
     health,
     missions,
+    results,
     runcontrol,
     runs,
     system,
@@ -54,6 +55,7 @@ def build_rest_app() -> FastAPI:
     app.include_router(health.router, prefix="/api")
     app.include_router(agents.router, prefix="/api")
     app.include_router(runs.router, prefix="/api")
+    app.include_router(results.router, prefix="/api")
     app.include_router(runcontrol.router, prefix="/api")
     app.include_router(missions.router, prefix="/api")
     app.include_router(catalog.router, prefix="/api")
@@ -301,10 +303,13 @@ def build_otel_app() -> FastAPI:
     from xorcise.core.otel.ingest.embedded import create_otel_app
     from xorcise.core.otel.mirror import resolve_mirror
     from xorcise.core.otel.store import SqliteSealStore
+    from xorcise.core.rest.run_start import telemetry_started
 
     resolve_mirror(get_settings())  # fail fast if the reserved mirror is enabled
     return create_otel_app(
-        seal_store=SqliteSealStore(), drops=drop_recorder_from_settings(get_settings())
+        seal_store=SqliteSealStore(),
+        drops=drop_recorder_from_settings(get_settings()),
+        on_admitted=telemetry_started,
     )
 
 

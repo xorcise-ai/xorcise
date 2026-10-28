@@ -167,6 +167,8 @@ export const handlers = [
   http.get("*/api/agents", () => HttpResponse.json([])),
   http.get("*/api/missions", () => HttpResponse.json([])),
   http.get("*/api/runs", () => HttpResponse.json([])),
+  http.get("*/api/results/runs", () => HttpResponse.json([])),
+  http.get("*/api/results/summary", () => HttpResponse.json([])),
   // The server returns empty records for an unknown run (read_since -> []).
   http.get("*/api/runs/:id/traces", ({ params }) =>
     HttpResponse.json({ run_id: params.id, records: [] }),
