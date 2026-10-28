@@ -195,8 +195,8 @@ class HttpCatalogSource(CatalogSource):
         below is deliberate. Anything outside those two still escapes — `httpx.InvalidURL`
         derives from Exception, not HTTPError, so a malformed `XORCISE_CATALOG_URL` (try
         "::::") propagates straight out of here. What makes the no-failure-reaches-the-browser
-        guarantee TOTAL is the broad `except Exception` in
-        `rest/announcements_view.list_announcements`, which is the boundary the router calls.
+        guarantee TOTAL is the broad `except Exception` in `rest/announcements_view._run_fetch`,
+        the thread this method runs on when the router asks for announcements.
         Narrow here and broad at the boundary is the right shape and each covers what the
         other does not: this method absorbs the failures that are EXPECTED of a remote call,
         so they stay quiet, while a genuinely unexpected bug still travels up to the one place
