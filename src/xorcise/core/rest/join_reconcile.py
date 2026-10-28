@@ -111,7 +111,7 @@ def reconcile_telemetry(run_id: str, *, has_telemetry: bool, store: ObservedFact
     )
 
 
-def _has_telemetry(run_id: str) -> bool:
+def has_telemetry(run_id: str) -> bool:
     """True iff the run has exported ≥1 raw span. Lazy import keeps the OTel store off this
     module's import path (plane isolation); never raises."""
     try:
@@ -169,7 +169,7 @@ def maybe_reconcile_join(run_id: str) -> None:
                 if cli is not None and agent_user is not None and not _is_confirmed(current):
                     reconcile_join(run_id, headscale=cli, agent_user=agent_user, store=store)
                 if not _is_telemetry_confirmed(current):
-                    reconcile_telemetry(run_id, has_telemetry=_has_telemetry(run_id), store=store)
+                    reconcile_telemetry(run_id, has_telemetry=has_telemetry(run_id), store=store)
                 final = store.list_for_run(run_id)
                 # Join is "settled" when confirmed OR we have no client to ever confirm it with.
                 join_settled = _is_confirmed(final) or cli is None

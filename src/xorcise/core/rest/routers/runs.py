@@ -593,17 +593,21 @@ def run_terrain_v2(run_id: str) -> ResolvedTerrainV2:
     telemetry_active = bool(SqliteTraceStore().read(run_id))
     resolved = project_terrain_v2(run_id, entry.mission, manifest)
 
-    # Persist the OTel connection as a runtime fact at connection time (view-time backstop; the
-    # infra-connection reconciler also latches it during the run). Terrain rendering still uses the
-    # always-current `telemetry_active` below — the fact is the durable DB record.
+    # Persist the OTel connection as a runtime fact at connection time, for a live run only (#194):
+    # observed facts are sealed evidence, and sealing latches this one for a run that still lacks
+    # it. A view-time backstop; the infra-connection reconciler also latches it during the run.
+    # Terrain rendering still uses the always-current `telemetry_active` below — the fact is the
+    # durable DB record.
+    live = not runs.terminal_state(run_id)[0]
     facts_store = SqliteObservedFactsStore()
-    reconcile_telemetry(run_id, has_telemetry=telemetry_active, store=facts_store)
+    if live:
+        reconcile_telemetry(run_id, has_telemetry=telemetry_active, store=facts_store)
     facts = facts_store.list_for_run(run_id)
     submissions = [(s.kind, s.created_at) for s in SqliteSubmissionStore().list_for_run(run_id)]
     # Kick the background infra-connection reconciler for a live run — it persists join=confirmed
     # (agent node online in Headscale) and telemetry=connected (first span) at connection time,
     # independent of viewing. Self-gates: no-op once both facts exist, or Headscale isn't owned.
-    if not runs.terminal_state(run_id)[0]:
+    if live:
         maybe_reconcile_join(run_id)
     # The agent event view feeds both the infra plane (span-linked join/brief annotations) and the
     # mission-plane catch-up below — read it once here.

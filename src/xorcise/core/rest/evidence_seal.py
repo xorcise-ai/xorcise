@@ -164,6 +164,7 @@ def seal_with_digest(run_id: str) -> None:
     from xorcise.core.otel.store import SqliteSealStore
 
     seals = SqliteSealStore()
+    _latch_telemetry_fact(run_id)
     # Close admission BEFORE hashing. Hashing first meant anything the receiver admitted while the
     # digest was being computed was hashed out of existence, and the freshly sealed run verified
     # False immediately — the seal accusing itself. `seal()` is first-wins and idempotent, so this
@@ -183,6 +184,32 @@ def seal_with_digest(run_id: str) -> None:
     # Tagged with the construction that produced it, so a future change to what is covered reads
     # as a different scheme rather than as tampering.
     seals.attach_digest(run_id, f"{_DIGEST_VERSION}:{digest}")
+
+
+def _latch_telemetry_fact(run_id: str) -> None:
+    """Record the collector-connected fact for a run with telemetry, while it can still take one.
+
+    Nothing else is sure to have. The join reconciler latches it only while it polls, for two
+    minutes after each kick, and the run page's terrain view only while the run is live. A run
+    launched from the CLI whose first span landed after that window sealed without it, and the
+    first view of its finished terrain then wrote it into sealed evidence (#194). The store now
+    refuses that write, so this is the last moment to make the fact part of what is sealed and
+    graded.
+
+    Before `seal()`, because after it the store refuses the fact. A first batch admitted between
+    the two leaves the run without the fact, as before; it is a display record, never a check on
+    the telemetry itself. Best-effort: sealing must not depend on it."""
+    try:
+        from xorcise.core.rest.join_reconcile import has_telemetry, reconcile_telemetry
+        from xorcise.core.runs.observed import SqliteObservedFactsStore
+
+        reconcile_telemetry(
+            run_id, has_telemetry=has_telemetry(run_id), store=SqliteObservedFactsStore()
+        )
+    except Exception:  # noqa: BLE001 — sealing must not depend on a display fact
+        log.warning(
+            "could not record the telemetry fact for %s before sealing", run_id, exc_info=True
+        )
 
 
 # Everything a reader can be told about a run's seal, as ONE value. `verified` alone is a tristate

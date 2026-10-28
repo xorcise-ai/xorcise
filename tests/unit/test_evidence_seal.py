@@ -848,3 +848,60 @@ def test_a_grade_that_dies_on_the_way_in_does_not_silence_the_next_regrade(
     assert any("no longer matches" in r.getMessage() for r in caplog.records), (
         "a mark left behind by a failed grade silenced the verification on the next one"
     )
+
+
+# ── a fact written after the seal (#194) ─────────────────────────────────────────────────────
+
+
+def _telemetry_facts(run_id: str) -> list[object]:
+    from xorcise.core.runs.observed import SqliteObservedFactsStore
+
+    return [
+        f
+        for f in SqliteObservedFactsStore().list_for_run(run_id)
+        if (f.kind, f.name, f.value) == ("telemetry-lifecycle", "collector", "connected")
+    ]
+
+
+def test_sealing_records_the_telemetry_fact_inside_the_seal(migrated_home) -> None:
+    """Only the join reconciler's two-minute poll and a live terrain view latched the collector
+    fact, so a run whose first span came later sealed without it. Sealing now records it first,
+    so it is in what is hashed and graded, and nothing is left to add after the seal."""
+    from xorcise.core.rest.evidence_seal import seal_with_digest, verify_evidence
+
+    _seed("r1")
+    seal_with_digest("r1")
+
+    assert len(_telemetry_facts("r1")) == 1
+    assert verify_evidence("r1") is True
+
+
+def test_sealing_a_run_with_no_telemetry_records_no_telemetry_fact(migrated_home) -> None:
+    from xorcise.core.rest.evidence_seal import seal_with_digest, verify_evidence
+    from xorcise.core.runcontrol.store import SqliteSubmissionStore
+
+    SqliteSubmissionStore().record("r1", "flag", "flag", "XORCISE{found}")
+    seal_with_digest("r1")
+
+    assert _telemetry_facts("r1") == []
+    assert verify_evidence("r1") is True
+
+
+def test_the_join_reconciler_cannot_add_a_fact_after_the_seal(migrated_home) -> None:
+    """The reconciler polls for two minutes after its last kick, whether or not the run has ended
+    since. A node that came online in that window confirmed the join into sealed evidence."""
+    from xorcise.core.rest.evidence_seal import seal_with_digest, verify_evidence
+    from xorcise.core.rest.join_reconcile import reconcile_join
+    from xorcise.core.runs.observed import SqliteObservedFactsStore
+
+    class _Online:
+        def node_online(self, user: str) -> bool:
+            return True
+
+    _seed("r1")
+    seal_with_digest("r1")
+    store = SqliteObservedFactsStore()
+    reconcile_join("r1", headscale=_Online(), agent_user="agent-r1", store=store)  # type: ignore[arg-type]
+
+    assert not any(f.value == "confirmed" for f in store.list_for_run("r1"))
+    assert verify_evidence("r1") is True

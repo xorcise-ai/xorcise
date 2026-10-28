@@ -48,10 +48,12 @@ class LogRow(Base):
 class AdmissionRow(Base):
     __tablename__ = "otel_admissions"
 
-    # One row per run that has exported or been sealed: the lock that orders admitting a batch
-    # against sealing the run. Both update this row before anything else in their transaction, so
-    # on any database one waits for the other's commit (#184). `batches` is what the update
-    # writes; it counts admissions plus seals and means nothing beyond that. Plain run_id PK.
+    # One row per run that has exported, been sealed or recorded a fact: the lock that orders
+    # admitting a batch against sealing the run. Both update this row before anything else in their
+    # transaction, so on any database one waits for the other's commit (#184). Recording an
+    # observed fact takes it too (#194), since facts are hashed beside the telemetry. `batches` is
+    # what the update writes; it counts admissions, seals and facts, and means nothing beyond that.
+    # Plain run_id PK.
     run_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     batches: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 

@@ -191,3 +191,42 @@ def test_terrain2_kicks_infra_reconciler_for_a_live_run_only(client, monkeypatch
     )
     client.get("/api/runs/r-recon-confirmed/terrain2")
     assert calls == [("r-recon-confirmed",)]
+
+
+def test_viewing_a_sealed_runs_terrain_leaves_its_evidence_verified(client):
+    """#194: a run that sealed with telemetry but no collector fact, as an earlier build sealed a
+    CLI run whose first span came after the reconciler's window. The first view of its finished
+    terrain wrote the fact into sealed evidence, and every verify after read `mismatch`."""
+    import json
+    from datetime import UTC, datetime
+
+    from xorcise.core.contracts.telemetry import TraceRecord
+    from xorcise.core.otel.store import SqliteSealStore, SqliteTraceStore
+    from xorcise.core.rest.evidence_seal import compute_evidence_digest, verify_evidence
+    from xorcise.core.runs.observed import SqliteObservedFactsStore
+
+    runs.create_run(
+        run_id="r-sealed",
+        agent_id="a1",
+        mission="not-installed",
+        budget_seconds=60,
+        source_agent="generic",
+    )
+    SqliteTraceStore().append(
+        TraceRecord(run_id="r-sealed", seq=0, payload=json.dumps({"resourceSpans": []}))
+    )
+    runs.mark_terminal("r-sealed", "done", datetime.now(UTC))
+    # Sealed the way an earlier build sealed it: no collector fact on record.
+    seals = SqliteSealStore()
+    seals.seal("r-sealed")
+    seals.attach_digest("r-sealed", f"xorcise-evidence-v1:{compute_evidence_digest('r-sealed')}")
+    assert verify_evidence("r-sealed") is True
+
+    body = client.get("/api/runs/r-sealed/terrain2").json()
+
+    # Still drawn from the stored telemetry, not from the fact.
+    assert _updates_by_target(body, "collector")
+    assert not any(
+        f.kind == "telemetry-lifecycle" for f in SqliteObservedFactsStore().list_for_run("r-sealed")
+    )
+    assert verify_evidence("r-sealed") is True
