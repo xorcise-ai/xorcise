@@ -1,12 +1,4 @@
 {
-  "active/": {
-    "outcome": null,
-    "status": {
-      "detail": null,
-      "label": "Running",
-      "tone": "active"
-    }
-  },
   "created/": {
     "outcome": null,
     "status": {
@@ -20,6 +12,14 @@
     "status": {
       "detail": null,
       "label": "Ended",
+      "tone": "muted"
+    }
+  },
+  "terminal/cancelled": {
+    "outcome": "not_started",
+    "status": {
+      "detail": "An operator stopped this run before the agent started, so there was nothing to grade. It is not graded or counted in any average.",
+      "label": "Cancelled",
       "tone": "muted"
     }
   },
@@ -47,6 +47,14 @@
       "tone": "ok"
     }
   },
+  "terminal/never_started": {
+    "outcome": "not_started",
+    "status": {
+      "detail": "The run's time budget ran out before the agent started, so there was nothing to grade. It is not graded or counted in any average.",
+      "label": "Never started",
+      "tone": "muted"
+    }
+  },
   "terminal/operator": {
     "outcome": "partial",
     "status": {
@@ -61,6 +69,14 @@
       "detail": "The agent reached its time budget before completing the mission, so the result is partial.",
       "label": "Timed out",
       "tone": "err"
+    }
+  },
+  "xorcising/": {
+    "outcome": null,
+    "status": {
+      "detail": null,
+      "label": "Xorcising",
+      "tone": "active"
     }
   }
 }

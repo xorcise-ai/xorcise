@@ -19,7 +19,12 @@ import { fullTime, formatDuration } from "@/lib/api/format";
 import { useRun, useTerminateRun, useRunEnvironment } from "@/features/runs/queries";
 import { useAgents } from "@/features/agents/queries";
 import { useConfig } from "@/features/settings/queries";
-import { isTerminal, runPresentation, type RunTone } from "@/features/runs/run-state";
+import {
+  isTerminal,
+  runPresentation,
+  startedText,
+  type RunTone,
+} from "@/features/runs/run-state";
 import { STALL_TICK_MS, isStalled, secondsSince, useNow } from "@/features/runs/stall";
 import { useUiStore } from "@/stores/ui";
 import { useRunEvents } from "@/features/replay/use-run-events";
@@ -290,7 +295,18 @@ export function RunLive({ runId }: { runId: string | null }) {
   // The environment is still coming up: the hand-off card must not read "Action required".
   const awaitingEnvironment = environment.data?.state === "starting";
   const elapsed = elapsedSeconds(r.created_at, r.completed_at);
-  const startedAt = fullTime(r.created_at);
+  const createdAt = fullTime(r.created_at);
+  // When the agent started (#209), with what showed it on a quieter line beneath.
+  const startedAt = r.started_at ? (
+    <>
+      <span className="block truncate">{fullTime(r.started_at)}</span>
+      {r.start_trigger_label && (
+        <span className="block truncate text-caption font-normal text-text-tertiary">
+          {r.start_trigger_label}
+        </span>
+      )}
+    </>
+  ) : null;
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden p-4">
@@ -399,7 +415,8 @@ export function RunLive({ runId }: { runId: string | null }) {
           <StatTileRow className="gap-x-6 gap-y-2">
             {/* Identity metadata — the set the results page uses: Mission (name + version,
                 links to its brief), Agent (name + version), the Platform it executed on, when it
-                Started and the wall clock it has occupied (Duration). Harness is NOT here — it
+                was Created, when the agent Started and what showed it (#209), and the wall
+                clock it has occupied (Duration). Harness is NOT here — it
                 sits in the chip row above, with the run's other identity facts. The HTML/MD
                 exports carry one row neither view has, Telemetry window, so these are close
                 relatives rather than the same set. */}
@@ -419,7 +436,10 @@ export function RunLive({ runId }: { runId: string | null }) {
             {r.platform && <MetaItem label="Platform" value={r.platform} />}
             {r.model && <MetaItem label="Model" value={r.model} />}
             <MetaItem label="Budget" value={formatBudget(r.budget_seconds)} />
-            {startedAt && <MetaItem label="Started" value={startedAt} />}
+            {createdAt && <MetaItem label="Created" value={createdAt} />}
+            {startedAt && (
+              <MetaItem label="Started" value={startedAt} title={startedText(r, fullTime) ?? undefined} />
+            )}
             {elapsed != null && (
               <MetaItem label="Duration" value={formatDuration(elapsed)} />
             )}
@@ -615,7 +635,12 @@ export function RunLive({ runId }: { runId: string | null }) {
         // The slot's pre-flight occupant: the launch hand-off, sized to the pane, with its own
         // single internal scroller and its copy action pinned above the payload.
         const workSection = awaitingAgent ? (
-          <RunPromptCard runId={r.run_id} fill awaitingEnvironment={awaitingEnvironment} />
+          <RunPromptCard
+            runId={r.run_id}
+            fill
+            awaitingEnvironment={awaitingEnvironment}
+            agentStarted={r.state === "xorcising"}
+          />
         ) : (
           traceSection
         );

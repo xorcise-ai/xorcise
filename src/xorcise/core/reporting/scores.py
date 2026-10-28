@@ -139,7 +139,9 @@ def score_rows(
     current: Mapping[str, str],
     intel: Mapping[str, int] | None = None,
 ) -> list[RunScore]:
-    """One RunScore per finished run, oldest first.
+    """One RunScore per finished run, oldest first. A run that ended before its agent started
+    (outcome `not_started`: stopped, or out of budget, #187) is left out: it is not a run of the
+    agent's, so it has no place on a performance view, not even as a mark that does not count.
 
     `grades` maps a run id to its recorded grade. `current` maps each mission to its current
     version label (`current_versions`); a run on any other label is on an older version, and a
@@ -150,8 +152,10 @@ def score_rows(
     )
     rows: list[RunScore] = []
     for run in finished:
+        outcome = run.outcome
+        if outcome is None or outcome == "not_started":
+            continue
         grade = grades.get(run.run_id)
-        assert run.outcome is not None
         label = run_version(run)
         rows.append(
             RunScore(
@@ -162,7 +166,7 @@ def score_rows(
                 current_version=current.get(run.mission, label) == label,
                 created_at=run.created_at,
                 completed_at=run.completed_at,
-                outcome=run.outcome,
+                outcome=outcome,
                 terminal_trigger=run.terminal_trigger,
                 bucket=bucket(run, grade),
                 timed_out=run.terminal_trigger == "timeout",

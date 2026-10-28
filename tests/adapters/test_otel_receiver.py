@@ -396,3 +396,29 @@ def test_dropped_batches_are_spooled_when_a_spool_is_configured(tmp_path) -> Non
     assert envelope["reason"] == "unroutable" and envelope["signal"] == "traces"
     assert envelope["payload"]["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["name"] == "lost-2"
     assert client.get("/healthz").json()["drops"]["spooled_batches"] == 3
+
+
+def test_on_admitted_names_each_run_whose_batch_was_stored() -> None:
+    """#209: the role that boots the receiver learns which runs exported, to record them as
+    started. Only an admitted batch counts — not one for a sealed run, nor an unroutable one."""
+    from xorcise.core.otel.store import InMemorySealStore
+
+    seen: list[str] = []
+    seals = InMemorySealStore()
+    seals.seal("run-sealed")
+    client = TestClient(create_otel_app(InMemoryTraceStore(), seals, on_admitted=seen.append))
+    client.post("/v1/traces", content=json.dumps(_trace("run-1", ["a"])))
+    client.post("/v1/traces", content=json.dumps(_trace("run-sealed", ["a"])))
+    client.post("/v1/traces", content=json.dumps(_trace(None, ["a"])))
+    assert seen == ["run-1"]
+
+
+def test_a_failing_on_admitted_does_not_refuse_the_batch() -> None:
+    def boom(run_id: str) -> None:
+        raise RuntimeError("database is locked")
+
+    store = InMemoryTraceStore()
+    client = TestClient(create_otel_app(store, on_admitted=boom))
+    resp = client.post("/v1/traces", content=json.dumps(_trace("run-1", ["a"])))
+    assert (resp.status_code, resp.json()) == (200, {})
+    assert len(store.read("run-1")) == 1

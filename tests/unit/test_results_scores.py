@@ -36,7 +36,7 @@ def _run(i: int, trigger: str | None = "done", **over: Any) -> RunEntry:
         "run_id": f"r{i}",
         "agent_id": "a1",
         "mission": "m1",
-        "state": "terminal" if trigger else "active",
+        "state": "terminal" if trigger else "xorcising",
         "created_at": T0 + timedelta(minutes=i),
         "completed_at": T0 + timedelta(minutes=i, seconds=30) if trigger else None,
         "terminal_trigger": trigger,
@@ -121,6 +121,15 @@ def test_a_crash_recorded_before_the_flag_is_read_from_its_detail() -> None:
         judge_model=None,
     )
     assert facts.grading_failed
+
+
+def test_a_run_that_ended_before_the_agent_started_is_not_a_row() -> None:
+    """A run stopped, or out of budget, before its agent started is not one of the agent's runs
+    (#187): not even a mark that does not count, unlike an environment failure."""
+    runs = [_run(1, "cancelled"), _run(2, "deploy_failed"), _run(3, "never_started")]
+    rows = score_rows(runs, {}, {"m1": "1.0.0"})
+    assert [(r.run_id, r.bucket) for r in rows] == [("r2", "infra_failed")]
+    assert summarize(rows, by="agent")[0].runs == 1
 
 
 def test_a_run_still_in_progress_is_not_a_row() -> None:

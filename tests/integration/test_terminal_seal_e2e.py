@@ -49,6 +49,9 @@ def test_budget_expiry_via_gate_backstop_stamps_timeout(migrated_home) -> None:
     run_entry = runs.get(rid)
     assert run_entry is not None
     created = run_entry.created_at
+    # The gate guards run-control, and any run-control call starts the run (#209); a budget that
+    # runs out before the agent starts ends `never_started` instead (#187).
+    runs.mark_started(rid, "run_control", created)
     terminate_run(rid, "timeout", created + timedelta(seconds=2))
     assert runs.terminal_state(rid)[1] == "timeout"
     assert SqliteSealStore().is_sealed(rid) is True

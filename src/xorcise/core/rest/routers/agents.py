@@ -129,17 +129,14 @@ def remove_agent(name: str, force: bool = False) -> Response:
     agent = agents.get(name)
     if agent is None:
         raise HTTPException(status_code=404, detail=f"no agent named '{name}'")
-    from xorcise.core.rest.run_teardown import check_deletable
+    from xorcise.core.rest.run_teardown import delete_runs
 
-    blocked = check_deletable(
+    blocked = delete_runs(
         [r.run_id for r in runs.list_runs() if r.agent_id == agent.id], force=force
     )
     if blocked is not None:
         body = blocked.body()
         body["detail"] = f"cannot remove agent '{name}': {body['detail']}"
         return JSONResponse(status_code=409, content=body)
-    from xorcise.core.rest.run_purge import purge_runs
-
-    purge_runs([r.run_id for r in runs.list_runs() if r.agent_id == agent.id])
     agents.remove(name)
     return Response(status_code=204)

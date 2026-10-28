@@ -321,10 +321,20 @@ def _status_line(ctx: RunReportContext) -> str:
     return ctx.run.status.label
 
 
+def _started(run: RunEntry) -> str:
+    """When the agent started and what showed it ("… · first OTel export"), or a dash for a run
+    it never started, and for one from before #209 that holds no evidence to date it by."""
+    if run.started_at is None:
+        return _DASH
+    label = run.start_trigger_label
+    return f"{_ts(run.started_at)} · {label}" if label else _ts(run.started_at)
+
+
 def _metadata_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
     """The identity metadata table, shared verbatim by the Markdown and HTML renderers: Mission
-    and Agent carry their pinned version in the name, then the Harness, when it Started, and the
-    wall clock the run occupied (Duration — what it COST, not how long the agent worked).
+    and Agent carry their pinned version in the name, then the Harness, when it was Created, when
+    the agent Started and what showed it (#209), and the wall clock the run occupied (Duration,
+    from creation — what it COST, not how long the agent worked).
 
     The results page shows the same pair: `/result` serves this table's Telemetry-window cell
     (`telemetry_window_cell`) and the page puts it beside its own Duration (#146). The live run
@@ -344,7 +354,8 @@ def _metadata_rows(ctx: RunReportContext) -> list[tuple[str, str]]:
         # The architecture the run executed on (§31/§43-UX8) — present only for a run that
         # recorded provenance, so a pre-contract run's table is unchanged.
         *([("Platform", ctx.conditions.platform)] if ctx.conditions.platform else []),
-        ("Started", _ts(ctx.run.created_at)),
+        ("Created", _ts(ctx.run.created_at)),
+        ("Started", _started(ctx.run)),
         ("Duration", _duration(_elapsed_seconds(ctx))),
         # The span when the server's own record of the run corroborates it, the reason it is
         # withheld when that record contradicts it, and absent when there is no span to report —
