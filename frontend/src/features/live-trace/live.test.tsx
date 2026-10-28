@@ -79,7 +79,7 @@ describe("RunLive", () => {
     server.use(
       http.get("*/api/runs", () =>
         HttpResponse.json([
-          runFixture({ run_id: "r1", mission: "sqli-login", name: "recon-run", state: "active" }),
+          runFixture({ run_id: "r1", mission: "sqli-login", name: "recon-run", state: "xorcising" }),
         ]),
       ),
       http.get("*/api/runs/r1/events", () =>
@@ -92,7 +92,7 @@ describe("RunLive", () => {
         screen.getByRole("heading", { name: "recon-run" }),
       ).toBeInTheDocument(),
     );
-    expect(screen.getByText("Running")).toBeInTheDocument();
+    expect(screen.getByText("Xorcising")).toBeInTheDocument();
     // terminal_command renders under its display-layer label (raw title stays a tooltip).
     await waitFor(() =>
       expect(screen.getByText("Agent Terminal")).toBeInTheDocument(),
@@ -104,7 +104,7 @@ describe("RunLive", () => {
     server.use(
       http.get("*/api/runs", () =>
         HttpResponse.json([
-          runFixture({ run_id: "r-cap", state: "active" }),
+          runFixture({ run_id: "r-cap", state: "xorcising" }),
         ]),
       ),
       http.get("*/api/runs/r-cap/events", () =>
@@ -155,7 +155,7 @@ describe("RunLive", () => {
     server.use(
       http.get("*/api/runs", () =>
         HttpResponse.json([
-          runFixture({ run_id: "rs", mission: "sqli-login", state: "active" }),
+          runFixture({ run_id: "rs", mission: "sqli-login", state: "xorcising" }),
         ]),
       ),
       http.get("*/api/runs/rs/events", () =>
@@ -286,7 +286,7 @@ describe("RunLive", () => {
           runFixture({
             run_id: "r3",
             mission: "sqli-login",
-            state: done ? "terminal" : "active",
+            state: done ? "terminal" : "xorcising",
             terminal_trigger: done ? "timeout" : null,
           }),
         ]);
@@ -296,21 +296,21 @@ describe("RunLive", () => {
       ),
     );
     renderWithProviders(<RunLive runId="r3" />);
-    await screen.findByText("Running");
+    await screen.findByText("Xorcising");
     // The run finishes on a timeout → the dedicated timeout message surfaces its
-    // "View partial result" action and the "Running" badge is gone.
+    // "View partial result" action and the "Xorcising" badge is gone.
     await waitFor(
       () => expect(screen.getByText(/View partial result/i)).toBeInTheDocument(),
       { timeout: 5000 },
     );
-    expect(screen.queryByText("Running")).toBeNull();
+    expect(screen.queryByText("Xorcising")).toBeNull();
   });
 
   it("links the mission fact to its detail page", async () => {
     server.use(
       http.get("*/api/runs", () =>
         HttpResponse.json([
-          runFixture({ run_id: "r1", mission: "sqli-login", name: "recon-run", state: "active" }),
+          runFixture({ run_id: "r1", mission: "sqli-login", name: "recon-run", state: "xorcising" }),
         ]),
       ),
       http.get("*/api/runs/r1/events", () =>
@@ -330,7 +330,7 @@ describe("RunLive", () => {
     server.use(
       http.get("*/api/runs", () =>
         HttpResponse.json([
-          runFixture({ run_id: "rt", mission: "sqli-login", state: "active" }),
+          runFixture({ run_id: "rt", mission: "sqli-login", state: "xorcising" }),
         ]),
       ),
       http.get("*/api/runs/rt/events", () =>
@@ -389,7 +389,7 @@ describe("RunLive", () => {
     server.use(
       http.get("*/api/runs", () =>
         HttpResponse.json([
-          runFixture({ run_id: "rc", mission: "sqli-login", name: "recon-run", state: "active" }),
+          runFixture({ run_id: "rc", mission: "sqli-login", name: "recon-run", state: "xorcising" }),
         ]),
       ),
       http.get("*/api/runs/rc/events", () =>
@@ -454,7 +454,7 @@ describe("RunLive", () => {
     server.use(
       http.get("*/api/runs", () =>
         HttpResponse.json([
-          runFixture({ run_id: "rd", mission: "ghostwire", state: "active" }),
+          runFixture({ run_id: "rd", mission: "ghostwire", state: "xorcising" }),
         ]),
       ),
       http.get("*/api/runs/rd/events", () =>
@@ -490,7 +490,7 @@ describe("RunLive", () => {
     server.use(
       http.get("*/api/runs", () =>
         HttpResponse.json([
-          runFixture({ run_id: "rz", mission: "sqli-login", state: "active" }),
+          runFixture({ run_id: "rz", mission: "sqli-login", state: "xorcising" }),
         ]),
       ),
       http.get("*/api/runs/rz/events", () =>
@@ -518,7 +518,7 @@ describe("RunLive", () => {
     server.use(
       http.get("*/api/runs", () =>
         HttpResponse.json([
-          runFixture({ run_id: "rf", mission: "sqli-login", state: "active" }),
+          runFixture({ run_id: "rf", mission: "sqli-login", state: "xorcising" }),
         ]),
       ),
       http.get("*/api/runs/rf/events", () =>

@@ -396,6 +396,43 @@ def test_run_terminate_posts_to_terminate_endpoint(monkeypatch):
     assert "Stopped" in res.stdout  # the server's label for an operator stop
 
 
+def test_run_terminate_on_a_run_that_never_started_cancels_it_without_waiting(monkeypatch):
+    """#187: the prompt says the run will not be graded, the server's Cancelled and its reason are
+    printed, and nothing is polled — there is no grade coming."""
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.run_or_none",
+        lambda self, rid: {"run_id": rid, "state": "created", "started_at": None},
+    )
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.RestClient.post",
+        lambda self, p, json: {
+            "run_id": RID,
+            "state": "terminal",
+            "terminal_trigger": "cancelled",
+            "status": run_status("terminal", "cancelled").model_dump(),
+        },
+    )
+
+    def no_poll(self, path):
+        raise AssertionError(f"polled {path} for a run that is never graded")
+
+    monkeypatch.setattr("xorcise.core.cli.commands.run.RestClient.get", no_poll)
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        "xorcise.core.cli.commands.run.confirm_or_abort",
+        lambda message, assume_yes=False: prompts.append(message),
+    )
+    res = runner.invoke(app, ["run", "terminate", RID])
+    assert res.exit_code == 0, res.output
+    assert prompts == [
+        f"Terminate run {RID[:8]}? (its agent has not started, so it will not be graded)"
+    ]
+    out = _plain(res.output)
+    assert "Cancelled" in out
+    assert "before the agent started" in out
+    assert "grading" not in out.lower()
+
+
 def test_run_terminate_waits_and_renders_grade(monkeypatch):
     """Run terminate acks, then polls past the grading window and prints the result."""
     monkeypatch.setattr(
@@ -611,7 +648,7 @@ def _patch_export(monkeypatch, *, active: bool = False, body: str = OTLP_LINES) 
     monkeypatch.setattr("xorcise.core.cli.commands.run.RestClient.get_text", fake_get_text)
     monkeypatch.setattr(
         "xorcise.core.cli.commands.run.RestClient.get_run_result",
-        lambda self, rid: {"status": "active"} if active else {"status": "graded"},
+        lambda self, rid: {"status": "xorcising"} if active else {"status": "graded"},
     )
     return captured
 
@@ -960,7 +997,7 @@ def test_export_selects_only_finished_runs():
     write three misleading files rather than fail honestly."""
     from xorcise.core.cli.commands.run import select_runs_for_export
 
-    rows = [_run_row("r1"), _run_row("r2", state="active", trigger=None)]
+    rows = [_run_row("r1"), _run_row("r2", state="xorcising", trigger=None)]
 
     assert [r["run_id"] for r in select_runs_for_export(rows)] == ["r1"]
 

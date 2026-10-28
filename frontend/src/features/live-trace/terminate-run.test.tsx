@@ -25,7 +25,7 @@ describe("RunLive terminate", () => {
   it("shows Terminate for an active run and POSTs on click", async () => {
     let terminated = false;
     server.use(
-      http.get("*/api/runs", () => HttpResponse.json([run("active")])),
+      http.get("*/api/runs", () => HttpResponse.json([run("xorcising")])),
       http.post("*/api/runs/r1/terminate", () => {
         terminated = true;
         return HttpResponse.json(run("terminal", "operator"));
@@ -43,9 +43,9 @@ describe("RunLive terminate", () => {
       http.get("*/api/runs", () => {
         if (terminated) getsAfterTerminate += 1;
         // Termination is async: the immediate post-terminate refetch still sees
-        // "active"; only a later poll observes the terminal flip.
+        // "xorcising"; only a later poll observes the terminal flip.
         const done = terminated && getsAfterTerminate >= 2;
-        return HttpResponse.json([done ? run("terminal", "operator") : run("active")]);
+        return HttpResponse.json([done ? run("terminal", "operator") : run("xorcising")]);
       }),
       http.post("*/api/runs/r1/terminate", () => {
         terminated = true;
