@@ -52,10 +52,11 @@ router = APIRouter(prefix="/runs", tags=["runs"])
 
 
 def _not_graded(run: RunEntry) -> JSONResponse | None:
-    """The FINAL answer for a run cut short by an environment failure, else None.
+    """The FINAL answer for a run that is never graded, else None: one cut short by an environment
+    failure (#109), or one an operator stopped before the agent started (#187).
 
-    Such a run is terminal and has no result by design (#109) — the failure is not the agent's,
-    so nothing was graded. Without this, every read of it fell through to the
+    Such a run is terminal and has no result by design — there is no attempt of the agent's to
+    score, so nothing was graded. Without this, every read of it fell through to the
     "terminal-but-ungraded" branch: a 202 "grading" that never resolves, plus a re-drive of the
     grade it must not have. 200, not 202: this is an answer, not progress — a poll loop must stop.
     Carries the trigger and the recorded reason so the caller can say WHY there is no score.
@@ -104,6 +105,16 @@ class RunResultView(BaseModel):
     # clipped for display, so the list above can repeat a name this count tells apart; and the
     # count itself saturates at the fold's tracking bound (contracts.reporting.RunStats).
     models_reported_truncated: int = 0
+    # The report's Agent-model and Telemetry-window cells, word for word (#146). The rules behind
+    # them (a declared name against the names the telemetry carried; a window withheld when the
+    # harness's clock contradicts the server's) live in reporting.render and nowhere else, so the
+    # results page renders these strings instead of re-deriving them. Both are harness-reported
+    # and say so in the text. `telemetry_window` is null when the report omits the row: no
+    # telemetry, or a span nobody measured. `agent_model` is null when nobody declared a model and
+    # the telemetry named none, where the report says "not disclosed": the page leaves out a row
+    # with nothing in it, as it does every other condition.
+    agent_model: str | None = None
+    telemetry_window: str | None = None
     # The run's evidence seal, machine-readable — the point of #116 is that a consumer can tie a
     # grade to evidence that has not changed, and until this the digest existed only as 16
     # characters of prose inside a rendered report. `evidence_digest` is the bare hex recorded at
@@ -220,21 +231,23 @@ def create_run(payload: RunCreate) -> RunCreatedEntry:
 
 @router.post("/{run_id}/terminate")
 def terminate_run(run_id: str, background: BackgroundTasks) -> RunEntry:
-    """Operator-initiated termination: abort an active run from GUI/CLI.
+    """Operator-initiated termination: stop an unfinished run from GUI/CLI.
 
     404 if the run is unknown; 409 if it is already terminal. Closes run-control synchronously and
     returns the terminal entry immediately; the background finalizer drains telemetry, seals, and
     grades without blocking the caller. Result surfaces via `run status` (202 grading → grade).
+    A run the agent never started (still `created`) ends `cancelled` and is never graded, so its
+    result is the final `not_graded` answer instead (#187).
     """
     from datetime import UTC, datetime
 
-    from xorcise.core.rest.run_terminate import grade_and_record, seal_terminal
+    from xorcise.core.rest.run_terminate import grade_and_record, stop_run
 
     if runs.get(run_id) is None:
         raise HTTPException(status_code=404, detail=f"no run '{run_id}'")
     if runs.terminal_state(run_id)[0]:
         raise HTTPException(status_code=409, detail=f"run '{run_id}' is already terminal")
-    seal_terminal(run_id, "operator", datetime.now(UTC))
+    stop_run(run_id, datetime.now(UTC))
     background.add_task(grade_and_record, run_id)
     updated = runs.get(run_id)
     if updated is None:  # pragma: no cover — present above, stays present after seal
@@ -260,13 +273,11 @@ def delete_run(run_id: str, force: bool = False) -> Response:
     run = runs.get(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"no run '{run_id}'")
-    from xorcise.core.rest.run_purge import purge_runs
-    from xorcise.core.rest.run_teardown import check_deletable
+    from xorcise.core.rest.run_teardown import delete_runs
 
-    blocked = check_deletable([run_id], force=force)
+    blocked = delete_runs([run_id], force=force)
     if blocked is not None:
         return JSONResponse(status_code=409, content=blocked.body())
-    purge_runs([run_id])
     return Response(status_code=204)
 
 
@@ -284,7 +295,8 @@ def regrade_run(run_id: str, background: BackgroundTasks) -> JSONResponse:
     slow); the new result surfaces via the SAME `202 grading → grade` poll the initial grade uses,
     so the client needs no new state machine. De-duplicated, so a double click grades once. 404 if
     the run is unknown; 409 if it has not reached a terminal state (nothing is sealed to grade yet),
-    or if it ended on an environment failure (`deploy_failed` / `crashed`), which is never graded.
+    or if it is never graded: it ended on an environment failure (`deploy_failed` / `crashed`), or
+    before the agent started (`cancelled` / `never_started`).
     """
     run = runs.get(run_id)
     if run is None:
@@ -298,12 +310,14 @@ def regrade_run(run_id: str, background: BackgroundTasks) -> JSONResponse:
         )
     if run.terminal_trigger in UNGRADED_TRIGGERS:
         # Re-grading would record exactly the phantom score the terminal path declined to (#109).
+        why = {
+            "cancelled": "it was stopped before the agent started",
+            "never_started": "its budget ran out before the agent started",
+        }.get(run.terminal_trigger or "", "it was cut short by an environment failure")
         raise HTTPException(
             status_code=409,
-            detail=(
-                f"run '{run_id}' ended {run.terminal_trigger} — it was cut short by an "
-                f"environment failure, and such a run is never graded"
-            ),
+            detail=f"run '{run_id}' ended {run.terminal_trigger} — {why}, and such a run is "
+            "never graded",
         )
     from xorcise.core.rest.run_terminate import ensure_graded_async
 
@@ -558,7 +572,7 @@ def run_terrain_v2(run_id: str) -> ResolvedTerrainV2:
 
     from xorcise.core.contracts.terrain import AttributionStatus, TerrainUpdate
     from xorcise.core.missions import get_installed
-    from xorcise.core.otel.store import SqliteTraceStore
+    from xorcise.core.otel.store import SqliteSealStore, SqliteTraceStore
     from xorcise.core.otel.store.agent_events import SqliteAgentEventStore
     from xorcise.core.rest.join_reconcile import maybe_reconcile_join, reconcile_telemetry
     from xorcise.core.rest.terrain_catchup_v2 import (
@@ -584,10 +598,13 @@ def run_terrain_v2(run_id: str) -> ResolvedTerrainV2:
     resolved = project_terrain_v2(run_id, entry.mission, manifest)
 
     # Persist the OTel connection as a runtime fact at connection time (view-time backstop; the
-    # infra-connection reconciler also latches it during the run). Terrain rendering still uses the
-    # always-current `telemetry_active` below — the fact is the durable DB record.
+    # infra-connection reconciler also latches it during the run). Not for a sealed run (#194):
+    # observed facts are sealed evidence, so the store would refuse it, and sealing latched it
+    # already where it could. Terrain rendering still uses the always-current `telemetry_active`
+    # below — the fact is the durable DB record.
     facts_store = SqliteObservedFactsStore()
-    reconcile_telemetry(run_id, has_telemetry=telemetry_active, store=facts_store)
+    if not SqliteSealStore().is_sealed(run_id):
+        reconcile_telemetry(run_id, has_telemetry=telemetry_active, store=facts_store)
     facts = facts_store.list_for_run(run_id)
     submissions = [(s.kind, s.created_at) for s in SqliteSubmissionStore().list_for_run(run_id)]
     # Kick the background infra-connection reconciler for a live run — it persists join=confirmed
@@ -827,7 +844,7 @@ def run_result(
     When no result is recorded yet, distinguish three cases instead of a blanket 404:
     grading runs asynchronously after /complete, so a terminal-but-ungraded run is a normal
     transient state, NOT a failure. Unknown run → 404; terminal-but-ungraded → 202
-    {"status": "grading"}; still-active run → 409 (no result to read yet).
+    {"status": "grading"}; unfinished run → 409 (no result to read yet).
 
     A run cut short by an environment failure (`deploy_failed` / `crashed`) is never graded — the
     failure is not the agent's — so it answers a FINAL 200 {"status": "not_graded",
@@ -875,6 +892,16 @@ def run_result(
     from xorcise.core.rest.evidence_seal import evidence_seal_view
 
     seal = evidence_seal_view(run_id, verify=verify)
+    # The report's own cell functions, over the same joined inputs the report reads. A run deleted
+    # between the two reads above has no row to bound a window with, so it gets none.
+    agent_model: str | None = None
+    window: str | None = None
+    if run_entry is not None:
+        cells = reporting.RunReportContext(
+            run=run_entry, agent_name="", grade=grade, conditions=conditions, stats=stats
+        )
+        agent_model = reporting.agent_model_cell(cells)
+        window = reporting.telemetry_window_cell(cells)
     return RunResultView(
         grade=grade,
         conditions=conditions,
@@ -882,6 +909,8 @@ def run_result(
         partial_trigger=partial_trigger,
         models_reported=tuple(stats.models) if stats else (),
         models_reported_truncated=stats.models_truncated if stats else 0,
+        agent_model=agent_model,
+        telemetry_window=window,
         evidence_digest=seal.digest,
         evidence_verified=seal.verified,
         evidence_status=seal.status,
@@ -910,7 +939,7 @@ def run_report(run_id: str, background: BackgroundTasks, format: str = "md") -> 
     Mirrors /result's state ladder exactly, so a caller polling for a report sees the same
     transitions it already handles: unknown run → 404; terminal-but-ungraded → 202
     {"status": "grading"}; ended on an environment failure → 200 {"status": "not_graded"};
-    still-active run → 409. An unsupported `format` → 422.
+    unfinished run → 409. An unsupported `format` → 422.
     Content-Disposition is `attachment`, so a browser downloads rather than renders it.
     """
     if format not in ("md", "html"):
@@ -959,7 +988,7 @@ def run_stats(run_id: str, background: BackgroundTasks) -> RunStats | JSONRespon
     live and the refreshed snapshot persisted — the derived stats column only, never the grade — so
     this page, the report and the replay agree (report_assembly.current_run_stats). Mirrors
     /result's states otherwise: unknown run → 404; terminal-but-ungraded → 202
-    {"status": "grading"}; still-active run → 409.
+    {"status": "grading"}; unfinished run → 409.
     """
     run = runs.get(run_id)
     if run is None:

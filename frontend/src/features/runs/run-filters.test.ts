@@ -15,11 +15,11 @@ describe("distinctStatuses", () => {
       runFixture({ run_id: "e", state: "terminal", terminal_trigger: "operator" }),
       runFixture({ run_id: "f", state: "created" }),
       runFixture({ run_id: "g", state: "terminal", terminal_trigger: "deploy_failed" }),
-      runFixture({ run_id: "h", state: "active" }),
+      runFixture({ run_id: "h", state: "xorcising" }),
       runFixture({ run_id: "i", state: "terminal", terminal_trigger: "done" }),
     ];
     expect(distinctStatuses(runs)).toEqual([
-      "Running",
+      "Xorcising",
       "Created",
       "Completed",
       "Stopped",

@@ -252,22 +252,29 @@ describe("RegisterAgentPage — register mode", () => {
     );
   });
 
-  // #141: `generic` is a registered adapter, so the page shows its real (unverified) profile
-  // rather than calling it registered and unknown at once.
-  it("shows the generic adapter's real profile for the Generic harness", async () => {
+  // The generic adapter maps what it can, at best: which spans an arbitrary agent exports is
+  // unknown, so Generic reads as unknown, never as a count of supported spans.
+  it("keeps the Generic harness's export capabilities unknown, not supported", async () => {
     renderWithProviders(<RegisterAgentPage editName={null} />);
     fireEvent.click(screen.getByRole("radio", { name: /^generic/i }));
 
-    await waitFor(() =>
-      expect(screen.getByText("Generic adapter · unverified")).toBeInTheDocument(),
-    );
-    expect(screen.queryByText(/unknown until/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/\d+ unknown/)).not.toBeInTheDocument();
-    expect(screen.getByLabelText(/thinking \/ cot: supported/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/file edits: not supported/i)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("9 unknown")).toBeInTheDocument());
+    expect(
+      screen.getByText("Generic adapter · best effort"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/\d+ supported/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/thinking \/ cot: unknown/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/thinking \/ cot: supported/i)).not.toBeInTheDocument();
     expect(screen.getByText("Visibility").nextElementSibling).toHaveTextContent(
-      /^Unverified · \d+ supported · \d+ unavailable$/,
+      /^Unverified · capabilities unknown$/,
     );
+  });
+
+  it("keeps a blank Harness ID unknown too, since it saves as generic", async () => {
+    renderWithProviders(<RegisterAgentPage editName={null} />);
+    fireEvent.click(screen.getByRole("radio", { name: /^generic/i }));
+    fireEvent.change(screen.getByLabelText(/harness id/i), { target: { value: "" } });
+    await waitFor(() => expect(screen.getByText("9 unknown")).toBeInTheDocument());
   });
 
   it("profiles a padded built-in slug as that harness, since it saves as one", async () => {

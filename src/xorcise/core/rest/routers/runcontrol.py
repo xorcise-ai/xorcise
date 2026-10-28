@@ -16,6 +16,7 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Path, Req
 from fastapi.responses import FileResponse, PlainTextResponse, Response
 
 from xorcise.core.config import Settings, get_settings
+from xorcise.core.contracts.run import StartTrigger
 from xorcise.core.contracts.runcontrol import (
     CompleteResponse,
     IntelResponse,
@@ -45,12 +46,21 @@ def _bearer(authorization: str | None) -> str:
     return authorization.split(" ", 1)[1].strip()
 
 
-def require_run(run_id: str, authorization: str | None) -> str:
-    """Authenticate the bearer as the owner of run_id; return run_id or raise 401."""
+def require_run(
+    run_id: str, authorization: str | None, *, start: StartTrigger = "run_control"
+) -> str:
+    """Authenticate the bearer as the owner of run_id; return run_id or raise 401.
+
+    Only the agent holds the bearer, so a call that passes is the agent at work: the run is
+    recorded as started (`xorcising`, #209) with *start* as what showed it, unless it already
+    has. `/alive` never comes through here — it takes the join script's watch token, and its
+    reaper polling is not the agent."""
     from xorcise.core import runs  # lazy: keep the runs module off this module's import path
+    from xorcise.core.rest.run_start import note_started
 
     if not runs.authenticate(run_id, _bearer(authorization)):
         raise HTTPException(status_code=401, detail="invalid run-control credential")
+    note_started(run_id, start)
     return run_id
 
 
@@ -187,7 +197,7 @@ def get_connect(
     from xorcise.core import runs
     from xorcise.core.runs.prompt import login_server_by_ip
 
-    rid = require_run(run_id, authorization)
+    rid = require_run(run_id, authorization, start="tailnet_key")
     settings = get_settings()
     ca = _Path(settings.headscale_ca_cert).read_text() if settings.headscale_ca_cert else ""
     base = settings.headscale_url or (
@@ -237,7 +247,7 @@ def get_join_script(
     from xorcise.core.runs.join import render_join_script
     from xorcise.core.runs.prompt import login_server_by_ip
 
-    rid = require_run(run_id, authorization)
+    rid = require_run(run_id, authorization, start="tailnet_key")
     settings = get_settings()
     ca = _Path(settings.headscale_ca_cert).read_text() if settings.headscale_ca_cert else ""
     base = settings.headscale_url or (
@@ -291,7 +301,7 @@ def get_tailscale_tarball(
         ensure_tarball,
     )
 
-    require_run(run_id, authorization)
+    require_run(run_id, authorization, start="tailnet_key")
     if arch not in SUPPORTED_ARCHES:
         raise HTTPException(status_code=400, detail=f"unsupported arch {arch!r}")
     try:
@@ -355,6 +365,9 @@ def attachment(
 
         if not (x_run_key and _runs_authenticate(run_id, x_run_key)):
             raise HTTPException(status_code=403, detail="invalid run key")
+        from xorcise.core.rest.run_start import note_started
+
+        note_started(run_id, "run_control")  # the run's key again: the agent, downloading
         if exp < int(time.time()):
             raise HTTPException(status_code=403, detail="link expired")
         if not verify(settings.run_control_signing_secret, run_id, name, exp, sig):

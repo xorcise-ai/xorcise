@@ -3,7 +3,7 @@ import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { server } from "@/test/msw/server";
 import { renderWithProviders } from "@/test/render";
-import { agentFixture, runFixture, missionFixture } from "@/test/fixtures";
+import { agentFixture, runFixture, missionFixture, serverView, summaryFixture } from "@/test/fixtures";
 
 const { push } = vi.hoisted(() => ({ push: vi.fn() }));
 vi.mock("next/navigation", () => ({
@@ -51,27 +51,15 @@ describe("AgentList", () => {
     );
   });
 
-  it("shows harness identity + a frontend-aggregated performance summary and card actions", async () => {
+  it("shows harness identity + the server's performance summary and card actions", async () => {
     server.use(
       http.get("*/api/agents", () =>
         HttpResponse.json([
           agentFixture({ name: "scout", id: "agent-1", kind: "codex", model: "gpt-5" }),
         ]),
       ),
-      http.get("*/api/runs", () =>
-        HttpResponse.json([
-          runFixture({
-            run_id: "run-1",
-            agent_id: "agent-1",
-            state: "terminal",
-            terminal_trigger: "done",
-            outcome: "completed",
-            completed_at: "2026-06-29T10:10:00Z",
-          }),
-        ]),
-      ),
-      http.get("*/api/runs/run-1/result", () =>
-        HttpResponse.json({ partial: false, grade: { overall: 0.5 } }),
+      http.get("*/api/results/summary", () =>
+        HttpResponse.json([summaryFixture({ agent_id: "agent-1", median: 0.5, best: 0.5 })]),
       ),
     );
     renderWithProviders(<AgentList />);
@@ -84,7 +72,7 @@ describe("AgentList", () => {
     expect(within(card).getByText(/Codex CLI/)).toBeInTheDocument();
     expect(within(card).getByText(/gpt-5/)).toBeInTheDocument();
 
-    // Frontend-aggregated performance summary (Average/Best 50% from the one scored run).
+    // The server's per-agent summary (Median/Best 50%), the same one every view reads.
     await waitFor(() =>
       expect(screen.getAllByText("50%").length).toBeGreaterThan(0),
     );
@@ -122,6 +110,27 @@ describe("AgentList", () => {
     await waitFor(() =>
       expect(screen.getByText(/No evaluations yet/i)).toBeInTheDocument(),
     );
+  });
+
+  it("never says an agent has no evaluations while the scores load, or when they fail", async () => {
+    let fail: () => void = () => {};
+    const failed = new Promise<void>((resolve) => (fail = resolve));
+    server.use(
+      http.get("*/api/agents", () =>
+        HttpResponse.json([agentFixture({ name: "scout", id: "agent-1" })]),
+      ),
+      http.get("*/api/results/summary", async () => {
+        await failed;
+        return new HttpResponse(null, { status: 500 });
+      }),
+    );
+    renderWithProviders(<AgentList />);
+    await screen.findByText("scout");
+    expect(screen.queryByText(/No evaluations yet/i)).toBeNull();
+
+    fail();
+    expect(await screen.findByText("Couldn’t load this agent’s scores.")).toBeInTheDocument();
+    expect(screen.queryByText(/No evaluations yet/i)).toBeNull();
   });
 
   it("lists agents newest → oldest regardless of transport order", async () => {
@@ -326,8 +335,10 @@ describe("AgentDetail", () => {
       name: /SQLi Login Bypass/i,
     });
     expect(links[0]).toHaveAttribute("href", "/runs/result?id=run-9");
-    // Status badge from the shared §10 vocabulary (budget trigger → "Partial").
-    expect(screen.getAllByText("Partial").length).toBeGreaterThan(0);
+    // Status badge from the shared §10 vocabulary: the server's label for a timed-out run.
+    expect(
+      screen.getAllByText(serverView("terminal", "timeout").status.label).length,
+    ).toBeGreaterThan(0);
     // Scores are shown; the raw run id is no longer rendered as a label.
     expect(screen.getAllByText("80%").length).toBeGreaterThan(0);
     expect(screen.queryByText("run-9")).toBeNull();

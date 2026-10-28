@@ -31,9 +31,11 @@ class _FakeContainer:
         self.name = run_id
         self.labels = {"xorcise.run_id": run_id, "xorcise.managed": "true"}
         self.removed_force: bool | None = None
+        self.removed_volumes: bool | None = None
 
-    def remove(self, force: bool = False) -> None:
+    def remove(self, force: bool = False, v: bool = False) -> None:
         self.removed_force = force
+        self.removed_volumes = v
 
 
 class _FakeContainers:
@@ -67,6 +69,7 @@ def test_stop_by_name_removes_present_container_and_returns_true() -> None:
     driver = DockerSdkDriver(client=_FakeClient({"run-1": c}))
     assert driver.stop_by_name("run-1") is True
     assert c.removed_force is True  # force-removed
+    assert c.removed_volumes is True  # with its anonymous dind volume (#66)
 
 
 def test_stop_by_name_absent_returns_false() -> None:

@@ -104,7 +104,10 @@ def test_operator_termination_recorded_partial(migrated_home) -> None:
         ("crashed", "infra_failed"),
     ],
 )
-def test_run_outcome_agrees_with_what_grading_recorded(migrated_home, trigger, outcome) -> None:
+@pytest.mark.parametrize("started", [True, False])
+def test_run_outcome_agrees_with_what_grading_recorded(
+    migrated_home, trigger, outcome, started
+) -> None:
     """`RunEntry.outcome` is the one classification every client reads, so it must say exactly
     what grading did with the run: `partial` iff the result is recorded partial, `infra_failed` iff
     nothing was graded. Clients used to prefer the result's partial flag and fall back to their own
@@ -113,14 +116,20 @@ def test_run_outcome_agrees_with_what_grading_recorded(migrated_home, trigger, o
 
     r = runs.create_run(agent_id="a1", mission="c", budget_seconds=600)
     assert r.outcome is None  # not ended yet
-    terminate_run(r.run_id, trigger, _now())
+    if started:
+        runs.mark_started(r.run_id, "telemetry", _now())
+    elif trigger == "timeout":
+        # A budget that ran out before the agent started is no attempt to time out (#187).
+        trigger, outcome = "never_started", "not_started"
+    recorded = terminate_run(r.run_id, "timeout" if trigger == "never_started" else trigger, _now())
+    assert recorded == trigger
 
     run = runs.get(r.run_id)
     assert run is not None
     assert run.outcome == outcome
     assert run.model_dump(mode="json")["outcome"] == outcome  # on the wire, not only in Python
     graded = reporting.get_result(r.run_id) is not None
-    assert graded == (outcome != "infra_failed")
+    assert graded == (outcome not in ("infra_failed", "not_started"))
     if graded:
         assert reporting.result_partial(r.run_id)[0] == (outcome == "partial")
 
@@ -307,6 +316,8 @@ def test_make_gate_budget_backstop_terminates_then_raises(migrated_home) -> None
     entry = runs.get(r.run_id)
     assert entry is not None
     created = entry.created_at
+    # The gate guards run-control, and a run-control call starts the run (#209).
+    runs.mark_started(r.run_id, "run_control", created)
     gate = make_gate(lambda: created + timedelta(seconds=11))  # past deadline
     with pytest.raises(MissionOverError):
         gate(r.run_id)

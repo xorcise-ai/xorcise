@@ -30,7 +30,7 @@ describe("RunLive agent identity", () => {
           runFixture({
             run_id: "r1",
             agent_id: "1c9343952bf64ac6b92785daeda54e1c",
-            state: "active",
+            state: "xorcising",
           }),
         ]),
       ),

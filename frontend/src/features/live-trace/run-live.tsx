@@ -19,7 +19,12 @@ import { fullTime, formatDuration } from "@/lib/api/format";
 import { useRun, useTerminateRun, useRunEnvironment } from "@/features/runs/queries";
 import { useAgents } from "@/features/agents/queries";
 import { useConfig } from "@/features/settings/queries";
-import { isTerminal, runPresentation, type RunTone } from "@/features/runs/run-state";
+import {
+  isTerminal,
+  runPresentation,
+  startedText,
+  type RunTone,
+} from "@/features/runs/run-state";
 import { STALL_TICK_MS, isStalled, secondsSince, useNow } from "@/features/runs/stall";
 import { useUiStore } from "@/stores/ui";
 import { useRunEvents } from "@/features/replay/use-run-events";
@@ -290,7 +295,18 @@ export function RunLive({ runId }: { runId: string | null }) {
   // The environment is still coming up: the hand-off card must not read "Action required".
   const awaitingEnvironment = environment.data?.state === "starting";
   const elapsed = elapsedSeconds(r.created_at, r.completed_at);
-  const startedAt = fullTime(r.created_at);
+  const createdAt = fullTime(r.created_at);
+  // When the agent started (#209), with what showed it on a quieter line beneath.
+  const startedAt = r.started_at ? (
+    <>
+      <span className="block truncate">{fullTime(r.started_at)}</span>
+      {r.start_trigger_label && (
+        <span className="block truncate text-caption font-normal text-text-tertiary">
+          {r.start_trigger_label}
+        </span>
+      )}
+    </>
+  ) : null;
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden p-4">
@@ -309,7 +325,9 @@ export function RunLive({ runId }: { runId: string | null }) {
                 {r.name}
               </h1>
               <Badge variant={toneBadge[view.tone]}>{view.label}</Badge>
-              <BackendStatusBulb phase={phase} compact />
+              {/* Live only: it tells Starting / Awaiting agent / Streaming / Stalled apart, which
+                  the badge cannot. Once the run is over it could only restate the badge (#38). */}
+              {!terminal && <BackendStatusBulb phase={phase} compact />}
               {/* Run ID — a debugging value, so its copy is icon-only: the labelled copy budget
                   in this row belongs to the launch command, not the id (§12, §17). */}
               <span className="flex min-w-0 items-center gap-1 rounded-md border border-border px-1.5 py-0.5">
@@ -370,7 +388,7 @@ export function RunLive({ runId }: { runId: string | null }) {
               operator scans. Harness carries no dot — it has no state to report. */}
           <ChipRow>
             <Chip label="Harness" value={r.source_agent} tone={null} />
-            {connectionChips(r, runEvents.events.length, environment.data).map((c) => (
+            {connectionChips(environment.data).map((c) => (
               <Chip
                 key={c.label}
                 label={c.label}
@@ -397,7 +415,8 @@ export function RunLive({ runId }: { runId: string | null }) {
           <StatTileRow className="gap-x-6 gap-y-2">
             {/* Identity metadata — the set the results page uses: Mission (name + version,
                 links to its brief), Agent (name + version), the Platform it executed on, when it
-                Started and the wall clock it has occupied (Duration). Harness is NOT here — it
+                was Created, when the agent Started and what showed it (#209), and the wall
+                clock it has occupied (Duration). Harness is NOT here — it
                 sits in the chip row above, with the run's other identity facts. The HTML/MD
                 exports carry one row neither view has, Telemetry window, so these are close
                 relatives rather than the same set. */}
@@ -417,7 +436,10 @@ export function RunLive({ runId }: { runId: string | null }) {
             {r.platform && <MetaItem label="Platform" value={r.platform} />}
             {r.model && <MetaItem label="Model" value={r.model} />}
             <MetaItem label="Budget" value={formatBudget(r.budget_seconds)} />
-            {startedAt && <MetaItem label="Started" value={startedAt} />}
+            {createdAt && <MetaItem label="Created" value={createdAt} />}
+            {startedAt && (
+              <MetaItem label="Started" value={startedAt} title={startedText(r, fullTime) ?? undefined} />
+            )}
             {elapsed != null && (
               <MetaItem label="Duration" value={formatDuration(elapsed)} />
             )}
@@ -446,7 +468,7 @@ export function RunLive({ runId }: { runId: string | null }) {
           >
             {r.status.label}
           </p>
-          <p className="mt-2 max-w-[68ch] text-body text-text-secondary">
+          <p className="mt-2 text-body text-text-secondary">
             {r.status.detail}
           </p>
           {r.terminal_detail && (
@@ -613,7 +635,12 @@ export function RunLive({ runId }: { runId: string | null }) {
         // The slot's pre-flight occupant: the launch hand-off, sized to the pane, with its own
         // single internal scroller and its copy action pinned above the payload.
         const workSection = awaitingAgent ? (
-          <RunPromptCard runId={r.run_id} fill awaitingEnvironment={awaitingEnvironment} />
+          <RunPromptCard
+            runId={r.run_id}
+            fill
+            awaitingEnvironment={awaitingEnvironment}
+            agentStarted={r.state === "xorcising"}
+          />
         ) : (
           traceSection
         );

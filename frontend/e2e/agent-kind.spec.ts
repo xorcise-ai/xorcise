@@ -117,8 +117,9 @@ test("a generic agent saves as generic and reads as Generic on its pages", async
   await openRegisterPage(page);
   await page.getByPlaceholder("scout").fill(name);
   await page.getByRole("radio", { name: /^Generic/ }).click();
-  await expect(page.getByText("Generic adapter · unverified")).toBeVisible();
-  await expect(page.getByText(/\d+ unknown/)).toHaveCount(0);
+  // Best effort: which spans an arbitrary agent exports is unknown, never counted supported.
+  await expect(page.getByText("Generic adapter · best effort")).toBeVisible();
+  await expect(page.getByText("9 unknown")).toBeVisible();
 
   const saved = page.waitForResponse(
     (r) => r.url().endsWith("/api/agents") && r.request().method() === "POST",

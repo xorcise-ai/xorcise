@@ -83,8 +83,9 @@ _MAX_ANNOUNCEMENT_BYTES = 64 * 1024
 # individual read is inside _ANNOUNCEMENTS_TIMEOUT, so a remote dribbling one header just under
 # it is never late by httpx's reckoning and never reaches a check of ours. Measured at 22.5 s
 # with one header every 2.5 s, rising linearly with header count (h11 caps total header BYTES at
-# ~16 KiB, which bounds the data but not the time). Tracked separately; a true total bound needs
-# a watchdog outside the calling thread, which costs more on a page-load path than it buys.
+# ~16 KiB, which bounds the data but not the time). The page load is bounded one layer up instead:
+# `rest/announcements_view.py` runs this call on its own thread and stops waiting for it (#161).
+# Callers that invoke this directly get no such bound.
 _ANNOUNCEMENTS_DEADLINE = 5.0
 
 
@@ -194,8 +195,8 @@ class HttpCatalogSource(CatalogSource):
         below is deliberate. Anything outside those two still escapes — `httpx.InvalidURL`
         derives from Exception, not HTTPError, so a malformed `XORCISE_CATALOG_URL` (try
         "::::") propagates straight out of here. What makes the no-failure-reaches-the-browser
-        guarantee TOTAL is the broad `except Exception` in
-        `rest/announcements_view.list_announcements`, which is the boundary the router calls.
+        guarantee TOTAL is the broad `except Exception` in `rest/announcements_view._run_fetch`,
+        the thread this method runs on when the router asks for announcements.
         Narrow here and broad at the boundary is the right shape and each covers what the
         other does not: this method absorbs the failures that are EXPECTED of a remote call,
         so they stay quiet, while a genuinely unexpected bug still travels up to the one place
@@ -388,7 +389,8 @@ def _read_bounded(resp: httpx.Response, deadline: float) -> bytes | None:
     stops being a wire count on the same line.)
 
     The deadline covers this loop, not the connect-and-headers phase that precedes it — see
-    `_ANNOUNCEMENTS_DEADLINE` for why nothing synchronous here can bound that.
+    `_ANNOUNCEMENTS_DEADLINE` for why nothing synchronous here can bound that, and where the
+    page load is bounded instead.
     """
     encoding = resp.headers.get("content-encoding", "").strip().lower()
     if encoding and encoding != "identity":

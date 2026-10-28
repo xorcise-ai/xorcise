@@ -925,6 +925,110 @@ def test_delete_refuses_while_the_run_is_being_graded(migrated_home, monkeypatch
     assert runs.get("run-del-grading") is not None
 
 
+def _grade_during_release(monkeypatch, run_id: str, *, released: bool) -> list[str]:
+    """Stub the release so that, while it runs, a grade and a result poll's re-drive both try to
+    start for the run (#188). Returns the grades that actually ran."""
+    from xorcise.core.rest import run_teardown, run_terminate
+
+    graded: list[str] = []
+    scheduled: list[object] = []
+    monkeypatch.setattr(run_terminate, "_grade_run", graded.append)
+
+    def teardown(rid: str) -> run_teardown.ReleaseOutcome:
+        run_terminate.grade_and_record(run_id)  # the boot regrade, or a re-drive's task
+        assert run_terminate.ensure_graded_async(run_id, scheduled.append) is False
+        return run_teardown.ReleaseOutcome(
+            released=released, error="" if released else "tailnet: Headscale is not reachable"
+        )
+
+    monkeypatch.setattr(run_teardown, "teardown_run", teardown)
+    assert scheduled == []
+    return graded
+
+
+def test_a_grade_cannot_start_while_its_run_is_being_deleted(migrated_home, monkeypatch):
+    """The delete holds the run's grading slot from its checks to the end of the purge, so a
+    grade that starts while the environment is released no-ops instead of writing a result for a
+    run about to be deleted (#188)."""
+    from xorcise.core import reporting, runs
+    from xorcise.core.rest import run_terminate
+
+    _finished_lab_run("run-del-race")
+    graded = _grade_during_release(monkeypatch, "run-del-race", released=True)
+    assert _client().delete("/api/runs/run-del-race").status_code == 204
+    assert graded == []
+    assert runs.get("run-del-race") is None
+    assert reporting.get_result("run-del-race") is None
+    assert not run_terminate.is_grading("run-del-race")  # the slot is not left behind
+
+
+def test_a_refused_delete_regrades_what_it_turned_away(migrated_home, monkeypatch):
+    """A grade turned away by a delete that then does not happen is re-scheduled when the hold
+    lets go: nothing else would revisit the run — the watchdog skips a terminal run, and the
+    release sweeper waits for a result before it releases one (#188 review)."""
+    from xorcise.core import runs
+    from xorcise.core.rest import run_terminate
+
+    _finished_lab_run("run-del-refused")
+    graded = _grade_during_release(monkeypatch, "run-del-refused", released=False)
+    later: list[str] = []
+    monkeypatch.setattr(run_terminate, "_regrade_later", later.append)
+    assert _client().delete("/api/runs/run-del-refused").status_code == 409
+    assert graded == []
+    assert later == ["run-del-refused"]
+    assert runs.get("run-del-refused") is not None
+    assert not run_terminate.is_grading("run-del-refused")
+    assert run_terminate._held == set() and run_terminate._deferred == set()
+
+
+def test_a_completed_delete_regrades_nothing(migrated_home, monkeypatch):
+    from xorcise.core.rest import run_terminate
+
+    _finished_lab_run("run-del-gone")
+    _grade_during_release(monkeypatch, "run-del-gone", released=True)
+    later: list[str] = []
+    monkeypatch.setattr(run_terminate, "_regrade_later", later.append)
+    assert _client().delete("/api/runs/run-del-gone").status_code == 204
+    assert later == []  # the run is gone: nothing to grade
+
+
+def test_a_delete_refused_as_running_holds_no_grade(migrated_home, monkeypatch):
+    """An unfinished run is refused before anything is held, so the grade its own ending
+    schedules (a /complete, the watchdog) can never meet a hold (#188 review)."""
+    from datetime import UTC, datetime
+
+    from xorcise.core import runs
+    from xorcise.core.rest import run_terminate
+
+    r = runs.create_run(agent_id="a1", mission="c", budget_seconds=600)
+    held: list[object] = []
+    real = run_terminate.grades_held
+
+    def recording(ids):
+        held.append(ids)
+        return real(ids)
+
+    monkeypatch.setattr(run_terminate, "grades_held", recording)
+    resp = _client().delete(f"/api/runs/{r.run_id}")
+    assert (resp.status_code, resp.json()["reason"]) == (409, "running")
+    assert held == []
+    runs.mark_terminal(r.run_id, "done", datetime.now(UTC))
+    assert not run_terminate.is_grading(r.run_id)
+
+
+def test_removing_an_agent_holds_the_grades_of_all_its_runs(migrated_home, monkeypatch):
+    from xorcise.core import agents, runs
+
+    c = _client()
+    agent = c.post("/api/agents", json={"name": "alpha"}).json()
+    _finished_lab_run("run-agent-race", agent_id=agent["id"])
+    graded = _grade_during_release(monkeypatch, "run-agent-race", released=True)
+    assert c.delete("/api/agents/alpha").status_code == 204
+    assert graded == []
+    assert runs.get("run-agent-race") is None
+    assert agents.get("alpha") is None
+
+
 def test_delete_of_a_released_run_does_not_tear_down_again(migrated_home, monkeypatch):
     from datetime import UTC, datetime
 
@@ -947,3 +1051,95 @@ def test_both_deletes_declare_their_409_body(migrated_home):
         assert ref.endswith("/DeleteRefusal"), (path, ref)
     fields = spec["components"]["schemas"]["DeleteRefusal"]["properties"]
     assert set(fields) == {"detail", "reason", "run_ids", "forceable"}
+
+
+def _run_with_result(run_id: str, stats=None, model: str | None = None):
+    """A finished run with a recorded result and, optionally, a telemetry snapshot."""
+    from datetime import timedelta
+
+    from xorcise.core import agents, reporting, runs
+    from xorcise.core.contracts.grading import GradeResult, ScoreBreakdown
+    from xorcise.core.contracts.reporting import ResultConditions
+
+    agent = agents.register(f"agent-{run_id}", endpoint="http://b")
+    run = runs.create_run(agent_id=agent.id, mission="c1", run_id=run_id, run_control_key="K")
+    runs.mark_terminal(run_id, "done", run.created_at + timedelta(minutes=30))
+    reporting.record_result(
+        run_id=run_id,
+        agent_id=agent.id,
+        result=GradeResult(
+            run_id=run_id,
+            overall=0.5,
+            breakdown=ScoreBreakdown(deterministic=0.5, judge=0.5),
+            trace_ref=run_id,
+        ),
+        conditions=ResultConditions(model=model),
+        stats=stats(run.created_at) if stats else None,
+    )
+    finished = runs.get(run_id)
+    assert finished is not None
+    return finished
+
+
+def _timing(first_s: float, last_s: float, models: tuple[str, ...] = ()):
+    from datetime import timedelta
+
+    from xorcise.core.contracts.reporting import RunStats, TimingStats
+
+    def build(created):
+        return RunStats(
+            models=models,
+            timing=TimingStats(
+                elapsed_seconds=1800.0,
+                first_event_ts=created + timedelta(seconds=first_s),
+                last_event_ts=created + timedelta(seconds=last_s),
+            ),
+        )
+
+    return build
+
+
+def test_run_result_carries_the_reports_model_and_telemetry_window_cells(migrated_home):
+    """The results page renders these strings rather than re-deriving them (#146), so they are
+    the report's own cells, harness-reported qualifier included."""
+    from xorcise.core import reporting
+
+    _install_mission(migrated_home, "c1")
+    run = _run_with_result("run-cells-1", stats=_timing(1, 61, models=("gpt-x",)))
+    body = _client().get(f"/api/runs/{run.run_id}/result").json()
+    assert body["agent_model"] == "gpt-x (reported by the harness)"
+    assert body["telemetry_window"] == "1m 0s (reported by the harness)"
+
+    grade, conditions = reporting.get_result(run.run_id), reporting.result_conditions(run.run_id)
+    assert grade is not None and conditions is not None
+    md = reporting.render_markdown(
+        reporting.RunReportContext(
+            run=run,
+            agent_name="a",
+            grade=grade,
+            conditions=conditions,
+            stats=reporting.get_stats(run.run_id),
+        )
+    )
+    assert f"| Agent model | {body['agent_model']} |" in md
+    assert f"| Telemetry window | {body['telemetry_window']} |" in md
+
+
+def test_run_result_says_why_a_window_is_withheld(migrated_home):
+    _install_mission(migrated_home, "c1")
+    # An hour of telemetry in a run that lasted thirty minutes: the harness's clock, not the work.
+    run = _run_with_result("run-cells-2", stats=_timing(1, 3601), model="declared-m")
+    body = _client().get(f"/api/runs/{run.run_id}/result").json()
+    assert body["telemetry_window"] == (
+        "withheld — the harness reported more telemetry than the run has lasted"
+    )
+    assert body["agent_model"] == "declared-m (disclosed)"
+
+
+def test_run_result_without_telemetry_has_no_window_and_no_model(migrated_home):
+    _install_mission(migrated_home, "c1")
+    run = _run_with_result("run-cells-3")
+    body = _client().get(f"/api/runs/{run.run_id}/result").json()
+    assert body["telemetry_window"] is None
+    # The report says "not disclosed"; the page leaves the empty row out.
+    assert body["agent_model"] is None

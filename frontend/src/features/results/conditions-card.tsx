@@ -6,9 +6,23 @@ import type { ResultConditions } from "@/lib/api/types";
 // never shows a dangling "—", and the whole card is hidden when nothing
 // meaningful remains. Per report §13 the sandbox ref and the agent/mission
 // version IDs are intentionally not surfaced here.
-export function ConditionsCard({ conditions }: { conditions: ResultConditions }) {
+//
+// `agentModel` is the report's Agent-model cell, served on the result (#146). The operator's
+// declaration (`conditions.model`) is almost never set, so reading only that said nothing on a
+// run whose telemetry named its model. The server weighs the declaration against the names the
+// harness reported and words the outcome, "(reported by the harness)" included, so this card and
+// the report cannot disagree. Null when there is nothing to name, and the row is left out; a
+// server too old to send it falls back to the declaration alone.
+export function ConditionsCard({
+  conditions,
+  agentModel,
+}: {
+  conditions: ResultConditions;
+  agentModel?: string | null;
+}) {
   const rows: { label: string; value: string }[] = [];
-  if (conditions.model) rows.push({ label: "Model", value: conditions.model });
+  const model = agentModel ?? conditions.model;
+  if (model) rows.push({ label: "Agent model", value: model });
   if (conditions.judge_model)
     rows.push({ label: "Judge model", value: conditions.judge_model });
   if (conditions.budget_seconds > 0)
