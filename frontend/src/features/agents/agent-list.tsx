@@ -11,19 +11,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Reveal } from "@/components/ui/reveal";
 import { cn } from "@/components/ui/cn";
 import { Page, PageBody, PageHead, PageTitle } from "@/components/layout/page";
-import { useRuns } from "@/features/runs/queries";
 import { Facet } from "@/features/runs/run-filters";
-import { classifyRun, isTerminal } from "@/features/runs/run-state";
-import { useRunResults } from "@/features/results/queries";
+import { useScoreSummary } from "@/features/results/queries";
 import { PerformanceSummary } from "@/features/results/performance-summary";
-import {
-  summarizeByAgent,
-  type AgentRunRow,
-  type AgentPerformanceSummary,
-} from "@/features/results/summarize-runs";
 import { useAgents } from "./queries";
 import { HARNESSES, GenericMark, harnessLabel } from "./harnesses";
-import type { AgentEntry } from "@/lib/api/types";
+import type { AgentEntry, ScoreSummary } from "@/lib/api/types";
 
 /** Harness identity for an agent's `kind` (report §7: the harness icon is the visual identity).
  *  Generic and your own label take the neutral generic mark; the name is harnessLabel's. */
@@ -53,7 +46,6 @@ const EMPTY_AGENT_FILTERS: AgentFilters = { harness: null, model: null };
 export function AgentList() {
   const router = useRouter();
   const agents = useAgents();
-  const runs = useRuns();
   const [filters, setFilters] = useState<AgentFilters>(EMPTY_AGENT_FILTERS);
 
   // Newest first — most recently registered leads the grid. The server serves oldest-first
@@ -95,35 +87,21 @@ export function AgentList() {
   );
   const filtersActive = Boolean(filters.harness || filters.model);
 
-  // Per-agent track record, aggregated entirely in the frontend from the runs the app
-  // already fetches (mirrors the Results page — no new backend field or endpoint).
-  const terminal = useMemo(
-    () => (runs.data ?? []).filter(isTerminal),
-    [runs.data],
-  );
-  const results = useRunResults(terminal.map((r) => r.run_id));
-
-  const rows: AgentRunRow[] = terminal.map((r, i) => {
-    const view = results[i]?.data;
-    // The server's classification of the run (run-state.ts classifyRun) — the same answer
-    // whether or not the result has been graded yet.
-    const counting = classifyRun(r.outcome);
-    return {
-      agentId: r.agent_id,
-      agentName: r.agent_id, // name isn't needed here; cards key off the agent list
-      overall: view?.grade?.overall ?? null,
-      ...counting,
-      when: r.completed_at ?? r.created_at,
-    };
-  });
-
+  // The server's per-agent summaries (GET /results/summary): the same numbers the Results page,
+  // the dashboard and `xorcise leaderboard` show for each agent.
+  const summaries = useScoreSummary("agent");
   const summaryByAgentId = useMemo(() => {
-    const m = new Map<string, AgentPerformanceSummary>();
-    for (const s of summarizeByAgent(rows)) m.set(s.agentId, s);
+    const m = new Map<string, ScoreSummary>();
+    for (const s of summaries.data ?? []) m.set(s.agent_id ?? "", s);
     return m;
-  }, [rows]);
+  }, [summaries.data]);
 
-  const scoresLoading = results.some((q) => q.isLoading);
+  // Until the summaries are in, a card without one is not an agent without evaluations.
+  const scoresState: ScoresState = summaries.isLoading
+    ? "loading"
+    : summaries.isError
+      ? "error"
+      : "ready";
 
   return (
     <Page className="gap-3">
@@ -182,10 +160,11 @@ export function AgentList() {
                 No agents match the current filters.
               </p>
             ) : (
-              <AgentGrid agents={filtered} summaryByAgentId={summaryByAgentId} />
-            )}
-            {scoresLoading && (
-              <p className="text-caption text-text-tertiary">Updating scores…</p>
+              <AgentGrid
+                agents={filtered}
+                summaryByAgentId={summaryByAgentId}
+                scoresState={scoresState}
+              />
             )}
           </>
         )}
@@ -197,19 +176,27 @@ export function AgentList() {
 /** Four across on wide screens (the shared card rhythm with the catalog + runs), stepping down
  *  responsively. Cards STRETCH to the tallest in their row (equal-height), with the action row
  *  pinned to the bottom. */
+type ScoresState = "loading" | "error" | "ready";
+
 function AgentGrid({
   agents,
   summaryByAgentId,
+  scoresState,
 }: {
   agents: AgentEntry[];
-  summaryByAgentId: Map<string, AgentPerformanceSummary>;
+  summaryByAgentId: Map<string, ScoreSummary>;
+  scoresState: ScoresState;
 }) {
   return (
     <ul className="grid grid-cols-1 items-stretch gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
       {agents.map((agent, i) => (
         <li key={agent.id}>
           <Reveal delay={i * 40} className="h-full">
-            <AgentCard agent={agent} summary={summaryByAgentId.get(agent.id)} />
+            <AgentCard
+              agent={agent}
+              summary={summaryByAgentId.get(agent.id)}
+              scoresState={scoresState}
+            />
           </Reveal>
         </li>
       ))}
@@ -220,9 +207,11 @@ function AgentGrid({
 function AgentCard({
   agent,
   summary,
+  scoresState,
 }: {
   agent: AgentEntry;
-  summary: AgentPerformanceSummary | undefined;
+  summary: ScoreSummary | undefined;
+  scoresState: ScoresState;
 }) {
   const { Logo, name: harnessName } = harnessOf(agent.kind);
   const detailHref = `/agents/detail?name=${encodeURIComponent(agent.name)}`;
@@ -263,6 +252,12 @@ function AgentCard({
 
       {summary ? (
         <PerformanceSummary summary={summary} columns={3} className="mt-3" />
+      ) : scoresState === "loading" ? (
+        <PerformanceSummary loading columns={3} className="mt-3" />
+      ) : scoresState === "error" ? (
+        <p className="flex flex-1 items-center justify-center px-2 text-center text-dense text-err">
+          Couldn’t load this agent’s scores.
+        </p>
       ) : (
         // Centre the empty-state line in the card's body rather than stranding it at the top with
         // dead space below — flex-1 claims the space between the header and the action row.

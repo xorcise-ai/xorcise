@@ -86,7 +86,8 @@ export function ResultsView({ runId }: { runId: string | null }) {
   // run completes, so the endpoint returns 202 {status:"grading"},
   // which api.get surfaces as a gradeless body. Treat `grade` as possibly absent
   // and render a graceful state instead of crashing on r.overall.
-  // A run whose environment failed (deploy_failed / crashed) is never graded — a final answer,
+  // A run whose environment failed (deploy_failed / crashed), or that was stopped before its agent
+  // started (cancelled / never_started), is never graded — a final answer,
   // not a wait, so it gets its own state rather than a "Grading in progress" that never ends.
   if (isNotGraded(view))
     return (
@@ -163,6 +164,7 @@ export function ResultsView({ runId }: { runId: string | null }) {
                 agents.data?.find((a) => a.id === run.data!.agent_id)?.name ??
                 run.data.agent_id.slice(0, 8)
               }
+              telemetryWindow={view.telemetry_window}
             />
           )}
 
@@ -186,7 +188,7 @@ export function ResultsView({ runId }: { runId: string | null }) {
                   <p className="text-body font-medium text-foreground">
                     Partial — {run.data?.status.label ?? "did not finish"}
                   </p>
-                  <p className="mt-2 max-w-[70ch] text-body text-text-secondary">
+                  <p className="mt-2 text-body text-text-secondary">
                     {run.data?.status.detail ??
                       "This run did not finish on the agent's own terms."}{" "}
                     Scores below reflect only what was completed.
@@ -218,7 +220,7 @@ export function ResultsView({ runId }: { runId: string | null }) {
           <ArtifactsSection runId={r.run_id} />
 
           {/* ═══ CONDITIONS — what this result was produced under ═══ */}
-          <ConditionsCard conditions={conditions} />
+          <ConditionsCard conditions={conditions} agentModel={view.agent_model} />
 
           {/* ═══ FOOTER — trace ref + deep-link + delete ═══ */}
           {/* The live view hosts the trace; static export routes by ?id= (no /runs/[id] segment). */}
@@ -248,27 +250,50 @@ export function ResultsView({ runId }: { runId: string | null }) {
 
 /**
  * The run's identity metadata: Mission and Agent (each carrying its pinned version in the name),
- * the Harness that ran it, when it Started and the wall clock it occupied (Duration — what the run
- * COST, not how long the agent worked). A compact labelled grid so the reader knows exactly which
+ * the Harness that ran it, when it was Created, when the agent Started and what showed it (#209),
+ * and the wall clock it occupied (Duration, from creation — what the run COST, not how long the
+ * agent worked). A compact labelled grid so the reader knows exactly which
  * run this is before reading the scores it produced.
  *
- * NEARLY the set the HTML/MD exports render, not identical: the report also carries a Telemetry
- * window row (how long the harness's own telemetry spans), which this grid does not. Claiming
- * field-for-field parity here was wrong once the report gained that row.
+ * Beside Duration sits the report's Telemetry window (how long the harness's own telemetry spans),
+ * so the pair the report puts side by side reads side by side here too: they agree on a healthy
+ * run and diverge loudly on a crashed one. The cell is the server's text, its "reported by the
+ * harness" qualifier or its reason for withholding the span included (#146); absent when the
+ * report omits the row too.
  */
-function RunMetaBar({ run, agentName }: { run: RunEntry; agentName: string }) {
+function RunMetaBar({
+  run,
+  agentName,
+  telemetryWindow,
+}: {
+  run: RunEntry;
+  agentName: string;
+  telemetryWindow?: string | null;
+}) {
   const elapsed = run.completed_at
     ? (new Date(run.completed_at).getTime() - new Date(run.created_at).getTime()) / 1000
     : null;
-  const items: { label: string; value: string; mono?: boolean }[] = [
+  // `wide` cells span the whole row and wrap: the telemetry window's text is a sentence when the
+  // span is withheld, and truncating it cut off exactly the reason, or the "reported by the
+  // harness" qualifier, that keeps a self-report from reading as a platform fact.
+  // `sub` is a second, quieter line under the value: what showed the agent had started (#209).
+  const items: { label: string; value: string; sub?: string; mono?: boolean; wide?: boolean }[] = [
     { label: "Mission", value: `${run.mission} v${run.mission_version ?? run.install_revision}` },
     { label: "Agent", value: `${agentName} v${run.agent_version}` },
     { label: "Harness", value: run.source_agent },
     // The architecture the run executed on (§43-UX8) — omitted for a pre-contract run so its
     // bar is unchanged, mono because it is a machine token (linux/arm64).
     ...(run.platform ? [{ label: "Platform", value: run.platform, mono: true }] : []),
-    { label: "Started", value: fullTime(run.created_at), mono: true },
+    { label: "Created", value: fullTime(run.created_at), mono: true },
+    // When the agent started, and what showed it (#209) on the line beneath.
+    {
+      label: "Started",
+      value: run.started_at ? fullTime(run.started_at) : "—",
+      sub: run.start_trigger_label ?? undefined,
+      mono: true,
+    },
     { label: "Duration", value: formatDuration(elapsed), mono: true },
+    ...(telemetryWindow ? [{ label: "Telemetry window", value: telemetryWindow, wide: true }] : []),
   ];
   return (
     <Card className="bg-raised">
@@ -282,12 +307,26 @@ function RunMetaBar({ run, agentName }: { run: RunEntry; agentName: string }) {
               key={it.label}
               label={it.label}
               value={
-                <span className={cn("block truncate", it.mono && "font-mono")}>
-                  {it.value}
-                </span>
+                <>
+                  <span
+                    className={cn(
+                      "block",
+                      it.wide ? "break-words" : "truncate",
+                      it.mono && "font-mono",
+                    )}
+                  >
+                    {it.value}
+                  </span>
+                  {it.sub && (
+                    <span className="block truncate text-caption font-normal text-text-tertiary">
+                      {it.sub}
+                    </span>
+                  )}
+                </>
               }
               small
-              title={it.value}
+              title={it.sub ? `${it.value} · ${it.sub}` : it.value}
+              className={cn(it.wide && "col-span-full")}
             />
           ))}
         </StatTileRow>
@@ -296,9 +335,9 @@ function RunMetaBar({ run, agentName }: { run: RunEntry; agentName: string }) {
   );
 }
 
-// A run cut short by an environment failure — the readiness gate's
-// deploy_failed or the boot reconcile's crashed. The server never grades it, so there is no
-// scorecard to show: say why instead, with the reason recorded when it ended. role="status", not
+// A run cut short by an environment failure — the readiness gate's deploy_failed or the boot
+// reconcile's crashed — or ended before its agent started (cancelled / never_started, #187). The
+// server never grades it, so there is no scorecard to show: say why instead, with the reason recorded when it ended. role="status", not
 // "alert" — the run is over and nothing here needs acting on.
 function NotGradedState({
   view,

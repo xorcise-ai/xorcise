@@ -311,23 +311,14 @@ def build_run_create_deps(settings: Settings, *, use_docker: bool | None = None)
         # so it costs ~nothing per run after the first (boot pre-warms the native one — see
         # role_all).
         from xorcise.core.rest.docker_runtime import (
+            docker_client,
             local_image_platform,
             require_base_compatible,
             require_nested_support,
         )
 
-        def _client() -> object:
-            import docker  # type: ignore[import-untyped]
-
-            try:
-                return docker.from_env()
-            except Exception as exc:  # daemon down / from_env failure — DockerException is NOT a
-                # RuntimeError, so unwrapped it escapes the runs router's except clauses as a raw
-                # 500; RuntimeError maps to a clean 503 with a remediation (mirrors mission_pull).
-                raise RuntimeError("Docker daemon is not reachable — start Docker") from exc
-
         def require_nested(platform: str | None) -> None:
-            require_nested_support(settings, _client, platform=platform)
+            require_nested_support(settings, docker_client, platform=platform)
 
         def check_base_compat(image_ref: str, origin: str) -> None:
             require_base_compatible(image_ref, label_lookup=driver.image_labels, origin=origin)

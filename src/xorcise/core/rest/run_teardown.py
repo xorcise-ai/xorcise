@@ -153,22 +153,32 @@ class DeleteBlocked:
         ).model_dump(mode="json")
 
 
-def check_deletable(run_ids: Sequence[str], *, force: bool = False) -> DeleteBlocked | None:
-    """Make these runs safe to delete, or say why they are not.
+def delete_runs(run_ids: Sequence[str], *, force: bool = False) -> DeleteBlocked | None:
+    """Delete these runs and everything recorded for them, or say why not (`check_deletable`).
 
-    The run row is the release sweeper's only handle on a run (#173): deleting it while the
-    environment is still up leaves the container until the next boot and the tailnet nodes
-    forever. So, in order:
-      running     a run that has not finished still has its environment up. Never forceable:
-                  terminate it first, which releases it.
-      grading     its grade is in flight, and grading may still need the environment. Never
-                  forceable: it settles on its own within moments.
-      unreleased  a finished run whose environment is still up is released here, synchronously.
-                  If that fails (Docker or Headscale down), the delete is refused unless `force`,
-                  which accepts the leak and is logged as such.
-    """
-    from xorcise.core.rest.run_terminate import is_grading
+    Every run's grading slot is held from the checks to the end of the purge (#188). The checks
+    release a finished run's environment, which takes seconds; without the hold, a grade could
+    start in that window, from a result poll or the boot regrade, and write a result for a run
+    whose row the purge then removes. With it, that grade no-ops, and nothing is left to grade:
+    the run is gone. The hold covers this process only; a grade in another process is still
+    caught by the boot sweep of orphaned records."""
+    # Lazy: run_terminate pulls the grading path, and run_purge the otel store.
+    from xorcise.core.rest.run_purge import purge_runs
+    from xorcise.core.rest.run_terminate import grades_held
 
+    # Refuse an unfinished run before holding anything: its own ending (a /complete, the
+    # watchdog) grades it, and that grade must not meet a hold for a delete that will not happen.
+    if (unfinished := _unfinished_refusal(run_ids)) is not None:
+        return unfinished
+    with grades_held(run_ids) as grading:
+        blocked = check_deletable(run_ids, force=force, grading=grading)
+        if blocked is None:
+            purge_runs(run_ids)
+    return blocked
+
+
+def _unfinished_refusal(run_ids: Sequence[str]) -> DeleteBlocked | None:
+    """The `running` refusal (see check_deletable), or None when every run has finished."""
     unfinished = [
         (r, entry.state)
         for r in run_ids
@@ -188,7 +198,31 @@ def check_deletable(run_ids: Sequence[str], *, force: bool = False) -> DeleteBlo
             "would leave its environment up with nothing left to clean it up.",
             forceable=False,
         )
-    grading = [r for r in run_ids if is_grading(r)]
+    return None
+
+
+def check_deletable(
+    run_ids: Sequence[str], *, force: bool = False, grading: Sequence[str] | None = None
+) -> DeleteBlocked | None:
+    """Make these runs safe to delete, or say why they are not.
+
+    The run row is the release sweeper's only handle on a run (#173): deleting it while the
+    environment is still up leaves the container until the next boot and the tailnet nodes
+    forever. So, in order:
+      running     a run that has not finished still has its environment up. Never forceable:
+                  terminate it first, which releases it.
+      grading     its grade is in flight, and grading may still need the environment. Never
+                  forceable: it settles on its own within moments.
+      unreleased  a finished run whose environment is still up is released here, synchronously.
+                  If that fails (Docker or Headscale down), the delete is refused unless `force`,
+                  which accepts the leak and is logged as such.
+    """
+    from xorcise.core.rest.run_terminate import is_grading
+
+    if (unfinished := _unfinished_refusal(run_ids)) is not None:
+        return unfinished
+    if grading is None:  # not held by `delete_runs`: ask the slots directly
+        grading = [r for r in run_ids if is_grading(r)]
     if grading:
         return DeleteBlocked(
             "grading",

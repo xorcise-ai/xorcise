@@ -89,6 +89,11 @@ def _warn_if_foreign_instance(base_url: str) -> None:
 SERVICE_WIDE_STATUSES = frozenset({401, 403, 429, 502, 503, 504})
 
 
+#: The soft `get_run_result` statuses of a run that has not finished: the server's run states
+#: before `terminal` (contracts.run.RunState).
+UNFINISHED_STATES = frozenset({"created", "xorcising"})
+
+
 class DocumentUnavailable(Exception):
     """One document fetch answered with an HTTP error STATUS — one request's problem, not the
     service's.
@@ -133,10 +138,11 @@ class RestClient:
         )
 
     def get_run_result(self, run_id: str, *, verify: bool = False) -> Any:
-        """A run's result envelope; a still-active run (the server 409s 'not terminal
-        yet — no result') returns a soft ``{"status": "active"}`` so `run status` /
-        `run report` render progress instead of a raw 409 that looks like an internal
-        failure. Every other status is handled exactly like `get`.
+        """A run's result envelope; an unfinished run (the server 409s 'not terminal
+        yet — no result') returns a soft ``{"status": <its state>}``, `created` or
+        `xorcising` (UNFINISHED_STATES), so `run status` / `run report` render progress
+        instead of a raw 409 that looks like an internal failure. Every other status is
+        handled exactly like `get`.
 
         `verify` asks the server to re-hash the run's evidence against its recorded digest.
         It is OFF by default because the hash is proportional to the run's telemetry and
@@ -160,8 +166,22 @@ class RestClient:
             except ValueError:
                 detail = resp.text
             if "not terminal" in detail or "no result" in detail:
-                return {"status": "active"}
+                # The run's own state, so the envelope says what the API and the GUI say
+                # (#209). The 409 does not carry it. A run the read cannot find reads as
+                # started, since it is live; so does a run from a server older than #209
+                # (no `started_at` on the row), which said `created` for working runs too.
+                run = self.run_or_none(run_id) or {}
+                state = run.get("state") if "started_at" in run else None
+                return {"status": state if state in UNFINISHED_STATES else "xorcising"}
         return self._call(lambda: resp, t, self.base_url)
+
+    def run_or_none(self, run_id: str) -> dict[str, Any] | None:
+        """One run's entry from the runs list, or None on any failure or when it is absent. The
+        server has no single-run read, so this is the list, filtered."""
+        runs = self.get_or_none("/runs")
+        if not isinstance(runs, list):
+            return None
+        return next((r for r in runs if isinstance(r, dict) and r.get("run_id") == run_id), None)
 
     def get_or_none(self, path: str, timeout: float | None = None) -> Any:
         """GET returning None on ANY failure (connection, timeout, error status,

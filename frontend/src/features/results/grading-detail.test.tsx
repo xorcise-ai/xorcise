@@ -28,6 +28,7 @@ function grade(over: Partial<GradeResult> = {}): GradeResult {
     major_deductions: [],
     hard_fails: [],
     judge_status: "ok",
+    grading_failed: false,
     judge_detail: null,
     judge_prompt: "### SYSTEM\ngrading instructions\n\n### USER\n⟦UNTRUSTED⟧ evidence ⟦/UNTRUSTED⟧",
     judge_breakdown: [],

@@ -1,3 +1,4 @@
+import { CircleHelp } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TBody, TD, TH, THead, TR } from "@/components/ui/table";
@@ -15,8 +16,9 @@ interface MatrixColumn {
   kind: string;
   name: string;
   profile: HarnessCapabilityProfile | undefined;
-  /** Generic always renders the generic adapter's profile, which is never "verified" against a
-   * real harness — the header badge says so rather than implying it was measured. */
+  /** Generic has no verified adapter: the generic adapter maps what it can, at best, and which
+   * spans an arbitrary agent exports is unknown. Its cells say unknown rather than borrowing the
+   * generic adapter's profile as if it were measured. */
   unverified: boolean;
 }
 
@@ -25,8 +27,9 @@ interface MatrixColumn {
  * creation: rows = the display groups, columns = every built-in harness + Generic, so a user
  * can see — before registering an agent — what telemetry that harness's adapter actually
  * declares, honestly (gaps show as an unsupported/partial dot with the adapter's own note,
- * never hidden). `selectedKind` highlights the chosen column with the amber selection token —
- * the one place this matrix uses amber; every dot's own state is shape-coded, never color-coded.
+ * never hidden). Generic's cells are amber question marks, as on the register page: unknown, not
+ * measured. `selectedKind` highlights the chosen column with the amber selection token; every
+ * dot's own state is shape-coded, never color-coded.
  */
 export function CapabilityMatrix({ selectedKind }: { selectedKind: string }) {
   const { profiles, byName, isLoading, isError } = useCapabilities();
@@ -112,7 +115,7 @@ export function CapabilityMatrix({ selectedKind }: { selectedKind: string }) {
                     {col.name}
                     {col.unverified && (
                       <span className="text-caption normal-case text-text-tertiary">
-                        (unverified — generic adapter)
+                        (unknown — generic adapter, best effort)
                       </span>
                     )}
                   </span>
@@ -134,7 +137,12 @@ export function CapabilityMatrix({ selectedKind }: { selectedKind: string }) {
                     key={col.kind}
                     className={cn(isSelected(col) && "bg-primary/10")}
                   >
-                    {col.profile ? (
+                    {col.unverified ? (
+                      <CircleHelp
+                        className="size-3 text-primary"
+                        aria-label={`${group.label}: unknown`}
+                      />
+                    ) : col.profile ? (
                       <CapabilityDot
                         level={groupLevel(col.profile, group)}
                         label={group.label}

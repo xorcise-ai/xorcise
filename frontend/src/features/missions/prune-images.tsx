@@ -79,7 +79,7 @@ export function PruneImagesPanel() {
 
   return (
     <div className="space-y-3 text-dense">
-      <p className="max-w-[68ch] text-text-secondary">
+      <p className="text-text-secondary">
         Mission images that nothing uses any more: older versions of an updated mission, and images
         of missions you uninstalled. An image used by an install, a run or a pull is never removed.
       </p>

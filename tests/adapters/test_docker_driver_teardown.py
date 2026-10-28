@@ -31,7 +31,7 @@ class _Container:
         self.attached = set(networks)
         self.alive = True
 
-    def remove(self, force: bool = False) -> None:
+    def remove(self, force: bool = False, v: bool = False) -> None:
         self.alive = False
         self.attached.clear()
 

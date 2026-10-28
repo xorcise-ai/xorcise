@@ -182,6 +182,27 @@ class ReleaseBacklogView(_Frozen):
     oldest_error: str = ""
 
 
+class NestedVerdictView(_Frozen):
+    """One nested-container verdict the server holds. `platform` is "" for the daemon's native
+    platform; `remediation` is "" when there is nothing to fix."""
+
+    platform: str
+    ok: bool
+    detail: str
+    remediation: str = ""
+
+
+class NestedSupportView(_Frozen):
+    """What the running server answers after re-probing nested containers (#195).
+
+    `native` is the daemon's own platform; `foreign` holds every other platform a run has asked
+    the server about (e.g. linux/amd64 on Apple Silicon), re-probed in the same call. These are
+    the verdicts run creation reads, so they are what `doctor` shows."""
+
+    native: NestedVerdictView
+    foreign: tuple[NestedVerdictView, ...] = ()
+
+
 class BootReconcileView(_Frozen):
     """What this server's start-up reconcile did, so the CLI can say it (#173).
 

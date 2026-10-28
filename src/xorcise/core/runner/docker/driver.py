@@ -7,6 +7,7 @@ the `runner` extra; only constructing the driver requires the SDK + a daemon.
 from __future__ import annotations
 
 import json as _json
+import logging
 from collections.abc import Callable
 from typing import Any, ClassVar
 
@@ -25,6 +26,8 @@ from xorcise.core.runner.docker import (
 # Where the mission-base entrypoint sends the inner daemon's output. Kept in sync with
 # containers/mission-base/entrypoint.sh (`dockerd-entrypoint.sh dockerd >/var/log/dockerd.log`).
 _INNER_DOCKERD_LOG = "/var/log/dockerd.log"
+
+log = logging.getLogger(__name__)
 
 
 def _text(raw: object) -> str:
@@ -337,10 +340,14 @@ class DockerSdkDriver(DockerDriver):
 
         from docker.errors import NotFound
 
+        # v=True: the outer container is a docker:dind descendant whose image declares a
+        # /var/lib/docker VOLUME, so every run gets an anonymous volume holding its inner daemon's
+        # whole image store. Without v it outlives the container, unlabelled and unreachable by the
+        # project-scoped sweep below: one leaked inner-daemon root per run, often several GB (#66).
         for container in self._client.containers.list(
             all=True, filters={"label": f"{RUN_ID_LABEL}={run_id}"}
         ):
-            container.remove(force=True)
+            container.remove(force=True, v=True)
         # Legacy sibling-era cleanup. Compose networks/volumes carry its standard project label.
         # A network cannot be removed while any container is still ATTACHED, and sibling mission
         # containers carried ONLY the compose-project label, not our run-id label — so the sweep
@@ -354,7 +361,7 @@ class DockerSdkDriver(DockerDriver):
             for cid in network.attrs.get("Containers") or {}:
                 # already gone between the inspect and the remove ⇒ idempotent
                 with contextlib.suppress(NotFound):
-                    self._client.containers.get(cid).remove(force=True)
+                    self._client.containers.get(cid).remove(force=True, v=True)
             network.remove()
         for volume in self._client.volumes.list(
             filters={"label": f"com.docker.compose.project={run_id}"}
@@ -367,7 +374,7 @@ class DockerSdkDriver(DockerDriver):
         if run_id:
             self._remove_run_resources(run_id)
         else:
-            container.remove(force=True)
+            container.remove(force=True, v=True)
 
     def stop_by_name(self, name: str) -> bool:
         # stop by the deterministic container name (== run_id) so teardown works
@@ -499,32 +506,40 @@ class DockerSdkDriver(DockerDriver):
         return cidrs
 
     def reap_managed(self) -> list[str]:
+        """Force-remove every managed container by id; return the names actually removed (#66).
+
+        The reported set IS the removed set. Each container goes by id, with its anonymous dind
+        volume (v=True), whether or not it carries a run id: removal by project alone could not
+        reach a container without RUN_ID_LABEL (the read_image_file throwaway), and a run whose
+        sweep failed halfway used to be reported reaped all the same. The run-scoped networks
+        and volumes are swept per run afterwards. A failure on one container or one run is logged
+        and skipped, so a single stuck network never aborts the reap of the rest, nor the
+        `xorcise down` that called it."""
+        from docker.errors import NotFound
+
         # all=True: include exited/crashed containers (orphans from prior sessions), not just
         # the running ones — the leak the bug report saw included a 3-day-old exited container.
         managed = self._client.containers.list(all=True, filters={"label": f"{MANAGED_LABEL}=true"})
+        reaped: list[str] = []
         run_ids: set[str] = set()
-        run_scoped = []
-        unscoped = []
         for container in managed:
             run_id = (container.labels or {}).get(RUN_ID_LABEL)
+            try:
+                container.remove(force=True, v=True)
+            except NotFound:
+                pass  # removed by a racing teardown: gone, and so reaped all the same
+            except Exception as exc:  # noqa: BLE001 — one stuck container must not stop the rest
+                # One line, no traceback: this lands on the operator's terminal mid-`down`.
+                log.warning("could not remove run container %s: %s", container.name, exc)
+                continue  # its run's sweep would only fail on the same container again
+            reaped.append(container.name)
             if isinstance(run_id, str) and run_id:
                 run_ids.add(run_id)
-                run_scoped.append(container)
-            else:
-                unscoped.append(container)
-        reaped = [c.name for c in managed]
-        # Run-scoped containers are reclaimed by PROJECT (their networks + anon volumes go too).
-        for run_id in run_ids:
-            self._remove_run_resources(run_id)
-        # A managed container with NO run id is not reachable by _remove_run_resources (which keys
-        # on the project == run id), so it would be REPORTED reaped here yet never removed. The
-        # read_image_file throwaway is exactly that shape — MANAGED_LABEL, deliberately no
-        # RUN_ID_LABEL — and it only survives its own `finally` remove if the process died between
-        # create and remove. Force-remove it directly (with its anon dind volume) so "reaped" is
-        # true for it too, not just claimed.
-        import contextlib
-
-        for container in unscoped:
-            with contextlib.suppress(Exception):  # best-effort reap; a racing removal is fine
-                container.remove(force=True, v=True)
+        # Containers first, then each run's networks and volumes. A network cannot be removed
+        # while its container is still attached, so this order lets the sweep finish.
+        for run_id in sorted(run_ids):
+            try:
+                self._remove_run_resources(run_id)
+            except Exception as exc:  # noqa: BLE001 — as above, per run
+                log.warning("could not remove the networks or volumes of run %s: %s", run_id, exc)
         return reaped

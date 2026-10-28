@@ -368,10 +368,16 @@ textarea,
 
 /* Global focus-visible fallback (guide §12) — every interactive gets a visible
    amber ring even when it doesn't set its own. Components that define a richer
-   focus treatment (button/input/tabs) still win via their own :focus-visible. */
-:focus-visible {
-  outline: 2px solid var(--color-ring);
-  outline-offset: 2px;
+   focus treatment (button/input/tabs) still win via their own :focus-visible.
+   It must sit in the base layer for that to hold: Tailwind emits its utilities in
+   `@layer utilities`, and unlayered CSS beats every layer whatever the specificity,
+   so unlayered this rule overrode every `focus-visible:outline-none` and focused
+   controls drew two indicators, their own ring plus this outline (#182). */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
 }
 
 html {
@@ -434,20 +440,23 @@ body {
    body rule so columns keep aligning.
 
    Measured on the live build before this rule existed: settings help text rendered at
-   line-height 1.33 and 76 characters (one at 92ch), the dashboard lede at 1.43 and
-   80ch. The type spec sets prose leading at 1.7; the readable band is 45–75ch.
-   Monospace is the reason both matter here — every glyph shares one advance width,
-   so the eye can't navigate by word silhouette and falls back on line position,
-   which is exactly what tight leading and long lines destroy. */
+   line-height 1.33. The type spec sets prose leading at 1.7. Monospace is why it matters
+   here — every glyph shares one advance width, so the eye can't navigate by word
+   silhouette and falls back on line position, which tight leading destroys.
+
+   No max-width. These rules used to cap prose at 68ch as well, and inside a wide card that
+   left two thirds of the box empty beside a narrow column of text: a mission's Objective and
+   Description ran 571px wide in a 1150px card. Text fills the box it sits in, everywhere in
+   the console; where a whole page reads better narrower, `.page-measure` bounds the page,
+   not each paragraph inside it. Centred copy (empty states, the 404) is the exception and
+   keeps its own measure, because its slack splits evenly either side. */
 .prose-block {
   line-height: 1.7;
-  max-width: 68ch;
 }
 /* Dense variant for help text sitting directly under a control, where 1.7 would
    visually detach it from the field it explains. */
 .prose-tight {
   line-height: 1.6;
-  max-width: 68ch;
 }
 
 /* ── Terrain map (live-trace) — pulsing rings, objective glow, and flowing edges.

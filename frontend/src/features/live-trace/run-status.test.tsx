@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { runFixture } from "@/test/fixtures";
-import { BackendStatusBulb, ConnectionPanel } from "./run-status";
+import { BackendStatusBulb, connectionChips } from "./run-status";
 import { runPhase } from "./run-phase";
 
 describe("BackendStatusBulb", () => {
@@ -13,75 +13,44 @@ describe("BackendStatusBulb", () => {
   });
 });
 
-describe("ConnectionPanel", () => {
-  it("created + no trace → env still provisioning, no objective cell yet", () => {
-    render(
-      <ConnectionPanel
-        run={runFixture({ state: "created", sandbox_ref: null })}
-        eventCount={0}
-      />,
-    );
-    expect(screen.getByText("Environment")).toBeInTheDocument();
-    expect(screen.getByText("Starting")).toBeInTheDocument(); // env still provisioning
-    // "In Progress" restated the run badge; gating Objective to terminal keeps the header
-    // strip short enough that no cell orphans onto a half-empty row.
-    expect(screen.queryByText("Objective")).toBeNull();
-    expect(screen.queryByText("In Progress")).toBeNull();
+describe("connectionChips", () => {
+  const labels = (env?: Parameters<typeof connectionChips>[0]) =>
+    connectionChips(env).map((c) => `${c.label}: ${c.value}`);
+
+  it("an environment not observed yet reads as still starting", () => {
+    expect(labels()).toEqual(["Environment: Starting"]);
   });
 
   it("never labels a chip 'Agent' — that word belongs to the harness identity alone", () => {
     // The run header carries `Harness: codex`; a chip called "Agent" holding a LINK state made
     // one word mean two things in the same strip. The link state lives in the status bulb.
-    render(
-      <ConnectionPanel
-        run={runFixture({ state: "active", sandbox_ref: "xorcise/chal:local" })}
-        eventCount={4}
-        // The env state is now OBSERVED by the server rather than guessed from sandbox_ref (which
-        // could not tell a static mission from a dead environment).
-        environment={{ run_id: "r1", state: "ready", ready: true, detail: "", release_attempts: 0 }}
-      />,
-    );
-    expect(screen.queryByText("Agent")).toBeNull();
-    expect(screen.queryByText("Connected")).toBeNull();
-    expect(screen.getByText("Ready")).toBeInTheDocument();
+    const chips = labels({ run_id: "r1", state: "ready", ready: true, detail: "", release_attempts: 0 });
+    expect(chips).toEqual(["Environment: Ready"]);
   });
 
-  it("terminal done → objective solved", () => {
-    render(
-      <ConnectionPanel
-        run={runFixture({ state: "terminal", terminal_trigger: "done" })}
-        eventCount={9}
-      />,
-    );
-    expect(screen.getByText("Objective")).toBeInTheDocument();
-    expect(screen.getByText("Solved")).toBeInTheDocument();
+  it("a finished run's environment reads as released, never live-green", () => {
+    // The server reports "released" for a terminal run once its teardown has landed (and
+    // "releasing" until then, #173), so the chip can never show a present-tense "Ready".
+    const chips = labels({
+      run_id: "r1",
+      state: "released",
+      ready: false,
+      detail: "",
+      release_attempts: 0,
+    });
+    expect(chips).toEqual(["Environment: Released"]);
   });
 
-  it("terminal run → env reads as released, not live-green", () => {
-    // A terminated run's env has been torn down — a present-tense green "Ready" would
-    // misrepresent it as still live.
-    render(
-      <ConnectionPanel
-        run={runFixture({
-          state: "terminal",
-          terminal_trigger: "operator",
-          sandbox_ref: "xorcise/chal:local",
-        })}
-        eventCount={5}
-        // The server reports "released" for a terminal run once its teardown has landed (and
-        // "releasing" until then, #173), so the chip can never show a present-tense green "Ready"
-        // for a finished run.
-        environment={{
-          run_id: "r1",
-          state: "released",
-          ready: false,
-          detail: "",
-          release_attempts: 0,
-        }}
-      />,
-    );
-    expect(screen.queryByText("Ready")).toBeNull();
-    expect(screen.getByText("Released")).toBeInTheDocument();
-    expect(screen.getByText("Not Solved")).toBeInTheDocument();
+  it("has no Objective chip, which only restated the badge and overpromised (#38)", () => {
+    // It read "Solved" exactly when the run completed: a run that completed and failed its
+    // objective read "Solved". The grade, on the result page, is what says that.
+    const chips = connectionChips({
+      run_id: "r1",
+      state: "released",
+      ready: false,
+      detail: "",
+      release_attempts: 0,
+    });
+    expect(chips.map((c) => c.label)).not.toContain("Objective");
   });
 });

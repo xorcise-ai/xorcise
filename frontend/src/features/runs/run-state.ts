@@ -1,29 +1,5 @@
 import type { RunEntry, RunStatus } from "@/lib/api/types";
 
-// How a terminal run counts in the aggregates — the server's answer (RunEntry.outcome, derived from
-// the trigger by contracts/run.py), never re-derived here. Shared by every aggregate (Results
-// agents + missions, the Agents list, the dashboard). Four private copies of the trigger rule once
-// listed a "budget" trigger nothing writes and missed "operator" (#159).
-export interface RunCounting {
-  /** Did not end on the agent's own terms — excluded from Average / Best. */
-  partial: boolean;
-  /** Finished on the agent's own terms. */
-  completed: boolean;
-  /** Cut short by an environment failure: never graded, and not one of the agent's attempts,
-   *  so it is left out of every score AND rate and disclosed as its own count (#109). */
-  infraFailed: boolean;
-}
-
-/** Spread the server's `outcome` into the flags the aggregates fold. A run with no outcome (not
- *  ended, or an unknown trigger) is none of the three. */
-export function classifyRun(outcome: RunEntry["outcome"] | undefined): RunCounting {
-  return {
-    partial: outcome === "partial",
-    completed: outcome === "completed",
-    infraFailed: outcome === "infra_failed",
-  };
-}
-
 export function isTerminal(run: Pick<RunEntry, "state">): boolean {
   return run.state === "terminal";
 }
@@ -56,7 +32,7 @@ export interface RunAction {
  *  (a partial one says so); anything else — an environment failure, an unknown ending — has no
  *  result to open, so it sends the operator to inspect the run. */
 export function runAction(run: Pick<RunEntry, "state" | "outcome">): RunAction {
-  if (run.state === "created" || run.state === "active")
+  if (run.state === "created" || run.state === "xorcising")
     return { label: "Open live run", target: "live" };
   if (run.outcome === "completed") return { label: "View result", target: "result" };
   if (run.outcome === "partial")
@@ -82,4 +58,16 @@ export function runPresentation(
   run: Pick<RunEntry, "state" | "status" | "outcome">,
 ): RunPresentation {
   return { label: run.status.label, tone: runTone(run.status), action: runAction(run) };
+}
+
+/** When the agent started and what showed it ("… · first OTel export"), worded by the server
+ *  (RunEntry.start_trigger_label) so the GUI, the CLI and the report agree (#209). Null for a run
+ *  the agent never started. */
+export function startedText(
+  run: Pick<RunEntry, "started_at" | "start_trigger_label">,
+  format: (iso: string) => string,
+): string | null {
+  if (!run.started_at) return null;
+  const when = format(run.started_at);
+  return run.start_trigger_label ? `${when} · ${run.start_trigger_label}` : when;
 }

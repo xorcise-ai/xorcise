@@ -30,12 +30,17 @@ describe("CapabilityMatrix", () => {
         /Model refusals: not supported, Model refusal details are not exported\./,
       ),
     ).toBeInTheDocument();
-    expect(screen.getAllByText(/Model refusals: supported/)).toHaveLength(3);
+    // The two built-ins that export refusals; Generic's cell is unknown, not supported.
+    expect(screen.getAllByText(/Model refusals: supported/)).toHaveLength(2);
   });
 
-  it("marks the Generic column unverified", async () => {
+  it("marks every Generic cell unknown, never the generic adapter's profile as measured", async () => {
     renderWithProviders(<CapabilityMatrix selectedKind="codex" />);
-    await waitFor(() => expect(screen.getByText(/unverified/i)).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText("(unknown — generic adapter, best effort)")).toBeInTheDocument(),
+    );
+    expect(screen.getByLabelText("Thinking / CoT: unknown")).toBeInTheDocument();
+    expect(screen.getByLabelText("Model refusals: unknown")).toBeInTheDocument();
   });
 
   it("highlights Generic when selectedKind matches no built-in harness (your own label)", async () => {
