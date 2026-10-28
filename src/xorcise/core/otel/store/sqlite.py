@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session
 
 from xorcise.core.contracts.telemetry import TraceRecord
@@ -102,6 +102,11 @@ class SqliteTraceStore(TraceStore):
                 .where(TraceRow.run_id == run_id)
                 .order_by(TraceRow.seq, TraceRow.payload)
             ).tuples()
+
+    def has_records(self, run_id: str) -> bool:
+        """Has the run exported anything? One index probe on `(run_id, seq)`, not a read."""
+        with session_scope() as s:
+            return bool(s.scalar(select(exists().where(TraceRow.run_id == run_id))))
 
     def receipt_times(self, run_id: str) -> dict[int, datetime]:
         """Map each trace record's `seq` -> its server-side ingest time (`TraceRow.created_at`, the
