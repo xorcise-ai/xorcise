@@ -6,6 +6,176 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions are derived from git tags (hatch-vcs).
 
+## [0.2.1] - 2026-10-29
+
+**Upgrading.** This release adds database migration `0009`. Migrations never run on boot, and
+`xorcise up` refuses a database that is behind. Run `xorcise down` before you install this
+release, because `xorcise up` adopts a 0.2.0 server that is still running instead of migrating.
+Then back up `~/.xorcise/xorcise.db`, since `0009` deletes some grades and its downgrade restores
+none of them, and run:
+
+```
+xorcise db upgrade
+xorcise up
+```
+
+Upgrade the CLI and the server together. Scripts that read run states, run triggers or
+`xorcise leaderboard --json` should check the first three entries under Changed.
+
+- **`0009` records when each run's agent started, and ends the finished runs whose agent never
+  did.** Every run gains `started_at` and `start_trigger`, backfilled from the evidence it already
+  holds. A finished run that timed out or was stopped with no telemetry, no submission, no fetch
+  of its brief or an attachment, and no confirmed join is ended `never_started` or `cancelled`,
+  and the grade an earlier build gave it is deleted. `terminal_detail` keeps the old trigger and
+  score. Earlier builds did not record every start signal, so a run whose agent worked but sent no
+  telemetry, submitted nothing and fetched no brief is relabelled too. Its grade had nothing of
+  the agent's to score either way. A downgrade ends both new triggers `crashed`, which earlier
+  builds never grade. (#211, fixes #187, #209)
+
+### Added
+
+- **The performance views show every run and a median, not an average.** An average mixed runs
+  that mean different things: a perfect solve whose judge never ran scored 50%, and an
+  environment failure was not the agent's attempt at all. `GET /api/results/runs` serves every
+  finished run with its scores, and `GET /api/results/summary?by=all|agent|mission|mission_agent`
+  serves the median, quartiles, best and mean, the checks' and the judge's averages, and a count
+  of each kind of run left out. The median covers runs graded with a judge, including timed-out
+  runs at the score they earned. Runs with no judge, stopped by an operator, whose grading failed,
+  that hit an environment failure or that are still grading are counted and disclosed, never
+  included. An older mission version is its own group. Results › Agents draws one column per run
+  with the median across it, Results › Missions plots checks against judge for each mission
+  version, and a run ledger on the agent page replaces the score-over-time chart. The dashboard,
+  the Agents list and the result page's cross-run card read the same summary. A grade recorded
+  when grading crashed is now marked `grading_failed`, where it read as no judge. (#206, fixes
+  #205)
+
+### Changed
+
+- **A working run reads `xorcising`, and its start is recorded.** Nothing ever moved a run out of
+  `created`, so every surface read Created for the whole life of a working run. A run now moves to
+  `xorcising` the first time its agent acts: its first telemetry export, a run-control call with
+  the run's key, or the fetch of its tailnet key. `RunEntry.state` is one of `created`,
+  `xorcising` and `terminal`, and `RunEntry` gains `started_at`, `start_trigger` and
+  `start_trigger_label`. `xorcise run status --json` on an unfinished run returns `"created"` or
+  `"xorcising"` where it returned `"active"`. The console, the CLI and the report show Created and
+  Started separately, where they labelled the creation time Started, and the last column of
+  `xorcise run list` is now titled Created. To migrate, read `xorcising` where you read `active`.
+  (#211, fixes #209)
+- **A run whose agent never started is not graded.** Stopping a run before its agent starts now
+  ends it `cancelled`, and a budget that runs out first ends it `never_started`. Earlier builds
+  graded the empty evidence and recorded a 0.00 against the agent. Both endings share the new
+  outcome `not_started`: `GET /api/runs/{id}/result` answers
+  `not_graded`, a regrade answers 409, and the performance views and the dashboard's Evaluated
+  count leave the run out. The run is still sealed, released and exported. A stop that loses a
+  race with the agent's first signal is recorded as `operator` and graded as before. To migrate,
+  treat `cancelled` and `never_started` as you treat `deploy_failed` and `crashed`.
+  (#211, fixes #187)
+- **`xorcise leaderboard` follows the performance views' rule.** It reads the server's summary and
+  shows Median, Mean and Best, with counts of timed-out, stopped, grading-failed, infra-failed and
+  no-judge runs. `--json` keeps v0.2.0's keys, but their values follow the median's rule:
+  `avg_overall` now includes timed-out runs and leaves out runs with no judge. It needs a server
+  with `/api/results/summary`. (#206)
+- **New runs read the run-control bearer from the environment.** The launch block exports
+  `XORCISE_RUN_BEARER` before the agent's command, and the stored prompt refers to the variable
+  instead of carrying the token. A custom launch command that starts the agent in a container must
+  forward it, for example with `docker run -e XORCISE_RUN_BEARER`. `XORCISE_TS_DIR` now names the
+  parent of `join.sh`'s work directory, not the directory itself, and is refused when another user
+  can write to it. A `tailscale` client too old to read its key from a file stops the join with an
+  upgrade message instead of taking the key on its command line. (#196)
+- **Dependencies.** The pinned `opentelemetry-proto` moves from 1.44.0 to 1.45.1, and the
+  console's `lucide-react` from 0.577 to 1.45. Frontend tests move to vitest 5. The rest are
+  minor and patch updates to Python, frontend and GitHub Actions dependencies.
+  (#151, #153, #177, #178, #198, #214)
+- **Contributor tooling.** `next build` and `next dev` no longer leave the working tree dirty.
+  The real-daemon reap tests refuse to run on a host whose Docker holds containers they did not
+  create, instead of tearing down its live runs. (#200, #212, fixes #126)
+
+### Fixed
+
+- **Every run's inner Docker daemon left its volume behind.** A run container's
+  `/var/lib/docker` is an anonymous volume holding the inner daemon's whole image store, and
+  teardown removed the container without it. One development host had 393 of them holding
+  195 GB. Teardown now removes the volume with the container. `xorcise down` removes every managed
+  container by id, with its volume, reports only what it removed, and carries on past one that
+  will not go instead of aborting before the Headscale teardown. Volumes leaked by earlier builds
+  carry no label, so XORCISE leaves them alone. `docker volume prune` reclaims them, but it
+  removes every unused anonymous volume on the host. (#212, fixes #66)
+- **Viewing a finished run no longer changes its evidence.** Opening a sealed run's page could
+  record a telemetry fact after the seal, so the run then read `mismatch` and its report showed a
+  MISMATCH callout, though nothing had been tampered with. The join reconciler could do the same
+  for two minutes after a run ended. The observed-facts store now refuses a fact for a sealed run,
+  and sealing records the telemetry fact first. Runs that already read `mismatch` for this reason
+  are not repaired, because a repair would delete rows from sealed evidence. (#217, fixes #194)
+- **A grade can no longer start while its run is being deleted.** `DELETE /api/runs/{id}` and
+  `DELETE /api/agents/{name}` hold each run's grading slot from their checks to the end of the
+  purge. A grade turned away by a delete that is then refused is scheduled again.
+  (#211, fixes #188)
+- **`xorcise doctor` clears the nested-container refusal the server holds.** After a host was
+  fixed, for example by enabling Rosetta on Apple Silicon, runs stayed refused until
+  `xorcise down && xorcise up`, because `doctor` re-probed in its own process. It now has the
+  server re-probe through the new `POST /api/system/nested-support/refresh` and shows the
+  server's verdicts, falling back to a local probe when no server answers. (#213, fixes #195)
+- **A slow catalog can no longer hold a page load open.** The announcements fetch checked its
+  five-second deadline only once headers had arrived, so a catalog that sent one header at a time
+  held the page load open (22.5 s measured, unbounded in principle). The fetch now runs on its own
+  thread, a page load waits for it at most five seconds, and page loads share one fetch per
+  catalog. (#218, fixes #161)
+- **A server with no runner refuses runner work instead of faking it.** Under
+  `serve --role control`, a run create answered 201 for a run that stayed `created` forever, a
+  mission pull recorded an install with no image, and a release marked an environment released
+  while its container kept running. These now answer 503 and name what was refused, and the
+  background jobs that need a runner do not start. Role `all` (`xorcise up`) is unaffected.
+  (#202, fixes #168)
+- **A distributed install refuses to listen on loopback only.** With the distributed topology and
+  a loopback `host`, nothing answered at the address agents and the collector were given. `serve`
+  and `up` now refuse, and say to set `host` in `config.toml`. (#202, fixes #169)
+- **Console fixes.** A focused control draws one focus indicator, not its own ring plus the global
+  outline, and the timeline-waterfall markers draw their own (#182). A finished run states its
+  status once on its live view, and the Objective chip, which read Solved for a run that failed
+  its objective, is gone (#38). The result page shows the model the harness reported and the
+  telemetry window, in the report's own words, from the new `agent_model` and `telemetry_window`
+  fields of `GET /api/runs/{id}/result` (#146). The All Runs table and an agent's run history say
+  No judge instead of 0%, and agent history rows carry `judge_status` (#143). Text fills its card
+  instead of stopping at a 68-character measure (#203).
+  (#204, fixes #38, #143, #146, #182, #203)
+- **The Generic harness no longer claims span support it cannot know.** The register and edit
+  agent pages showed the generic adapter's profile as, for example, "7 supported" with green
+  checks. For `generic`, a blank Harness ID or a label of your own they now show every span group
+  as unknown, and choosing Generic shows a warning that the generic adapter is not verified
+  against any harness. (#207)
+- **`xorcise config set-model --span-max-tokens` works on its own.** It was rejected as "nothing
+  to set". (#200, fixes #124)
+- **`serve` explains a plane whose startup fails on uvicorn 0.53 and later.** It exited 3 with no
+  message. (#200, fixes #122)
+- **The compose profiles README no longer advertises a multi-host install.** It says the profiles
+  are scaffolding, and that `xorcise up` is the only working install. (#200, fixes #170)
+
+### Security
+
+- **The tailnet join key and the run-control bearer stay off process command lines.** Any local
+  user can read every process's arguments. `join.sh` passed the join key to `tailscale up` and the
+  bearer to `curl` as arguments, in sidecar mode as well as native, and the launch command carried
+  the whole prompt, bearer included, for the entire run. Claude Code and Codex also logged that
+  prompt into the run's traces. The key now reaches `tailscale up` as a mode-0600 file, the bearer
+  reaches `curl` on stdin, and the prompt refers to `$XORCISE_RUN_BEARER`. The join script's
+  reapers poll the new `GET /api/runs/{id}/alive` with a watch token that reveals only whether
+  the run is still going. `/prompt` and `xorcise run prompt` still inline the token for a
+  hand-off, and runs created before this release keep their stored prompts. (#196, fixes #172)
+- **Headscale is pinned by digest, and the CA key is in no container.** `xorcise up` ran the
+  floating `headscale/headscale:stable`, which moved to v0.29 while the adapter was written for
+  v0.28. It now runs `headscale/headscale:v0.29.5`, verified by image ID, and refuses to replace a
+  newer Headscale with it, because Headscale cannot migrate a database backwards. A host that
+  cannot pull is told how to `docker save` and `docker load` the image. On the next `up` the CA
+  key moves to `headscale/ca/`, which no container mounts, and the router stops receiving the
+  server's TLS private key. A change of host IP re-signs the server certificate with the existing
+  CA instead of minting a new one. Existing installs keep the old `:stable` image on disk.
+  (#199, fixes #171)
+- **A config value can no longer break or extend `~/.xorcise/.env`.** The model, terrain-model
+  and network setters wrote values unquoted, so a line break in one (for example in
+  `headscale_url`) could corrupt the file or add a variable of its own. A value with a line
+  break now gets a 422 and nothing is written, `config set-model --key` refuses one too, and
+  `.env` is never readable by other users while it is written. (#200, fixes #160)
+
 ## [0.2.0] - 2026-10-16
 
 **Upgrading.** This release adds database migrations `0003` to `0008`. Migrations never run on
