@@ -2,25 +2,26 @@
 # cannot merge without a maintainer's approval. See MAINTAINERS.md.
 #
 #   @guru-xorciseai      Guru Hariharaun      — author and maintainer
-#   @christo-xorciseai   Christo Joby Antony  — maintainer
 #
-# Both are on every rule so either can approve; a single owner would deadlock reviews.
+# There is one owner, so that ruleset option stays OFF: an author cannot approve their own pull
+# request, and every change the owner opened would deadlock. Add a second owner to every rule
+# before turning it on.
 #
 # Two silent failure modes — neither reports an error at merge time:
 #   1. an owner without WRITE access to the repo is ignored;
 #   2. a handle that does not resolve is skipped, and the rule then protects nothing.
 # Check for GitHub's warning banner on this file after pushing.
 
-*                                @guru-xorciseai @christo-xorciseai
+*                                @guru-xorciseai
 
 # Supply-chain critical: a bad change here compromises every release, not just one feature.
-/.github/                        @guru-xorciseai @christo-xorciseai
-/.github/workflows/              @guru-xorciseai @christo-xorciseai
-/.github/workflows/release.yml   @guru-xorciseai @christo-xorciseai
-/pyproject.toml                  @guru-xorciseai @christo-xorciseai
-/hatch_build.py                  @guru-xorciseai @christo-xorciseai
-/uv.lock                         @guru-xorciseai @christo-xorciseai
-/scripts/                        @guru-xorciseai @christo-xorciseai
-/SECURITY.md                     @guru-xorciseai @christo-xorciseai
-/CODE_OF_CONDUCT.md              @guru-xorciseai @christo-xorciseai
-/LICENSE                         @guru-xorciseai @christo-xorciseai
+/.github/                        @guru-xorciseai
+/.github/workflows/              @guru-xorciseai
+/.github/workflows/release.yml   @guru-xorciseai
+/pyproject.toml                  @guru-xorciseai
+/hatch_build.py                  @guru-xorciseai
+/uv.lock                         @guru-xorciseai
+/scripts/                        @guru-xorciseai
+/SECURITY.md                     @guru-xorciseai
+/CODE_OF_CONDUCT.md              @guru-xorciseai
+/LICENSE                         @guru-xorciseai
