@@ -39,7 +39,7 @@
     "@testing-library/react": "^16",
     "@testing-library/jest-dom": "^7",
     "jsdom": "^30",
-    "msw": "^2",
+    "msw": "^3",
     "openapi-typescript": "^7",
     "@playwright/test": "^1"
   }
